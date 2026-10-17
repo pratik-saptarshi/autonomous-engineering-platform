@@ -72,12 +72,14 @@ drive_catch_up() {
   fi
   newest="$(ls -1t "$STAGE"/db-*.db 2>/dev/null | head -1 || true)"
   if [ -z "$newest" ]; then
-    log "WARNING: Drive catch-up wanted (sha ${want_sha:0:12}…) but no staged backup exists"
+    log "WARNING: Drive catch-up wanted (sha ${want_sha:0:12}…) but no staged backup exists — clearing local watermark so the next run takes a fresh backup"
+    rm -f "$SHA_FILE"
     return 0
   fi
   fsha="$(sha256sum "$newest" | awk '{print $1}')"
   if [ "$fsha" != "$want_sha" ]; then
-    log "WARNING: newest staged backup (${fsha:0:12}…) does not match DB (${want_sha:0:12}…) — skipping Drive catch-up"
+    log "WARNING: newest staged backup (${fsha:0:12}…) does not match DB (${want_sha:0:12}…) — clearing local watermark so the next run takes a fresh backup"
+    rm -f "$SHA_FILE"
     return 0
   fi
   folder_id="$(cat "$FOLDER_ID_FILE")"
@@ -89,6 +91,10 @@ drive_catch_up() {
     log "ERROR: Drive catch-up upload failed (${upload_diag:0:200}) — will retry next run"
     return 1
   fi
+}
+
+prune_staging() {
+  ls -1t "$STAGE"/db-*.db 2>/dev/null | tail -n +4 | xargs -r rm -f
 }
 
 # 1. Watchdog: revive via direct start. (A bare MCP spawn was tried here
@@ -127,6 +133,7 @@ if [ -n "$LAST_SHA" ] && [ "$NOW_SHA" = "$LAST_SHA" ]; then
   if ! drive_catch_up "$NOW_SHA"; then
     exit 1
   fi
+  prune_staging
   exit 0
 fi
 
@@ -217,5 +224,6 @@ else
 fi
 
 # 6. Prune local staging, keep 3 most recent
-ls -1t "$STAGE"/db-*.db 2>/dev/null | tail -n +4 | xargs -r rm -f
+prune_staging
 log "done"
+
