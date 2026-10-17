@@ -4,13 +4,23 @@
 # Every run:
 #   1. Watchdog: if the daemon is down, restart it directly (nohup).
 #   2. Checksum the DB. If unchanged since the last backup, log and exit 0 —
-#      the daemon is never stopped when there is nothing to back up.
+#      the daemon is never stopped when there is nothing to back up — but
+#      first run drive_catch_up: the Drive tier may be behind even when the
+#      DB is unchanged (it was unconfigured or failed when this state was
+#      backed up).
 #   3. On change: SIGTERM the daemon (graceful checkpoint), copy the DB,
 #      sha256-verify the copy against a hash taken immediately before the
-#      copy, restart the daemon with HF_HUB_OFFLINE=1.
+#      copy, restart the daemon with HF_HUB_OFFLINE=1. Record the local
+#      checksum (.last-db-sha256) independently of Drive.
 #   4. Upload the copy to Google Drive when configured (folder id file +
-#      hatch_gws_cli present); otherwise the local backup is the only tier
-#      and the run still succeeds. Record the new checksum, prune staging.
+#      hatch_gws_cli present) and record .last-drive-sha256; otherwise the
+#      local backup is the only tier and the run still succeeds — the Drive
+#      checksum stays stale so a later run uploads this backup once Drive
+#      is configured. Prune staging.
+#
+# Two watermarks, two tiers: .last-db-sha256 = a verified local copy exists;
+# .last-drive-sha256 = that state was uploaded. Never mark the Drive tier
+# done without a successful upload.
 #
 # The upstream backup.sh needs systemd; this environment has no user D-Bus,
 # so SIGTERM replaces `systemctl stop/start`. Exit 0 unless the backup copy
@@ -21,6 +31,7 @@ BIN="$HOME/workspace/neurostrata/bin/neurostrata-mcp"
 DB="$HOME/.config/NeuroStrata/data/db/ladybug.db"
 STAGE="$HOME/workspace/neurostrata/backups"
 SHA_FILE="$HOME/workspace/neurostrata/.last-db-sha256"
+DRIVE_SHA_FILE="$HOME/workspace/neurostrata/.last-drive-sha256"
 FOLDER_ID_FILE="$HOME/workspace/neurostrata/.drive-database-folder-id"
 LOG="$HOME/workspace/neurostrata/watchdog.log"
 export HF_HUB_OFFLINE=1
@@ -40,6 +51,44 @@ start_daemon() {
   # lock for its whole lifetime and brick every future watchdog run.
   nohup "$BIN" daemon 9>&- > "$HOME/workspace/neurostrata/daemon.log" 2>&1 &
   sleep 12
+}
+
+drive_configured() {
+  [ -s "$FOLDER_ID_FILE" ] && command -v /opt/hatch/bin/hatch_gws_cli >/dev/null
+}
+
+# Upload the newest staged backup to Drive and record it. Used both after a
+# fresh backup and on no-change runs to catch up a Drive tier that was
+# unconfigured (or failed) when the backup was taken: without this, a backup
+# taken while Drive was unavailable would never be uploaded once Drive
+# returns, because the DB checksum would already be marked done.
+drive_catch_up() {
+  # $1 = sha256 of the DB state the staged backup must match
+  local want_sha="$1" drive_sha newest fsha folder_id name upload_diag
+  drive_configured || return 0
+  drive_sha="$(cat "$DRIVE_SHA_FILE" 2>/dev/null || true)"
+  if [ -n "$drive_sha" ] && [ "$drive_sha" = "$want_sha" ]; then
+    return 0
+  fi
+  newest="$(ls -1t "$STAGE"/db-*.db 2>/dev/null | head -1 || true)"
+  if [ -z "$newest" ]; then
+    log "WARNING: Drive catch-up wanted (sha ${want_sha:0:12}…) but no staged backup exists"
+    return 0
+  fi
+  fsha="$(sha256sum "$newest" | awk '{print $1}')"
+  if [ "$fsha" != "$want_sha" ]; then
+    log "WARNING: newest staged backup (${fsha:0:12}…) does not match DB (${want_sha:0:12}…) — skipping Drive catch-up"
+    return 0
+  fi
+  folder_id="$(cat "$FOLDER_ID_FILE")"
+  name="$(basename "$newest")"
+  if upload_diag="$(/opt/hatch/bin/hatch_gws_cli drive +upload "$newest" --parent "$folder_id" --name "$name" 2>&1)"; then
+    log "uploaded to Drive (folder ${folder_id:0:12}…): $name"
+    echo -n "$want_sha" > "$DRIVE_SHA_FILE"
+  else
+    log "ERROR: Drive catch-up upload failed (${upload_diag:0:200}) — will retry next run"
+    return 1
+  fi
 }
 
 # 1. Watchdog: revive via direct start. (A bare MCP spawn was tried here
@@ -73,6 +122,11 @@ LAST_SHA="$(cat "$SHA_FILE" 2>/dev/null || true)"
 
 if [ -n "$LAST_SHA" ] && [ "$NOW_SHA" = "$LAST_SHA" ]; then
   log "no DB changes (sha256 ${NOW_SHA:0:12}…) — skipping backup, daemon untouched"
+  # The DB is unchanged, but the Drive tier may still be behind (it was
+  # unconfigured or failed when this state was backed up). Catch it up.
+  if ! drive_catch_up "$NOW_SHA"; then
+    exit 1
+  fi
   exit 0
 fi
 
@@ -138,19 +192,24 @@ log "local backup OK: $STAGE_FILE"
 
 finish_restart
 
+# The local tier is complete: record it now, independently of Drive. A
+# failing Drive upload must not force a redundant daemon stop/copy cycle on
+# the next run — the catch-up path re-uploads from staging instead.
+echo -n "$CP_SHA" > "$SHA_FILE"
+
 # 5. Upload to Google Drive when configured. Drive is an optional tier: if the
 # folder id file or hatch_gws_cli is missing, log a loud warning and keep the
-# local backup as the only tier (exit 0). Only a *configured but failing*
-# upload keeps the checksum stale so the next run retries it.
-if [ ! -s "$FOLDER_ID_FILE" ] || ! command -v /opt/hatch/bin/hatch_gws_cli >/dev/null; then
+# local backup as the only tier (exit 0) — but do NOT mark the Drive tier
+# done, so a later run uploads this backup once Drive is configured (see
+# drive_catch_up). Only a *configured but failing* upload exits 1.
+if ! drive_configured; then
   log "WARNING: Drive upload not configured (missing folder id file or hatch_gws_cli) — local backup is the only tier"
-  echo -n "$CP_SHA" > "$SHA_FILE"
 else
   FOLDER_ID="$(cat "$FOLDER_ID_FILE")"
   NAME="ladybug-$TS.db"
   if upload_diag="$(/opt/hatch/bin/hatch_gws_cli drive +upload "$STAGE_FILE" --parent "$FOLDER_ID" --name "$NAME" 2>&1)"; then
     log "uploaded to Drive (folder ${FOLDER_ID:0:12}…): $NAME"
-    echo -n "$CP_SHA" > "$SHA_FILE"
+    echo -n "$CP_SHA" > "$DRIVE_SHA_FILE"
   else
     log "ERROR: Drive upload failed (${upload_diag:0:200}) — local backup retained at $STAGE_FILE; will retry next run"
     exit 1
