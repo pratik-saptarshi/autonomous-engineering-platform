@@ -49,6 +49,9 @@ start_daemon() {
   log "starting daemon"
   # 9>&-: the daemon must not inherit the flock fd, or it would hold the
   # lock for its whole lifetime and brick every future watchdog run.
+  # Rotate (never truncate) the daemon log with a date-timestamp: a dying
+  # daemon's stderr — Rust panic, OOM trace — must survive the restart.
+  rotate_daemon_log "$HOME/workspace/neurostrata/daemon.log"
   nohup "$BIN" daemon 9>&- > "$HOME/workspace/neurostrata/daemon.log" 2>&1 &
   sleep 12
 }
@@ -95,23 +98,80 @@ drive_catch_up() {
 
 prune_staging() {
   ls -1t "$STAGE"/db-*.db 2>/dev/null | tail -n +4 | xargs -r rm -f
+  ls -1t "$STAGE"/logs-*.tar.gz 2>/dev/null | tail -n +4 | xargs -r rm -f
 }
 
-# 1. Watchdog: revive via direct start. (A bare MCP spawn was tried here
-# previously, but the stdio server does not reliably auto-start the daemon —
-# verified: it hangs with no output and no daemon. Direct nohup is the
-# proven path.)
-if "$BIN" status 2>/dev/null | grep -q "status: healthy"; then
-  log "watchdog: daemon healthy"
-else
-  log "watchdog: daemon down — restarting directly"
-  start_daemon
-  if "$BIN" status 2>/dev/null | grep -q "status: healthy"; then
-    log "watchdog: daemon recovered"
+# Archive the daemon and watchdog logs (the latter carries the memory
+# telemetry) alongside each DB backup, so a backup always ships with the
+# logs needed for forensics.
+archive_logs() {
+  # $1 = timestamp string for the archive name
+  local ts="$1" archive
+  archive="$STAGE/logs-$ts.tar.gz"
+  tar -czf "$archive" -C "$HOME/workspace/neurostrata" \
+    daemon.log watchdog.log logs 2>/dev/null || true
+  if [ -f "$archive" ]; then
+    log "logs archived: $archive"
   else
-    log "watchdog: ERROR — daemon still down after restart attempt"
+    log "WARNING: log archive failed (non-fatal)"
   fi
+}
+
+# Memory telemetry, logged on every run: a rising daemon-RSS trend
+# distinguishes a memory leak from external OOM pressure.
+log_memory() {
+  local pid rss avail
+  pid="$(pgrep -f '[n]eurostrata-mcp daemon' | head -1 || true)"
+  rss=""
+  if [ -n "$pid" ]; then
+    rss="$(ps -o rss= -p "$pid" 2>/dev/null | tr -d ' ' || true)"
+  fi
+  avail="$(awk '/MemAvailable/ {print $2; exit}' /proc/meminfo 2>/dev/null || true)"
+  log "memory: daemon_rss_kb=${rss:-unknown} mem_available_kb=${avail:-unknown}"
+}
+
+LOGS_DIR="$HOME/workspace/neurostrata/logs"
+IDLE_SECS=3600
+LAST_USE_FILE="$HOME/workspace/neurostrata/.last-daemon-use"
+
+# Rotate a daemon log with a date-timestamp; prune to keep the 5 most recent.
+rotate_daemon_log() {
+  local src="$1" ts base
+  [ -f "$src" ] && [ -s "$src" ] || return 0
+  mkdir -p "$LOGS_DIR"
+  ts="$(date +%Y%m%d-%H%M%S)"
+  base="daemon-$ts.log"
+  mv -f "$src" "$LOGS_DIR/$base"
+  log "rotated daemon log -> logs/$base"
+  ls -1t "$LOGS_DIR"/daemon-*.log 2>/dev/null | tail -n +6 | xargs -r rm -f
+}
+
+daemon_healthy() {
+  "$BIN" status 2>/dev/null | grep -q "status: healthy"
+}
+
+# 1. On-demand model (2026-10-17): the daemon is no longer always-on. The MCP
+# client starts it lazily at the beginning of a coding loop; this watchdog
+# stops it after IDLE_SECS without use. If it is down, that is the expected
+# idle state — nothing to do.
+if ! daemon_healthy; then
+  log "daemon idle (on-demand model) — nothing to do"
+  exit 0
 fi
+log "daemon healthy"
+log_memory
+
+# 2. Idle check: an actively-used daemon is left alone; an idle one is
+# backed up (if changed) and stopped. A missing timestamp means the daemon
+# predates on-demand tracking — treat it as idle so the old always-on
+# instance is reaped on the first sweep.
+now="$(date +%s)"
+last_use="$(cat "$LAST_USE_FILE" 2>/dev/null || true)"
+if [ -n "$last_use" ] && [ "$now" -lt "$((last_use + IDLE_SECS))" ]; then
+  log "daemon active (last client use $((now - last_use))s ago) — leaving it running"
+  exit 0
+fi
+log "daemon idle (last client use: ${last_use:-never}) — backing up and stopping"
 
 # 2. Change detection BEFORE stopping anything: a live sha256sum read is safe
 # here — it is only change detection. A torn read can only trigger a
@@ -127,62 +187,45 @@ NOW_SHA="$(sha256sum "$DB" | awk '{print $1}')"
 LAST_SHA="$(cat "$SHA_FILE" 2>/dev/null || true)"
 
 if [ -n "$LAST_SHA" ] && [ "$NOW_SHA" = "$LAST_SHA" ]; then
-  log "no DB changes (sha256 ${NOW_SHA:0:12}…) — skipping backup, daemon untouched"
+  log "no DB changes (sha256 ${NOW_SHA:0:12}…) — skipping backup"
   # The DB is unchanged, but the Drive tier may still be behind (it was
   # unconfigured or failed when this state was backed up). Catch it up.
   if ! drive_catch_up "$NOW_SHA"; then
     exit 1
   fi
   prune_staging
+  stop_daemon
+  log "done (daemon stopped, idle)"
   exit 0
 fi
 
 # 3. Quiesce: SIGTERM the daemon so the copy is checkpoint-consistent.
-# RESTART_NEEDED + the EXIT trap guarantee the daemon comes back even if a
-# later step fails (set -e would otherwise exit with the daemon down).
-RESTART_NEEDED=false
-on_exit() {
-  if $RESTART_NEEDED; then
-    log "exit trap: ensuring daemon is restarted"
-    start_daemon
-    RESTART_NEEDED=false
+# On-demand model: the daemon stays down after this — the MCP client
+# restarts it on the next coding loop.
+stop_daemon() {
+  local PIDS PID
+  PIDS="$(pgrep -f '[n]eurostrata-mcp daemon' || true)"
+  if [ -z "$PIDS" ]; then
+    log "daemon already stopped"
+    return 0
   fi
-}
-trap on_exit EXIT
-
-PIDS="$(pgrep -f '[n]eurostrata-mcp daemon' || true)"
-if [ -n "$PIDS" ]; then
   # The binary forks on start, so pgrep can return a parent/zombie plus the
   # real daemon. Signalling only the first PID (head -1) can miss the live
   # daemon and brick the backup cycle — signal every match.
-  log "stopping daemon (pids $(echo "$PIDS" | tr '\n' ' ')) for a consistent copy"
+  log "stopping daemon (pids $(echo "$PIDS" | tr '\n' ' '))"
   for PID in $PIDS; do kill -TERM "$PID" 2>/dev/null || true; done
   for _ in $(seq 1 30); do
     pgrep -f '[n]eurostrata-mcp daemon' >/dev/null || break
     sleep 1
   done
   if pgrep -f '[n]eurostrata-mcp daemon' >/dev/null; then
-    log "ERROR: daemon did not exit in 30s — skipping backup this run"
-    exit 0
+    log "ERROR: daemon did not exit in 30s — leaving it running, backup skipped"
+    return 1
   fi
-  RESTART_NEEDED=true
   log "daemon stopped"
-else
-  log "daemon not running at stop time — will start it after the backup"
-  RESTART_NEEDED=true
-fi
-
-finish_restart() {
-  if $RESTART_NEEDED; then
-    start_daemon
-    if "$BIN" status 2>/dev/null | grep -q "status: healthy"; then
-      log "daemon restarted, healthy"
-    else
-      log "ERROR: daemon failed to restart — next watchdog run will retry"
-    fi
-    RESTART_NEEDED=false
-  fi
 }
+
+stop_daemon || exit 0
 
 # 4. Backup + verify: hash the exact bytes being copied, taken immediately
 # before cp, and verify the copy against THAT — not against the earlier
@@ -195,12 +238,14 @@ CP_SHA="$(sha256sum "$STAGE_FILE" | awk '{print $1}')"
 if [ "$CP_SHA" != "$SRC_SHA" ]; then
   log "ERROR: backup checksum mismatch (copy ${CP_SHA:0:12}… vs source ${SRC_SHA:0:12}…) — bad copy deleted, source untouched"
   rm -f "$STAGE_FILE"
-  finish_restart
   exit 1
 fi
 log "local backup OK: $STAGE_FILE"
 
-finish_restart
+# Daemon stays down (on-demand model) — the MCP client restarts it next run.
+
+# Archive logs with the backup for forensics.
+archive_logs "$TS"
 
 # The local tier is complete: record it now, independently of Drive. A
 # failing Drive upload must not force a redundant daemon stop/copy cycle on
