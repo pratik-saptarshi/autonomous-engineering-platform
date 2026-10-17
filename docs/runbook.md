@@ -73,7 +73,7 @@ sleep 15
 
 The daemon log must show the embedder initializing from cache with no download attempt. The store is created at `~/.config/NeuroStrata/data/db/ladybug.db`.
 
-Note: the binary ships systemd user units, but they cannot be enabled where no user D-Bus exists. `nohup` is the supported fallback; any MCP spawn restarts a dead daemon automatically.
+Note: the binary ships systemd user units, but they cannot be enabled where no user D-Bus exists. `nohup` is the supported fallback; a dead daemon does *not* reliably come back via MCP spawn (verified 2026-10-16) — restart it directly or wait for the watchdog cron.
 
 ## 4. MCP client and connector registration
 
