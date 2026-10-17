@@ -8,7 +8,7 @@ Root-cause analysis of the five documented platform limitations, performed 2026-
 
 **Worse finding.** The dead backup timer meant the database had never been backed up: a corrupt `ladybug.db` would have been unrecoverable.
 
-**Resolution.** A watchdog cron (`neurostrata-watchdog`, every 2 h) revives a dead daemon via MCP auto-spawn and takes change-detected backups: the DB is checksummed, and only on change is the daemon SIGTERMed for a checkpoint-consistent copy (sha256-verified), restarted, and the copy uploaded to Google Drive (`Musebot-Astro/database`). The shipped `backup.sh` requires systemd and could not be used; `scripts/watchdog-backup.sh` in this repo is the nohup-aware equivalent.
+**Resolution.** A watchdog cron (`neurostrata-watchdog`, every 2 h) revives a dead daemon via direct `nohup` restart (an MCP-spawn revive was tried and found unreliable — the stdio server hangs without starting the daemon) and takes change-detected backups: the DB is checksummed, and only on change is the daemon SIGTERMed for a checkpoint-consistent copy (sha256-verified), restarted, and the copy uploaded to Google Drive (`Musebot-Astro/database`). The shipped `backup.sh` requires systemd and could not be used; `scripts/watchdog-backup.sh` in this repo is the nohup-aware equivalent.
 
 ## 2. TLS-intercepting proxy vs model downloads — mitigated
 
