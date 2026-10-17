@@ -95,6 +95,6 @@ bash .../bin/stop.sh
 | MCP client: invalid JSON-RPC message | Server emits `{}` after `notifications/initialized` | Tolerate non-JSON-RPC stdout lines; do not fail on them |
 | `bd doctor`: "not yet supported in embedded mode" | Expected | Use `bd doctor --check={artifacts,conventions,pollution}`, `bd ping` |
 | Provider calls fail from open-connector | Egress guard | Allowlist the host via `OOMOL_CONNECT_EGRESS_TRUSTED_HOSTS` |
-| `neurostrata-mcp status`: "down" | Daemon died (e.g. VM restart) | Restart via nohup, or just call the MCP client — it auto-starts |
+| `neurostrata-mcp status`: "down" | Daemon died (e.g. VM restart) | Restart via nohup (`nohup …/neurostrata-mcp daemon … &`); the watchdog cron also revives it on its next run. Note: a bare MCP spawn does *not* reliably auto-start the daemon — verified 2026-10-16. |
 | Cron run reports "backlog empty" | No to-do tasks | Add tasks to `~/workspace/ralph/backlog.md` |
 | Loop works an example task | Backlog still has seed examples | Replace `RALPH-001`/`RALPH-002` with real work or mark them done |
