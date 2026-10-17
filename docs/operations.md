@@ -20,10 +20,21 @@ Runs report to chat only when tasks were completed or attention is needed. An em
 tail -20 ~/workspace/neurostrata/daemon.log          # startup / model load
 # restart:
 pkill -f 'neurostrata-mcp daemon'
-nohup ~/workspace/neurostrata/bin/neurostrata-mcp daemon > ~/workspace/neurostrata/daemon.log 2>&1 &
+HF_HUB_OFFLINE=1 nohup ~/workspace/neurostrata/bin/neurostrata-mcp daemon > ~/workspace/neurostrata/daemon.log 2>&1 &
 ```
 
 If the daemon is down, the next MCP client spawn restarts it automatically.
+
+## Watchdog and backups
+
+A cron job (`neurostrata-watchdog`, every 2 h) runs `~/workspace/neurostrata/bin/watchdog-backup.sh`: it revives a dead daemon, checksums the database, and only when the checksum changed it takes a verified copy (SIGTERM for a checkpoint-consistent copy, sha256-verified) and uploads it to Google Drive (`Musebot-Astro/database`). The last checksum lives in `~/workspace/neurostrata/.last-db-sha256`; run output goes to `~/workspace/neurostrata/watchdog.log`.
+
+To restore the model cache after a wipe:
+
+```bash
+sha256sum -c ~/workspace/neurostrata/model-cache-backup.sha256
+tar -xzf ~/workspace/neurostrata/model-cache-backup.tar.gz -C ~/.cache/neuro/models
+```
 
 ## Memory backend
 
