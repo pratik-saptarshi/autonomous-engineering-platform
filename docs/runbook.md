@@ -129,4 +129,5 @@ Start on demand (`start.sh`, ~20 s), discover actions (`oc.py list <service>` / 
 - [ ] `neurostrata-mcp status` healthy; MCP store/search/fetch/archive round-trip passes
 - [ ] `backlog.py next` returns the expected task as JSON
 - [ ] Scheduler shows the `ralph-loop` job with a next run time
+- [ ] Scheduler shows the `neurostrata-watchdog` job; a manual run backs up to Google Drive on DB change
 - [ ] A scheduled run with an empty backlog ends quietly; a run with tasks reports a summary
