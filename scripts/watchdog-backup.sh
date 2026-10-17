@@ -101,8 +101,8 @@ if [ -n "$PID" ]; then
     log "ERROR: daemon did not exit in 30s — skipping backup this run"
     exit 0
   fi
-  log "daemon stopped"
   RESTART_NEEDED=true
+  log "daemon stopped"
 else
   log "daemon not running at stop time — will start it after the backup"
   RESTART_NEEDED=true
@@ -148,11 +148,11 @@ if [ ! -s "$FOLDER_ID_FILE" ] || ! command -v /opt/hatch/bin/hatch_gws_cli >/dev
 else
   FOLDER_ID="$(cat "$FOLDER_ID_FILE")"
   NAME="ladybug-$TS.db"
-  if /opt/hatch/bin/hatch_gws_cli drive +upload "$STAGE_FILE" --parent "$FOLDER_ID" --name "$NAME" >/dev/null 2>&1; then
-    log "uploaded to Drive: Musebot-Astro/database/$NAME"
+  if upload_diag="$(/opt/hatch/bin/hatch_gws_cli drive +upload "$STAGE_FILE" --parent "$FOLDER_ID" --name "$NAME" 2>&1)"; then
+    log "uploaded to Drive (folder ${FOLDER_ID:0:12}…): $NAME"
     echo -n "$CP_SHA" > "$SHA_FILE"
   else
-    log "ERROR: Drive upload failed — local backup retained at $STAGE_FILE; will retry next run"
+    log "ERROR: Drive upload failed (${upload_diag:0:200}) — local backup retained at $STAGE_FILE; will retry next run"
     exit 1
   fi
 fi
