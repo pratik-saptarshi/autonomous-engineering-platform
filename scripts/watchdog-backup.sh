@@ -2,7 +2,7 @@
 # watchdog-backup.sh — NeuroStrata daemon watchdog + change-detected DB backup.
 #
 # Every run:
-#   1. Watchdog: if the daemon is down, trigger one MCP spawn (auto-restart).
+#   1. Watchdog: if the daemon is down, restart it directly (nohup).
 #   2. Checksum the DB once quiescent. If unchanged since the last backup, stop.
 #   3. On change: SIGTERM the daemon (graceful checkpoint), copy + sha256-verify,
 #      restart the daemon with HF_HUB_OFFLINE=1, upload the copy to Google Drive
@@ -13,7 +13,6 @@
 set -euo pipefail
 
 BIN="$HOME/workspace/neurostrata/bin/neurostrata-mcp"
-CLIENT="$HOME/workspace/custom-connectors/custom.neurostrata/bin/client.py"
 DB="$HOME/.config/NeuroStrata/data/db/ladybug.db"
 STAGE="$HOME/workspace/neurostrata/backups"
 SHA_FILE="$HOME/workspace/neurostrata/.last-db-sha256"
@@ -25,30 +24,28 @@ log() { echo "[$(date '+%F %T')] $*" | tee -a "$LOG"; }
 mkdir -p "$STAGE"
 
 # Concurrency guard: two overlapping runs must never SIGTERM/copy together.
+# NOTE: fd 9 must not leak into the daemon (see 9>&- in start_daemon) — an
+# inheriting daemon would hold the lock forever and brick future runs.
 exec 9>"$HOME/workspace/neurostrata/.watchdog.lock"
 flock -n 9 || { log "another watchdog run in progress — exiting"; exit 0; }
 
-# Preflight: without the Drive folder id (or the CLI) no upload is possible.
-# Fail fast with a clear message instead of dying mid-run under set -e.
-if [ ! -s "$FOLDER_ID_FILE" ]; then
-  log "ERROR: Drive folder id file missing or empty ($FOLDER_ID_FILE) — cannot upload; fix and rerun"
-  exit 2
-fi
-command -v /opt/hatch/bin/hatch_gws_cli >/dev/null || { log "ERROR: hatch_gws_cli not found — cannot upload"; exit 2; }
-
 start_daemon() {
   log "starting daemon"
-  nohup "$BIN" daemon > "$HOME/workspace/neurostrata/daemon.log" 2>&1 &
+  # 9>&-: the daemon must not inherit the flock fd, or it would hold the
+  # lock for its whole lifetime and brick every future watchdog run.
+  nohup "$BIN" daemon 9>&- > "$HOME/workspace/neurostrata/daemon.log" 2>&1 &
   sleep 12
 }
 
-# 1. Watchdog
+# 1. Watchdog: revive via direct start. (A bare MCP spawn was tried here
+# previously, but the stdio server does not reliably auto-start the daemon —
+# verified: it hangs with no output and no daemon. Direct nohup is the
+# proven path.)
 if "$BIN" status 2>/dev/null | grep -q "status: healthy"; then
   log "watchdog: daemon healthy"
 else
-  log "watchdog: daemon down — triggering auto-restart via MCP spawn"
-  python3 "$CLIENT" list-tools >/dev/null 2>&1 || true
-  sleep 10
+  log "watchdog: daemon down — restarting directly"
+  start_daemon
   if "$BIN" status 2>/dev/null | grep -q "status: healthy"; then
     log "watchdog: daemon recovered"
   else
@@ -128,6 +125,13 @@ log "local backup OK: $STAGE_FILE"
 finish_restart
 
 # 4. Upload to Google Drive (Musebot-Astro/database).
+# Preflight here (not at the top): the watchdog and local backup above must
+# run even when Drive is misconfigured — only the upload is gated.
+if [ ! -s "$FOLDER_ID_FILE" ]; then
+  log "ERROR: Drive folder id file missing or empty ($FOLDER_ID_FILE) — local backup retained at $STAGE_FILE; fix and rerun"
+  exit 2
+fi
+command -v /opt/hatch/bin/hatch_gws_cli >/dev/null || { log "ERROR: hatch_gws_cli not found — local backup retained at $STAGE_FILE"; exit 2; }
 # Record the checksum ONLY after a successful upload: if the upload fails,
 # the checksum stays stale, so the next run repeats the full backup cycle
 # (stop, copy, restart, re-upload) instead of treating the DB as backed up.
@@ -138,6 +142,7 @@ if /opt/hatch/bin/hatch_gws_cli drive +upload "$STAGE_FILE" --parent "$FOLDER_ID
   echo -n "$NOW_SHA" > "$SHA_FILE"
 else
   log "ERROR: Drive upload failed — local backup retained at $STAGE_FILE; will retry next run"
+  exit 1
 fi
 
 # 5. Prune local staging, keep 3 most recent
