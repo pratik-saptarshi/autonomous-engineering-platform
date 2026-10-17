@@ -44,11 +44,21 @@ else
   fi
 fi
 
-# 2. Quiesce: SIGTERM the daemon so the copy is checkpoint-consistent
+# 2. Quiesce: SIGTERM the daemon so the copy is checkpoint-consistent.
+# RESTART_NEEDED + the EXIT trap guarantee the daemon comes back even if a
+# later step fails (set -e would otherwise exit with the daemon down).
+RESTART_NEEDED=false
+on_exit() {
+  if $RESTART_NEEDED; then
+    log "exit trap: ensuring daemon is restarted"
+    start_daemon
+    RESTART_NEEDED=false
+  fi
+}
+trap on_exit EXIT
+
 PID="$(pgrep -f 'neurostrata-mcp daemon' | head -1 || true)"
-WAS_RUNNING=false
 if [ -n "$PID" ]; then
-  WAS_RUNNING=true
   log "stopping daemon (pid $PID) for a consistent copy"
   kill -TERM "$PID" || true
   for _ in $(seq 1 30); do
@@ -60,16 +70,18 @@ if [ -n "$PID" ]; then
     exit 0
   fi
   log "daemon stopped"
+  RESTART_NEEDED=true
 fi
 
 finish_restart() {
-  if $WAS_RUNNING; then
+  if $RESTART_NEEDED; then
     start_daemon
     if "$BIN" status 2>/dev/null | grep -q "status: healthy"; then
       log "daemon restarted, healthy"
     else
       log "ERROR: daemon failed to restart — next watchdog run will retry"
     fi
+    RESTART_NEEDED=false
   fi
 }
 
@@ -103,16 +115,18 @@ log "local backup OK: $STAGE_FILE"
 
 finish_restart
 
-# 4. Upload to Google Drive (Musebot-Astro/database)
+# 4. Upload to Google Drive (Musebot-Astro/database).
+# Record the checksum ONLY after a successful upload: if the upload fails,
+# the next run must retry the retained staging file instead of treating
+# the unchanged DB as already backed up.
 FOLDER_ID="$(cat "$FOLDER_ID_FILE")"
 NAME="ladybug-$TS.db"
 if /opt/hatch/bin/hatch_gws_cli drive +upload "$STAGE_FILE" --parent "$FOLDER_ID" --name "$NAME" >/dev/null 2>&1; then
   log "uploaded to Drive: Musebot-Astro/database/$NAME"
+  echo -n "$NOW_SHA" > "$SHA_FILE"
 else
-  log "ERROR: Drive upload failed — local backup retained at $STAGE_FILE"
+  log "ERROR: Drive upload failed — local backup retained at $STAGE_FILE; will retry next run"
 fi
-
-echo -n "$NOW_SHA" > "$SHA_FILE"
 
 # 5. Prune local staging, keep 3 most recent
 ls -1t "$STAGE"/db-*.db 2>/dev/null | tail -n +4 | xargs -r rm -f
