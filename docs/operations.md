@@ -96,5 +96,6 @@ bash .../bin/stop.sh
 | `bd doctor`: "not yet supported in embedded mode" | Expected | Use `bd doctor --check={artifacts,conventions,pollution}`, `bd ping` |
 | Provider calls fail from open-connector | Egress guard | Allowlist the host via `OOMOL_CONNECT_EGRESS_TRUSTED_HOSTS` |
 | `neurostrata-mcp status`: "down" | Daemon died (e.g. VM restart) | Restart via nohup (`nohup …/neurostrata-mcp daemon … &`); the watchdog cron also revives it on its next run. Note: a bare MCP spawn does *not* reliably auto-start the daemon — verified 2026-10-16. |
+| Watchdog always reports "another watchdog run in progress" | The daemon inherited the script's flock FD and holds the lock for its whole lifetime | Upgrade to the fixed script (closes the FD with `9>&-` on the daemon spawn); kill the old daemon once so the stale lock clears, then let the watchdog restart it |
 | Cron run reports "backlog empty" | No to-do tasks | Add tasks to `~/workspace/ralph/backlog.md` |
 | Loop works an example task | Backlog still has seed examples | Replace `RALPH-001`/`RALPH-002` with real work or mark them done |

@@ -3,13 +3,18 @@
 #
 # Every run:
 #   1. Watchdog: if the daemon is down, restart it directly (nohup).
-#   2. Checksum the DB once quiescent. If unchanged since the last backup, stop.
-#   3. On change: SIGTERM the daemon (graceful checkpoint), copy + sha256-verify,
-#      restart the daemon with HF_HUB_OFFLINE=1, upload the copy to Google Drive
-#      (Musebot-Astro/database), record the new checksum, prune local staging.
+#   2. Checksum the DB. If unchanged since the last backup, log and exit 0 —
+#      the daemon is never stopped when there is nothing to back up.
+#   3. On change: SIGTERM the daemon (graceful checkpoint), copy the DB,
+#      sha256-verify the copy against a hash taken immediately before the
+#      copy, restart the daemon with HF_HUB_OFFLINE=1.
+#   4. Upload the copy to Google Drive when configured (folder id file +
+#      hatch_gws_cli present); otherwise the local backup is the only tier
+#      and the run still succeeds. Record the new checksum, prune staging.
 #
 # The upstream backup.sh needs systemd; this environment has no user D-Bus,
-# so SIGTERM replaces `systemctl stop/start`. Exit 0 unless the backup itself failed.
+# so SIGTERM replaces `systemctl stop/start`. Exit 0 unless the backup copy
+# itself failed verification or a configured Drive upload failed.
 set -euo pipefail
 
 BIN="$HOME/workspace/neurostrata/bin/neurostrata-mcp"
@@ -53,7 +58,25 @@ else
   fi
 fi
 
-# 2. Quiesce: SIGTERM the daemon so the copy is checkpoint-consistent.
+# 2. Change detection BEFORE stopping anything: a live sha256sum read is safe
+# here — it is only change detection. A torn read can only trigger a
+# redundant backup cycle, never a missed one; the authoritative copy is
+# still taken with the daemon stopped in step 3. Previously the daemon was
+# SIGTERMed on every run even when the DB was unchanged.
+if [ ! -f "$DB" ]; then
+  log "no DB file yet — nothing to back up"
+  exit 0
+fi
+
+NOW_SHA="$(sha256sum "$DB" | awk '{print $1}')"
+LAST_SHA="$(cat "$SHA_FILE" 2>/dev/null || true)"
+
+if [ -n "$LAST_SHA" ] && [ "$NOW_SHA" = "$LAST_SHA" ]; then
+  log "no DB changes (sha256 ${NOW_SHA:0:12}…) — skipping backup, daemon untouched"
+  exit 0
+fi
+
+# 3. Quiesce: SIGTERM the daemon so the copy is checkpoint-consistent.
 # RESTART_NEEDED + the EXIT trap guarantee the daemon comes back even if a
 # later step fails (set -e would otherwise exit with the daemon down).
 RESTART_NEEDED=false
@@ -80,6 +103,9 @@ if [ -n "$PID" ]; then
   fi
   log "daemon stopped"
   RESTART_NEEDED=true
+else
+  log "daemon not running at stop time — will start it after the backup"
+  RESTART_NEEDED=true
 fi
 
 finish_restart() {
@@ -94,28 +120,16 @@ finish_restart() {
   fi
 }
 
-if [ ! -f "$DB" ]; then
-  log "no DB file yet — nothing to back up"
-  finish_restart
-  exit 0
-fi
-
-NOW_SHA="$(sha256sum "$DB" | awk '{print $1}')"
-LAST_SHA="$(cat "$SHA_FILE" 2>/dev/null || true)"
-
-if [ -n "$LAST_SHA" ] && [ "$NOW_SHA" = "$LAST_SHA" ]; then
-  log "no DB changes (sha256 ${NOW_SHA:0:12}…) — skipping backup"
-  finish_restart
-  exit 0
-fi
-
-# 3. Backup + verify
+# 4. Backup + verify: hash the exact bytes being copied, taken immediately
+# before cp, and verify the copy against THAT — not against the earlier
+# change-detection hash, which describes the DB as it was before the stop.
 TS="$(date +%Y%m%d-%H%M%S)"
 STAGE_FILE="$STAGE/db-$TS.db"
+SRC_SHA="$(sha256sum "$DB" | awk '{print $1}')"
 cp -p "$DB" "$STAGE_FILE"
 CP_SHA="$(sha256sum "$STAGE_FILE" | awk '{print $1}')"
-if [ "$CP_SHA" != "$NOW_SHA" ]; then
-  log "ERROR: backup checksum mismatch — bad copy deleted, source untouched"
+if [ "$CP_SHA" != "$SRC_SHA" ]; then
+  log "ERROR: backup checksum mismatch (copy ${CP_SHA:0:12}… vs source ${SRC_SHA:0:12}…) — bad copy deleted, source untouched"
   rm -f "$STAGE_FILE"
   finish_restart
   exit 1
@@ -124,27 +138,25 @@ log "local backup OK: $STAGE_FILE"
 
 finish_restart
 
-# 4. Upload to Google Drive (Musebot-Astro/database).
-# Preflight here (not at the top): the watchdog and local backup above must
-# run even when Drive is misconfigured — only the upload is gated.
-if [ ! -s "$FOLDER_ID_FILE" ]; then
-  log "ERROR: Drive folder id file missing or empty ($FOLDER_ID_FILE) — local backup retained at $STAGE_FILE; fix and rerun"
-  exit 2
-fi
-command -v /opt/hatch/bin/hatch_gws_cli >/dev/null || { log "ERROR: hatch_gws_cli not found — local backup retained at $STAGE_FILE"; exit 2; }
-# Record the checksum ONLY after a successful upload: if the upload fails,
-# the checksum stays stale, so the next run repeats the full backup cycle
-# (stop, copy, restart, re-upload) instead of treating the DB as backed up.
-FOLDER_ID="$(cat "$FOLDER_ID_FILE")"
-NAME="ladybug-$TS.db"
-if /opt/hatch/bin/hatch_gws_cli drive +upload "$STAGE_FILE" --parent "$FOLDER_ID" --name "$NAME" >/dev/null 2>&1; then
-  log "uploaded to Drive: Musebot-Astro/database/$NAME"
-  echo -n "$NOW_SHA" > "$SHA_FILE"
+# 5. Upload to Google Drive when configured. Drive is an optional tier: if the
+# folder id file or hatch_gws_cli is missing, log a loud warning and keep the
+# local backup as the only tier (exit 0). Only a *configured but failing*
+# upload keeps the checksum stale so the next run retries it.
+if [ ! -s "$FOLDER_ID_FILE" ] || ! command -v /opt/hatch/bin/hatch_gws_cli >/dev/null; then
+  log "WARNING: Drive upload not configured (missing folder id file or hatch_gws_cli) — local backup is the only tier"
+  echo -n "$CP_SHA" > "$SHA_FILE"
 else
-  log "ERROR: Drive upload failed — local backup retained at $STAGE_FILE; will retry next run"
-  exit 1
+  FOLDER_ID="$(cat "$FOLDER_ID_FILE")"
+  NAME="ladybug-$TS.db"
+  if /opt/hatch/bin/hatch_gws_cli drive +upload "$STAGE_FILE" --parent "$FOLDER_ID" --name "$NAME" >/dev/null 2>&1; then
+    log "uploaded to Drive: Musebot-Astro/database/$NAME"
+    echo -n "$CP_SHA" > "$SHA_FILE"
+  else
+    log "ERROR: Drive upload failed — local backup retained at $STAGE_FILE; will retry next run"
+    exit 1
+  fi
 fi
 
-# 5. Prune local staging, keep 3 most recent
+# 6. Prune local staging, keep 3 most recent
 ls -1t "$STAGE"/db-*.db 2>/dev/null | tail -n +4 | xargs -r rm -f
 log "done"
