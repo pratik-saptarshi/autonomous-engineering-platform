@@ -72,7 +72,7 @@ Guards: at most 6 iterations per run. Three failed attempts on one task stops th
 | beads | v1.3.1 | `~/workspace/bin/bd` | Installed; lifecycle verified |
 | open-code-review | v1.13.1 | `~/workspace/bin/ocr` | Installed; delegation mode verified |
 | open-connector | catalog 1,641 / 19,526 | `~/workspace/open-connector/` | Installed; start/stop verified |
-| Scheduler | job `ralph-loop` | cron, interval 2 h | Active |
+| Scheduler | jobs `ralph-loop` (2 h), `neurostrata-watchdog` (2 h), `neurostrata-tls-validation` (one-shot) | cron | Active |
 
 ### Skill sources
 
@@ -98,9 +98,15 @@ SWE-bench was evaluated and deliberately skipped. The `fastcontext` upstream pac
 README.md            this file
 docs/runbook.md      exact steps to reproduce the environment
 docs/operations.md   operating the platform: scheduler, daemon, memory, troubleshooting
+docs/limitation-analysis.md
+                     root-cause analysis of the five documented limitations
+scripts/watchdog-backup.sh
+                     nohup-aware daemon watchdog + change-detected DB backup
 ```
 
 ## Known limitations
+
+Full root-cause analysis: [docs/limitation-analysis.md](docs/limitation-analysis.md).
 
 - The NeuroStrata daemon runs under `nohup`, not systemd: this environment has no user D-Bus, so the shipped user units are staged but inactive. Mitigated by a watchdog cron (every 2 h) that revives a dead daemon via MCP auto-spawn, and change-detected database backups to Google Drive. A dead daemon is also restarted automatically on the next MCP spawn.
 - The binary cannot download its embedding model through a TLS-intercepting egress proxy (rustls does not trust the proxy CA). Mitigated: the model cache is pre-seeded, a compressed backup is kept in the workspace, and `HF_HUB_OFFLINE=1` is set on the daemon and the MCP client so a cache miss fails fast with a clear error instead of an opaque TLS failure.
