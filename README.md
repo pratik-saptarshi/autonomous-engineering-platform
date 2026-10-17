@@ -102,8 +102,8 @@ docs/operations.md   operating the platform: scheduler, daemon, memory, troubles
 
 ## Known limitations
 
-- The NeuroStrata daemon runs under `nohup`, not systemd: this environment has no user D-Bus, so the shipped user units are staged but inactive. A dead daemon is restarted automatically on the next MCP spawn.
-- The binary cannot download its embedding model through a TLS-intercepting egress proxy (rustls does not trust the proxy CA). The model cache must be pre-seeded; the server cannot fetch anything new on its own.
-- The open-connector gateway does not survive VM restarts; start it on demand.
-- The sandbox egress guard blocks provider hosts until allowlisted via `OOMOL_CONNECT_EGRESS_TRUSTED_HOSTS`.
-- `bd doctor` is only partially supported in embedded mode; the available checks pass.
+- The NeuroStrata daemon runs under `nohup`, not systemd: this environment has no user D-Bus, so the shipped user units are staged but inactive. Mitigated by a watchdog cron (every 2 h) that revives a dead daemon via MCP auto-spawn, and change-detected database backups to Google Drive. A dead daemon is also restarted automatically on the next MCP spawn.
+- The binary cannot download its embedding model through a TLS-intercepting egress proxy (rustls does not trust the proxy CA). Mitigated: the model cache is pre-seeded, a compressed backup is kept in the workspace, and `HF_HUB_OFFLINE=1` is set on the daemon and the MCP client so a cache miss fails fast with a clear error instead of an opaque TLS failure.
+- The open-connector gateway does not survive VM restarts. Mitigated: `oc.py` auto-starts it when a command finds it down; start it by hand with `start.sh` when preferred.
+- The sandbox egress guard blocks provider hosts until allowlisted. Managed through `egress-allowlist.conf`, which `start.sh` reads on every start.
+- `bd doctor` is only partially supported in embedded mode; the available checks pass. Accepted as a limitation: the realistic failure modes are covered by the working checks plus the open-time schema guard.
