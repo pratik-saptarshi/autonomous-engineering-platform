@@ -24,6 +24,18 @@ export HF_HUB_OFFLINE=1
 log() { echo "[$(date '+%F %T')] $*" | tee -a "$LOG"; }
 mkdir -p "$STAGE"
 
+# Concurrency guard: two overlapping runs must never SIGTERM/copy together.
+exec 9>"$HOME/workspace/neurostrata/.watchdog.lock"
+flock -n 9 || { log "another watchdog run in progress — exiting"; exit 0; }
+
+# Preflight: without the Drive folder id (or the CLI) no upload is possible.
+# Fail fast with a clear message instead of dying mid-run under set -e.
+if [ ! -s "$FOLDER_ID_FILE" ]; then
+  log "ERROR: Drive folder id file missing or empty ($FOLDER_ID_FILE) — cannot upload; fix and rerun"
+  exit 2
+fi
+command -v /opt/hatch/bin/hatch_gws_cli >/dev/null || { log "ERROR: hatch_gws_cli not found — cannot upload"; exit 2; }
+
 start_daemon() {
   log "starting daemon"
   nohup "$BIN" daemon > "$HOME/workspace/neurostrata/daemon.log" 2>&1 &
@@ -57,15 +69,15 @@ on_exit() {
 }
 trap on_exit EXIT
 
-PID="$(pgrep -f 'neurostrata-mcp daemon' | head -1 || true)"
+PID="$(pgrep -f '[n]eurostrata-mcp daemon' | head -1 || true)"
 if [ -n "$PID" ]; then
   log "stopping daemon (pid $PID) for a consistent copy"
   kill -TERM "$PID" || true
   for _ in $(seq 1 30); do
-    pgrep -f 'neurostrata-mcp daemon' >/dev/null || break
+    pgrep -f '[n]eurostrata-mcp daemon' >/dev/null || break
     sleep 1
   done
-  if pgrep -f 'neurostrata-mcp daemon' >/dev/null; then
+  if pgrep -f '[n]eurostrata-mcp daemon' >/dev/null; then
     log "ERROR: daemon did not exit in 30s — skipping backup this run"
     exit 0
   fi
@@ -117,8 +129,8 @@ finish_restart
 
 # 4. Upload to Google Drive (Musebot-Astro/database).
 # Record the checksum ONLY after a successful upload: if the upload fails,
-# the next run must retry the retained staging file instead of treating
-# the unchanged DB as already backed up.
+# the checksum stays stale, so the next run repeats the full backup cycle
+# (stop, copy, restart, re-upload) instead of treating the DB as backed up.
 FOLDER_ID="$(cat "$FOLDER_ID_FILE")"
 NAME="ladybug-$TS.db"
 if /opt/hatch/bin/hatch_gws_cli drive +upload "$STAGE_FILE" --parent "$FOLDER_ID" --name "$NAME" >/dev/null 2>&1; then
