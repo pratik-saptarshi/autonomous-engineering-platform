@@ -75,6 +75,8 @@ The daemon log must show the embedder initializing from cache with no download a
 
 Note: the binary ships systemd user units, but they cannot be enabled where no user D-Bus exists. `nohup` is the supported fallback; a dead daemon does *not* reliably come back via MCP spawn (verified 2026-10-16) — restart it directly or wait for the watchdog cron.
 
+**Daemon forking behavior.** The binary forks on startup: briefly after launch, `pgrep -f 'neurostrata-mcp daemon'` returns two PIDs (the forking parent plus the live daemon). Any stop logic must signal *all* matching PIDs, not just the first — `pgrep ... | head -1` can pick the stale parent, leaving the live daemon running until the stop times out (observed 2026-10-17: `ERROR: daemon did not exit in 30s`, backup skipped, unclean-shutdown WAL warning on next start). Use the `[n]` bracket trick (`pgrep -f '[n]eurostrata-mcp daemon'`) so pgrep never matches its own command line, and loop `kill -TERM` over every returned PID. `scripts/watchdog-backup.sh` implements this.
+
 ## 4. MCP client and connector registration
 
 The server speaks MCP over stdio (protocol version `2024-11-05`). Write a minimal JSON-RPC client with `list-tools` and `call-tool --name --arguments-file` commands. Two protocol quirks to handle:

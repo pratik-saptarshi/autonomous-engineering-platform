@@ -150,10 +150,13 @@ on_exit() {
 }
 trap on_exit EXIT
 
-PID="$(pgrep -f '[n]eurostrata-mcp daemon' | head -1 || true)"
-if [ -n "$PID" ]; then
-  log "stopping daemon (pid $PID) for a consistent copy"
-  kill -TERM "$PID" || true
+PIDS="$(pgrep -f '[n]eurostrata-mcp daemon' || true)"
+if [ -n "$PIDS" ]; then
+  # The binary forks on start, so pgrep can return a parent/zombie plus the
+  # real daemon. Signalling only the first PID (head -1) can miss the live
+  # daemon and brick the backup cycle — signal every match.
+  log "stopping daemon (pids $(echo "$PIDS" | tr '\n' ' ')) for a consistent copy"
+  for PID in $PIDS; do kill -TERM "$PID" 2>/dev/null || true; done
   for _ in $(seq 1 30); do
     pgrep -f '[n]eurostrata-mcp daemon' >/dev/null || break
     sleep 1
