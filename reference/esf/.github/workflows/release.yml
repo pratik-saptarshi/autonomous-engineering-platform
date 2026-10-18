@@ -1,0 +1,180 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Unpublished candidate version matching inventory, such as v0.6.1-rc.1
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build release assets
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+      id-token: write
+      attestations: write
+    env:
+      RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.27.2
+          cache: true
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26.12.0
+          cache: npm
+          cache-dependency-path: internal/controlplane/web/package-lock.json
+      - name: Validate release version
+        shell: bash
+        run: |
+          set -euo pipefail
+          inventory_version=$(python3 -c 'import json; print(json.load(open("release/inventory.json"))["release"])')
+          test "${RELEASE_VERSION%%-*}" = "$inventory_version"
+          [[ "$RELEASE_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[1-9][0-9]*)?$ ]]
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            [[ "$RELEASE_VERSION" == *-rc.* ]]
+          fi
+      - name: Confirm toolchain
+        run: test "$(go env GOVERSION)" = "go1.27.2"
+      - name: Verify release tag
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[1-9][0-9]*)?$ ]]
+          test "$(git cat-file -t "refs/tags/$RELEASE_VERSION")" = tag
+          test "$(git rev-parse "refs/tags/$RELEASE_VERSION^{}")" = "$GITHUB_SHA"
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/master
+      - name: Verify master CI for tagged commit
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ci_result=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs" \
+            --jq '[.check_runs[] | select(.name == "check")] | max_by(.id).conclusion')
+          test "$ci_result" = success
+      - name: Build and verify frontend
+        if: contains(env.RELEASE_VERSION, '-rc.')
+        working-directory: internal/controlplane/web
+        run: |
+          npm ci
+          npm test
+          npm run build
+          git diff --exit-code -- dist
+          test -z "$(git status --porcelain --untracked-files=all -- dist)"
+      - name: Build release set
+        if: contains(env.RELEASE_VERSION, '-rc.')
+        run: bash scripts/release.sh "$RELEASE_VERSION" dist
+      - name: Prove reproducible release set
+        if: contains(env.RELEASE_VERSION, '-rc.')
+        run: |
+          bash scripts/release.sh "$RELEASE_VERSION" dist-repeat
+          diff -qr dist dist-repeat
+      - name: Promote verified RC archives
+        if: "!contains(env.RELEASE_VERSION, '-rc.')"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_RUN_ID: ${{ vars.ESF_PROMOTION_RUN_ID }}
+          QUALIFICATION_RUN_ID: ${{ vars.ESF_QUALIFICATION_RUN_ID }}
+          RC_ASSET_DIR: ${{ runner.temp }}/esf-rc-assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$QUALIFICATION_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          mkdir "$RC_ASSET_DIR"
+          gh run download "$CANDIDATE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name esf-release-assets --dir "$RC_ASSET_DIR"
+          gh run download "$QUALIFICATION_RUN_ID" --repo "$GITHUB_REPOSITORY" --name esf-qualification --dir "$RC_ASSET_DIR"
+          QUALIFIED_RC=$(python3 -c 'import json,os; print(json.load(open(os.path.join(os.environ["RC_ASSET_DIR"],"release-manifest.json")))["release"])')
+          gh attestation verify "$RC_ASSET_DIR/qualification-manifest.json" -R "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/qualification.yml" \
+            --source-digest "$GITHUB_SHA"
+          python3 scripts/verify-release-inventory.py --require-qualified \
+            --qualification-manifest "$RC_ASSET_DIR/qualification-manifest.json" --artifact-dir "$RC_ASSET_DIR"
+          (cd "$RC_ASSET_DIR" && shasum -a 256 -c checksums.txt)
+          for archive in "$RC_ASSET_DIR"/esf_*.tar.gz; do
+            gh attestation verify "$archive" -R "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+              --source-digest "$GITHUB_SHA"
+            gh attestation verify "$archive" -R "$GITHUB_REPOSITORY" \
+              --predicate-type https://cyclonedx.org/bom \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+              --source-digest "$GITHUB_SHA"
+          done
+          python3 scripts/promote-release.py "$QUALIFIED_RC" "$RELEASE_VERSION" "$RC_ASSET_DIR" dist "$RC_ASSET_DIR/qualification-manifest.json"
+      - name: Verify release set
+        run: bash scripts/verify-release.sh dist "$RELEASE_VERSION"
+      - name: Attest release files
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/*
+      - name: Attest archive SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/esf_*.tar.gz
+          sbom-path: dist/sbom.cdx.json
+      - name: Upload release set
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: esf-release-assets
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Publish GitHub release
+    if: github.event_name == 'push'
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_VERSION: ${{ github.ref_name }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: esf-release-assets
+          path: dist
+      - name: Create GitHub release
+        shell: bash
+        run: |
+          set -euo pipefail
+          flags=(--verify-tag --generate-notes)
+          if [[ "$RELEASE_VERSION" == *-* ]]; then
+            flags+=(--prerelease --notes "Validation candidate. Production qualification requires the matching attested companion manifest and retained evidence.")
+          else
+            flags+=(--notes "Promoted from immutable qualified RC assets. Qualification is recorded in qualification-manifest.json; deployments use a single authority and drained upgrades.")
+          fi
+          files=()
+          for file in dist/*; do
+            [[ -f "$file" ]] && files+=("$file")
+          done
+          gh release create "$RELEASE_VERSION" "${files[@]}" \
+            --title "ESF $RELEASE_VERSION" \
+            "${flags[@]}"

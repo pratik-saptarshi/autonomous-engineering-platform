@@ -1,0 +1,93 @@
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      compatibility-sensitive-go:
+        patterns:
+          - github.com/tencentcloud/CubeSandbox/sdk/go
+          - go.temporal.io/*
+          - google.golang.org/grpc
+        update-types:
+          - minor
+          - patch
+      go-minor-and-patch:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - github.com/tencentcloud/CubeSandbox/sdk/go
+          - go.temporal.io/*
+          - google.golang.org/grpc
+        update-types:
+          - minor
+          - patch
+  - package-ecosystem: npm
+    directory: /internal/controlplane/web
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      npm-production:
+        dependency-type: production
+        update-types:
+          - minor
+          - patch
+      npm-development:
+        dependency-type: development
+        update-types:
+          - minor
+          - patch
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    groups:
+      github-actions:
+        update-types:
+          - minor
+          - patch
+  - package-ecosystem: npm
+    directory: /agents/opencode
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 2
+    groups:
+      opencode-compatibility:
+        patterns:
+          - "@opencode/*"
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    groups:
+      python-compatibility:
+        patterns:
+          - dspy
+          - temporalio
+  - package-ecosystem: docker
+    directory: /deploy/images
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+  - package-ecosystem: docker
+    directory: /deploy/cube
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 2
+  - package-ecosystem: docker-compose
+    directory: /deployments/dev/temporal
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3

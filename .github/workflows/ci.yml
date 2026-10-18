@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  docs-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: npx --yes markdownlint-cli2 "**/*.md" "!reference/esf/**/*.md"
+
+  shell-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+      - run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          go install mvdan.cc/sh/v3/cmd/shfmt@v3.10.0
+          shellcheck scripts/*.sh
+          test -z "$(shfmt -d -i 2 scripts/*.sh)"
+
+  go-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.2'
+      - run: test -z "$(gofmt -l reference/esf)"
+      - run: cd reference/esf && go vet ./...
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install gitleaks (checksum-verified)
+        run: |
+          curl -sSL -o /tmp/gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz
+          echo "9991e0b2903da4c8f6122b5c3186448b927a5da4deef1fe45271c3793f4ee29c  /tmp/gitleaks.tar.gz" | sha256sum -c -
+          tar xz -C /tmp -f /tmp/gitleaks.tar.gz
+      - name: Scan working tree for secrets
+        # Direct run (not gitleaks-action): the action's PR range logic breaks
+        # on merge commits (0-byte partial scan). A working-tree scan is
+        # deterministic. .gitleaks.toml allowlists the known synthetic fixtures.
+        run: /tmp/gitleaks detect --source . --verbose --exit-code 1
+
+  vendor-integrity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          cd reference/esf
+          sha256sum -c ../../.github/vendor-esf.sha256
+          comm -23 <(find . -type f | sort) <(cut -d' ' -f3- ../../.github/vendor-esf.sha256 | sed 's|^\./|./|' | sort) | grep -q . && { echo "ERROR: unlisted files"; exit 1; } || true
+          find . -type l | while read -r link; do test -e "$link" || { echo "ERROR: broken symlink $link"; exit 1; }; done

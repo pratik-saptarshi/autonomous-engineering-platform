@@ -1,0 +1,21 @@
+# markdownlint v1 baseline for autonomous-engineering-platform.
+#
+# These rules are disabled because the pre-existing docs corpus violates them
+# (200+ hits across the repo's docs, which were never linted). The gate still
+# enforces all remaining rules on every file, so new violations of structural
+# rules (header increment, trailing spaces, etc.) are caught.
+# TODO: clean the corpus incrementally and re-enable these rules.
+MD007: false # ul-indent
+MD012: false # no-multiple-blanks
+MD013: false # line-length (repo docs use long lines)
+MD022: false # blanks-around-headings
+MD024: false # no-duplicate-heading
+MD028: false # no-blanks-blockquote
+MD031: false # blanks-around-fences
+MD032: false # blanks-around-lists
+MD033: false # no-inline-html
+MD034: false # no-bare-urls
+MD036: false # no-emphasis-as-heading
+MD040: false # fenced-code-language
+MD041: false # first-line-heading
+MD060: false # table-column-style (repo uses compact tables)
