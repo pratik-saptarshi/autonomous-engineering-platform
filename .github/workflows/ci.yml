@@ -21,7 +21,7 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
           go install mvdan.cc/sh/v3/cmd/shfmt@v3.10.0
           shellcheck scripts/*.sh
-          test -z "$(shfmt -d scripts/*.sh)"
+          test -z "$(shfmt -d -i 2 scripts/*.sh)"
 
   go-checks:
     runs-on: ubuntu-latest

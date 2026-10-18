@@ -41,8 +41,8 @@ check_daemon() {
   local out
   out=$(neurostrata-mcp status 2>&1) || true # capture first, test second
   case "$out" in
-    *answering*) ok daemon ;;
-    *) fail daemon "daemon not answering (neurostrata-mcp status)" ;;
+  *answering*) ok daemon ;;
+  *) fail daemon "daemon not answering (neurostrata-mcp status)" ;;
   esac
 }
 
@@ -52,8 +52,8 @@ check_guards() {
   n=$(printf '%s\n' "$out" | sed -n 's/^Found \([0-9][0-9]*\) memor\(y\|ies\).*/\1/p' | head -1)
   [ -n "$n" ] || fail guards "could not parse guard memory count"
   [ "$n" -ge 3 ] || fail guards "only $n guard memories found, need >= 3"
-  printf '%s\n' "$out" | grep -q "Destructive GitHub actions" \
-    || fail guards "destructive-actions guard rule missing"
+  printf '%s\n' "$out" | grep -q "Destructive GitHub actions" ||
+    fail guards "destructive-actions guard rule missing"
   ok guards
 }
 
@@ -74,7 +74,7 @@ self_test() {
 
   # Fake neurostrata-mcp: STUB_CASE selects the failure mode; anything else
   # delegates to the real binary (so the gh-auth-fail case runs real checks).
-  cat > "$stubdir/neurostrata-mcp" <<EOF
+  cat >"$stubdir/neurostrata-mcp" <<EOF
 #!/usr/bin/env bash
 case "\${STUB_CASE:-}" in
   daemon-down) echo "daemon: not running" ;;
@@ -87,7 +87,7 @@ case "\${STUB_CASE:-}" in
   *) exec "$real_nsmcp" "\$@" ;;
 esac
 EOF
-  cat > "$stubdir/gh" <<'EOF'
+  cat >"$stubdir/gh" <<'EOF'
 #!/usr/bin/env bash
 exit 1
 EOF
@@ -96,13 +96,15 @@ EOF
   expect_fail() { # $1 = STUB_CASE value (empty = unset), $2 = case label
     if [ -n "$1" ]; then
       if STUB_CASE="$1" PATH="$stubdir:$PATH" bash "$gate" >/dev/null 2>&1; then
-        echo "SELF-TEST: $2 FAIL: gate exited 0, expected non-zero"; fails=$((fails + 1))
+        echo "SELF-TEST: $2 FAIL: gate exited 0, expected non-zero"
+        fails=$((fails + 1))
       else
         echo "SELF-TEST: $2 ok"
       fi
     else
       if PATH="$stubdir:$PATH" bash "$gate" >/dev/null 2>&1; then
-        echo "SELF-TEST: $2 FAIL: gate exited 0, expected non-zero"; fails=$((fails + 1))
+        echo "SELF-TEST: $2 FAIL: gate exited 0, expected non-zero"
+        fails=$((fails + 1))
       else
         echo "SELF-TEST: $2 ok"
       fi
@@ -123,23 +125,23 @@ EOF
 }
 
 case "${1:-}" in
-  --self-test)
-    rc=0
-    self_test || rc=$?
-    if [ "$rc" -ne 0 ]; then
-      echo "SELF-TEST: $rc assertion(s) failed"
-      exit 1
-    fi
-    echo "SELF-TEST: all ok"
-    ;;
-  "")
-    check_binaries
-    check_daemon
-    check_guards
-    check_gh_auth
-    ;;
-  *)
-    echo "usage: $0 [--self-test]" >&2
-    exit 2
-    ;;
+--self-test)
+  rc=0
+  self_test || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "SELF-TEST: $rc assertion(s) failed"
+    exit 1
+  fi
+  echo "SELF-TEST: all ok"
+  ;;
+"")
+  check_binaries
+  check_daemon
+  check_guards
+  check_gh_auth
+  ;;
+*)
+  echo "usage: $0 [--self-test]" >&2
+  exit 2
+  ;;
 esac

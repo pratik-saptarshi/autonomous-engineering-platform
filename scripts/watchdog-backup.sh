@@ -43,7 +43,10 @@ mkdir -p "$STAGE"
 # NOTE: fd 9 must not leak into the daemon (see 9>&- in start_daemon) — an
 # inheriting daemon would hold the lock forever and brick future runs.
 exec 9>"$HOME/workspace/neurostrata/.watchdog.lock"
-flock -n 9 || { log "another watchdog run in progress — exiting"; exit 0; }
+flock -n 9 || {
+  log "another watchdog run in progress — exiting"
+  exit 0
+}
 
 start_daemon() {
   log "starting daemon"
@@ -52,7 +55,7 @@ start_daemon() {
   # Rotate (never truncate) the daemon log with a date-timestamp: a dying
   # daemon's stderr — Rust panic, OOM trace — must survive the restart.
   rotate_daemon_log "$HOME/workspace/neurostrata/daemon.log"
-  nohup "$BIN" daemon 9>&- > "$HOME/workspace/neurostrata/daemon.log" 2>&1 &
+  nohup "$BIN" daemon 9>&- >"$HOME/workspace/neurostrata/daemon.log" 2>&1 &
   sleep 12
 }
 
@@ -90,7 +93,7 @@ drive_catch_up() {
   name="$(basename "$newest")"
   if upload_diag="$(/opt/hatch/bin/hatch_gws_cli drive +upload "$newest" --parent "$folder_id" --name "$name" 2>&1)"; then
     log "uploaded to Drive (folder ${folder_id:0:12}…): $name"
-    echo -n "$want_sha" > "$DRIVE_SHA_FILE"
+    echo -n "$want_sha" >"$DRIVE_SHA_FILE"
   else
     log "ERROR: Drive catch-up upload failed (${upload_diag:0:200}) — will retry next run"
     return 1
@@ -100,6 +103,7 @@ drive_catch_up() {
 prune_staging() {
   # shellcheck disable=SC2012 # filenames are machine-generated; ls -1t mtime sort is intended
   ls -1t "$STAGE"/db-*.db 2>/dev/null | tail -n +4 | xargs -r rm -f
+  # shellcheck disable=SC2012 # filenames are machine-generated; ls -1t mtime sort is intended
   ls -1t "$STAGE"/logs-*.tar.gz 2>/dev/null | tail -n +4 | xargs -r rm -f
 }
 
@@ -253,7 +257,7 @@ archive_logs "$TS"
 # The local tier is complete: record it now, independently of Drive. A
 # failing Drive upload must not force a redundant daemon stop/copy cycle on
 # the next run — the catch-up path re-uploads from staging instead.
-echo -n "$CP_SHA" > "$SHA_FILE"
+echo -n "$CP_SHA" >"$SHA_FILE"
 
 # 5. Upload to Google Drive when configured. Drive is an optional tier: if the
 # folder id file or hatch_gws_cli is missing, log a loud warning and keep the
@@ -267,7 +271,7 @@ else
   NAME="ladybug-$TS.db"
   if upload_diag="$(/opt/hatch/bin/hatch_gws_cli drive +upload "$STAGE_FILE" --parent "$FOLDER_ID" --name "$NAME" 2>&1)"; then
     log "uploaded to Drive (folder ${FOLDER_ID:0:12}…): $NAME"
-    echo -n "$CP_SHA" > "$DRIVE_SHA_FILE"
+    echo -n "$CP_SHA" >"$DRIVE_SHA_FILE"
   else
     log "ERROR: Drive upload failed (${upload_diag:0:200}) — local backup retained at $STAGE_FILE; will retry next run"
     exit 1
@@ -277,4 +281,3 @@ fi
 # 6. Prune local staging, keep 3 most recent
 prune_staging
 log "done"
-
