@@ -99,7 +99,7 @@ client.py call-tool --name neurostrata_search_memory --arguments-file search.jso
 
 ## 5. Skill library
 
-Install each skill as `~/workspace/custom-skills/<name>/` containing `SKILL.md` and `skill.yaml`. Adapt upstream repos to local conventions; skip harness-specific plugins, anything needing unavailable credentials, and anything that duplicates an existing skill. Record the source of each skill. The inventory in the README lists all 29 skills and their 11 upstream sources.
+Install each skill as `~/workspace/custom-skills/<name>/` containing `SKILL.md` and `skill.yaml`. Adapt upstream repos to local conventions; skip harness-specific plugins, anything needing unavailable credentials, and anything that duplicates an existing skill. Record the source of each skill. The inventory in the README lists all 58 skills and their 12 upstream sources.
 
 Two local integrations to apply after install:
 
