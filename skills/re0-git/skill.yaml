@@ -1,0 +1,5 @@
+name: "re0-git"
+title: "Re0 Git"
+description: "Rewrite a finished commit's message into a clean, handoff-ready form in your own log style, so `git log` alone tells the story. User-invoked: run it after a commit."
+category: "Work and knowledge"
+include_in_prompt: false

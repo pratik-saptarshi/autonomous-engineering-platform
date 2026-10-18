@@ -1,0 +1,5 @@
+name: "re0-release"
+title: "Re0 Release"
+description: "Walk a pending change through this repo's shipping and releasing checklist end to end, then tag and publish once confirmed. User-invoked: run it when you've decided to ship."
+category: "Work and knowledge"
+include_in_prompt: false
