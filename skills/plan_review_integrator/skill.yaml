@@ -1,0 +1,5 @@
+name: "plan_review_integrator"
+title: "Plan Review Integrator"
+description: "Fold structured review findings into an implementation plan with traceability, epistemic-weighted triage, governance gates, and rollback-safe edits."
+category: "Work and knowledge"
+include_in_prompt: false

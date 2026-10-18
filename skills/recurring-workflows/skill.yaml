@@ -1,0 +1,5 @@
+name: "recurring-workflows"
+title: "Recurring Workflows"
+description: "Use when the user wants a recurring loop in their life specified as a workflow: triggers, checkpoints, and briefs, ready to automate."
+category: "Work and knowledge"
+include_in_prompt: false

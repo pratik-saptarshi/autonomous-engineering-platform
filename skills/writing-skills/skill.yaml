@@ -1,0 +1,5 @@
+name: "writing-skills"
+title: "Writing Skills"
+description: "Use when creating a new custom skill, editing an existing one, or verifying a skill works before saving it."
+category: "Work and knowledge"
+include_in_prompt: false

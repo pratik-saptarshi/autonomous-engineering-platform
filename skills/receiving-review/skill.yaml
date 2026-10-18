@@ -1,0 +1,5 @@
+name: "receiving-review"
+title: "Receiving Review"
+description: "Use when receiving feedback or review comments on your work, before implementing any of the suggestions."
+category: "Work and knowledge"
+include_in_prompt: false

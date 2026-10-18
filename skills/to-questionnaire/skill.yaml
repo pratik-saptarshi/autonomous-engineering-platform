@@ -1,0 +1,5 @@
+name: "to-questionnaire"
+title: "To Questionnaire"
+description: "Use when the user faces a decision they cannot resolve alone and needs to pull knowledge out of someone else via a written questionnaire."
+category: "Work and knowledge"
+include_in_prompt: false

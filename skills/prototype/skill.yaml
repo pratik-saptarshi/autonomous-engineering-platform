@@ -1,0 +1,5 @@
+name: "prototype"
+title: "Prototype"
+description: "Use when the user wants a throwaway prototype to answer a design question: sanity-check logic or explore what something should look like."
+category: "Work and knowledge"
+include_in_prompt: false

@@ -1,0 +1,5 @@
+name: "code_explorer"
+title: "Code Explorer"
+description: "Use before editing, reviewing, or debugging unfamiliar code: delegate repository exploration to a read-only subagent that returns file-and-line citations, then verify by reading the cited ranges yourself."
+category: "Work and knowledge"
+include_in_prompt: false

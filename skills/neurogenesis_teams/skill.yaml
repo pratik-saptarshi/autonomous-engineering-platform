@@ -1,0 +1,5 @@
+name: "neurogenesis_teams"
+title: "Design High-Integrity Agent Teams"
+description: "Assemble small subagent teams with maker-checker verification, adversarial review panels, and strict anti-fabrication integrity gates when work is complex or mistakes are costly."
+category: "Work and knowledge"
+include_in_prompt: false

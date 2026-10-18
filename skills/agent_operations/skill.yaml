@@ -1,0 +1,5 @@
+name: "agent_operations"
+title: "Agent Operations"
+description: "Use when running multi-step autonomous work: gather context before acting, contact the user with structured questions, fail compactly and escalate, keep control flow deterministic."
+category: "Work and knowledge"
+include_in_prompt: false

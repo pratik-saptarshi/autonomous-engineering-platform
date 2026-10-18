@@ -1,0 +1,5 @@
+name: "test-driven-development"
+title: "Test-Driven Development"
+description: "Use when writing or fixing any code or script, before writing the implementation."
+category: "Work and knowledge"
+include_in_prompt: false

@@ -1,0 +1,5 @@
+name: "self_test_gym"
+title: "Self-Testing Gym"
+description: "Test one of your behavioral rules with deterministic checks in an isolated trial, diagnose failures, and adopt only rules that pass."
+category: "Work and knowledge"
+include_in_prompt: false

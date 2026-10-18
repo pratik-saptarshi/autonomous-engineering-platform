@@ -1,0 +1,5 @@
+name: "writing-for-agents"
+title: "Writing for Agents"
+description: "Use when creating or editing skills, or modifying AGENTS.md, SOUL.md, or MEMORY.md: the craft of writing documents an agent consumes."
+category: "Work and knowledge"
+include_in_prompt: false

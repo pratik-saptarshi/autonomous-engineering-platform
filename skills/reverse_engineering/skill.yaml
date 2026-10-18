@@ -1,0 +1,5 @@
+name: "reverse_engineering"
+title: "Reverse Engineering"
+description: "Explain how a feature in a shipped binary, app, or package works using evidence-based analysis; use when the answer depends on the artifact rather than source you can read."
+category: "Work and knowledge"
+include_in_prompt: false

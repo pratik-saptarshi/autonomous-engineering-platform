@@ -1,0 +1,5 @@
+name: "systematic-debugging"
+title: "Systematic Debugging"
+description: "Use when hitting any bug, failure, or unexpected behavior, before proposing fixes."
+category: "Work and knowledge"
+include_in_prompt: true

@@ -1,0 +1,5 @@
+name: "writing-articles"
+title: "Writing Articles"
+description: "Use when the user wants to write an article: mine raw fragments first with no structure, then assemble them beat by beat with every concept grounded."
+category: "Work and knowledge"
+include_in_prompt: false
