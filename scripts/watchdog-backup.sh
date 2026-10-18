@@ -73,6 +73,7 @@ drive_catch_up() {
   if [ -n "$drive_sha" ] && [ "$drive_sha" = "$want_sha" ]; then
     return 0
   fi
+  # shellcheck disable=SC2012 # filenames are machine-generated (db-*.db); ls -1t mtime sort is intended
   newest="$(ls -1t "$STAGE"/db-*.db 2>/dev/null | head -1 || true)"
   if [ -z "$newest" ]; then
     log "WARNING: Drive catch-up wanted (sha ${want_sha:0:12}…) but no staged backup exists — clearing local watermark so the next run takes a fresh backup"
@@ -97,6 +98,7 @@ drive_catch_up() {
 }
 
 prune_staging() {
+  # shellcheck disable=SC2012 # filenames are machine-generated; ls -1t mtime sort is intended
   ls -1t "$STAGE"/db-*.db 2>/dev/null | tail -n +4 | xargs -r rm -f
   ls -1t "$STAGE"/logs-*.tar.gz 2>/dev/null | tail -n +4 | xargs -r rm -f
 }
@@ -143,6 +145,7 @@ rotate_daemon_log() {
   base="daemon-$ts.log"
   mv -f "$src" "$LOGS_DIR/$base"
   log "rotated daemon log -> logs/$base"
+  # shellcheck disable=SC2012 # filenames are machine-generated (daemon-*.log); ls -1t mtime sort is intended
   ls -1t "$LOGS_DIR"/daemon-*.log 2>/dev/null | tail -n +6 | xargs -r rm -f
 }
 

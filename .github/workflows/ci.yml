@@ -37,9 +37,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install gitleaks (checksum-verified)
+        run: |
+          curl -sSL -o /tmp/gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz
+          echo "9991e0b2903da4c8f6122b5c3186448b927a5da4deef1fe45271c3793f4ee29c  /tmp/gitleaks.tar.gz" | sha256sum -c -
+          tar xz -C /tmp -f /tmp/gitleaks.tar.gz
+      - name: Scan working tree for secrets
+        # Direct run (not gitleaks-action): the action's PR range logic breaks
+        # on merge commits (0-byte partial scan). A working-tree scan is
+        # deterministic. .gitleaks.toml allowlists the known synthetic fixtures.
+        run: /tmp/gitleaks detect --source . --verbose --exit-code 1
 
   vendor-integrity:
     runs-on: ubuntu-latest

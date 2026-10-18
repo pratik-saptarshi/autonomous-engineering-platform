@@ -95,15 +95,17 @@ EOF
 
   expect_fail() { # $1 = STUB_CASE value (empty = unset), $2 = case label
     if [ -n "$1" ]; then
-      STUB_CASE="$1" PATH="$stubdir:$PATH" bash "$gate" >/dev/null 2>&1
+      if STUB_CASE="$1" PATH="$stubdir:$PATH" bash "$gate" >/dev/null 2>&1; then
+        echo "SELF-TEST: $2 FAIL: gate exited 0, expected non-zero"; fails=$((fails + 1))
+      else
+        echo "SELF-TEST: $2 ok"
+      fi
     else
-      PATH="$stubdir:$PATH" bash "$gate" >/dev/null 2>&1
-    fi
-    if [ $? -ne 0 ]; then
-      echo "SELF-TEST: $2 ok"
-    else
-      echo "SELF-TEST: $2 FAIL: gate exited 0, expected non-zero"
-      fails=$((fails + 1))
+      if PATH="$stubdir:$PATH" bash "$gate" >/dev/null 2>&1; then
+        echo "SELF-TEST: $2 FAIL: gate exited 0, expected non-zero"; fails=$((fails + 1))
+      else
+        echo "SELF-TEST: $2 ok"
+      fi
     fi
   }
 
