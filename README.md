@@ -14,10 +14,11 @@ graph TB
         RL["ralph_loop skill<br/>orchestrator"]
         PY["backlog.py<br/>list / next"]
     end
-    subgraph Skills["Skill library · 29 skills"]
+    subgraph Skills["Skill library · 58 skills"]
         SP["Superpowers · 11<br/>build discipline"]
         MP["mattpocock/skills · 8<br/>research & writing"]
-        OT["Other sources · 10<br/>review, memory, teams"]
+        PT["paperthin · 28<br/>anti-slop reflexes"]
+        OT["Other sources · 11<br/>review, memory, teams"]
     end
     subgraph Memory["Memory backend"]
         NS["NeuroStrata MCP server<br/>daemon on 127.0.0.1:34343"]
@@ -63,7 +64,7 @@ Guards: at most 6 iterations per run. Three failed attempts on one task stops th
 
 | Component | Version | Location | Status |
 |---|---|---|---|
-| Skill library | 29 skills, 11 upstream sources | `~/workspace/custom-skills/` | Installed, verified |
+| Skill library | 58 skills, 12 upstream sources | `~/workspace/custom-skills/` | Installed, verified |
 | Ralph loop | skill + `backlog.py` | `~/workspace/ralph/` | Installed; scheduled every 2 h |
 | NeuroStrata engine | v1.9.0 (prebuilt binary) | `~/workspace/neurostrata/` | Live; daemon healthy |
 | NeuroStrata MCP connector | custom stdio client | `~/workspace/custom-connectors/custom.neurostrata/` | Registered; round-trip verified |
@@ -83,6 +84,7 @@ Guards: at most 6 iterations per run. Three failed attempts on one task stops th
 | Cognilogical/NeuroStrata | neurostrata_memory |
 | Cognilogical/NeuroPlasticity | self_test_gym |
 | Cognilogical/NeuroGenesis | neurogenesis_teams |
+| LilMGenius/paperthin | re0, readchk, aim, modelchk, hate, macrothink, feynman, autobahn, reorder, detool, dedash, debloat, shower, factchk, mandela, sip, re0-git, re0-release, re0-merge, ssotize, re0-upgrade, re0-plan, re0-loop, re0-memo, re0-work, catchup, nba, prism (see [docs/paperthin-skills.md](docs/paperthin-skills.md)) |
 | humanlayer/12-factor-agents | agent_operations |
 | pratik-saptarshi/opencode-rountable-review | plan_review_integrator, roundtable_review |
 | zomars/ralph | ralph_loop |
@@ -97,6 +99,8 @@ SWE-bench was evaluated and deliberately skipped. The `fastcontext` upstream pac
 ```text
 README.md            this file
 docs/runbook.md      exact steps to reproduce the environment
+docs/paperthin-skills.md
+                     catalog of the 28 vendored paperthin skills
 docs/operations.md   operating the platform: scheduler, daemon, memory, troubleshooting
 docs/limitation-analysis.md
                      root-cause analysis of the five documented limitations
