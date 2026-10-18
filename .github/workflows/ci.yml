@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: npx --yes markdownlint-cli2 "**/*.md"
+      - run: npx --yes markdownlint-cli2 "**/*.md" "!reference/esf/**/*.md"
 
   shell-lint:
     runs-on: ubuntu-latest
@@ -52,4 +52,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: cd reference/esf && sha256sum -c ../../.github/vendor-esf.sha256
+      - run: |
+          cd reference/esf
+          sha256sum -c ../../.github/vendor-esf.sha256
+          comm -23 <(find . -type f | sort) <(cut -d' ' -f3- ../../.github/vendor-esf.sha256 | sed 's|^\./|./|' | sort) | grep -q . && { echo "ERROR: unlisted files"; exit 1; } || true
+          find . -type l | while read -r link; do test -e "$link" || { echo "ERROR: broken symlink $link"; exit 1; }; done
