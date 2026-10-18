@@ -1,0 +1,5 @@
+name: "executing-plans"
+title: "Executing Plans"
+description: "Use when executing an implementation plan yourself in this session, task by task, with one review at the end."
+category: "Work and knowledge"
+include_in_prompt: false

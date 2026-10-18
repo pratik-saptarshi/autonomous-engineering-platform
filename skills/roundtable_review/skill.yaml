@@ -1,0 +1,5 @@
+name: "roundtable_review"
+title: "Roundtable Review"
+description: "Run a multi-agent adversarial review panel over code, plans, or docs with debate, claim verification, and a judge's verdict, when several independent perspectives are needed."
+category: "Work and knowledge"
+include_in_prompt: false

@@ -1,0 +1,5 @@
+name: "subagent-driven-development"
+title: "Subagent-Driven Development"
+description: "Use when executing an implementation plan task by task with fresh subagents and a review gate per task."
+category: "Work and knowledge"
+include_in_prompt: false

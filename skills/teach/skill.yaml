@@ -1,0 +1,5 @@
+name: "teach"
+title: "Teach"
+description: "Use when the user wants to learn a topic over multiple sessions: run a stateful tutoring workspace with missions, lessons, and learning records."
+category: "Work and knowledge"
+include_in_prompt: false

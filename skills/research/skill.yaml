@@ -1,0 +1,5 @@
+name: "research"
+title: "Research"
+description: "Use when the user wants a topic investigated against primary sources, docs or API facts gathered, or reading legwork delegated to a background agent."
+category: "Work and knowledge"
+include_in_prompt: true

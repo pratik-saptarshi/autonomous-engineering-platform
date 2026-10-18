@@ -1,0 +1,5 @@
+name: "neurostrata_memory"
+title: "Memory Hygiene"
+description: "Decide what is worth remembering from the work you do and record it in the right place, so future sessions keep the lessons without the noise."
+category: "Work and knowledge"
+include_in_prompt: true

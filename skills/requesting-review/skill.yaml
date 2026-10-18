@@ -1,0 +1,5 @@
+name: "requesting-review"
+title: "Requesting Review"
+description: "Use after completing a task or major deliverable, or before merging, publishing, or shipping, to get an independent review."
+category: "Work and knowledge"
+include_in_prompt: false

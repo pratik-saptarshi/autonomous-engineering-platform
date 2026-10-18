@@ -1,0 +1,5 @@
+name: "ralph_loop"
+title: "Ralph Loop"
+description: "Work through a file backlog autonomously, one verified task per iteration, with role handoffs and reflection learnings."
+category: "Work and knowledge"
+include_in_prompt: false

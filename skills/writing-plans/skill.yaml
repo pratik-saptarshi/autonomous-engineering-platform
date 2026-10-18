@@ -1,0 +1,5 @@
+name: "writing-plans"
+title: "Writing Plans"
+description: "Use when you have requirements or a spec for multi-step work, before starting implementation."
+category: "Work and knowledge"
+include_in_prompt: false

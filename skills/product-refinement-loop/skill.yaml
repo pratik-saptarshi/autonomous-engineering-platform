@@ -1,0 +1,5 @@
+name: product-refinement-loop
+description: Turn approved decisions into implementable SMART work items through a 7-stage loop (product breakdown → analyst critique → judge → optional overseer panel → rework → targeted re-review → beads).
+version: 1.0.0
+created: 2026-10-18
+source: distilled from the 2026-10-18 profile-decisions refinement (judge REQUEST CHANGES → panel validation → rework → APPROVE → 18 beads issues)

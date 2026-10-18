@@ -1,0 +1,5 @@
+name: "dispatching-parallel-agents"
+title: "Dispatching Parallel Agents"
+description: "Use when facing two or more independent tasks that can proceed without shared state or sequential dependencies."
+category: "Work and knowledge"
+include_in_prompt: false
