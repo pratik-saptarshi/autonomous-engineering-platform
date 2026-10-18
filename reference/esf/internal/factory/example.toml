@@ -1,0 +1,316 @@
+# Factory operator configuration.
+#
+# This file is OPERATOR POLICY. A task can choose only: task text, an approved
+# repository, and an exact revision. It can never choose an executable, a host
+# path, or a credential.
+#
+
+schema_version = 1
+
+[cube]
+version         = "0.7.3"
+# Set the API URL to match your operator-managed Cube deployment.
+api_url         = "https://cube.example.org"
+template_id     = "tpl-your-ready-template"
+proxy_node_ip   = "cube-proxy.example.org"
+proxy_port_http = 443
+proxy_scheme    = "https"
+idle_timeout    = "60m"
+request_timeout = "60s"
+
+[temporal]
+host_port  = "temporal.example.org:7233"
+tls        = true
+namespace  = "default"
+task_queue = "factory"
+# Required for remote Temporal endpoints. Never disable certificate validation.
+# tls = true
+# server_name = "temporal.example.com"
+# ca_file = "/etc/factory/temporal-ca.pem" # omit to use system roots
+# cert_file = "/etc/factory/client.pem"  # optional mTLS pair
+# key_file = "/etc/factory/client-key.pem"
+# api_key_env = "TEMPORAL_API_KEY"       # optional API-key authentication
+# payload_keyring = "/etc/factory/payload-keys.json"
+
+[storage]
+data_dir = "/var/lib/esf/factory"
+
+[sandbox]
+# Use a versioned Cube template with pinned Git, CA certificates, sha256sum,
+# head, mkfifo, and the configured agent binaries. Empty avoids network package
+# installation for every run. A development template may opt in to packages.
+base_packages = []
+# After repository preparation, egress-managed harnesses switch to
+# deny-by-default. Add only destinations the agent genuinely needs at runtime.
+# The model endpoint is allowed automatically by its L7 injection rule.
+runtime_allow_out = []
+
+[limits]
+command_output_bytes = 4194304
+artifact_bytes       = 33554432
+worker_concurrency   = 8
+worker_stop_timeout  = "60s"
+agent_timeout        = "30m"
+verification_timeout = "15m"
+total_timeout        = "90m"
+sandbox_idle_timeout = "60m"
+
+# ── Hardening ────────────────────────────────────────────────────────────────
+# Defense-in-depth policy. These settings exist so the security posture is
+# structural rather than aspirational: the factory measures the boundary it
+# depends on instead of assuming it.
+
+[hardening]
+# Repository preparation and package installation run INSIDE the sandbox, so the
+# setup phase needs a network path. Acknowledge that explicitly instead of
+# leaving it implicit.
+#
+# When your preparation needs no internet — a pre-warmed snapshot, or a local
+# git bundle — set this to false and deny egress instead. The factory then
+# refuses to start unless every [egress] policy sets allow_internet = false.
+acknowledge_open_egress = true
+
+# Verify, inside each run's sandbox, that a policy which claims to deny the
+# internet actually does. The probe runs after the runtime lockdown and its
+# result is durable evidence. Absent means enabled.
+egress_probe = true
+egress_canary_url = "https://example.com/"
+# Reaching the cloud metadata endpoint is always a finding: it is a credential
+# source that needs no third-party compromise.
+metadata_probe_url = "http://169.254.169.254/latest/meta-data/"
+
+# Fail a run whose agent would execute as uid 0. The CubeSandbox template
+# decides the user; this makes an unexpected root sandbox a visible failure.
+require_non_root = false
+
+# Scan the agent's captured output for out-of-bounds behavior (privilege
+# escalation, credential access, reconnaissance, reverse shells, exfiltration)
+# and quarantine a run that trips the threshold. Absent means enabled.
+# Operator rules are ADDED to the built-in ruleset; they cannot remove it.
+behavior_monitor = true
+trip_severity = "HIGH"
+# trip_rules_file = "/etc/factory/trip-rules.json"
+
+# A patch that modifies the build or test scripts it is judged by fails closed.
+# Set true only when the repository legitimately owns gate changes.
+allow_gate_self_modification = false
+
+# Security alerts. Empty disables delivery; every alert is still recorded in the
+# run's evidence. The token is a path, never a value.
+# alert_webhook_url = "https://hooks.example.org/esf"
+# alert_webhook_token_file = "/run/credentials/factory-worker.service/alert-token"
+alert_timeout = "5s"
+alert_on_blocked = true
+
+# Optional host-side DSPy/Jev task intake advice. The submitted task text is
+# sent to TypeSafe before a sandbox exists. This never blocks a validated run.
+[intake]
+enabled = false
+python_executable = "/opt/factory/intake-venv/bin/python"
+key_file = "/run/credentials/factory-worker.service/typesafe-api-key"
+model = "jev-latest"
+# base_url = "http://127.0.0.1:10000" # optional local TypeSafe-compatible service
+timeout = "15s"
+# program_path = "/etc/factory/intake/calibrated-v1.json" # operator-promoted
+
+[observability]
+# Empty disables trace export; the factory then uses no-op tracers.
+otel_endpoint = "" # set https://collector.example.org:4317 for TLS export
+service_name  = "factory"
+
+[repositories]
+# Remote repositories must match one of these prefixes. Empty disallows all
+# remote repositories; local sources remain available for tests.
+allowed = []
+
+# ── Agent harnesses ──────────────────────────────────────────────────────────
+# The harness name is what a request may select. The executable and arguments
+# are operator configuration and are never client-supplied.
+
+[harnesses.opencode2]
+type        = "opencode"
+binary      = "/opt/esf/agents/opencode2"
+preinstalled = true
+packages    = []
+pass_env    = []
+catalog_cache = ""
+binary_sha256 = "ff17011078cfe1d2db04f429c65a5bf9dd86e232cc493c7a03730ecc12a000ff"
+provider    = "openrouter"
+base_url    = "https://openrouter.ai/api/v1"
+model       = "openrouter/<model>"
+timeout     = "30m"
+prompt_mode = "stdin_file"
+credential_mode = "cube_egress"
+api_key_file = "/run/credentials/factory-worker.service/opencode-provider-key"
+
+# Pre-stage the agent's model catalog. A coding agent that must fetch a model
+# catalog from the network at start-up is neither reproducible nor reliable:
+# the run would depend on an external service being reachable and fast at that
+# instant. Staging it makes model resolution deterministic and offline.
+# catalog_cache = "/opt/esf/agents/opencode-models.json"
+
+# CubeEgress injects the real credential into a matching HTTPS request after
+# repository preparation. The agent receives only a harmless placeholder.
+
+# ── Claude Code and Codex CLI (opt-in) ───────────────────────────────────────
+# See docs/harness-claude-codex.md for installation and CubeEgress credentials.
+# Stage standalone worker-host binaries in development, or pin preinstalled
+# complete runtimes in a versioned Cube template for production.
+# [harnesses.claude]
+# type = "claude"
+# binary = "/opt/esf/agents/claude"
+# model = "YOUR_APPROVED_CLAUDE_MODEL"
+# api_key_env = "ANTHROPIC_API_KEY" # worker only; never passed into the VM
+# credential_mode = "cube_egress"
+# base_url = "https://api.anthropic.com"
+# timeout = "30m"
+#
+# [harnesses.codex]
+# type = "codex"
+# binary = "/opt/esf/agents/codex"
+# model = "YOUR_APPROVED_CODEX_MODEL"
+# api_key_env = "OPENAI_API_KEY" # worker only; never passed into the VM
+# credential_mode = "cube_egress"
+# base_url = "https://api.openai.com/v1"
+# timeout = "30m"
+
+# ── unreal-agent (async harness, no Go dependency) ───────────────────────────
+# ESF invokes the template's standalone runner using its JSON protocol. It
+# does not import the unreal-agent Go module and needs no shell/Python adapter.
+# See docs/harness-unreal.md for the full operator guide and benchmarks.
+#
+# [harnesses.unreal]
+# type           = "unreal"
+# binary         = "/opt/esf/agents/unreal-agent-runner"
+# preinstalled   = true
+# binary_sha256  = "d289aa2046bb79d2b063679c6e0e6b714c759f8a5ed6f969d3b3ea1eeeec03ee"
+# provider       = "openrouter"
+# base_url       = "https://openrouter.ai/api/v1"
+# model          = "<provider-model-id>"
+# api_key_file   = "/run/credentials/factory-worker.service/openrouter-key"
+# api_key_env    = "OPENROUTER_API_KEY" # compatibility; choose exactly one
+# credential_mode = "cube_egress"
+# thinking_level = "high"
+# timeout        = "30m"
+#
+# `cube_egress` is the production mode: the worker sends the real value directly
+# to CubeEgress after repository preparation, runtime egress becomes
+# deny-by-default, and the runner sees only a harmless placeholder. The secret
+# never enters the microVM or Temporal history. `environment` is the legacy
+# compatibility mode and exposes the key to sandbox code.
+
+# A credential-free conformance harness is available in the end-to-end test
+# fixture. Add it to a development-only configuration when testing locally.
+
+# ── Deterministic verification ───────────────────────────────────────────────
+# Verification is ALWAYS a structured argv. There is no shell-string form: an
+# API client must never be able to smuggle shell syntax into a gate.
+
+[verification.default]
+name = "default"
+
+[[verification.default.steps]]
+id          = "build"
+argv        = ["./build.sh"]
+mandatory   = true
+timeout     = "10m"
+description = "repository build script"
+
+[[verification.default.steps]]
+id          = "unit-tests"
+argv        = ["./test.sh"]
+mandatory   = true
+timeout     = "10m"
+description = "repository test script"
+
+# ── Named resources ──────────────────────────────────────────────────────────
+# A run REFERENCES these by name; it can never define one. Every resolved
+# resource is recorded in the run manifest with a content digest, so a run is
+# reproducible from its own evidence.
+
+# [sandbox]
+# attach and preview are privileged operator actions against a live sandbox.
+# Both are DEFAULT CLOSED and audited in the run's evidence directory.
+# allow_attach  = false
+# allow_preview = false
+
+# [models.<name>] — model endpoints, separate from harnesses so a model can be
+# changed in one place and accounted for across harnesses. Credentials are
+# referenced by environment variable NAME; the value never enters configuration
+# or evidence.
+#
+# [models.default]
+# provider    = "anthropic"
+# model       = "claude-sonnet-4-5"
+# api_key_env = "ANTHROPIC_API_KEY"
+# base_url    = ""            # optional gateway
+# scopes      = []            # empty = available to every scope
+
+# [egress.<name>] — network policy. A zero-value policy means "deployment
+# default"; allow_internet = false is the strong form. Deny wins.
+#
+# [egress.restricted]
+# allow_internet = false
+# allow_out      = ["api.anthropic.com", "github.com", "registry.npmjs.org"]
+# deny_out       = []
+
+# [workspaces.<name>] — a pre-warmed execution environment. snapshot_id records
+# a pre-built CubeSandbox snapshot containing the preparation below.
+#
+# [workspaces.python]
+# template          = ""       # optional override of cube.template_id
+# base_packages     = ["git", "ca-certificates", "python3", "python3-pip"]
+# setup_script      = ""
+# snapshot_id       = ""
+# repository_cache  = false
+
+# [budgets.<name>] — spending ceilings. A budget is EVIDENCE, not enforcement:
+# the factory records usage reported by the harness and flags a crossing; it
+# never rewrites a result because a ceiling was hit.
+#
+# [budgets.cheap]
+# max_cost_usd   = 1.50
+# max_tokens     = 100000
+# max_wall_clock = "30m"
+
+# [scopes.<name>] — tenancy boundaries. A scope can only NARROW the operator's
+# policy: its repository list is intersected with [repositories].allowed, and a
+# scope entry that no global prefix covers is dropped.
+#
+# [scopes.payments]
+# repositories = ["https://github.com/acme/payments"]
+# harnesses    = ["opencode2"]
+# egress       = "restricted"
+# model        = "default"
+# workspace    = "python"
+# budget       = "cheap"
+# review       = false        # overrides the global review gate
+
+# [review] — the human review gate. When enabled, a run pauses after the
+# deterministic gates report, optionally checkpoints its sandbox, publishes
+# preview URLs, and waits for a decision or the timeout. A timeout is recorded
+# as "timeout" and the run finishes normally.
+#
+# [review]
+# enabled       = false
+# timeout       = "24h"
+# preview_ports = [3000]
+# suspend       = true
+
+# Opt-in Pi v1 candidate; requires a separately qualified READY template.
+# See docs/harness-pi.md. OpenCode remains the automatic default.
+# [harnesses.pi]
+# type = "pi"
+# preinstalled = true
+# binary = "/opt/esf/agents/pi-runner.mjs"
+# binary_sha256 = "04bd662ac31ca6e74775a6b0c03403d66030c44855a9840607e95ab2fcf89bf5"
+# runtime_binary = "/opt/esf/agents/node"
+# runtime_sha256 = "caa24debe02770c92a70677e2a62ca98890150e7ac1c17bcfe31bcc98cc89943"
+# provider = "local"
+# base_url = "http://192.168.0.14:8000/v1"
+# model = "<approved-model-id>"
+# api = "openai-completions"
+# catalog_cache = "/absolute/path/to/validated-model.json"
+# thinking_level = "off"
+# max_process_restarts = 1
+# timeout = "30m"
