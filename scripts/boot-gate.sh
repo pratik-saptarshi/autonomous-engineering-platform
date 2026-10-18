@@ -18,7 +18,7 @@ set -euo pipefail
 # (cron, agents) may not source ~/.bashrc, so ensure them here. They are
 # APPENDED (not prepended) so a caller-injected PATH — e.g. the --self-test
 # stub dir — keeps precedence. The command -v checks below stay strict.
-export PATH="$PATH:$HOME/go/bin:$HOME/sdk/go/bin"
+export PATH="$PATH:$HOME/go/bin:$HOME/sdk/go/bin:$HOME/workspace/bin:$HOME/workspace/neurostrata/bin:$HOME/workspace/toolchains/bin"
 
 fail() { # $1 = check name, $2 = reason
   echo "BOOT-GATE: $1 FAIL: $2"
