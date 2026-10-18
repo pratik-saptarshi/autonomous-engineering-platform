@@ -8,14 +8,22 @@ BIN="$HOME/workspace/skillspector/venv/bin/skillspector"
 TARGET="${1:?usage: scan-gate.sh <skill-dir-or-file>}"
 
 REPORT="$("$BIN" scan "$TARGET" --no-llm --format json 2>/dev/null)"
+SCAN_RC=$?
+if [ $SCAN_RC -ne 0 ]; then
+  echo "GATE BLOCKED: skillspector exited with status $SCAN_RC (fail closed)" >&2
+  exit 1
+fi
 if [ -z "$REPORT" ]; then
-  echo "GATE BLOCKED: skillspector scan failed or produced no output (fail closed)" >&2
+  echo "GATE BLOCKED: skillspector produced no output (fail closed)" >&2
   exit 1
 fi
 
 EVAL="$(echo "$REPORT" | python3 -c "
 import json,sys
 r = json.load(sys.stdin)
+if not r.get('execution_successful', True):
+    print('report flags execution_successful=false', file=sys.stderr)
+    sys.exit(1)
 score = r['risk_assessment']['score']
 sev = r['risk_assessment']['severity']
 rec = r['risk_assessment']['recommendation']

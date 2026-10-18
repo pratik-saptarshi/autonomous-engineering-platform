@@ -10,7 +10,7 @@ Skills assume the workspace layout under `~/workspace/` (e.g. `~/workspace/ralph
 
 | Skill | Source | License | Notes |
 |---|---|---|---|
-| agent_operations | humanlayer/12-factor-agents | MIT | |
+| agent_operations | humanlayer/12-factor-agents | CC BY-SA 4.0 | |
 | brainstorming | obra/superpowers | MIT | |
 | code_explorer | Jakevin/fastcontext-agent-tools | MIT | Methodology only; upstream package uninstallable |
 | delegate_code_review | alibaba/open-code-review | Apache-2.0 | Delegation mode; needs LLM key for full review |
