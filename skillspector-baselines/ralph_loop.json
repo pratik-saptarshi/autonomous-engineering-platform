@@ -1,0 +1,1 @@
+{"accepted":[{"confidence":0.75,"justification":"Autonomy is the skill's purpose: Ralph loop processes backlog tasks without per-step human approval. This is Neo's explicit standing choice (2026-10-17). Durable/external actions still require approval per standing rules.","location":"SKILL.md:44","pattern":"EA2"}],"skill":"ralph_loop"}

@@ -1,0 +1,1 @@
+{"dismissed":[{"confidence":0.9,"disposition":"False positive — matched \"without\" in \"Do not write done until the evidence is in.\" The skill is literally about requiring verification before completion; the pattern fired on the negation, inverting the meaning.","location":"SKILL.md","pattern":"EA2"}],"skill":"verification-before-completion"}

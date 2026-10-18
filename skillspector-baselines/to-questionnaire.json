@@ -1,0 +1,1 @@
+{"dismissed":[{"confidence":0.9,"disposition":"False positive — matched \"always answer\" in \"the _send_, which they can always answer.\" This describes the user being able to respond to a questionnaire, not overriding model refusals.","location":"SKILL.md","pattern":"AR1"}],"skill":"to-questionnaire"}
