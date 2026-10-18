@@ -1,0 +1,3 @@
+# markdownlint config for the AEP repo.
+# MD013 (line-length) is disabled: the repo's docs use long lines.
+MD013: false
