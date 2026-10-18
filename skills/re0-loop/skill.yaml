@@ -1,0 +1,5 @@
+name: "re0-loop"
+title: "Re0 Loop"
+description: "Run repeated build -> QA -> re0-memo -> re0-work cycles while preserving learning and letting code die. Use for long agentic projects where progress must be measured by quality-cleared templates, reusable modules, and eliminated anti-patterns rather than hours spent or features accumulated."
+category: "Work and knowledge"
+include_in_prompt: true

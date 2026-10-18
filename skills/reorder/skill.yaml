@@ -1,0 +1,5 @@
+name: "reorder"
+title: "Reorder"
+description: "Realign a listing whose order has gone arbitrary — a list, table, catalog, sections, an enum — into a logical sequence under one stated principle. Move items only: nothing is reworded, added, or removed. Use when the order no longer helps a reader follow the set."
+category: "Work and knowledge"
+include_in_prompt: false

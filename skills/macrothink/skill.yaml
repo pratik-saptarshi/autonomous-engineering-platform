@@ -1,0 +1,5 @@
+name: "macrothink"
+title: "Macrothink"
+description: "User-invoked read-only pass for checking whether the current direction is tunnel-visioned: strip the session's bait, fan out 2 to 5 same-model fresh reads, and report divergence first without treating convergence as proof."
+category: "Work and knowledge"
+include_in_prompt: false

@@ -1,0 +1,5 @@
+name: "re0-work"
+title: "Re0 Work"
+description: "Restart a project or artifact from v0 while preserving only proven lessons, contracts, gates, vocabulary, real-surface tests, and negative corpus. Use when the foundation is wrong, accumulated code is misleading progress, or a new pass should learn from the old one without inheriting its accidental architecture."
+category: "Work and knowledge"
+include_in_prompt: true
