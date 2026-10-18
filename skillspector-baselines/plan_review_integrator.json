@@ -1,0 +1,1 @@
+{"dismissed":[{"confidence":0.85,"disposition":"Scanner noise — matched a markdown link to another skill's documentation. Cross-referencing skills is expected, not suspicious.","location":"SKILL.md","pattern":"AS3"}],"skill":"plan_review_integrator"}

@@ -1,0 +1,1 @@
+{"dismissed":[{"confidence":0.9,"disposition":"False positive — matched the phrase \"access tokens\" in an example of a good exploration question (\"Find where OAuth access tokens are refreshed\"). The skill is explicitly read-only; it describes finding code, not accessing credentials.","location":"SKILL.md","pattern":"PE3"}],"skill":"code_explorer"}

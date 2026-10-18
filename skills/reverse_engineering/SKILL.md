@@ -4,11 +4,11 @@ Adapted from REA (Reverse Engineer Anything). Use this when a claim depends on a
 
 ## Use what is available here
 
-- The working tool is the REA CLI via `npx -y rea-agents@latest` (verified: version 6.5.0 prints, and JavaScript application analysis returns a structured Evidence record). It needs no installation and writes only to the npm cache.
+- The working tool is the REA CLI via `npx -y rea-agents@6.5.0` (verified: version 6.5.0 prints, and JavaScript application analysis returns a structured Evidence record). It needs no installation and writes only to the npm cache. The version is pinned — do not use `@latest` (supply-chain hygiene).
 - There is no MCP client in this environment, so the REA MCP server cannot be registered here. Native deep analysis needs engines that are not installed (Hopper, Ghidra, IDA). Static JavaScript and Electron application analysis works through the CLI with no engine.
 - Analyze a JavaScript application or Electron tree with:
 
-  `npx -y rea-agents@latest analyze-javascript-application /absolute/path/to/app --json`
+  `npx -y rea-agents@6.5.0 analyze-javascript-application /absolute/path/to/app --json`
 
 - Read the returned Evidence record the way you would read a lab report: identity and SHA-256 digests, the graph of modules, stated limitations, and unknowns. Do not treat a truncated preview as the complete record.
 

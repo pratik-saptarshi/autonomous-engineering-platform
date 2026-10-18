@@ -1,0 +1,1 @@
+{"dismissed":[{"confidence":0.9,"disposition":"False positive — matched \"without constraints\" in \"Do not brief without constraints.\" This is about task scoping for subagents (every brief needs constraints), not about bypassing safety controls.","location":"SKILL.md","pattern":"AR3"}],"skill":"dispatching-parallel-agents"}
