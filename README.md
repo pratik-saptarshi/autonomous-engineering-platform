@@ -39,6 +39,8 @@ graph TB
     RL -->|"tracks work"| BD
 ```
 
+- [ESF reference](docs/esf-reference.md) — vendored snapshot of mitkox/esf (Engineering Software Factory) with build/verification notes.
+
 ## Continuous loop cycle
 
 Every scheduled run executes this cycle, one verified task per iteration:
