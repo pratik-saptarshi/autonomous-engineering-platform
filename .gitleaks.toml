@@ -4,6 +4,8 @@
 # unit tests (sequential fake ghp_ material, documented in
 # reference/esf/PROVENANCE.md). Allowlist them here so the byte-identical
 # vendor tree is never touched for lint reasons.
+[extend]
+useDefault = true
 [allowlist]
 description = "Synthetic fixtures in vendored ESF redaction tests"
 paths = ['''reference/esf/internal/factory/redact_test.go''']

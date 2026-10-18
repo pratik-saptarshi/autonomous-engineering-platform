@@ -39,19 +39,23 @@ check_binaries() {
 
 check_daemon() {
   local out
-  out=$(neurostrata-mcp status 2>&1) || true # capture first, test second
+  if ! out=$(neurostrata-mcp status 2>&1); then
+    fail daemon "neurostrata-mcp status exited non-zero: $out"
+  fi
   case "$out" in
-  *answering*) ok daemon ;;
+  *"daemon: listening"*"answering"*) ok daemon ;;
   *) fail daemon "daemon not answering (neurostrata-mcp status)" ;;
   esac
 }
 
 check_guards() {
   local out n
-  out=$(neurostrata-mcp list guard 2>&1) || true # capture first, test second
-  n=$(printf '%s\n' "$out" | sed -n 's/^Found \([0-9][0-9]*\) memor\(y\|ies\).*/\1/p' | head -1)
-  [ -n "$n" ] || fail guards "could not parse guard memory count"
-  [ "$n" -ge 3 ] || fail guards "only $n guard memories found, need >= 3"
+  if ! out=$(neurostrata-mcp list guard 2>&1); then
+    fail guards "neurostrata-mcp list guard failed: $out"
+  fi
+  # Count actual guard_rule entries, not total memories in the namespace
+  n=$(printf '%s\n' "$out" | grep -c "guard_rule" || true)
+  [ "$n" -ge 3 ] || fail guards "only $n guard_rule entries found, need >= 3"
   printf '%s\n' "$out" | grep -q "Destructive GitHub actions" ||
     fail guards "destructive-actions guard rule missing"
   ok guards
