@@ -11,7 +11,7 @@ One invocation sets up an unattended run: a milestone split into independent lan
 
 **Core principle:** Isolated lanes + fresh reviewers + capped rounds + human merge = throughput that stays merge-grade while you are away.
 
-**REQUIRED BACKGROUND:** You MUST understand `subagent-driven-development` (dispatch + review loop mechanics) and `using-git-worktrees` (isolation setup) before using this skill. This skill is the overnight/unattended orchestration layer on top of them.
+**REQUIRED BACKGROUND:** You MUST understand `subagent-driven-development` (dispatch + review loop mechanics) before using this skill. Worktree isolation safety checks are inlined in step 2 below — no companion skill required.
 
 ## When to Use
 
@@ -25,7 +25,7 @@ One invocation sets up an unattended run: a milestone split into independent lan
 
 **1. Split into lanes.** Each lane: one bounded deliverable, its own files, its own acceptance test. Two lanes touching the same file are not two lanes — re-split. Record the lane list and the independence argument in the ledger before dispatching anything.
 
-**2. One lane, one worktree, one branch.** Cut every lane worktree from the same base commit. Verify each worktree's ignore/safety per `using-git-worktrees`. Never let parallel workers share a working copy.
+**2. One lane, one worktree, one branch.** Cut every lane worktree from the same base commit. Before creating a worktree, confirm you are not already inside one: compare `git rev-parse --git-dir` against `git rev-parse --git-common-dir` — different paths (and no output from `git rev-parse --show-superproject-working-tree`, which would mean a submodule, not a worktree) means you are already isolated, so do not nest another. Verify each new worktree sits on its own branch, is clean at cut time, and that no two lanes share a working copy. Never let parallel workers share a working copy.
 
 **3. Dispatch one worker per lane, in parallel.** Each dispatch is self-contained: the lane brief (exact values verbatim), the files it may touch, the deterministic gate commands, the report contract. Workers never dispatch subagents — no reviewer, no helpers. Review arrives from you.
 

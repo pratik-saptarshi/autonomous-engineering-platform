@@ -1,6 +1,6 @@
 ---
 name: scrubbing-public-tree
-description: Use when preparing an agent-built repo or branch for public viewing — after agentic implementation work, before opening a PR or publishing. Triggers: docs or comments containing agent headers, absolute machine paths, or bot identity strings; process artifacts (plans, designs, reviews, integration logs) sitting in the public tree; nested scratch or spike modules; duplicate CHANGELOG sections.
+description: "Use when preparing an agent-built repo or branch for public viewing — after agentic implementation work, before opening a PR or publishing. Triggers: docs or comments containing agent headers, absolute machine paths, or bot identity strings; process artifacts (plans, designs, reviews, integration logs) sitting in the public tree; nested scratch or spike modules; duplicate CHANGELOG sections."
 ---
 
 # Scrubbing the Public Tree
@@ -29,7 +29,7 @@ Work through these in order. Each step ends with a checkable result.
 |---|------|-----------|-----------|
 | 1 | Inventory | List process artifacts (plans, designs, reviews, integration logs) and agent/machine traces (headers, absolute paths, identity strings) in the public tree | You have the full list |
 | 2 | Relocate | Move process docs under `docs/process/` (`plans/`, `designs/`, `reviews/` subdirs as appropriate) | Public tree has no build paperwork |
-| 3 | Scrub | Remove agent headers, absolute machine paths (`/home/...`, `/tmp/...`, `/Users/...`), and bot identity strings from every public-tree file | `grep -r` for each pattern returns empty |
+| 3 | Scrub | Remove agent headers, absolute machine paths (`/home/...`, `/root/...`, `/Users/...`), and bot identity strings from every public-tree file | `grep -r` for each pattern returns empty |
 | 4 | Delete | Remove nested scratch/spike modules and evidence dirs that shouldn't publish | No dead modules remain |
 | 5 | Dedupe | Merge duplicate CHANGELOG sections; keep one entry per version | Changelog parses cleanly |
 | 6 | Repair | Rebase intra-repo references to the new paths; then grep-verify no dangling references remain | Every moved file's inbound links resolve |
@@ -40,18 +40,20 @@ Work through these in order. Each step ends with a checkable result.
 **Scrub patterns** (extend per repo; these are the common ones). Search all text files, excluding VCS and build output. Exclude skill files — they document these patterns literally and will always self-match:
 ```bash
 EXCL="--exclude-dir=.git --exclude-dir=target --exclude-dir=node_modules --exclude-dir=vendor --exclude-dir=dist --exclude=SKILL.md"
-grep -rn -E '/home/|/root/|/tmp/|/Users/' . $EXCL
+grep -rn -E '/home/|/root/|/Users/' . $EXCL
 grep -rniE 'cloudbot|neo-green' . $EXCL
 ```
 In repos with gitignored local material (evidence dirs, scratch checkouts), scope verification to tracked files so local-only hits don't mask real ones (no output means clean):
 ```bash
-git grep -nE '/home/|/root/|/tmp/|/Users/' -- ':!**/SKILL.md'
+git grep -nE '/home/|/root/|/Users/' -- ':!**/SKILL.md'
 git grep -niE 'cloudbot|neo-green' -- ':!**/SKILL.md'
 ```
 
+`/tmp` is portable by convention — do not treat it as a machine-identity finding. Only flag a `/tmp` path if it encodes machine-specific identity (a username, a hostname), which is rare; legitimate runtime files, sockets, and CI scratch usage stay as-is.
+
 **Scrub, don't just delete:** when a machine path carries meaning ("build output lives at /home/<user>/build/out"), generalize it to a neutral description ("the configured build output directory") rather than deleting the sentence — the information matters, the absolute path doesn't.
 
-**Build detection** (step 7) — check for manifest files at the repo root, in this order. Guard each with `command -v` so a manifest without its toolchain reports cleanly instead of failing opaquely:
+**Build detection** (step 7) — discover manifest files at any depth (excluding VCS and build-output dirs), in this order. Guard each with `command -v` so a manifest without its toolchain reports cleanly instead of failing opaquely:
 
 | Manifest | Run |
 |---|---|
@@ -60,7 +62,7 @@ git grep -niE 'cloudbot|neo-green' -- ':!**/SKILL.md'
 | `package.json` | `command -v npm >/dev/null && npm test` |
 | `pyproject.toml` / `requirements.txt` | `command -v pytest >/dev/null && pytest` |
 
-Detection is root-manifest-only: workspace members and nested modules are covered by the root suite — don't hunt for nested manifests. If several manifests exist, run each suite. If a manifest exists but its toolchain doesn't, note it and move on. If no manifests exist, note it and move on — don't invent a build.
+A root manifest's suite covers the workspace members it declares — but an independent nested module with its own manifest and no root workspace including it gets its own suite run. Never conclude "no build" from a missing root manifest while nested manifests exist; that reports success without testing anything. If several manifests exist, run each suite. If a manifest exists but its toolchain doesn't, note it and move on. If no manifests exist at any depth, note it and move on — don't invent a build.
 
 **Relocation:** prefer moving over copying — a copy leaves two sources of truth that drift. Step 6 is mandatory after every move: references break silently, including in ADRs and decision records (updating a moved path doesn't alter the decision; a broken link in a day-old ADR serves nobody).
 
