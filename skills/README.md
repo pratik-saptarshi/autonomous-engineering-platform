@@ -27,6 +27,7 @@ The 28 paperthin skills are distributed under the upstream MIT license; its copy
 | dispatching-parallel-agents | obra/superpowers | MIT | |
 | executing-plans | obra/superpowers | MIT | Extended locally with git-conventions bullet |
 | factchk | LilMGenius/paperthin | MIT | Vendored verbatim (7d5dc62) |
+| feature-pr-pipeline | Authored locally | MIT | Standard feature-to-PR workflow: plan, subagent-driven TDD, independent review, hygiene, PR with CI and review-comment gating |
 | feynman | LilMGenius/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | grilling | mattpocock/skills | MIT | |
 | hate | LilMGenius/paperthin | MIT | Vendored verbatim (7d5dc62) |
@@ -35,10 +36,11 @@ The 28 paperthin skills are distributed under the upstream MIT license; its copy
 | modelchk | LilMGenius/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | nba | LilMGenius/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | neurogenesis_teams | Cognilogical/NeuroGenesis | — | |
-| neurostrata_memory | Distilled locally from NeuroStrata docs | — | Custom wiring: retrieval before / inscription after loop iterations |
+| neurostrata_memory | Distilled locally from NeuroStrata docs | MIT | Custom wiring: retrieval before / inscription after loop iterations |
+| overnight-parallel-lanes | Authored locally | MIT | Unattended parallel-run setup: isolated worktree per lane, parallel workers, independent reviewers, explicit stop conditions |
 | plan_review_integrator | pratik-saptarshi/opencode-rountable-review | MIT | |
 | prism | LilMGenius/paperthin | MIT | Vendored verbatim (7d5dc62) |
-| product-refinement-loop | Created locally | — | Distilled from 2026-10-18 profile-decisions refinement |
+| product-refinement-loop | Created locally | MIT | Distilled from 2026-10-18 profile-decisions refinement |
 | prototype | mattpocock/skills | MIT | |
 | ralph_loop | zomars/ralph, heavily refined locally | MIT | Added: Conventional Commits conventions, on-demand daemon lifecycle, independent verifier rule |
 | re0 | LilMGenius/paperthin | MIT | Vendored verbatim (7d5dc62) |
@@ -58,6 +60,7 @@ The 28 paperthin skills are distributed under the upstream MIT license; its copy
 | research | mattpocock/skills | MIT | |
 | reverse_engineering | morluto/rea | MIT | |
 | roundtable_review | pratik-saptarshi/opencode-rountable-review | MIT | |
+| scrubbing-public-tree | Authored locally | MIT | Pre-publish hygiene for agent-built trees: relocate process docs, scrub machine paths and identities |
 | self_test_gym | Cognilogical/NeuroPlasticity | — | Native binary not built (needs cargo + Podman) |
 | shower | LilMGenius/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | sip | LilMGenius/paperthin | MIT | Vendored verbatim (7d5dc62) |

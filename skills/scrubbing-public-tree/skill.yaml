@@ -1,0 +1,5 @@
+name: "scrubbing-public-tree"
+title: "Scrubbing the Public Tree"
+description: "Use when preparing an agent-built repo or branch for public viewing — after agentic implementation work, before opening a PR or publishing. Triggers: docs or comments containing agent headers, absolute machine paths, or bot identity strings; process artifacts (plans, designs, reviews, integration logs) sitting in the public tree; nested scratch or spike modules; duplicate CHANGELOG sections."
+category: "Work and knowledge"
+include_in_prompt: true
