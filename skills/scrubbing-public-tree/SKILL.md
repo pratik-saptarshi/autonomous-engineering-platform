@@ -37,17 +37,19 @@ Work through these in order. Each step ends with a checkable result.
 
 ## Implementation
 
-**Scrub patterns** (extend per repo; these are the common ones). Search all text files, excluding VCS and build output. Exclude skill files — they document these patterns literally and will always self-match:
+**Scrub patterns** (extend per repo; these are the common ones). Search all text files, excluding VCS and build output:
 ```bash
-EXCL="--exclude-dir=.git --exclude-dir=target --exclude-dir=node_modules --exclude-dir=vendor --exclude-dir=dist --exclude=SKILL.md"
+EXCL="--exclude-dir=.git --exclude-dir=target --exclude-dir=node_modules --exclude-dir=vendor --exclude-dir=dist"
 grep -rn -E '/home/|/root/|/Users/' . $EXCL
 grep -rniE 'cloudbot|neo-green' . $EXCL
 ```
 In repos with gitignored local material (evidence dirs, scratch checkouts), scope verification to tracked files so local-only hits don't mask real ones (no output means clean):
 ```bash
-git grep -nE '/home/|/root/|/Users/' -- ':!**/SKILL.md'
-git grep -niE 'cloudbot|neo-green' -- ':!**/SKILL.md'
+git grep -nE '/home/|/root/|/Users/'
+git grep -niE 'cloudbot|neo-green'
 ```
+
+Do NOT blanket-exclude skill files: another SKILL.md in the public tree carrying a real machine path or bot identity is a genuine finding, not a self-match. Classify every hit — this playbook documenting the patterns literally (its own pattern examples above) is intentional and stays; anything else is scrubbed like any other public-tree file.
 
 `/tmp` is portable by convention — do not treat it as a machine-identity finding. Only flag a `/tmp` path if it encodes machine-specific identity (a username, a hostname), which is rare; legitimate runtime files, sockets, and CI scratch usage stay as-is.
 

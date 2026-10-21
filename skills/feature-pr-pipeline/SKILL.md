@@ -28,7 +28,7 @@ This skill orchestrates five companion workflow skills. At Stage 0, confirm each
 - `subagent-driven-development` — fresh implementer subagent + reviewer per task
 - `test-driven-development` — RED → GREEN → refactor
 - `scrubbing-public-tree` — pre-push hygiene pass
-- `finishing-a-development-branch` — push/PR integration decision
+- `finishing-a-development-branch` — push/PR integration decision (procedure inlined in Stage 5 below; installing the companion skill is optional)
 
 If a companion is missing, install it or substitute its documented procedure before proceeding — the stages below reference these skills as written.
 
@@ -76,7 +76,7 @@ Stage 7: Merge      → auto-merge (`gh pr merge --squash --auto`) on repos unde
 
 ### Stage 5 — Integrate
 
-- Follow `finishing-a-development-branch` for the push/PR decision, per the Authorization rule above (ask once, name the branch).
+- Push the branch and open the PR per the Authorization rule above: ask once, naming the exact branch (unless the repo's auto-merge rule covers this run) — `git push -u origin <branch>`, then open the PR with a Conventional Commit title summarizing the change. If the companion skill `finishing-a-development-branch` is installed, follow it as written; otherwise this procedure is the complete substitute.
 - **Gate:** branch pushed and PR opened with user authorization. If the user declines, the pipeline ends here: report the local branch state and stop — do not proceed to Stage 6.
 
 ### Stage 6 — Gate
