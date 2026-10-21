@@ -1,0 +1,5 @@
+name: "overnight-parallel-lanes"
+title: "Overnight Parallel Lanes"
+description: "Use when setting up an unattended coding run — overnight or otherwise — where a milestone should be split into independent workstreams built in parallel with review gating the merge."
+category: "Work and knowledge"
+include_in_prompt: true

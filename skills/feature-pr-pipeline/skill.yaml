@@ -1,0 +1,5 @@
+name: "feature-pr-pipeline"
+title: "Feature-to-PR Pipeline"
+description: "Standardized feature-to-PR workflow — plan, implement with subagent-driven TDD, independent whole-branch review, hygiene pass, then PR with CI and review-comment gating. Use when the user asks for the standard workflow, says \"make this the standard process\", or requests a multi-step feature, fix, or docs change that will end as a pull request."
+category: "Work and knowledge"
+include_in_prompt: true
