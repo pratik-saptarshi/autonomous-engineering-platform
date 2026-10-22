@@ -2,9 +2,9 @@
 
 ## What it is
 
-mitkox/esf — Engineering Software Factory: a self-hosted factory that runs coding agents in isolated CubeSandbox microVMs and verifies their changes. Pipeline: task → Temporal durable workflow → CubeSandbox microVM → coding agent → deterministic verification → patch + evidence. Deterministic gates decide factory success; agent success alone is not enough.
+pratik-saptarshi/esf — Engineering Software Factory: a self-hosted factory that runs coding agents in isolated CubeSandbox microVMs and verifies their changes. Pipeline: task → Temporal durable workflow → CubeSandbox microVM → coding agent → deterministic verification → patch + evidence. Deterministic gates decide factory success; agent success alone is not enough.
 
-Vendored snapshot: [PROVENANCE.md](../reference/esf/PROVENANCE.md) — upstream `https://github.com/mitkox/esf` at `d41535d86a13e55fe2357d9e0a108566d68ce1b9` (2026-10-18, MIT).
+Vendored snapshot: [PROVENANCE.md](../reference/esf/PROVENANCE.md) — upstream `https://github.com/pratik-saptarshi/esf` at `d41535d86a13e55fe2357d9e0a108566d68ce1b9` (2026-10-18, MIT).
 
 ## Mapping to the AEP loop
 

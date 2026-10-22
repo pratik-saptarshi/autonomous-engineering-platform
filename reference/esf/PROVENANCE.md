@@ -1,6 +1,6 @@
 # Provenance — vendored ESF reference snapshot
 
-- **Upstream:** https://github.com/mitkox/esf
+- **Upstream:** https://github.com/pratik-saptarshi/esf
 - **Pinned commit:** `d41535d86a13e55fe2357d9e0a108566d68ce1b9` ("Add durable sf turn executor with Cube checkpoints and permissions (#40)")
 - **Snapshot date:** 2026-10-18
 - **License:** MIT (copyright 2026 Owain Lewis; fork by mitkox — see `docs/upstream.md`). `LICENSE` is preserved verbatim in this tree.
