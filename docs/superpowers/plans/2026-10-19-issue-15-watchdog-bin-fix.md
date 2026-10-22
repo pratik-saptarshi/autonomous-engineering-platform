@@ -162,6 +162,15 @@ git commit -m "fix(scripts): define stop_daemon before its first call site"
 
 The header currently says "1. Watchdog: if the daemon is down, restart it directly (nohup)" — this describes the old always-on model and contradicts the on-demand behavior at the main flow ("If it is down, that is the expected idle state — nothing to do"). Replace step 1 with text matching the on-demand model, e.g.: "1. Watchdog (on-demand model): if the daemon is down, that is the expected idle state — nothing to do. An idle daemon is backed up (if changed) and stopped; restart a stopped daemon via direct nohup (`HF_HUB_OFFLINE=1 nohup ~/go/bin/neurostrata-mcp daemon ... &`) — MCP-spawn revive is unreliable (verified 2026-10-16, see issue #16)."
 
+- [ ] **Step 1b: Remove remaining MCP auto-start claims from the main flow**
+
+The header is not the only place. Three comments in the main flow still claim the MCP client revives the daemon, contradicting the verified direct-nohup requirement (issue #16):
+- `scripts/watchdog-backup.sh:160-163`: "the MCP client starts it lazily at the beginning of a coding loop"
+- `scripts/watchdog-backup.sh:209-211`: "the MCP client restarts it on the next coding loop"
+- `scripts/watchdog-backup.sh:252`: "the MCP client restarts it next run"
+
+Rewrite each to state the verified mechanism: a stopped daemon is restarted via direct nohup (`HF_HUB_OFFLINE=1 nohup ~/go/bin/neurostrata-mcp daemon ... &`); MCP-spawn revive is unreliable (verified 2026-10-16). Grep for any remaining `MCP client.*start\|MCP client.*restart` after the edit — zero matches expected.
+
 - [ ] **Step 2: Verify**
 
 Read the header and the on-demand comment block (the `# 1. On-demand model` section); confirm they no longer contradict. Run `bash -n` and `shfmt -d -i 2` (comment-only change, but keep the habit).

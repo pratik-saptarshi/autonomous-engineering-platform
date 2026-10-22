@@ -79,6 +79,10 @@ fi
 ls -1t "$DAEMON_LOG".* 2>/dev/null | tail -n +11 | xargs -r rm -f
 ```
 
+- [ ] **Step 2b: Cover the direct-nohup restart path**
+
+The watchdog exits 0 when the daemon is down (on-demand model), so Step 2's rotation never runs before a direct nohup start (issue #17's path). Add the same rotation snippet immediately before every direct daemon start command — including the nohup invocation in the issue-17 boot-gate preamble and any manual restart runbook. Grep the repo for `nohup.*neurostrata-mcp daemon` and confirm each site is preceded by the rotation (or sources a shared `rotate_daemon_log` function). A startup without a preceding rotation is a Task 3 evidence gap.
+
 - [ ] **Step 3: Verify syntax and document**
 
 Run: `bash -n ~/workspace/neurostrata/bin/watchdog-backup.sh && echo SYNTAX-OK`

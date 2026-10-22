@@ -116,9 +116,12 @@ for domain in "${DOMAINS[@]}"; do
   while read -r ip; do
     iptables -C OUTPUT -d "$ip" -j DROP 2>/dev/null || { echo "VERIFY FAIL: v4 rule missing for $ip ($domain)" >&2; failed=1; }
   done <<< "$v4ips"
-  while read -r ip; do
-    ip6tables -C OUTPUT -d "$ip" -j DROP 2>/dev/null || { echo "VERIFY FAIL: v6 rule missing for $ip ($domain)" >&2; failed=1; }
-  done <<< "$(resolve_v6 "$domain")"
+  v6ips=$(resolve_v6 "$domain") || exit 1
+  if [ -n "$v6ips" ]; then
+    while read -r ip; do
+      ip6tables -C OUTPUT -d "$ip" -j DROP 2>/dev/null || { echo "VERIFY FAIL: v6 rule missing for $ip ($domain)" >&2; failed=1; }
+    done <<< "$v6ips"
+  fi
 done
 [ "$failed" -eq 0 ] || { echo "FATAL: verification failed — blocks NOT fully applied" >&2; exit 1; }
 
