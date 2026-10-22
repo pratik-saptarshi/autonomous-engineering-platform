@@ -129,16 +129,25 @@ Note: the sampler does not survive VM reboots (no @reboot cron). If the VM is re
 
 **Rationale:** The old Task 3 tested whether the watchdog's health check was wrong. It isn't — the reaper explains the pattern. The new question: which shutdowns leave WALs, and what precedes them?
 
-- [ ] **Step 1: Enumerate every WAL warning with its startup context**
+- [ ] **Step 1: Enumerate every WAL warning with its startup context — and the preceding shutdown from the rotated log**
+
+Task 1 rotates `daemon.log` before every restart, so a WAL warning in the CURRENT log and the shutdown that caused it live in DIFFERENT files: the warning is in the fresh log, the preceding shutdown sequence is at the tail of the rotated file. Pair them — never classify from the current log alone.
 
 Run:
 ```bash
+# 1a: list WAL warnings in the current log with their startup context
 grep -n "not clean" ~/.local/share/neurostrata/daemon.log | cut -d: -f1 | while read ln; do
-  echo "=== WAL at log line $ln ==="
+  echo "=== WAL warning at current-log line $ln ==="
   sed -n "$((ln-3)),$((ln+1))p" ~/.local/share/neurostrata/daemon.log
 done
+# 1b: the shutdown BEFORE each warning is in the rotated logs (timestamped
+# daemon.log.YYYYMMDD-HHMMSS). List rotations newest-first and match each
+# warning to the rotation whose timestamp immediately precedes it:
+ls -1t ~/.local/share/neurostrata/daemon.log.*
+# 1c: for each matched rotation, pull the tail — this is the preceding shutdown:
+tail -30 ~/.local/share/neurostrata/daemon.log.<matched-timestamp>
 ```
-Record: how many WAL warnings, and for each, what the PREVIOUS shutdown looked like (SIGTERM+checkpoint = clean; HTTP+checkpoint = clean; abrupt end = unclean).
+Record: how many WAL warnings, and for each, what the PREVIOUS shutdown looked like (from the ROTATED file's tail — SIGTERM+checkpoint = clean; HTTP+checkpoint = clean; abrupt end = unclean). A warning whose preceding rotation shows a clean SIGTERM shutdown points at a daemon-side race (H2 variant); one whose rotation ends abruptly points at SIGKILL/crash (H1/H3).
 
 - [ ] **Step 2: Correlate unclean deaths with reaper and watchdog logs**
 

@@ -68,12 +68,17 @@ Keep the existing Verify line (`bd ping`, `bd init` lifecycle) — it is correct
 
 - [ ] **Step 3: Rewrite the open-code-review install block**
 
-Delete the npm-fetch + symlink block (`@alibaba-group/ocr-linux-x64`, `~/workspace/open-code-review/`, `ln -s ... ~/workspace/bin/ocr`) — none of those paths were ever used. Replace with the verified outcome (verbatim):
+Delete the npm-fetch + symlink block (`@alibaba-group/ocr-linux-x64`, `~/workspace/open-code-review/`, `ln -s ... ~/workspace/bin/ocr`) — none of those paths were ever used. Replace with the verified install (verbatim):
 ```bash
-# ocr v1.13.1 (Apache-2.0): download the linux-x64 binary from the Alibaba
-# OpenCodeReview release, verify SHA256 against the release's sha256sum.txt,
+# ocr v1.13.1 (Apache-2.0): linux-amd64 binary from the alibaba/open-code-review
+# GitHub release. Verify SHA256 against the release's sha256sum.txt, then
 # install to ~/go/bin/ocr (a real binary, not a symlink).
-# Install record: ~/memory/2026-10-16.md ("Parallel repo reviews/installs").
+# (Skip if ~/go/bin/ocr --version already reports v1.13.1 — installed 2026-10-16.)
+cd /tmp
+gh release download v1.13.1 --repo alibaba/open-code-review \
+  --pattern 'opencodereview-linux-amd64' --pattern 'sha256sum.txt'
+sha256sum -c sha256sum.txt --ignore-missing  # must report OK for opencodereview-linux-amd64
+install -m 755 opencodereview-linux-amd64 ~/go/bin/ocr
 ~/go/bin/ocr --version  # open-code-review v1.13.1 linux/amd64
 ```
 Keep the existing Verify lines (`ocr delegate preview/rule`) — they are correct.

@@ -160,7 +160,7 @@ git commit -m "fix(scripts): define stop_daemon before its first call site"
 
 - [ ] **Step 1: Rewrite header step 1**
 
-The header currently says "1. Watchdog: if the daemon is down, restart it directly (nohup)" — this describes the old always-on model and contradicts the on-demand behavior at the main flow ("If it is down, that is the expected idle state — nothing to do"). Replace step 1 with text matching the on-demand model, e.g.: "1. Watchdog (on-demand model): if the daemon is down, that is the expected idle state — nothing to do. An idle daemon is backed up (if changed) and stopped; the MCP client restarts it on next use."
+The header currently says "1. Watchdog: if the daemon is down, restart it directly (nohup)" — this describes the old always-on model and contradicts the on-demand behavior at the main flow ("If it is down, that is the expected idle state — nothing to do"). Replace step 1 with text matching the on-demand model, e.g.: "1. Watchdog (on-demand model): if the daemon is down, that is the expected idle state — nothing to do. An idle daemon is backed up (if changed) and stopped; restart a stopped daemon via direct nohup (`HF_HUB_OFFLINE=1 nohup ~/go/bin/neurostrata-mcp daemon ... &`) — MCP-spawn revive is unreliable (verified 2026-10-16, see issue #16)."
 
 - [ ] **Step 2: Verify**
 

@@ -91,7 +91,7 @@ Replace the table body. Decisions (do not relitigate): keep one row per componen
   - open-connector → status `Planned — not installed`
   - Scheduler → list only jobs confirmed in Task 1 Step 2 (expect `neurostrata-watchdog` 2h, `neurostrata-export` weekly; drop `ralph-loop` and `neurostrata-tls-validation`)
 
-- [ ] **Step 2: Fix the table's Status vocabulary**
+  - [ ] **Step 2: Fix the table's Status vocabulary**
 
 The only allowed Status values after this task: `Installed`, `Installed; verified` (only where a verification command in the runbook passes), or `Planned — not installed`. No other wording.
 
@@ -156,7 +156,9 @@ git commit -m "docs(readme): redraw ecosystem diagram without fictional componen
 - [ ] **Step 1: Retitle and disclaim the section**
 
 Decision (do not relitigate): keep the flowchart as design reference but retitle the heading to `## Planned: continuous loop cycle` and prepend this disclaimer verbatim:
-`> **Not yet implemented.** This is the design for the autonomous execution loop. No scheduler job currently runs this cycle; `backlog.py` and the `ralph-loop` cron do not exist.`
+```
+> **Not yet implemented.** This is the design for the autonomous execution loop. No scheduler job currently runs this cycle; `backlog.py` and the `ralph-loop` cron do not exist.
+```
 
 - [ ] **Step 2: Verify the disclaimer is present and the diagram is untouched**
 
@@ -185,7 +187,11 @@ git commit -m "docs(readme): mark continuous loop cycle as planned, not implemen
 
 - [ ] **Step 1: Update the counts**
 
-Set the Ecosystem `Skills` subgraph label and the inventory-adjacent claims to the Task-1 verified count of `~/workspace/custom-skills/` (observed 62 on 2026-10-19 — re-verify, do not copy blindly). In the `### Skill sources` section, add one clarifying line verbatim: `The repo's `skills/` directory carries a 30-skill curated subset; the full library lives at `~/workspace/custom-skills/`.` Verify the 30-dir count: `ls -d skills/*/ | wc -l`.
+Set the Ecosystem `Skills` subgraph label and the inventory-adjacent claims to the Task-1 verified count of `~/workspace/custom-skills/` (observed 62 on 2026-10-19 — re-verify, do not copy blindly). In the `### Skill sources` section, add one clarifying line verbatim:
+```
+The repo's `skills/` directory carries a 30-skill curated subset; the full library lives at `~/workspace/custom-skills/`.
+```
+Verify the 30-dir count: `ls -d skills/*/ | wc -l`.
 
 - [ ] **Step 2: Check count consistency across the file**
 

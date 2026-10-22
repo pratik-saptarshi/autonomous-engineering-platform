@@ -86,10 +86,15 @@ V6_ROUTE=no
 ip -6 route show default >/dev/null 2>&1 && V6_ROUTE=yes
 
 for domain in "${DOMAINS[@]}"; do
+  # Resolve BEFORE the loop into a checked variable: a process substitution
+  # (< <(resolve_v4 ...)) would swallow resolve_v4's non-zero exit (bash does
+  # not propagate it, even under set -e), so a DNS failure would silently
+  # process zero IPs and the script would exit 0 claiming success.
+  v4ips=$(resolve_v4 "$domain") || exit 1
   while read -r ip; do
     apply_drop iptables "$ip"
     echo "blocked (v4): $domain -> $ip"
-  done < <(resolve_v4 "$domain")
+  done <<< "$v4ips"
 
   v6ips=$(resolve_v6 "$domain")
   if [ -n "$v6ips" ]; then
@@ -105,9 +110,12 @@ done
 # Verification pass: every applied rule must exist before we claim success.
 failed=0
 for domain in "${DOMAINS[@]}"; do
+  # Same checked-variable pattern as the apply loop: never let a resolver
+  # failure hide inside process substitution during verification either.
+  v4ips=$(resolve_v4 "$domain") || exit 1
   while read -r ip; do
     iptables -C OUTPUT -d "$ip" -j DROP 2>/dev/null || { echo "VERIFY FAIL: v4 rule missing for $ip ($domain)" >&2; failed=1; }
-  done < <(resolve_v4 "$domain")
+  done <<< "$v4ips"
   while read -r ip; do
     ip6tables -C OUTPUT -d "$ip" -j DROP 2>/dev/null || { echo "VERIFY FAIL: v6 rule missing for $ip ($domain)" >&2; failed=1; }
   done <<< "$(resolve_v6 "$domain")"
@@ -117,7 +125,7 @@ done
 echo "Domain blocks applied and verified: ${DOMAINS[*]}"
 ```
 
-Design notes for the implementer: the `while read` loops use process substitution (`< <(...)`) so `set -e` and variables behave; the `|| true` on the v6 resolver keeps empty results non-fatal; the v6 WARNING (not fatal) reflects that AAAA absence is currently normal.
+Design notes for the implementer: the `while read` loops take their input from a checked variable via herestring (`<<< "$v4ips"`), NOT process substitution — bash does not propagate a failing command's exit status through `< <(...)`, so `resolve_v4` must run (and its failure must abort) before the loop starts; the `|| true` on the v6 resolver keeps empty results non-fatal; the v6 WARNING (not fatal) reflects that AAAA absence is currently normal.
 
 - [ ] **Step 2: Syntax check and lint**
 

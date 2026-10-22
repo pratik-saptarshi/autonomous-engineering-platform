@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Conventional Commits for every commit; author `Musebot-Astro <6238157+pratik-saptarshi@users.noreply.github.com>`.
-- Do not break the running `neurostrata-watchdog` cron: deploy only when no watchdog run is in progress. The cron invokes the script via `bash ~/workspace/neurostrata/bin/watchdog-backup.sh` (verified in the cron body), so file replacement takes effect on the next run — no cron definition change is needed.
+- Do not break the running `neurostrata-watchdog` cron: serialize the deploy with watchdog runs by HOLDING the flock at `~/workspace/neurostrata/.watchdog.lock` across the backup + deploy steps (a check-then-copy races the 2h cron: the watchdog can start between the check and the overwrite). Deploy via atomic rename (temp file + `mv`), never in-place `cp` — `bash script.sh` reads incrementally, so an in-place overwrite mid-run executes mixed content, while rename lets a concurrent reader keep the old inode.
 - Preserve file ownership and mode on deploy (currently `root:nogroup`, `770` — verified via `ls -la`).
 - Never deploy an unverified script: it must pass `bash -n`, shellcheck, and `shfmt -d -i 2` first.
 - **Dependency:** Task 3 requires issue #15's fix merged to the repo first. Tasks 1 and 2 are independent of each other and of #15 — they may run in parallel.
@@ -22,7 +22,7 @@
 
 ## Review Focus
 
-- **Deploying while a watchdog run is in progress** — `bash script.sh` reads the file incrementally during execution, so overwriting it mid-run risks executing mixed content. The procedure must verify no run is active first (check the flock lock at `~/workspace/neurostrata/.watchdog.lock` and `pgrep -f watchdog-backup.sh`). The Task 1 doc pins this as a mandatory pre-deploy check.
+- **Deploying while a watchdog run is in progress** — `bash script.sh` reads the file incrementally during execution, so overwriting it mid-run risks executing mixed content, and a check-then-copy races the 2h cron (the watchdog can acquire the lock after the check but before the copy). The procedure must HOLD the flock at `~/workspace/neurostrata/.watchdog.lock` across the entire backup + deploy (blocking acquire with timeout — if a run is active, wait for it; while held, a cron-fired watchdog exits cleanly via its own `flock -n` path) and deploy via atomic rename (temp file in the same dir + `mv`), never in-place `cp`. The Task 1 doc pins this as mandatory.
 - **Rollback** — a bad deploy must be revertible. The procedure must back up the current deployed file (timestamped copy) before overwriting.
 - **Checksum record atomicity** — the deployment log entry is part of the deploy, not an afterthought; Task 3 writes it in the same task as the file replacement.
 - **Permission preservation** — the deployed file is `root:nogroup` mode `770`; the procedure sets owner/mode explicitly rather than inheriting from the copy.
@@ -47,9 +47,24 @@ Read `docs/operations.md`, find the "Watchdog and backups" section, and identify
 
 Add the subsection covering, in order:
 1. **Preconditions:** the script change is merged; CI (shell-lint) is green on it; issue #15's fail-fast guard is present (so a bad path can never silently deploy).
-2. **Pre-deploy check:** confirm no watchdog run is in progress — `pgrep -f watchdog-backup.sh` must print nothing and the flock at `~/workspace/neurostrata/.watchdog.lock` must be free. If a run is active, wait for it to finish; never overwrite the file mid-run.
-3. **Back up the live file:** `cp ~/workspace/neurostrata/bin/watchdog-backup.sh ~/workspace/neurostrata/bin/watchdog-backup.sh.bak-$(date +%Y%m%d)` (rollback copy).
-4. **Deploy:** `cp <repo>/scripts/watchdog-backup.sh ~/workspace/neurostrata/bin/watchdog-backup.sh`, then `chown root:nogroup` and `chmod 770` to match the existing ownership/mode; verify with `bash -n` and record `sha256sum`.
+2. **Serialize with the watchdog:** acquire the flock at `~/workspace/neurostrata/.watchdog.lock` and HOLD it across steps 3–4. Do not check-then-release — the check races the 2h cron. Blocking acquire with a 10-minute timeout (a normal watchdog run finishes in well under a minute):
+```bash
+exec 8>"$HOME/workspace/neurostrata/.watchdog.lock"
+flock --timeout 600 8 || { echo "FATAL: watchdog lock not acquired within 10 min (a run may be stuck — investigate with pgrep -f watchdog-backup.sh)" >&2; exit 1; }
+# fd 8 stays open through steps 3-4; the lock releases when this shell exits.
+# While held, a cron-fired watchdog exits cleanly via its own `flock -n` path.
+```
+3. **Back up the live file (under the held lock):** `cp ~/workspace/neurostrata/bin/watchdog-backup.sh ~/workspace/neurostrata/bin/watchdog-backup.sh.bak-$(date +%Y%m%d)` (rollback copy).
+4. **Deploy atomically (under the held lock):** copy to a temp file in the SAME directory, set owner/mode on the temp file, verify syntax, then rename over the target — never `cp` over the live path in place:
+```bash
+cp <repo>/scripts/watchdog-backup.sh ~/workspace/neurostrata/bin/watchdog-backup.sh.new
+chown root:nogroup ~/workspace/neurostrata/bin/watchdog-backup.sh.new
+chmod 770 ~/workspace/neurostrata/bin/watchdog-backup.sh.new
+bash -n ~/workspace/neurostrata/bin/watchdog-backup.sh.new && echo "syntax OK"
+mv ~/workspace/neurostrata/bin/watchdog-backup.sh.new ~/workspace/neurostrata/bin/watchdog-backup.sh
+sha256sum ~/workspace/neurostrata/bin/watchdog-backup.sh   # record for the log entry
+```
+(`mv` within one filesystem is atomic: a concurrent reader keeps the old inode instead of executing mixed content.)
 5. **Verify cron pickup:** the `neurostrata-watchdog` cron runs `bash ~/workspace/neurostrata/bin/watchdog-backup.sh` each cycle, so no cron change is needed; confirm the next run's `watchdog.log` lines reflect the new script (e.g. the on-demand log messages).
 6. **Record:** append an entry to `docs/process/watchdog-deployments.md` (date, repo git SHA, sha256sum, notes).
 7. **Rollback:** if the next run misbehaves, restore the `.bak-<date>` copy, re-verify with `bash -n`, and log the rollback in the deployments file.
@@ -119,26 +134,27 @@ git commit -m "docs(process): add watchdog deployment log with production baseli
 - Consumes: issue #15's fixed `scripts/watchdog-backup.sh` (merged to the repo); Task 1's procedure; Task 2's log
 - Produces: deployed fixed script; new log entry; verified cron pickup
 
-- [ ] **Step 1: Verify preconditions**
+- [ ] **Step 1: Verify preconditions and acquire the lock**
 
-Confirm: issue #15's fix is merged (repo `scripts/watchdog-backup.sh` contains the fail-fast guard — `grep -q 'FATAL: neurostrata-mcp' scripts/watchdog-backup.sh`); CI is green on the merge commit; no watchdog run is in progress (`pgrep -f watchdog-backup.sh` prints nothing).
+Confirm: issue #15's fix is merged (repo `scripts/watchdog-backup.sh` contains the fail-fast guard — `grep -q 'FATAL: neurostrata-mcp' scripts/watchdog-backup.sh`); CI is green on the merge commit. Then acquire the watchdog lock and hold it for Steps 2–3 (see Task 1, procedure step 2 — blocking `flock --timeout 600`; this serializes with any in-progress run instead of racing it).
 
-- [ ] **Step 2: Back up the live file**
+- [ ] **Step 2: Back up the live file (under the held lock)**
 
 Run: `cp ~/workspace/neurostrata/bin/watchdog-backup.sh ~/workspace/neurostrata/bin/watchdog-backup.sh.bak-$(date +%Y%m%d)`
 Verify: `ls -la ~/workspace/neurostrata/bin/watchdog-backup.sh.bak-*` shows the new backup.
 
-- [ ] **Step 3: Deploy the fixed script**
+- [ ] **Step 3: Deploy the fixed script atomically (under the held lock)**
 
 Run:
 ```bash
-cp ~/workspace/worktrees/aep-ci-pr/scripts/watchdog-backup.sh ~/workspace/neurostrata/bin/watchdog-backup.sh
-chown root:nogroup ~/workspace/neurostrata/bin/watchdog-backup.sh
-chmod 770 ~/workspace/neurostrata/bin/watchdog-backup.sh
-bash -n ~/workspace/neurostrata/bin/watchdog-backup.sh && echo "syntax OK"
+cp ~/workspace/worktrees/aep-ci-pr/scripts/watchdog-backup.sh ~/workspace/neurostrata/bin/watchdog-backup.sh.new
+chown root:nogroup ~/workspace/neurostrata/bin/watchdog-backup.sh.new
+chmod 770 ~/workspace/neurostrata/bin/watchdog-backup.sh.new
+bash -n ~/workspace/neurostrata/bin/watchdog-backup.sh.new && echo "syntax OK"
+mv ~/workspace/neurostrata/bin/watchdog-backup.sh.new ~/workspace/neurostrata/bin/watchdog-backup.sh
 sha256sum ~/workspace/neurostrata/bin/watchdog-backup.sh
 ```
-Expected: syntax OK; capture the sha256sum for the log entry. (Note: use the repo path that reflects the merged #15 fix — if the worktree branch has moved on, use the main checkout at `~/workspace/repos/autonomous-engineering-platform`.)
+Expected: syntax OK; capture the sha256sum for the log entry. (Note: use the repo path that reflects the merged #15 fix — if the worktree branch has moved on, use the main checkout at `~/workspace/repos/autonomous-engineering-platform`. The `mv` is the atomic publish; a concurrent reader keeps the old inode.)
 
 - [ ] **Step 4: Verify the deployed file matches the repo script**
 

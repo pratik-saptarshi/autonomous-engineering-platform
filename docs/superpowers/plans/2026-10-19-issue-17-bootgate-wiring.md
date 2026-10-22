@@ -54,7 +54,14 @@ The exact markdown to prepend (after the `# Title` line, before existing `## 1.`
 ```markdown
 ## 0. Preflight gate — fail-closed (runs first, every run)
 
-Run `bash ~/workspace/repos/autonomous-engineering-platform/scripts/boot-gate.sh`.
+The daemon may be legitimately stopped (on-demand model + idle reaper) — a stopped
+daemon is NOT a gate failure, but the gate needs it answering. Ensure it is up first:
+run `~/go/bin/neurostrata-mcp status`; if the output does not contain "answering",
+start it with `HF_HUB_OFFLINE=1 nohup ~/go/bin/neurostrata-mcp daemon >>~/.local/share/neurostrata/daemon.log 2>&1 &`
+then poll `~/go/bin/neurostrata-mcp status` every 5s until "answering" (timeout 60s).
+If it never answers, STOP and report the startup failure.
+
+Then run `bash ~/workspace/repos/autonomous-engineering-platform/scripts/boot-gate.sh`.
 It checks: required binaries on PATH, NeuroStrata daemon answering, guard
 namespace holds the standing guard rules (≥3, incl. the destructive-GitHub-actions
 rule), and `gh` authenticated.
