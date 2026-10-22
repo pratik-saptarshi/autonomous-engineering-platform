@@ -106,7 +106,9 @@ Write `~/workspace/neurostrata/bin/sample-daemon-rss.sh`:
 while true; do
   rss=$(ps -o rss= -C neurostrata-mcp 2>/dev/null | awk '{s+=$1} END {print s+0}')
   mem=$(free -m | awk '/^Mem:/ {print $3"/"$2}')
-  echo "$(date '+%Y-%m-%d %H:%M:%S') rss_kb=${rss} mem_used_total=${mem} daemon_procs=$(pgrep -fc neurostrata-mcp || echo 0)"
+  # NB: pgrep -c prints 0 AND exits 1 when nothing matches — use || true
+  # (not || echo 0) so an absent daemon yields a single 0, not "0\n0".
+  echo "$(date '+%Y-%m-%d %H:%M:%S') rss_kb=${rss} mem_used_total=${mem} daemon_procs=$(pgrep -fc neurostrata-mcp 2>/dev/null || true)"
   sleep 300
 done
 ```
@@ -135,10 +137,11 @@ Task 1 rotates `daemon.log` before every restart, so a WAL warning in the CURREN
 
 Run:
 ```bash
-# 1a: list WAL warnings in the current log with their startup context
-grep -n "not clean" ~/.local/share/neurostrata/daemon.log | cut -d: -f1 | while read ln; do
-  echo "=== WAL warning at current-log line $ln ==="
-  sed -n "$((ln-3)),$((ln+1))p" ~/.local/share/neurostrata/daemon.log
+# 1a: list WAL warnings across the CURRENT log and ALL rotated logs
+# (after 2+ restarts, earlier warnings live in daemon.log.*, not the current file)
+grep -n "not clean" ~/.local/share/neurostrata/daemon.log ~/.local/share/neurostrata/daemon.log.* 2>/dev/null | while IFS=: read f ln rest; do
+  echo "=== WAL warning in $f line $ln ==="
+  sed -n "$((ln-3)),$((ln+1))p" "$f"
 done
 # 1b: the shutdown BEFORE each warning is in the rotated logs (timestamped
 # daemon.log.YYYYMMDD-HHMMSS). List rotations newest-first and match each

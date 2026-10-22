@@ -79,14 +79,15 @@ Then: `gh pr checks 12 --watch` — all 5 jobs must pass (no job writes anything
 
 - [ ] **Step 1: Pin the version**
 
-Change:
+Change (preserving every existing `!` exclusion — the vendored trees must stay out of the lint):
 ```yaml
-      - run: npx --yes markdownlint-cli2 "**/*.md"
+      - run: npx --yes markdownlint-cli2 "**/*.md" "!reference/esf/**/*.md"
 ```
 to:
 ```yaml
-      - run: npx --yes markdownlint-cli2@0.18.1 "**/*.md"
+      - run: npx --yes markdownlint-cli2@0.18.1 "**/*.md" "!reference/esf/**/*.md"
 ```
+(If further `!` exclusions exist at implementation time — e.g. `!skills/archify/**/*.md` — keep them all; only the package spec changes.)
 (`0.18.1` verified to exist on npm 2026-10-19; it is the version the issue suggested and it predates the 0.23.x line, minimizing rule-change risk against the v1 baseline config.)
 
 - [ ] **Step 2: Validate YAML locally**
@@ -195,7 +196,9 @@ Expected: FAIL — `--self-test-stubs` is not a recognized flag (usage error, ex
 
 Add a `STUBS_ONLY` variable (default empty). In `self_test()`, when `STUBS_ONLY` is set:
 - Skip the real-environment positive case at the end.
+- Stub `bd` and `ocr` as successful no-op commands in `$stubdir` (the `check_binaries` gate requires `neurostrata-mcp bd ocr gh`; without `bd`/`ocr` stubs, every negative case would "pass" by failing at the binary check instead of exercising its claimed behavior).
 - For the `gh-auth-fail` case (empty STUB_CASE), do NOT delegate to the real binary — instead handle a `healthy` stub case in the fake neurostrata-mcp that prints the healthy daemon line and a valid guard listing (3 memories incl. "Destructive GitHub actions"), so the gate passes daemon/guards and fails only on the stubbed `gh`.
+- Assert the expected failing check per case (not just nonzero exit): each `expect_fail` must also grep the gate output for the case's diagnostic (e.g. `daemon-down` → "daemon" check failure, not "binaries").
 
 Wire the CLI: add a `--self-test-stubs)` case that sets `STUBS_ONLY=1` then runs the same `self_test` flow. Update the usage line to `usage: $0 [--self-test | --self-test-stubs]`.
 
@@ -239,9 +242,10 @@ Then: `gh pr checks 12 --watch` — shell-lint must pass with the new step.
 
 - [ ] **Step 1: Look up current SHAs and pin**
 
-For each of `actions/checkout@v4` (3 occurrences) and `actions/setup-go@v5` (2 occurrences):
+For each of `actions/checkout@v4` (5 occurrences: docs-lint, shell-lint, go-checks, security, vendor-integrity) and `actions/setup-go@v5` (2 occurrences):
 1. Resolve the tag to its commit SHA at implementation time: `gh api repos/actions/checkout/commits/v4 --jq .sha` (and likewise for setup-go).
 2. Replace `actions/checkout@v4` with `actions/checkout@<sha> # v4` (keep the version as a comment so upgrades remain discoverable).
+3. Final validation: `grep -rn "uses: actions/" .github/workflows/ | grep -v "@[0-9a-f]\{40\}"` must print nothing (no unpinned refs remain).
 
 - [ ] **Step 2: Validate YAML, commit, push, verify all jobs pass**
 

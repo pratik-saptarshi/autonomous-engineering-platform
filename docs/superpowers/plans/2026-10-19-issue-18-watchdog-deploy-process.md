@@ -54,7 +54,7 @@ Add the subsection covering, in order:
    # fd 8 stays open through steps 3-4; the lock releases when this shell exits.
    # While held, a cron-fired watchdog exits cleanly via its own `flock -n` path.
    ```
-3. **Back up the live file (under the held lock):** `cp ~/workspace/neurostrata/bin/watchdog-backup.sh ~/workspace/neurostrata/bin/watchdog-backup.sh.bak-$(date +%Y%m%d)` (rollback copy).
+3. **Back up the live file (under the held lock):** `cp ~/workspace/neurostrata/bin/watchdog-backup.sh ~/workspace/neurostrata/bin/watchdog-backup.sh.bak-$(date +%Y%m%d-%H%M%S)` (rollback copy — the time component keeps every deployment's backup unique; a second deploy the same day must never overwrite the first's backup).
 4. **Deploy atomically (under the held lock):** copy to a temp file in the SAME directory, set owner/mode on the temp file, verify syntax, then rename over the target — never `cp` over the live path in place:
 ```bash
 cp <repo>/scripts/watchdog-backup.sh ~/workspace/neurostrata/bin/watchdog-backup.sh.new
@@ -67,7 +67,7 @@ sha256sum ~/workspace/neurostrata/bin/watchdog-backup.sh   # record for the log 
 (`mv` within one filesystem is atomic: a concurrent reader keeps the old inode instead of executing mixed content.)
 5. **Verify cron pickup:** the `neurostrata-watchdog` cron runs `bash ~/workspace/neurostrata/bin/watchdog-backup.sh` each cycle, so no cron change is needed; confirm the next run's `watchdog.log` lines reflect the new script (e.g. the on-demand log messages).
 6. **Record:** append an entry to `docs/process/watchdog-deployments.md` (date, repo git SHA, sha256sum, notes).
-7. **Rollback:** if the next run misbehaves, restore the `.bak-<date>` copy, re-verify with `bash -n`, and log the rollback in the deployments file.
+7. **Rollback:** if the next run misbehaves, restore the `.bak-<timestamp>` copy using the SAME procedure as deployment: reacquire the watchdog flock (blocking, 10-min timeout), copy the backup to a temp file in the same directory, restore owner/mode (`chown root:nogroup`, `chmod 770`), verify with `bash -n`, then atomic `mv` over the live path — never `cp` over it in place. Log the rollback in the deployments file.
 
 - [ ] **Step 3: Verify the docs change**
 

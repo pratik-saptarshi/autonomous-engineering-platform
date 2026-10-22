@@ -61,7 +61,7 @@ Delete the `gastownhall/beads` tarball block. Replace with the verified method f
 # bd is built from source (github.com/steveyegge/beads); the README's
 # CGO_ENABLED=0 recipe produces a broken embedded DB — use the default CGO build.
 # Requires Go (see Prerequisites) and gcc.
-go install github.com/steveyegge/beads/cmd/bd@latest
+go install github.com/steveyegge/beads/cmd/bd@v1.3.1
 bd --version   # bd version 1.3.1 (dev) — the (dev) suffix is expected: source build
 ```
 Keep the existing Verify line (`bd ping`, `bd init` lifecycle) — it is correct.
@@ -71,12 +71,13 @@ Keep the existing Verify line (`bd ping`, `bd init` lifecycle) — it is correct
 Delete the npm-fetch + symlink block (`@alibaba-group/ocr-linux-x64`, `~/workspace/open-code-review/`, `ln -s ... ~/workspace/bin/ocr`) — none of those paths were ever used. Replace with the verified install (verbatim):
 ```bash
 # ocr v1.13.1 (Apache-2.0): linux-amd64 binary from the alibaba/open-code-review
-# GitHub release. Verify SHA256 against the release's sha256sum.txt, then
-# install to ~/go/bin/ocr (a real binary, not a symlink).
+# GitHub release. Download with curl (a prerequisite — do NOT use gh, which is
+# not installed on a fresh VM), verify SHA256 against the release's
+# sha256sum.txt, then install to ~/go/bin/ocr (a real binary, not a symlink).
 # (Skip if ~/go/bin/ocr --version already reports v1.13.1 — installed 2026-10-16.)
 cd /tmp
-gh release download v1.13.1 --repo alibaba/open-code-review \
-  --pattern 'opencodereview-linux-amd64' --pattern 'sha256sum.txt'
+curl -L -o opencodereview-linux-amd64 https://github.com/alibaba/open-code-review/releases/download/v1.13.1/opencodereview-linux-amd64
+curl -L -o sha256sum.txt https://github.com/alibaba/open-code-review/releases/download/v1.13.1/sha256sum.txt
 sha256sum -c sha256sum.txt --ignore-missing  # must report OK for opencodereview-linux-amd64
 install -m 755 opencodereview-linux-amd64 ~/go/bin/ocr
 ~/go/bin/ocr --version  # open-code-review v1.13.1 linux/amd64
@@ -89,8 +90,11 @@ In §1, replace `mkdir -p ~/workspace/neurostrata/bin` + extract-to-there with (
 ```bash
 cd /tmp
 # neurostrata-mcp-linux-amd64.tar.gz from the v1.9.0 release
-# (https://github.com/Cognilogical/NeuroStrata); verify SHA256 against the
-# release's SHA256SUMS, then:
+# (https://github.com/Cognilogical/NeuroStrata). Download with curl,
+# verify SHA256 against the release's SHA256SUMS, then extract:
+curl -L -o neurostrata-mcp-linux-amd64.tar.gz https://github.com/Cognilogical/NeuroStrata/releases/download/v1.9.0/neurostrata-mcp-linux-amd64.tar.gz
+curl -L -o SHA256SUMS https://github.com/Cognilogical/NeuroStrata/releases/download/v1.9.0/SHA256SUMS
+sha256sum -c SHA256SUMS --ignore-missing  # must report OK for the tarball
 tar xzf neurostrata-mcp-linux-amd64.tar.gz neurostrata-mcp
 install -m 755 neurostrata-mcp ~/go/bin/neurostrata-mcp
 ~/go/bin/neurostrata-mcp --version  # neurostrata-mcp 1.9.0

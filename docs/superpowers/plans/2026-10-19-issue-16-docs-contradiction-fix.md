@@ -41,7 +41,7 @@ Expected: line 26 reads "If the daemon is down, the next MCP client spawn restar
 
 - [ ] **Step 2: Delete line 26 and bridge the paragraph**
 
-Remove the sentence "If the daemon is down, the next MCP client spawn restarts it automatically." Replace it with one sentence pointing at the verified mechanism: "If the daemon is down, restart it via the nohup command above; the watchdog cron also revives it on its next run (a bare MCP spawn does not reliably auto-start it — see Troubleshooting)."
+Remove the sentence "If the daemon is down, the next MCP client spawn restarts it automatically." Replace it with one sentence pointing at the verified mechanism: "If the daemon is down, restart it via the nohup command above (the watchdog cron does not restart it — `scripts/watchdog-backup.sh` treats a down daemon as expected idle state and exits 0; a bare MCP spawn does not reliably auto-start it — see Troubleshooting)."
 
 - [ ] **Step 3: Verify the section reads coherently**
 
