@@ -16,6 +16,7 @@ The 28 paperthin skills are distributed under the upstream MIT license; its copy
 |---|---|---|---|
 | agent_operations | humanlayer/12-factor-agents | CC BY-SA 4.0 | |
 | aim | LilMGenius/paperthin | MIT | Vendored verbatim (7d5dc62) |
+| archify | tt-a1i/archify | MIT | Vendored verbatim (25cf370); needs ARCHIFY_CHROME env for browser-check gate |
 | autobahn | LilMGenius/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | brainstorming | obra/superpowers | MIT | |
 | catchup | LilMGenius/paperthin | MIT | Vendored verbatim (7d5dc62) |

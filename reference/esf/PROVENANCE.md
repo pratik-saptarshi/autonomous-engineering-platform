@@ -1,13 +1,17 @@
 # Provenance — vendored ESF reference snapshot
 
 - **Upstream:** https://github.com/pratik-saptarshi/esf
-- **Pinned commit:** `d41535d86a13e55fe2357d9e0a108566d68ce1b9` ("Add durable sf turn executor with Cube checkpoints and permissions (#40)")
-- **Snapshot date:** 2026-10-18
+- **Pinned commit:** `804fb461068972a707628b0a3243e4db09cafb0c` ("Add qualification-gated Harness2 improvement for OpenCode2 factory runs (#43)")
+- **Snapshot date:** 2026-10-21
 - **License:** MIT (copyright 2026 Owain Lewis; fork by mitkox — see `docs/upstream.md`). `LICENSE` is preserved verbatim in this tree.
 - **Excluded from the vendor:** `.git` (history) and `bin/` (local build output).
 - **Purpose:** reference implementation for the AEP factory lane — studied and built from, not executed from here.
 
-Note: `bin/` build output is NOT vendored. The factory binaries were built locally from this exact commit during the install phase (plan Task 2) and live outside the repo at `~/workspace/repos/esf/bin/`.
+Note: `bin/` build output is NOT vendored. The factory binaries were built locally from the previous pin (d41535d) during the install phase (plan Task 2) and live outside the repo at `~/workspace/repos/esf/bin/` — rebuild from the new pin before executing.
+
+## Update history
+
+- 2026-10-21: re-vendored at `804fb46` (#43 — qualification-gated Harness2 improvement for OpenCode2 factory runs). 505 files in manifest (was 478). Secret-scan: same single synthetic fixture in `redact_test.go`, no new hits.
 
 ## Secret-scan annotation (2026-10-18)
 
