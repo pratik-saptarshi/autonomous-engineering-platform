@@ -1,8 +1,8 @@
 # Provenance — vendored ESF reference snapshot
 
 - **Upstream:** https://github.com/pratik-saptarshi/esf
-- **Pinned commit:** `804fb461068972a707628b0a3243e4db09cafb0c` ("Add qualification-gated Harness2 improvement for OpenCode2 factory runs (#43)")
-- **Snapshot date:** 2026-10-21
+- **Pinned commit:** `3f6430b` ("fix(factory): redact evidence errors in WriteInventory (#3)")
+- **Snapshot date:** 2026-10-22
 - **License:** MIT (copyright 2026 Owain Lewis; fork by mitkox — see `docs/upstream.md`). `LICENSE` is preserved verbatim in this tree.
 - **Excluded from the vendor:** `.git` (history) and `bin/` (local build output).
 - **Purpose:** reference implementation for the AEP factory lane — studied and built from, not executed from here.
