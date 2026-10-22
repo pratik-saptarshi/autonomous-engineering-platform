@@ -40,7 +40,7 @@ graph TB
     RL -->|"tracks work"| BD
 ```
 
-- [ESF reference](docs/esf-reference.md) — vendored snapshot of mitkox/esf (Engineering Software Factory) with build/verification notes.
+- [ESF reference](docs/esf-reference.md) — vendored snapshot of pratik-saptarshi/esf (Engineering Software Factory) with build/verification notes.
 
 ## Continuous loop cycle
 
@@ -83,7 +83,7 @@ Guards: at most 6 iterations per run. Three failed attempts on one task stops th
 |---|---|
 | obra/superpowers | brainstorming, dispatching-parallel-agents, executing-plans, receiving-review, requesting-review, subagent-driven-development, systematic-debugging, test-driven-development, verification-before-completion, writing-plans, writing-skills |
 | mattpocock/skills | grilling, prototype, recurring-workflows, research, teach, to-questionnaire, writing-articles, writing-for-agents |
-| Cognilogical/NeuroStrata | neurostrata_memory |
+| pratik-saptarshi/NeuroStrata | neurostrata_memory |
 | Cognilogical/NeuroPlasticity | self_test_gym |
 | Cognilogical/NeuroGenesis | neurogenesis_teams |
 | LilMGenius/paperthin | re0, readchk, aim, modelchk, hate, macrothink, feynman, autobahn, reorder, detool, dedash, debloat, shower, factchk, mandela, sip, re0-git, re0-release, re0-merge, ssotize, re0-upgrade, re0-plan, re0-loop, re0-memo, re0-work, catchup, nba, prism (see [docs/paperthin-skills.md](docs/paperthin-skills.md)) |

@@ -1,6 +1,6 @@
 # Provenance — vendored ESF reference snapshot
 
-- **Upstream:** https://github.com/mitkox/esf
+- **Upstream:** https://github.com/pratik-saptarshi/esf
 - **Pinned commit:** `804fb461068972a707628b0a3243e4db09cafb0c` ("Add qualification-gated Harness2 improvement for OpenCode2 factory runs (#43)")
 - **Snapshot date:** 2026-10-21
 - **License:** MIT (copyright 2026 Owain Lewis; fork by mitkox — see `docs/upstream.md`). `LICENSE` is preserved verbatim in this tree.
