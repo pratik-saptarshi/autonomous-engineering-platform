@@ -8,4 +8,4 @@
 useDefault = true
 [allowlist]
 description = "Synthetic fixtures in vendored ESF redaction tests"
-paths = ['''reference/esf/internal/factory/redact_test.go''']
+paths = ['''reference/esf/internal/factory/redact_test.go''', '''reference/esf/internal/factory/evidence_test.go''']

@@ -1,7 +1,7 @@
 # Provenance — vendored ESF reference snapshot
 
 - **Upstream:** https://github.com/pratik-saptarshi/esf
-- **Pinned commit:** `3f6430b` ("fix(factory): redact evidence errors in WriteInventory (#3)")
+- **Pinned commit:** `3f6430bfe3bdb1189ce91b15d378a1c404e0bb5d` ("fix(factory): redact evidence errors in WriteInventory (#3)")
 - **Snapshot date:** 2026-10-22
 - **License:** MIT (copyright 2026 Owain Lewis; fork by mitkox — see `docs/upstream.md`). `LICENSE` is preserved verbatim in this tree.
 - **Excluded from the vendor:** `.git` (history) and `bin/` (local build output).

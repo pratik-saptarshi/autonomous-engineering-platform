@@ -4,7 +4,7 @@
 
 pratik-saptarshi/esf — Engineering Software Factory: a self-hosted factory that runs coding agents in isolated CubeSandbox microVMs and verifies their changes. Pipeline: task → Temporal durable workflow → CubeSandbox microVM → coding agent → deterministic verification → patch + evidence. Deterministic gates decide factory success; agent success alone is not enough.
 
-Vendored snapshot: [PROVENANCE.md](../reference/esf/PROVENANCE.md) — upstream `https://github.com/pratik-saptarshi/esf` at `3f6430b` (2026-10-22, MIT).
+Vendored snapshot: [PROVENANCE.md](../reference/esf/PROVENANCE.md) — upstream `https://github.com/pratik-saptarshi/esf` at `3f6430bfe3bdb1189ce91b15d378a1c404e0bb5d` (2026-10-22, MIT).
 
 ## Mapping to the AEP loop
 
