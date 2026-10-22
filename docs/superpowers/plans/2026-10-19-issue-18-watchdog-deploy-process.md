@@ -47,15 +47,15 @@ Read `docs/operations.md`, find the "Watchdog and backups" section, and identify
 
 Add the subsection covering, in order:
 1. **Preconditions:** the script change is merged; CI (shell-lint) is green on it; issue #15's fail-fast guard is present (so a bad path can never silently deploy).
-2. **Serialize with the watchdog:** acquire the flock at `~/workspace/neurostrata/.watchdog.lock` and HOLD it across steps 3–4. Do not check-then-release — the check races the 2h cron. Blocking acquire with a 10-minute timeout (a normal watchdog run finishes in well under a minute):
+1. **Serialize with the watchdog:** acquire the flock at `~/workspace/neurostrata/.watchdog.lock` and HOLD it across steps 2–3. Do not check-then-release — the check races the 2h cron. Blocking acquire with a 10-minute timeout (a normal watchdog run finishes in well under a minute):
 ```bash
 exec 8>"$HOME/workspace/neurostrata/.watchdog.lock"
 flock --timeout 600 8 || { echo "FATAL: watchdog lock not acquired within 10 min (a run may be stuck — investigate with pgrep -f watchdog-backup.sh)" >&2; exit 1; }
-# fd 8 stays open through steps 3-4; the lock releases when this shell exits.
+# fd 8 stays open through steps 2-3; the lock releases when this shell exits.
 # While held, a cron-fired watchdog exits cleanly via its own `flock -n` path.
 ```
-3. **Back up the live file (under the held lock):** `cp ~/workspace/neurostrata/bin/watchdog-backup.sh ~/workspace/neurostrata/bin/watchdog-backup.sh.bak-$(date +%Y%m%d)` (rollback copy).
-4. **Deploy atomically (under the held lock):** copy to a temp file in the SAME directory, set owner/mode on the temp file, verify syntax, then rename over the target — never `cp` over the live path in place:
+2. **Back up the live file (under the held lock):** `cp ~/workspace/neurostrata/bin/watchdog-backup.sh ~/workspace/neurostrata/bin/watchdog-backup.sh.bak-$(date +%Y%m%d)` (rollback copy).
+3. **Deploy atomically (under the held lock):** copy to a temp file in the SAME directory, set owner/mode on the temp file, verify syntax, then rename over the target — never `cp` over the live path in place:
 ```bash
 cp <repo>/scripts/watchdog-backup.sh ~/workspace/neurostrata/bin/watchdog-backup.sh.new
 chown root:nogroup ~/workspace/neurostrata/bin/watchdog-backup.sh.new
