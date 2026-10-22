@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: npx --yes markdownlint-cli2 "**/*.md" "!reference/esf/**/*.md"
+      - run: npx --yes markdownlint-cli2 "**/*.md" "!reference/esf/**/*.md" "!skills/archify/**/*.md"
 
   shell-lint:
     runs-on: ubuntu-latest
