@@ -274,3 +274,5 @@ On a branch `docs/issue-21-findings` (Conventional Commits as `Musebot-Astro <62
 **3. Review Focus:** The five points cover the critical distinctions: reaper-cycle vs unclean-death separation, evidence preservation priority, the 42-byte WAL anomaly, explicit unverifiability, and correct temporal correlation.
 
 **4. Proportion:** Shorter than the original — the refuted H4 test is replaced by a leaner correlation task, and the redundant instrumentation is consolidated.
+
+> **Reconciliation note (2026-10-23):** Two corrections to the mechanism description on line 17 above (the investigation's conclusions are unaffected): (a) 'The watchdog then finds the daemon down and restarts it' — true only on the change path and no-change+unexpected path; reaped downs on the no-change path are left down (`docs/daemon-lifecycle-contract.md` § Transitions). Whether the observed 2h-grid restarts correlate with change-path runs is left as an open check for the investigation, not asserted here. (b) 'sends SIGTERM after 45 idle minutes' — the reaper uses `neurostrata-mcp shutdown` (clean checkpoint), never SIGTERM (`~/workspace/neurostrata/bin/idle-reaper.sh:18`).

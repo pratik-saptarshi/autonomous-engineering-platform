@@ -28,6 +28,8 @@
 
 ---
 
+> **Reconciliation note (2026-10-23):** This plan's daemon handling is consistent with `docs/daemon-lifecycle-contract.md` § What to do in each state (DOWN_REAPED/DOWN_UNEXPECTED → start via direct nohup when the job needs the daemon). No change to the instructed nohup command or 60s poll.
+
 ### Task 1: Verify preconditions and draft the gate preamble
 
 **Files:**
