@@ -181,3 +181,5 @@ Read the header and the on-demand comment block (the `# 1. On-demand model` sect
 git add scripts/watchdog-backup.sh
 git commit -m "docs(scripts): correct watchdog header to describe on-demand model"
 ```
+
+> **Reconciliation note (2026-10-23):** The 'expected idle state — nothing to do' language in this plan describes the REPO `scripts/watchdog-backup.sh` (lines 164-167), which is accurate for that file. The DEPLOYED script additionally restarts on DOWN_UNEXPECTED and unconditionally on the change path — see `docs/daemon-lifecycle-contract.md` § The Fork and § Transitions. This plan's fail-fast guard remains correct and necessary under both.

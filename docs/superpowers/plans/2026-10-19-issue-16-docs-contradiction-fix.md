@@ -111,3 +111,5 @@ git add -u  # only if files changed in Step 1
 git commit -m "docs: remove residual MCP auto-spawn revive claims"  # only if files changed
 ```
 If Step 1 found nothing, skip this step — no empty commit.
+
+> **Reconciliation note (2026-10-23):** The 'watchdog cron does not restart it' claim is accurate for the REPO script and for the deployed script's no-change+reaped path. It does not cover the deployed script's change-path unconditional restart — see `docs/daemon-lifecycle-contract.md` § The Fork. The plan's core correction (MCP-spawn revive is unreliable; use direct nohup) stands; the demand-path gap is now tracked in `docs/daemon-lifecycle-contract.md` § Known gaps.
