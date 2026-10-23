@@ -14,7 +14,7 @@ There are **two** watchdog scripts, and they disagree.
 | | Repo script (`repo-scripts`) | Deployed script (`deployed-bin`) |
 |---|---|---|
 | Path | `scripts/watchdog-backup.sh` (in this repo) | `~/workspace/neurostrata/bin/watchdog-backup.sh` (on the VM) |
-| Daemon-down behavior | Logs "daemon idle (on-demand model) — nothing to do", exits 0. **No restart path exists.** (`watchdog-backup.sh:164-167`) | Three-way decision + change-path restart (see §3 Transitions) |
+| Daemon-down behavior | Logs "daemon idle (on-demand model) — nothing to do", exits 0. **No restart path exists** (`watchdog-backup.sh:164-167`) — but a stop path exists: `stop_daemon()` at `:212`, valid on the change path (`:235`), non-executing on the no-change path (`:204`, see §3). | Three-way decision + change-path restart (see §3 Transitions) |
 | `reaped_expected()` | Absent — zero occurrences (`watchdog-backup.sh` grep → 0) | Present (`watchdog-backup.sh:153`) |
 | `start_daemon()` | Defined but never called (`watchdog-backup.sh:51`) — script exits 0 on daemon-down first | Present (`watchdog-backup.sh:112`) |
 | EXIT trap | Absent | Present (`watchdog-backup.sh:182`) |
@@ -122,9 +122,22 @@ Every transition names which script performs it.
 
 ### repo-scripts transitions
 
-- **None.** On daemon-down the repo script logs and exits 0
-  (`watchdog-backup.sh:164-167`). There is no start, stop, or restart path
-  in the repo script.
+- **HEALTHY → down (no-change path): defined but would not execute.** On
+  DB-unchanged, the script calls `stop_daemon` at `watchdog-backup.sh:204`
+  — before the function is defined at `:212`. With `set -euo pipefail`
+  (`:28`) this would be "command not found" → exit 127 (verified
+  empirically). The daemon would NOT be stopped; the
+  `log "done (daemon stopped, idle)"` at `:205` would never run. (The repo
+  script is not executed by any cron today, so this is analyzed behavior,
+  not an observed event. Do not remediate under this plan — see Global
+  Constraints.)
+- **HEALTHY → down (change path):** `stop_daemon || exit 0` at
+  `watchdog-backup.sh:235` — the definition at `:212` has executed by now,
+  so the call would succeed: the daemon would be SIGTERM-stopped (30s
+  timeout loop, `:212-233`) before the backup copy.
+- **DOWN (any reason) → no restart:** on daemon-down the script logs and
+  exits 0 (`watchdog-backup.sh:164-167`). No restart path exists in the
+  repo script.
 
 ### Out-of-band transitions (neither script)
 
