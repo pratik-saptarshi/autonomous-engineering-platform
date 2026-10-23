@@ -250,19 +250,19 @@ would close it. None of these are blessed; all are open.
 
 ## 7. Refresh trigger
 
-This contract rots the moment either script changes without a contract
-update. The trigger has a mechanism, not just a paragraph.
+**manual, best-effort** — re-verify the cited file:line references against
+both scripts on any watchdog-related change. This contract rots the moment
+either script changes without a contract update, and no automated check
+exists today: the 2h watchdog cron was not modified to log script hashes
+(out of scope for this docs PR), so there is no CONTRACT STALE alert. A
+future change may add the hash check described below; until then, this
+trigger is honest about being manual. No owner is assigned to the
+re-verification — it happens when someone touches watchdog-related code
+and remembers to check.
 
-**Primary mechanism:** add a script-hash check to the existing 2h watchdog
-cron. Each run logs `sha256sum` of both scripts
+*Proposed mechanism (not implemented):* add a script-hash check to the
+existing 2h watchdog cron. Each run would log `sha256sum` of both scripts
 (`~/workspace/neurostrata/bin/watchdog-backup.sh` and the repo
 `scripts/watchdog-backup.sh`); on hash change, log an alert line
 (`CONTRACT STALE: watchdog script changed — re-verify
-docs/daemon-lifecycle-contract.md`). The alert is greppable in
-`watchdog.log` by the same monitoring that watches the cron.
-
-**Fallback:** if the cron cannot be modified (permissions), this section must
-be edited to read "**manual, best-effort** — re-verify the cited file:line
-references against both scripts on any watchdog-related change" and the
-commit message must say so. A silent unwired trigger is worse than an
-honest manual one.
+docs/daemon-lifecycle-contract.md`).
