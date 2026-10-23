@@ -158,10 +158,15 @@ Every transition names which script performs it.
 
 **Lockless-nohup race note.** The boot-gate's nohup path takes no lock. A
 start landing between the watchdog's change-path SIGTERM-stop
-(`watchdog-backup.sh:236`) and its backup copy corrupts the backup: the copy
-then fails checksum verification, is deleted, and the run exits 1
-(`watchdog-backup.sh` copy-verify logic) — contained, but the backup is lost
-for that run. Mitigation today: none automated; the race window is seconds
+(`watchdog-backup.sh:236`) and its backup copy can corrupt the backup. The
+copy-verify logic (`watchdog-backup.sh:255-261`) catches torn copies (partial
+write during `cp` → hash mismatch → deleted, exit 1), but it verifies copy ==
+source-at-hash-time, not source consistency: a write landing after the copy,
+or WAL-only writes not in the copied `$DB` file, would produce a
+checksum-passing but stale or inconsistent backup. The race is therefore NOT
+contained — the worst case is a bad backup that looks good, not a failed run.
+(These are worst-case analyses of the mechanism, not observed events.)
+Mitigation today: none automated; the race window is seconds
 per 2h cycle. The contract records it; closing it (lock the nohup path, or
 re-check daemon state after acquiring the watchdog lock) is follow-up work.
 
