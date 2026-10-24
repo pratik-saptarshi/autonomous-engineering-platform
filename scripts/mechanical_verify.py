@@ -258,10 +258,20 @@ def run_verification(
         try:
             proc.wait(timeout=TERM_GRACE_SECONDS)
         except subprocess.TimeoutExpired:
+            pass
+        # Escalate even when the leader already exited: a descendant
+        # that ignored SIGTERM can outlive it while still holding the
+        # process group (and the worktree). SIGKILL whatever remains.
+        try:
+            os.killpg(proc.pid, 0)
+        except OSError:
+            pass
+        else:
             try:
                 os.killpg(proc.pid, signal.SIGKILL)
             except OSError:
                 pass
+        if proc.returncode is None:
             proc.wait()
     for thread in threads:
         thread.join(timeout=5)

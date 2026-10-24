@@ -3,9 +3,11 @@ import io
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -137,6 +139,16 @@ class DiscoveryTests(unittest.TestCase):
             self.assertEqual(discover_verification_commands(Path(tmp)), ())
 
 
+def _pid_dead(pid: int) -> bool:
+    """Gone entirely, or a zombie (dead, awaiting reaping by init)."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return True
+    state = stat.rsplit(")", 1)[1].split()[0]
+    return state == "Z"
+
+
 class RunVerificationTests(unittest.TestCase):
     def test_run_captures_pass_and_exit_code(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -159,6 +171,50 @@ class RunVerificationTests(unittest.TestCase):
             self.assertFalse(result.passed)
             self.assertNotIn(result.exit_code, (None, 0))
             self.assertLess(result.duration_ms, 3000)
+
+    def test_timeout_kills_sigterm_ignoring_descendant(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            marker = root / "child.pid"
+            child_src = (
+                "import os, signal, sys, time\n"
+                "from pathlib import Path\n"
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                "Path(sys.argv[1]).write_text(str(os.getpid()))\n"
+                "time.sleep(60)\n"
+            )
+            parent_src = (
+                "import subprocess, sys, time\n"
+                "subprocess.Popen([sys.executable, '-c', "
+                + repr(child_src)
+                + ", sys.argv[1]])\n"
+                "time.sleep(60)\n"
+            )
+            result = run_verification(
+                root,
+                VerificationCommand(
+                    "t",
+                    "t",
+                    (sys.executable, "-c", parent_src, str(marker)),
+                ),
+                timeout_seconds=1,
+            )
+            self.assertTrue(result.timed_out)
+            child_pid = int(marker.read_text())
+            try:
+                # The leader dies on SIGTERM (default handler); the child
+                # ignores it. The verifier's post-grace escalation must
+                # still SIGKILL the group.
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline and not _pid_dead(child_pid):
+                    time.sleep(0.05)
+                self.assertTrue(
+                    _pid_dead(child_pid),
+                    f"SIGTERM-ignoring descendant {child_pid} survived",
+                )
+            finally:
+                if not _pid_dead(child_pid):
+                    os.kill(child_pid, signal.SIGKILL)
 
     def test_run_caps_output_at_65536_bytes(self):
         with tempfile.TemporaryDirectory() as tmp:
