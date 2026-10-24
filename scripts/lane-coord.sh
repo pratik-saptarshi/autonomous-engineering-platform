@@ -59,6 +59,23 @@ print(value)
 ' "$1" "$2"
 }
 
+# manifest_epoch_state <file> — print "<epoch> <state>" from a SINGLE
+# parse, so the two values can never be observed across a concurrent
+# rewrite of the manifest.
+manifest_epoch_state() {
+  python3 -c '
+import json, sys
+try:
+    with open(sys.argv[1]) as fh:
+        data = json.load(fh)
+except Exception:
+    sys.exit(1)
+if data.get("epoch") is None or data.get("state") is None:
+    sys.exit(1)
+print(data["epoch"], data["state"])
+' "$1"
+}
+
 # write_manifest <name> <repo> <path> <branch> <base> <worker> <pid> <epoch> <state> <claimed_at>
 write_manifest() {
   local name="$1" repo="$2" path="$3" branch="$4" base="$5" worker="$6"
@@ -232,23 +249,27 @@ cmd_claim() {
 
   mkdir -p "$LANES_DIR" "$WT_ROOT"
 
-  # Previous claim bookkeeping (read before the settle pass rewrites it).
   local prev_exists=0 prev_epoch=0 prev_state=""
-  if [ -f "$manifest_file" ]; then
-    if prev_epoch=$(manifest_get "$manifest_file" epoch 2>/dev/null) &&
-      prev_state=$(manifest_get "$manifest_file" state 2>/dev/null); then
-      prev_exists=1
-    else
-      prev_epoch=0
-      prev_state=""
-    fi
-  fi
 
   # --- Claim transaction, under the capacity lock ---
   exec 9>"$LANES_DIR/.capacity.lock"
   if ! flock -w 60 9; then
     echo "LANE: lock timeout after 60s waiting for the capacity lock"
     exit 5
+  fi
+
+  # Previous-claim snapshot: taken only AFTER the capacity lock is held,
+  # in a single parse, and before the step-1 settle pass rewrites this
+  # lane's manifest — so epoch and state are always one consistent
+  # observation of the previous claim, never a torn pair straddling
+  # another lane's settle or a standalone release.
+  if [ -f "$manifest_file" ]; then
+    local prev_snap
+    if prev_snap=$(manifest_epoch_state "$manifest_file" 2>/dev/null); then
+      prev_epoch="${prev_snap%% *}"
+      prev_state="${prev_snap##* }"
+      prev_exists=1
+    fi
   fi
 
   # 1. Auto-settle stale claims: a claimed manifest whose fence probes
@@ -369,6 +390,17 @@ cmd_release() {
   if [ -z "$name" ]; then usage; exit 2; fi
   if ! [[ "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then usage; exit 2; fi
 
+  # Serialize against claim transactions: the fence probe, the state
+  # check, and the manifest update below all run under the capacity
+  # lock, so a claim can never interleave between probe and write and
+  # have its fresh "claimed" manifest clobbered to "released".
+  mkdir -p "$LANES_DIR"
+  exec 9>"$LANES_DIR/.capacity.lock"
+  if ! flock -w 60 9; then
+    echo "LANE: lock timeout after 60s waiting for the capacity lock"
+    exit 5
+  fi
+
   local manifest_file="$LANES_DIR/$name.json"
   if [ ! -f "$manifest_file" ]; then
     echo "LANE: refuse release $name: no manifest"
@@ -483,6 +515,16 @@ self_test() {
       "$LANES_DIR/$1.json" "$2" 2>/dev/null || true
   }
 
+  wait_for_claimed() { # $1 = lane name, $2 = epoch — poll until that claim is live
+    local i=0
+    while [ $i -lt 50 ]; do
+      if [ "$(mget "$1" epoch)" = "$2" ] && [ "$(mget "$1" state)" = "claimed" ]; then return 0; fi
+      sleep 0.1
+      i=$((i + 1))
+    done
+    return 1
+  }
+
   report_case() { # $1 = case label
     if [ "$case_fails" -eq 0 ]; then
       echo "SELF-TEST: $1 ok"
@@ -540,6 +582,36 @@ self_test() {
   [ "$rc3" -eq 0 ] || case_fails=1
   [ "$rc3b" -eq 0 ] || case_fails=1
   [ "$(mget gamma-three epoch)" = "2" ] || case_fails=1
+  # Extension: standalone release serializes under the capacity lock.
+  # Leave a claimed manifest with a free fence (signal the launcher, as
+  # in case 4), then hold the capacity lock in the test itself: a
+  # release launched with the test's lock fd closed must stay blocked
+  # and change nothing until the lock is dropped, then succeed.
+  local out3c="$selftest_root/out3c.txt" out3r="$selftest_root/out3r.txt" rc3r=0
+  bash "$self_path" claim --repo "$repo" --project gamma --lane three \
+    --branch br-three --base HEAD --worker w3 \
+    --exec sleep 10 >"$out3c" 2>&1 &
+  local launcher3c=$!
+  BG_PIDS+=("$launcher3c")
+  wait_for_claimed "gamma-three" 3 || case_fails=1
+  kill "$launcher3c" 2>/dev/null || true
+  wait "$launcher3c" 2>/dev/null || true
+  sleep 0.2
+  [ "$(mget gamma-three state)" = "claimed" ] || case_fails=1
+  exec 7>"$LANES_DIR/.capacity.lock"
+  flock 7 || case_fails=1
+  bash "$self_path" release --name gamma-three >"$out3r" 2>&1 7>&- &
+  local release3_pid=$!
+  BG_PIDS+=("$release3_pid")
+  sleep 1
+  kill -0 "$release3_pid" 2>/dev/null || case_fails=1
+  [ "$(mget gamma-three state)" = "claimed" ] || case_fails=1
+  flock -u 7 || true
+  exec 7>&-
+  wait "$release3_pid" || rc3r=$?
+  [ "$rc3r" -eq 0 ] || case_fails=1
+  grep -q "LANE: released gamma-three" "$out3r" || case_fails=1
+  [ "$(mget gamma-three state)" = "released" ] || case_fails=1
   report_case "release-frees-fence"
 
   # --- Case 4: stale-claim-auto-settles ---
@@ -568,6 +640,43 @@ self_test() {
     kill -0 "$worker_a_pid" 2>/dev/null || case_fails=1
     kill "$worker_a_pid" 2>/dev/null || true
   fi
+  # Extension: the previous-claim snapshot is taken under the capacity
+  # lock. Leave lane delta-c claimed with a free fence, hold the lock
+  # in the test, and launch the takeover claim with the test's lock fd
+  # closed so it blocks on the lock. While it is blocked, flip
+  # delta-c's manifest claimed -> released (what a concurrent settle or
+  # standalone release would do). After the lock drops, the claim's
+  # snapshot must observe "released": no settled-interrupted note, and
+  # the epoch still advances to 2. A pre-lock snapshot would have seen
+  # "claimed" and printed the note spuriously.
+  local out4c="$selftest_root/out4c.txt" out4d="$selftest_root/out4d.txt" rc4d=0
+  bash "$self_path" claim --repo "$repo" --project delta --lane c \
+    --branch br-four-c --base HEAD --worker wc \
+    --exec sleep 10 >"$out4c" 2>&1 &
+  local launcher4c=$!
+  BG_PIDS+=("$launcher4c")
+  wait_for_claimed "delta-c" 1 || case_fails=1
+  kill "$launcher4c" 2>/dev/null || true
+  wait "$launcher4c" 2>/dev/null || true
+  sleep 0.2
+  [ "$(mget delta-c state)" = "claimed" ] || case_fails=1
+  exec 7>"$LANES_DIR/.capacity.lock"
+  flock 7 || case_fails=1
+  bash "$self_path" claim --repo "$repo" --project delta --lane c \
+    --branch br-four-c --base HEAD --worker wc2 \
+    --exec true >"$out4d" 2>&1 7>&- &
+  local takeover4_pid=$!
+  BG_PIDS+=("$takeover4_pid")
+  sleep 1
+  kill -0 "$takeover4_pid" 2>/dev/null || case_fails=1
+  python3 -c 'import json, sys; p = sys.argv[1]; d = json.load(open(p)); d["state"] = "released"; json.dump(d, open(p, "w"))' \
+    "$LANES_DIR/delta-c.json" || case_fails=1
+  flock -u 7 || true
+  exec 7>&-
+  wait "$takeover4_pid" || rc4d=$?
+  [ "$rc4d" -eq 0 ] || case_fails=1
+  if grep -q "LANE: note previous claim on delta-c" "$out4d"; then case_fails=1; fi
+  [ "$(mget delta-c epoch)" = "2" ] || case_fails=1
   report_case "stale-claim-auto-settles"
 
   # --- Case 5: capacity-blocks-second-lane ---
