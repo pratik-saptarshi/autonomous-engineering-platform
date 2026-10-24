@@ -21,6 +21,17 @@
 #     inside the lock) so arbitrary path characters round-trip
 #     exactly, and read back only via python3 JSON parsing — never
 #     grep.
+#   * The manifest also records the spawned worker's pid and /proc
+#     start time. A free fence proves only that the LAUNCHER died —
+#     the worker is spawned with the fence closed precisely so it
+#     can outlive the launcher — so a takeover claim and
+#     release --clean additionally require the previously recorded
+#     worker to be gone: pid dead, or pid recycled (same pid, a
+#     different start time). A still-running recorded worker refuses
+#     both, naming the pid; a previous interrupted claim that
+#     recorded no worker cannot prove its worker stopped and also
+#     refuses. kill -0 is used as an existence probe only — nothing
+#     is signalled, here or anywhere in operational code.
 #   * Launch-point controls: every claim loads and validates the
 #     launch policy data (scripts/policy.data, sibling of this script;
 #     AEP_POLICY_DATA overrides it for tests) before any state changes.
@@ -86,13 +97,16 @@ print(data["epoch"], data["state"])
 ' "$1"
 }
 
-# write_manifest <name> <repo> <path> <branch> <base> <worker> <pid> <epoch> <state> <claimed_at>
+# write_manifest <name> <repo> <path> <branch> <base> <worker> <pid> <epoch> <state> <claimed_at> <worker-pid> <worker-start>
 # Fields are serialized by python3's JSON encoder — never printf
 # interpolation — so paths containing quotes, backslashes, or control
-# characters round-trip exactly through the JSON readers.
+# characters round-trip exactly through the JSON readers. worker-pid /
+# worker-start are 0 until the launcher records the spawned worker's
+# identity (update_manifest_worker).
 write_manifest() {
   local name="$1" repo="$2" path="$3" branch="$4" base="$5" worker="$6"
   local pid="$7" epoch="$8" state="$9" claimed_at="${10}"
+  local wpid="${11}" wstart="${12}"
   local tmp="$LANES_DIR/$name.json.tmp.$$"
   python3 -c '
 import json, sys
@@ -110,11 +124,13 @@ data = {
     "state": sys.argv[10],
     "claimed_at": sys.argv[11],
     "updated_at": sys.argv[12],
+    "worker_pid": int(sys.argv[13]),
+    "worker_start": int(sys.argv[14]),
 }
 with open(sys.argv[1], "w") as fh:
     fh.write(json.dumps(data) + "\n")
 ' "$tmp" "$name" "$repo" "$path" "$branch" "$base" "$worker" "$pid" "$epoch" \
-    "$state" "$claimed_at" "$(now_iso)"
+    "$state" "$claimed_at" "$(now_iso)" "$wpid" "$wstart"
   mv "$tmp" "$LANES_DIR/$name.json"
 }
 
@@ -122,7 +138,7 @@ with open(sys.argv[1], "w") as fh:
 # new state and a fresh updated_at, preserving every other field.
 update_manifest_state() {
   local name="$1" new_state="$2" file="$LANES_DIR/$1.json"
-  local repo path branch base worker pid epoch claimed_at
+  local repo path branch base worker pid epoch claimed_at wpid wstart
   repo=$(manifest_get "$file" repo) || return 1
   path=$(manifest_get "$file" path) || return 1
   branch=$(manifest_get "$file" branch) || return 1
@@ -131,8 +147,100 @@ update_manifest_state() {
   pid=$(manifest_get "$file" launcher_pid) || return 1
   epoch=$(manifest_get "$file" epoch) || return 1
   claimed_at=$(manifest_get "$file" claimed_at) || return 1
+  wpid=$(manifest_get "$file" worker_pid 2>/dev/null || echo 0)
+  wstart=$(manifest_get "$file" worker_start 2>/dev/null || echo 0)
   write_manifest "$name" "$repo" "$path" "$branch" "$base" "$worker" \
-    "$pid" "$epoch" "$new_state" "$claimed_at"
+    "$pid" "$epoch" "$new_state" "$claimed_at" "$wpid" "$wstart"
+}
+
+# update_manifest_worker <name> <worker-pid> <worker-start> — record the
+# spawned worker's identity, preserving every other field. Written by
+# the launcher right after the spawn, outside the capacity lock like
+# the post-worker state update (temp file + mv either way, so readers
+# never observe a torn manifest).
+update_manifest_worker() {
+  local name="$1" wpid="$2" wstart="$3" file="$LANES_DIR/$1.json"
+  local repo path branch base worker pid epoch state claimed_at
+  repo=$(manifest_get "$file" repo) || return 1
+  path=$(manifest_get "$file" path) || return 1
+  branch=$(manifest_get "$file" branch) || return 1
+  base=$(manifest_get "$file" base) || return 1
+  worker=$(manifest_get "$file" worker) || return 1
+  pid=$(manifest_get "$file" launcher_pid) || return 1
+  epoch=$(manifest_get "$file" epoch) || return 1
+  state=$(manifest_get "$file" state) || return 1
+  claimed_at=$(manifest_get "$file" claimed_at) || return 1
+  write_manifest "$name" "$repo" "$path" "$branch" "$base" "$worker" \
+    "$pid" "$epoch" "$state" "$claimed_at" "$wpid" "$wstart"
+}
+
+# proc_start_time <pid> — print the process's start time
+# (/proc/<pid>/stat field 22, jiffies since boot), or nothing when
+# unreadable. A pid alone does not identify a process across
+# recycling; pid + start time does.
+proc_start_time() {
+  python3 -c '
+import sys
+try:
+    with open("/proc/" + sys.argv[1] + "/stat", "rb") as fh:
+        raw = fh.read()
+except OSError:
+    sys.exit(1)
+rest = raw[raw.rfind(b")") + 2:].split()
+if len(rest) <= 19:
+    sys.exit(1)
+print(rest[19].decode())
+' "$1" 2>/dev/null || true
+}
+
+# proc_state_start <pid> — print "<state> <start-time>" from
+# /proc/<pid>/stat (fields 3 and 22), or nothing when unreadable.
+proc_state_start() {
+  python3 -c '
+import sys
+try:
+    with open("/proc/" + sys.argv[1] + "/stat", "rb") as fh:
+        raw = fh.read()
+except OSError:
+    sys.exit(1)
+rest = raw[raw.rfind(b")") + 2:].split()
+if len(rest) <= 19:
+    sys.exit(1)
+print(rest[0].decode(), rest[19].decode())
+' "$1" 2>/dev/null || true
+}
+
+# recorded_worker_alive <worker-pid> <worker-start> — true when the
+# recorded worker process is still running: the pid exists, is not a
+# zombie (a zombie has exited — it cannot run or write, whatever its
+# parent has or has not reaped), AND its start time matches the
+# recorded one. A live pid with a DIFFERENT start time is a recycled
+# pid — the recorded worker is gone. A live pid whose start time was
+# never recorded (0) cannot be distinguished from the recorded
+# worker, so it is treated conservatively as alive. kill -0 is an
+# existence probe only; nothing is signalled.
+recorded_worker_alive() {
+  local wp="$1" ws="$2" ss cur_state cur_start
+  if [ -z "$wp" ] || [ "$wp" = "0" ]; then
+    return 1
+  fi
+  kill -0 "$wp" 2>/dev/null || return 1
+  ss=$(proc_state_start "$wp")
+  if [ -z "$ss" ]; then
+    # Died (or became unreadable) between the probe and the read:
+    # re-probe once before deciding.
+    kill -0 "$wp" 2>/dev/null || return 1
+    return 0
+  fi
+  cur_state="${ss%% *}"
+  cur_start="${ss##* }"
+  if [ "$cur_state" = "Z" ]; then
+    return 1
+  fi
+  if [ -z "$ws" ] || [ "$ws" = "0" ]; then
+    return 0
+  fi
+  [ "$cur_start" = "$ws" ]
 }
 
 history_append() { # $1 = name, $2 = event, $3 = epoch, $4 = worker
@@ -500,6 +608,7 @@ cmd_claim() {
   mkdir -p "$LANES_DIR" "$WT_ROOT"
 
   local prev_exists=0 prev_epoch=0 prev_state="" prev_path=""
+  local prev_worker="" prev_worker_pid=0 prev_worker_start=0
 
   # --- Claim transaction, under the capacity lock ---
   exec 9>"$LANES_DIR/.capacity.lock"
@@ -520,6 +629,9 @@ cmd_claim() {
       prev_state="${prev_snap##* }"
       prev_exists=1
       prev_path=$(manifest_get "$manifest_file" path 2>/dev/null || true)
+      prev_worker=$(manifest_get "$manifest_file" worker 2>/dev/null || echo unknown)
+      prev_worker_pid=$(manifest_get "$manifest_file" worker_pid 2>/dev/null || echo 0)
+      prev_worker_start=$(manifest_get "$manifest_file" worker_start 2>/dev/null || echo 0)
     fi
   fi
 
@@ -558,6 +670,28 @@ cmd_claim() {
   if flock -n "$fence_file" true 2>/dev/null; then
     echo "LANE: fence verification failed for $name"
     exit 1
+  fi
+
+  # 3b. Worker-lifetime gate: holding the fence proves the previous
+  #     launcher is dead; it says nothing about the previous WORKER,
+  #     which runs with the fence closed and can outlive its
+  #     launcher. Reusing this lane's worktree while that worker
+  #     still runs would put two workers in one worktree, so require
+  #     the recorded worker to be gone first. A previous interrupted
+  #     claim (claimed/reaped) that recorded no worker cannot prove
+  #     its worker stopped either — refuse conservatively.
+  if [ "$prev_exists" -eq 1 ]; then
+    if [ "$prev_worker_pid" != "0" ]; then
+      if recorded_worker_alive "$prev_worker_pid" "$prev_worker_start"; then
+        echo "LANE: refuse $name: previous worker $prev_worker_pid still running (epoch $prev_epoch); worktree may still be in use"
+        history_append "$name" "takeover-refused" "$prev_epoch" "$prev_worker"
+        exit 1
+      fi
+    elif [ "$prev_state" = "claimed" ] || [ "$prev_state" = "reaped" ]; then
+      echo "LANE: refuse $name: previous claim at epoch $prev_epoch recorded no worker; cannot prove its worker stopped"
+      history_append "$name" "takeover-refused" "$prev_epoch" "$prev_worker"
+      exit 1
+    fi
   fi
 
   # 4. Takeover bookkeeping: epoch is monotonic per lane.
@@ -607,7 +741,7 @@ cmd_claim() {
 
   # 6. Write the manifest (temp + mv, inside the lock) and history.
   write_manifest "$name" "$repo" "$wt_path" "$branch" "$base_sha" "$worker" \
-    "$$" "$epoch" "claimed" "$(now_iso)"
+    "$$" "$epoch" "claimed" "$(now_iso)" 0 0
   history_append "$name" "claimed" "$epoch" "$worker"
 
   # Release the capacity lock — the transaction is over.
@@ -663,19 +797,22 @@ cmd_claim() {
   # --- Worker spawn: child process, fence/capacity fds closed ---
   echo "LANE: claimed $name path=$wt_path branch=$branch epoch=$epoch"
   cd "$wt_path" || claim_setup_failed "$name"
-  local worker_status=0
+  local worker_status=0 worker_pid=0
   if [ "${AEP_LANE_FULL_ENV:-}" = "1" ]; then
     # Opt-out is loud, never silent: the warning goes to stderr on
     # every launch and the worker receives the full environment.
     echo "LANE: warning AEP_LANE_FULL_ENV=1: worker receives the full environment (credential scrub disabled)" >&2
-    "${worker_cmd[@]}" 8>&- 9>&- || worker_status=$?
+    "${worker_cmd[@]}" 8>&- 9>&- &
+    worker_pid=$!
   else
     # Env sanitization applies to the worker child only: the scrub
     # runs in the subshell wrapping the spawn, so the launcher keeps
     # its own environment for its bookkeeping. The subshell closes the
     # fence/capacity fds itself first — otherwise it would hold the
     # fence open as an orphan after the launcher dies, defeating the
-    # fence-lifetime contract above.
+    # fence-lifetime contract above. The subshell EXECS the worker, so
+    # the pid recorded below is the worker process itself, never a
+    # wrapper that could exit while the worker runs on.
     (
       exec 8>&- 9>&-
       while IFS= read -r scrub_var; do
@@ -683,9 +820,18 @@ cmd_claim() {
           unset "$scrub_var"
         fi
       done < <(compgen -e)
-      "${worker_cmd[@]}" 8>&- 9>&-
-    ) || worker_status=$?
+      exec "${worker_cmd[@]}" 8>&- 9>&-
+    ) &
+    worker_pid=$!
   fi
+  # Record the worker's identity in the manifest before waiting on
+  # it: pid + /proc start time, the pair that identifies this exact
+  # process across pid recycling. A worker that already exited leaves
+  # start 0, which readers treat conservatively.
+  local worker_start
+  worker_start=$(proc_start_time "$worker_pid")
+  update_manifest_worker "$name" "$worker_pid" "${worker_start:-0}" || true
+  wait "$worker_pid" || worker_status=$?
 
   update_manifest_state "$name" "released" || true
   history_append "$name" "released" "$epoch" "$worker"
@@ -827,6 +973,27 @@ cmd_release() {
     fi
     c_epoch=$(manifest_get "$manifest_file" epoch 2>/dev/null || echo 0)
     c_worker=$(manifest_get "$manifest_file" worker 2>/dev/null || echo unknown)
+
+    # Worker-lifetime precondition (with the fence/state checks
+    # above): removal is licensed only when the recorded worker is
+    # gone. A launcher that died mid-claim can leave an orphaned
+    # worker writing in the worktree, and a "released" state written
+    # by a standalone release does not prove that worker stopped —
+    # the recorded pid is checked whatever the state. An interrupted
+    # claim (state claimed) that recorded no worker cannot prove its
+    # worker stopped either.
+    local c_worker_pid c_worker_start
+    c_worker_pid=$(manifest_get "$manifest_file" worker_pid 2>/dev/null || echo 0)
+    c_worker_start=$(manifest_get "$manifest_file" worker_start 2>/dev/null || echo 0)
+    if [ "$c_worker_pid" != "0" ]; then
+      if recorded_worker_alive "$c_worker_pid" "$c_worker_start"; then
+        echo "LANE: refuse clean $name: worker $c_worker_pid still running (epoch $c_epoch); worktree may still be in use"
+        exit 1
+      fi
+    elif [ "$c_state" = "claimed" ]; then
+      echo "LANE: refuse clean $name: interrupted claim recorded no worker; cannot prove its worker stopped"
+      exit 1
+    fi
 
     # Signal 1: the manifest exists and its repo/path/branch name
     # this lane.
@@ -1019,6 +1186,34 @@ self_test() {
     return 1
   }
 
+  wait_for_pid_dead() { # $1 = pid — poll until the pid is gone or a
+    # zombie (a zombie has exited; its parent just has not reaped it,
+    # and kill -0 alone would keep succeeding on it).
+    local i=0 pstate
+    while [ $i -lt 50 ]; do
+      kill -0 "$1" 2>/dev/null || return 0
+      pstate=$(python3 -c 'import sys; print(open("/proc/" + sys.argv[1] + "/stat").read().rsplit(")", 1)[1].split()[0])' "$1" 2>/dev/null || echo "?")
+      if [ "$pstate" = "Z" ]; then return 0; fi
+      sleep 0.1
+      i=$((i + 1))
+    done
+    return 1
+  }
+
+  wait_for_worker_record() { # $1 = lane name, $2 = worker pid — poll until
+    # the manifest records that worker. The launcher writes the record
+    # just after the spawn; killing it before the record lands would
+    # leave an interrupted claim that recorded no worker, which the
+    # worker-lifetime gate refuses conservatively.
+    local i=0
+    while [ $i -lt 50 ]; do
+      if [ "$(mget "$1" worker_pid)" = "$2" ]; then return 0; fi
+      sleep 0.1
+      i=$((i + 1))
+    done
+    return 1
+  }
+
   mget() { # $1 = lane name, $2 = field
     python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' \
       "$LANES_DIR/$1.json" "$2" 2>/dev/null || true
@@ -1161,12 +1356,25 @@ self_test() {
   local out4c="$selftest_root/out4c.txt" out4d="$selftest_root/out4d.txt" rc4d=0
   bash "$self_path" claim --repo "$repo" --project delta --lane c \
     --branch br-four-c --base HEAD --worker wc \
-    --exec sleep 10 >"$out4c" 2>&1 &
+    --exec sh -c "echo \$\$ > $selftest_root/worker-c.pid; exec sleep 10" >"$out4c" 2>&1 &
   local launcher4c=$!
   BG_PIDS+=("$launcher4c")
   wait_for_claimed "delta-c" 1 || case_fails=1
+  wait_for_file "$selftest_root/worker-c.pid" || case_fails=1
+  local worker_c_pid=""
+  worker_c_pid=$(cat "$selftest_root/worker-c.pid" 2>/dev/null || true)
+  if [ -n "$worker_c_pid" ]; then
+    wait_for_worker_record "delta-c" "$worker_c_pid" || case_fails=1
+  fi
   kill "$launcher4c" 2>/dev/null || true
   wait "$launcher4c" 2>/dev/null || true
+  # The orphaned worker must also be gone before the takeover below
+  # is licensed (worker-lifetime gate, case 22); kill it while the
+  # takeover is still blocked on the lock.
+  if [ -n "$worker_c_pid" ]; then
+    kill "$worker_c_pid" 2>/dev/null || true
+    wait_for_pid_dead "$worker_c_pid" || case_fails=1
+  fi
   sleep 0.2
   [ "$(mget delta-c state)" = "claimed" ] || case_fails=1
   exec 7>"$LANES_DIR/.capacity.lock"
@@ -1319,12 +1527,24 @@ self_test() {
   local out13a="$selftest_root/out13a.txt" out13b="$selftest_root/out13b.txt" rc13b=0
   bash "$self_path" claim --repo "$repo" --project iota --lane thirteen \
     --branch br-thirteen --base HEAD --worker w13 \
-    --exec sleep 30 >"$out13a" 2>&1 &
+    --exec sh -c "echo \$\$ > $selftest_root/worker-13.pid; exec sleep 30" >"$out13a" 2>&1 &
   local launcher13=$!
   BG_PIDS+=("$launcher13")
   wait_for_claimed "iota-thirteen" 1 || case_fails=1
+  wait_for_file "$selftest_root/worker-13.pid" || case_fails=1
+  local worker_13_pid=""
+  worker_13_pid=$(cat "$selftest_root/worker-13.pid" 2>/dev/null || true)
+  if [ -n "$worker_13_pid" ]; then
+    wait_for_worker_record "iota-thirteen" "$worker_13_pid" || case_fails=1
+  fi
   kill "$launcher13" 2>/dev/null || true
   wait "$launcher13" 2>/dev/null || true
+  # Takeover is licensed only once the orphaned worker is also gone
+  # (worker-lifetime gate, case 22) — kill it too.
+  if [ -n "$worker_13_pid" ]; then
+    kill "$worker_13_pid" 2>/dev/null || true
+    wait_for_pid_dead "$worker_13_pid" || case_fails=1
+  fi
   sleep 0.2
   bash "$self_path" claim --repo "$repo" --project iota --lane thirteen \
     --branch br-thirteen --base HEAD --worker w13b \
@@ -1355,10 +1575,16 @@ self_test() {
   local out15b="$selftest_root/out15b.txt"
   bash "$self_path" claim --repo "$repo" --project iota --lane fifteen \
     --branch br-fifteen --base HEAD --worker w15 \
-    --exec sleep 30 >"$out15" 2>&1 &
+    --exec sh -c "echo \$\$ > $selftest_root/worker-15.pid; exec sleep 30" >"$out15" 2>&1 &
   local launcher15=$!
   BG_PIDS+=("$launcher15")
   wait_for_claimed "iota-fifteen" 1 || case_fails=1
+  wait_for_file "$selftest_root/worker-15.pid" || case_fails=1
+  local worker_15_pid=""
+  worker_15_pid=$(cat "$selftest_root/worker-15.pid" 2>/dev/null || true)
+  if [ -n "$worker_15_pid" ]; then
+    wait_for_worker_record "iota-fifteen" "$worker_15_pid" || case_fails=1
+  fi
   kill "$launcher15" 2>/dev/null || true
   wait "$launcher15" 2>/dev/null || true
   sleep 0.2
@@ -1368,6 +1594,12 @@ self_test() {
   [ "$(mget iota-fifteen state)" = "reaped" ] || case_fails=1
   grep -q " settled-interrupted epoch=1 worker=w15" "$LANES_DIR/iota-fifteen.log" || case_fails=1
   grep -q " reaped epoch=1 worker=w15" "$LANES_DIR/iota-fifteen.log" || case_fails=1
+  # The re-claim below is a takeover: licensed only once the orphaned
+  # worker is gone too (worker-lifetime gate, case 22).
+  if [ -n "$worker_15_pid" ]; then
+    kill "$worker_15_pid" 2>/dev/null || true
+    wait_for_pid_dead "$worker_15_pid" || case_fails=1
+  fi
   bash "$self_path" claim --repo "$repo" --project iota --lane fifteen \
     --branch br-fifteen --base HEAD --worker w15b \
     --exec true >"$out15b" 2>&1 || rc15b=$?
@@ -1518,6 +1750,56 @@ json.dump(data, open(sys.argv[1], "w"))
   [ "$rc21r" -eq 0 ] || case_fails=1
   grep -q "LANE: released xi-twentyone" "$out21r" || case_fails=1
   report_case "manifest-json-escapes-paths"
+
+  # --- Case 22: takeover-refused-while-worker-lives ---
+  # The fence proves the launcher died; it does not prove the worker
+  # stopped — the worker runs with the fence closed and outlives the
+  # launcher. Kill ONLY the launcher of a lane whose worker keeps
+  # writing a heartbeat into the worktree: release --clean must
+  # refuse and a takeover claim must refuse, both naming the live
+  # worker pid, and only once the worker has exited may the takeover
+  # proceed.
+  local out22a="$selftest_root/out22a.txt" out22b="$selftest_root/out22b.txt"
+  local out22c="$selftest_root/out22c.txt" out22d="$selftest_root/out22d.txt"
+  local rc22b=0 rc22c=0 rc22d=0
+  bash "$self_path" claim --repo "$repo" --project omicron --lane twentytwo \
+    --branch br-twentytwo --base HEAD --worker w22 \
+    --exec sh -c "echo \$\$ > $selftest_root/worker-22.pid; while [ ! -f $selftest_root/worker-22.stop ]; do echo beat >> heartbeat.txt; sleep 0.2; done" >"$out22a" 2>&1 &
+  local launcher22=$!
+  BG_PIDS+=("$launcher22")
+  wait_for_claimed "omicron-twentytwo" 1 || case_fails=1
+  wait_for_file "$selftest_root/worker-22.pid" || case_fails=1
+  local worker22_pid=""
+  worker22_pid=$(cat "$selftest_root/worker-22.pid" 2>/dev/null || true)
+  [ -n "$worker22_pid" ] || case_fails=1
+  # The manifest records the same worker identity at spawn time.
+  wait_for_worker_record "omicron-twentytwo" "$worker22_pid" || case_fails=1
+  [ "$(mget omicron-twentytwo worker)" = "w22" ] || case_fails=1
+  wait_for_file "$WT_ROOT/omicron-twentytwo/heartbeat.txt" || case_fails=1
+  kill "$launcher22" 2>/dev/null || true
+  wait "$launcher22" 2>/dev/null || true
+  sleep 0.2
+  kill -0 "$worker22_pid" 2>/dev/null || case_fails=1
+  bash "$self_path" release --name omicron-twentytwo --clean >"$out22c" 2>&1 || rc22c=$?
+  [ "$rc22c" -eq 1 ] || case_fails=1
+  grep -qF "LANE: refuse clean omicron-twentytwo: worker $worker22_pid still running" "$out22c" || case_fails=1
+  [ -d "$WT_ROOT/omicron-twentytwo" ] || case_fails=1
+  bash "$self_path" claim --repo "$repo" --project omicron --lane twentytwo \
+    --branch br-twentytwo --base HEAD --worker w22b \
+    --exec true >"$out22b" 2>&1 || rc22b=$?
+  [ "$rc22b" -eq 1 ] || case_fails=1
+  grep -qF "LANE: refuse omicron-twentytwo: previous worker $worker22_pid still running" "$out22b" || case_fails=1
+  [ "$(mget omicron-twentytwo epoch)" = "1" ] || case_fails=1
+  # Let the worker exit (it polls for the stop file); the takeover is
+  # licensed again and advances the epoch.
+  : >"$selftest_root/worker-22.stop"
+  wait_for_pid_dead "$worker22_pid" || case_fails=1
+  bash "$self_path" claim --repo "$repo" --project omicron --lane twentytwo \
+    --branch br-twentytwo --base HEAD --worker w22b \
+    --exec true >"$out22d" 2>&1 || rc22d=$?
+  [ "$rc22d" -eq 0 ] || case_fails=1
+  [ "$(mget omicron-twentytwo epoch)" = "2" ] || case_fails=1
+  report_case "takeover-refused-while-worker-lives"
 
   return "$fails"
 }

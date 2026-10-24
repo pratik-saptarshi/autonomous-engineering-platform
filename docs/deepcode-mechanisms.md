@@ -141,7 +141,7 @@ Scope statement: this check runs whenever an operator or a cron invokes `boot-ga
 
 ### Manifest
 
-Each lane has one JSON manifest, `<name>.json` in the lanes directory, written atomically (temp file + rename) with fields serialized by a JSON encoder, so paths containing quotes or backslashes round-trip exactly: the claim-time write happens inside the capacity lock, as do reap/release updates; only the launcher's post-worker `released` update runs outside the lock (still temp file + rename, so atomicity is unaffected):
+Each lane has one JSON manifest, `<name>.json` in the lanes directory, written atomically (temp file + rename) with fields serialized by a JSON encoder, so paths containing quotes or backslashes round-trip exactly: the claim-time write happens inside the capacity lock, as do reap/release updates; the launcher's worker-identity record (written just after the spawn) and its post-worker `released` update run outside the lock (still temp file + rename, so atomicity is unaffected):
 
 | Field | Content |
 | --- | --- |
@@ -153,6 +153,8 @@ Each lane has one JSON manifest, `<name>.json` in the lanes directory, written a
 | `base` | the base ref resolved to a full commit SHA at claim time |
 | `worker` | the `--worker` id |
 | `launcher_pid` | the claiming process's PID — operator information only; nothing ever signals it |
+| `worker_pid` | the spawned worker's PID, recorded by the launcher just after the spawn (0 until then); probed for liveness — never signalled — by takeover claims and `release --clean` |
+| `worker_start` | the worker's `/proc` start time; pid + start time together identify the exact process across pid recycling (0 when the worker exited before it could be read) |
 | `epoch` | claim generation: starts at 1, increments monotonically per lane across takeovers |
 | `state` | `claimed`, `released`, `reaped`, or `cleaned` (set by `release --clean` once the validated worktree removal completes) |
 | `claimed_at`, `updated_at` | UTC timestamps |
@@ -165,7 +167,7 @@ At most **2** lanes may be in `claimed` state at once (default; `--capacity <n>`
 
 ### Fence semantics, stated exactly
 
-The fence is an `flock` held by the launcher process on its own open file descriptor, for its lifetime. The worker is spawned with the fence (and capacity-lock) descriptors closed, so no descendant can keep the fence alive after the launcher dies. Therefore: the launcher's death frees the lock, and **acquiring the lock is the only proof of death the tool accepts** — a later claim whose fence probe succeeds auto-settles the previous claim as interrupted (epoch increments; the worktree's contents are left exactly as they lie). The tool signals no process, ever: `launcher_pid` is never killed, and a crafted manifest naming an innocent PID changes nothing.
+The fence is an `flock` held by the launcher process on its own open file descriptor, for its lifetime. The worker is spawned with the fence (and capacity-lock) descriptors closed, so no descendant can keep the fence alive after the launcher dies. Therefore: the launcher's death frees the lock, and **acquiring the lock is the only proof of the launcher's death the tool accepts** — a later claim whose fence probe succeeds auto-settles the previous claim as interrupted (epoch increments; the worktree's contents are left exactly as they lie). The free fence does **not** prove the previous worker stopped: the worker runs with the fence closed precisely so nothing keeps the fence alive, and it can outlive its launcher. So a takeover claim — and `release --clean` — additionally require the manifest's recorded worker to be gone: if that exact process (pid + `/proc` start time) is still running, both refuse and name the pid; a pid recycled by an unrelated process (different start time) and a zombie both count as gone; an interrupted claim that recorded no worker cannot prove its worker stopped, and both refuse it conservatively. The tool signals no process, ever: no pid named in a manifest is ever killed — at most, a live recorded `worker_pid` makes takeover and cleanup refuse (fail closed), and a crafted manifest naming an innocent PID changes nothing else.
 
 What is **not** fenced: any lane, worktree, or process not launched through the coordinator. The coordinator's guarantees cover coordinator-launched lanes only.
 
@@ -174,13 +176,13 @@ What is **not** fenced: any lane, worktree, or process not launched through the 
 `release` is the normal teardown path — not `reap`, and not manual worktree removal:
 
 1. `bash scripts/lane-coord.sh release --name <name>` — settles the claim (state `released`, capacity freed). Refused while the fence is held: a lane whose launcher is still running is owned; hands off.
-2. When the worktree itself should go away: `release --name <name> --clean`. Cleanup validates four ownership signals, in order, and removes nothing on any mismatch: (1) the manifest exists and names this lane's repo/path/branch; (2) the repo's worktree list registers the path; (3) the branch checked out at the path is the manifest's branch; (4) the path is exactly the deterministic managed location. A dirty worktree is refused; `--clean --force-dirty` first archives the porcelain status and `git diff HEAD` to `$AEP_LANES_DIR/<name>.final-diff.patch`, then removes.
+2. When the worktree itself should go away: `release --name <name> --clean`. Cleanup first requires the fence free and the manifest's recorded worker gone (see *Fence semantics, stated exactly*); then it validates four ownership signals, in order, and removes nothing on any mismatch: (1) the manifest exists and names this lane's repo/path/branch; (2) the repo's worktree list registers the path; (3) the branch checked out at the path is the manifest's branch; (4) the path is exactly the deterministic managed location. A dirty worktree is refused; `--clean --force-dirty` first archives the porcelain status and `git diff HEAD` to `$AEP_LANES_DIR/<name>.final-diff.patch`, then removes.
 
 ### Runbook: unstick a lane
 
 1. `bash scripts/lane-coord.sh status --name <name>` — look at the fence state.
 2. Fence **held** → the lane is owned by a live launcher. Hands off; there is nothing to unstick.
-3. Fence **free** → the launcher is dead (that is what the free fence proves). Either `reap --name <name>` to settle the claim and leave the worktree, or simply make the next `claim` for the lane — it auto-settles the stale claim, increments the epoch, and proceeds.
+3. Fence **free** → the launcher is dead (that is what the free fence proves). Either `reap --name <name>` to settle the claim and leave the worktree, or simply make the next `claim` for the lane — it auto-settles the stale claim, increments the epoch, and proceeds, provided the previous worker has also exited. If that worker is still running, the claim (and `release --clean`) refuses and names its pid: the worker belongs to the previous claim's owner, who stops it by their own means — the coordinator never signals it. Once it has exited, retry.
 4. Never delete a manifest or a fence file by hand to force a lane free; that destroys the epoch history the next claim relies on.
 
 ## Activation checklist
