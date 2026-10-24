@@ -97,6 +97,36 @@ class DiscoveryTests(unittest.TestCase):
             ids = [c.id for c in discover_verification_commands(root)]
             self.assertEqual(ids, ["pytest"])
 
+    def test_discovers_mixed_styles_partitioned_by_runner(self):
+        # A suite mixing unittest-style modules with plain pytest-style
+        # modules needs BOTH runners: the unittest command names only
+        # the unittest-style modules, and the remaining modules fall to
+        # the pytest command — otherwise plain test functions in the
+        # non-unittest modules are silently never collected.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "test_ok.py", "import unittest\n")
+            write(root, "test_bad.py", "def test_bad():\n    assert True\n")
+            commands = discover_verification_commands(root)
+            self.assertEqual([c.id for c in commands], ["unittest", "pytest"])
+            self.assertEqual(
+                commands[0].argv,
+                ("python3", "-m", "unittest", "-v", "test_ok"),
+            )
+            self.assertEqual(
+                commands[1].argv, ("python3", "-m", "pytest", "-q")
+            )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "ok_test.py", "from unittest import TestCase\n")
+            write(root, "plain_test.py", "def test_plain():\n    assert True\n")
+            commands = discover_verification_commands(root)
+            self.assertEqual([c.id for c in commands], ["unittest", "pytest"])
+            self.assertEqual(
+                commands[0].argv,
+                ("python3", "-m", "unittest", "-v", "ok_test"),
+            )
+
     def test_discovers_make_test_from_makefile_target(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

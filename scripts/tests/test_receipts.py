@@ -378,5 +378,95 @@ class ReceiptTests(unittest.TestCase):
             )
 
 
+def _path_pytest_available() -> bool:
+    """The verifier's pytest command is literal `python3 -m pytest`:
+    what matters is the python3 on PATH, not this test process."""
+    try:
+        proc = subprocess.run(
+            ["python3", "-m", "pytest", "--version"],
+            capture_output=True,
+            timeout=30,
+        )
+    except OSError:
+        return False
+    return proc.returncode == 0
+
+
+MIXED_OK = (
+    "import unittest\n\n\n"
+    "class Ok(unittest.TestCase):\n"
+    "    def test_ok(self):\n"
+    "        pass\n"
+)
+
+
+@unittest.skipUnless(
+    _path_pytest_available(), "python3 on PATH has no pytest module"
+)
+class MixedRunnerReceiptTests(unittest.TestCase):
+    """Mixed unittest+pytest suites: runner selection is per style, so
+    plain pytest functions in non-unittest modules are collected too."""
+
+    def test_mixed_suite_failing_pytest_function_fails_verification(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            receipts = root / "r.jsonl"
+            write(root, "test_ok.py", MIXED_OK)
+            write(
+                root,
+                "test_bad.py",
+                "def test_bad():\n"
+                "    assert False, 'plain pytest failure must run'\n",
+            )
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("VERIFY: pytest FAIL", proc.stdout)
+            parsed = read_receipts(receipts)
+            command_receipts = [
+                r for r in parsed if r.get("command_id") is not None
+            ]
+            self.assertEqual(
+                [r["command_id"] for r in command_receipts],
+                ["unittest", "pytest"],
+            )
+            self.assertEqual(command_receipts[0]["exit_code"], 0)
+            self.assertNotEqual(command_receipts[1]["exit_code"], 0)
+            proc = check(receipts, "1")
+            self.assertEqual(proc.returncode, 1)
+
+    def test_mixed_suite_all_passing_runs_both_runners(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            receipts = root / "r.jsonl"
+            write(root, "test_ok.py", MIXED_OK)
+            write(
+                root,
+                "test_good.py",
+                "from pathlib import Path\n\n\n"
+                "def test_good():\n"
+                "    Path('pytest-side.ran').write_text('ran')\n",
+            )
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            # The plain pytest function demonstrably executed.
+            self.assertTrue((root / "pytest-side.ran").is_file())
+            parsed = read_receipts(receipts)
+            command_receipts = [
+                r for r in parsed if r.get("command_id") is not None
+            ]
+            self.assertEqual(
+                [r["command_id"] for r in command_receipts],
+                ["unittest", "pytest"],
+            )
+            completion = parsed[-1]
+            self.assertEqual(completion.get("kind"), "run-complete")
+            self.assertEqual(completion["command_count"], 2)
+            proc = check(receipts, "1")
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn(
+                "RECEIPTS: PASS task 1: 2 receipts, chain valid", proc.stdout
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -113,8 +113,14 @@ def discover_verification_commands(root: Path) -> tuple[VerificationCommand, ...
             )
         )
 
-    # 5. Root-level python test files: unittest if any imports it, else the
-    # pytest command as fallback (deduplicated against rule 4).
+    # 5. Root-level python test files, partitioned by style: modules
+    # importing unittest run under the unittest runner (named
+    # explicitly — discover's default pattern (test*.py) would
+    # silently skip the *_test.py files discovery accepts), and the
+    # remaining modules fall to the pytest command, which collects
+    # plain test functions the unittest runner never would. A mixed
+    # suite therefore runs BOTH runners; a single-style suite runs
+    # exactly the one command it ran before.
     test_files: list[Path] = []
     if root.is_dir():
         for entry in sorted(root.iterdir()):
@@ -123,29 +129,27 @@ def discover_verification_commands(root: Path) -> tuple[VerificationCommand, ...
             if entry.name.startswith("test_") or entry.name.endswith("_test.py"):
                 test_files.append(entry)
     if test_files:
-        imports_unittest = False
+        unittest_modules: list[str] = []
+        pytest_modules: list[str] = []
         for path in test_files:
             try:
                 with path.open("r", encoding="utf-8", errors="ignore") as fh:
                     text = fh.read(SCAN_CHARS)
             except OSError:
-                continue
+                text = ""
             if "import unittest" in text or "from unittest" in text:
-                imports_unittest = True
-                break
-        if imports_unittest:
-            # Execute the discovered modules directly: unittest discover's
-            # default pattern (test*.py) would silently skip the *_test.py
-            # files discovery accepts, so the executed set must be named.
-            modules = tuple(path.stem for path in test_files)
+                unittest_modules.append(path.stem)
+            else:
+                pytest_modules.append(path.stem)
+        if unittest_modules:
             add(
                 VerificationCommand(
                     "unittest",
                     "Python unittest",
-                    ("python3", "-m", "unittest", "-v", *modules),
+                    ("python3", "-m", "unittest", "-v", *unittest_modules),
                 )
             )
-        else:
+        if pytest_modules:
             add(
                 VerificationCommand(
                     "pytest", "Python tests", ("python3", "-m", "pytest", "-q")
