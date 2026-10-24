@@ -830,7 +830,14 @@ self_test() {
   LANES_DIR="$AEP_LANES_DIR"
   WT_ROOT="$AEP_WORKTREES_ROOT"
   BG_PIDS=()
-  trap 'for p in "${BG_PIDS[@]:-}"; do if [ -n "$p" ]; then kill "$p" 2>/dev/null || true; fi; done; rm -rf "$selftest_root"' EXIT
+  selftest_cleanup() {
+    local p
+    for p in "${BG_PIDS[@]:-}"; do
+      if [ -n "$p" ]; then kill "$p" 2>/dev/null || true; fi
+    done
+    rm -rf "$selftest_root"
+  }
+  trap selftest_cleanup EXIT
 
   local repo="$selftest_root/repo"
   mkdir -p "$repo" "$LANES_DIR" "$WT_ROOT"
