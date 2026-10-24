@@ -26,6 +26,10 @@
 # when anything invokes boot-gate.sh is issue #17's unexecuted scope.
 # Run with --self-test to execute the stub-based negative tests
 # (each prints "SELF-TEST: <case> ok").
+# `--self-test --offline` runs the same cases with fully self-contained
+# stubs — nothing delegates to a real binary — and skips the
+# real-environment case, so it passes on a stock CI runner with no
+# daemon, no gh auth, and none of the platform CLIs installed.
 set -euo pipefail
 
 # Platform-standard tool locations (see TOOLS.md): non-interactive runs
@@ -33,6 +37,8 @@ set -euo pipefail
 # APPENDED (not prepended) so a caller-injected PATH — e.g. the --self-test
 # stub dir — keeps precedence. The command -v checks below stay strict.
 export PATH="$PATH:$HOME/go/bin:$HOME/sdk/go/bin:$HOME/workspace/bin:$HOME/workspace/neurostrata/bin:$HOME/workspace/toolchains/bin"
+
+OFFLINE=0
 
 fail() { # $1 = check name, $2 = reason
   echo "BOOT-GATE: $1 FAIL: $2"
@@ -103,19 +109,51 @@ check_policy() {
 }
 
 self_test() {
-  local gate real_nsmcp fails gate_dir policy_out policy_rc same_sha
+  local gate real_nsmcp fails gate_dir policy_out policy_rc same_sha policy_path
   gate="$0"
   fails=0
   gate_dir="$(cd "$(dirname "$gate")" && pwd)"
-  real_nsmcp=$(command -v neurostrata-mcp)
+  real_nsmcp=$(command -v neurostrata-mcp || true)
   # NB: stubdir is intentionally global (not local) so the EXIT trap can
   # still see it under `set -u` after this function returns.
   stubdir=$(mktemp -d)
   trap 'rm -rf "$stubdir"' EXIT
 
-  # Fake neurostrata-mcp: STUB_CASE selects the failure mode; anything else
-  # delegates to the real binary (so the gh-auth-fail case runs real checks).
-  cat >"$stubdir/neurostrata-mcp" <<EOF
+  if [ "$OFFLINE" -eq 1 ]; then
+    # Offline stubs are fully self-contained: the good case answers
+    # every check itself, STUB_CASE selects the failure modes, and the
+    # gh stub fails only when the gh-auth case asks it to. Nothing
+    # delegates to a real binary.
+    cat >"$stubdir/neurostrata-mcp" <<'EOF'
+#!/usr/bin/env bash
+case "${STUB_CASE:-}" in
+  daemon-down) echo "daemon: not running" ;;
+  zero-guards)
+    if [ "$1" = "status" ]; then echo "daemon: listening on 127.0.0.1:34343, answering"
+    else echo "Found 0 memories in namespace 'guard':"; fi ;;
+  missing-rule)
+    if [ "$1" = "status" ]; then echo "daemon: listening on 127.0.0.1:34343, answering"
+    else printf "Found 3 memories in namespace 'guard':\n\n--- ID: x ---\nType: guard_rule\nContent: some other rule\n"; fi ;;
+  *)
+    if [ "$1" = "status" ]; then
+      echo "daemon: listening on 127.0.0.1:34343, answering"
+    else
+      printf "Found 3 memories in namespace 'guard':\n\n--- ID: a ---\nType: guard_rule\nContent: Destructive GitHub actions require approval\n\n--- ID: b ---\nType: guard_rule\nContent: second standing rule\n\n--- ID: c ---\nType: guard_rule\nContent: third standing rule\n"
+    fi ;;
+esac
+EOF
+    cat >"$stubdir/gh" <<'EOF'
+#!/usr/bin/env bash
+[ "${GH_STUB_FAIL:-}" = "1" ] && exit 1
+exit 0
+EOF
+    printf '#!/usr/bin/env bash\nexit 0\n' >"$stubdir/bd"
+    printf '#!/usr/bin/env bash\nexit 0\n' >"$stubdir/ocr"
+    chmod +x "$stubdir/neurostrata-mcp" "$stubdir/gh" "$stubdir/bd" "$stubdir/ocr"
+  else
+    # Fake neurostrata-mcp: STUB_CASE selects the failure mode; anything else
+    # delegates to the real binary (so the gh-auth-fail case runs real checks).
+    cat >"$stubdir/neurostrata-mcp" <<EOF
 #!/usr/bin/env bash
 case "\${STUB_CASE:-}" in
   daemon-down) echo "daemon: not running" ;;
@@ -128,11 +166,12 @@ case "\${STUB_CASE:-}" in
   *) exec "$real_nsmcp" "\$@" ;;
 esac
 EOF
-  cat >"$stubdir/gh" <<'EOF'
+    cat >"$stubdir/gh" <<'EOF'
 #!/usr/bin/env bash
 exit 1
 EOF
-  chmod +x "$stubdir/neurostrata-mcp" "$stubdir/gh"
+    chmod +x "$stubdir/neurostrata-mcp" "$stubdir/gh"
+  fi
 
   expect_fail() { # $1 = STUB_CASE value (empty = unset), $2 = case label
     if [ -n "$1" ]; then
@@ -155,19 +194,37 @@ EOF
   expect_fail daemon-down "daemon-down"
   expect_fail zero-guards "zero-guards"
   expect_fail missing-rule "missing-destructive-rule"
-  expect_fail "" "gh-auth-fail"
-  if bash "$gate" >/dev/null 2>&1; then
+  if [ "$OFFLINE" -eq 1 ]; then
+    # Offline, the good gh stub passes by default; the case flips it.
+    if GH_STUB_FAIL=1 PATH="$stubdir:$PATH" bash "$gate" >/dev/null 2>&1; then
+      echo "SELF-TEST: gh-auth-fail FAIL: gate exited 0, expected non-zero"
+      fails=$((fails + 1))
+    else
+      echo "SELF-TEST: gh-auth-fail ok"
+    fi
+  else
+    expect_fail "" "gh-auth-fail"
+  fi
+  if [ "$OFFLINE" -eq 1 ]; then
+    echo "SELF-TEST: real-environment skipped (--offline)"
+  elif bash "$gate" >/dev/null 2>&1; then
     echo "SELF-TEST: real-environment ok"
   else
     echo "SELF-TEST: real-environment FAIL: gate failed against the real environment"
     fails=$((fails + 1))
   fi
-  # policy cases run the gate WITHOUT the stubdir on PATH, so the real
-  # binaries serve the first four checks and the run reaches policy; both
-  # assert on captured output, not exit code alone.
+  # policy cases: online they run the gate WITHOUT the stubdir on PATH,
+  # so the real binaries serve the first four checks and the run reaches
+  # policy; offline the self-contained stubs serve them — a stock runner
+  # has neither the binaries nor a daemon. Both assert on captured
+  # output, not exit code alone.
+  policy_path="$PATH"
+  if [ "$OFFLINE" -eq 1 ]; then
+    policy_path="$stubdir:$PATH"
+  fi
   cp "$gate_dir/policy.data" "$stubdir/policy-extra.data"
   printf '%s\n' '*/extra-pattern' >>"$stubdir/policy-extra.data"
-  policy_out=$(AEP_POLICY_DATA="$stubdir/policy-extra.data" bash "$gate" 2>&1) && policy_rc=0 || policy_rc=$?
+  policy_out=$(PATH="$policy_path" AEP_POLICY_DATA="$stubdir/policy-extra.data" bash "$gate" 2>&1) && policy_rc=0 || policy_rc=$?
   if [ "$policy_rc" -ne 0 ] && printf '%s\n' "$policy_out" | grep -q "BOOT-GATE: policy FAIL:"; then
     echo "SELF-TEST: policy-mismatch ok"
   else
@@ -175,7 +232,7 @@ EOF
     printf '%s\n' "$policy_out"
     fails=$((fails + 1))
   fi
-  policy_out=$(AEP_POLICY_DATA="$stubdir/no-such-policy.data" bash "$gate" 2>&1) && policy_rc=0 || policy_rc=$?
+  policy_out=$(PATH="$policy_path" AEP_POLICY_DATA="$stubdir/no-such-policy.data" bash "$gate" 2>&1) && policy_rc=0 || policy_rc=$?
   if [ "$policy_rc" -eq 0 ] && printf '%s\n' "$policy_out" | grep -q "BOOT-GATE: policy SKIP:" &&
     printf '%s\n' "$policy_out" | grep -q "^BOOT-GATE-RESULT: POLICY-INACTIVE$"; then
     echo "SELF-TEST: policy-skip ok"
@@ -189,7 +246,7 @@ EOF
   # resolved path + short digest and the run ends with the POLICY-OK
   # token, so exit-code consumers can distinguish pass from SKIP.
   cp "$gate_dir/policy.data" "$stubdir/policy-same.data"
-  policy_out=$(AEP_POLICY_DATA="$stubdir/policy-same.data" bash "$gate" 2>&1) && policy_rc=0 || policy_rc=$?
+  policy_out=$(PATH="$policy_path" AEP_POLICY_DATA="$stubdir/policy-same.data" bash "$gate" 2>&1) && policy_rc=0 || policy_rc=$?
   same_sha=$(sha256sum "$stubdir/policy-same.data" | cut -d' ' -f1)
   if [ "$policy_rc" -eq 0 ] &&
     printf '%s\n' "$policy_out" | grep -qF "BOOT-GATE: policy ok: $stubdir/policy-same.data (sha256 ${same_sha:0:12})" &&
@@ -206,7 +263,7 @@ EOF
   mkdir -p "$stubdir/fixture"
   cp "$gate" "$stubdir/fixture/boot-gate.sh"
   cp "$gate_dir/policy.data" "$stubdir/fixture/policy.data"
-  policy_out=$(bash "$stubdir/fixture/boot-gate.sh" 2>&1) && policy_rc=0 || policy_rc=$?
+  policy_out=$(PATH="$policy_path" bash "$stubdir/fixture/boot-gate.sh" 2>&1) && policy_rc=0 || policy_rc=$?
   if [ "$policy_rc" -ne 0 ] && printf '%s\n' "$policy_out" | grep -q "BOOT-GATE: policy FAIL: cannot read committed scripts/policy.data via git"; then
     echo "SELF-TEST: policy-unreadable ok"
   else
@@ -219,6 +276,9 @@ EOF
 
 case "${1:-}" in
 --self-test)
+  if [ "${2:-}" = "--offline" ]; then
+    OFFLINE=1
+  fi
   rc=0
   self_test || rc=$?
   if [ "$rc" -ne 0 ]; then
@@ -235,7 +295,7 @@ case "${1:-}" in
   check_policy
   ;;
 *)
-  echo "usage: $0 [--self-test]" >&2
+  echo "usage: $0 [--self-test [--offline]]" >&2
   exit 2
   ;;
 esac
