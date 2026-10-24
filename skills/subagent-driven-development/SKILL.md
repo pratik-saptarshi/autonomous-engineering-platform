@@ -48,6 +48,8 @@
 
 - Mark the task complete in the ledger only when the review is clean or every open finding is parked with a ruling.
 
+- Completion also requires mechanical evidence (AEP verification receipts). Before writing the `Task <N>: complete` line, the controller — never the implementer — runs `python3 <AEP checkout>/scripts/mechanical_verify.py verify --root <task worktree> --task <N> --receipts <workspace>/receipts.jsonl` and requires exit 0, or validates receipts it generated earlier in this run with `python3 <AEP checkout>/scripts/mechanical_verify.py check-receipts --receipts <workspace>/receipts.jsonl --task <N>` (exit 0 required). An implementer-produced receipts file is an audit artifact, not evidence. Exit 2 from `verify` (no discoverable commands) must be recorded next to the completion line as `mechanical evidence: none available`.
+
 ## Run the final review and finish
 
 - After the last task, dispatch one final reviewer over the whole body of work, pointing it at the ledger's deferred minors and parked findings.
