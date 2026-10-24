@@ -79,16 +79,97 @@ class DiscoveryTests(unittest.TestCase):
             self.assertIn("pytest", ids)
 
     def test_discovers_unittest_from_test_files(self):
+        # Task 4 named exception: classification follows the runners'
+        # collection semantics, so a stub that merely imports unittest
+        # no longer discovers the unittest command — the fixtures
+        # define real TestCase subclasses, which is what unittest
+        # discovery ever meant. Bare-import modules fall to the pytest
+        # default (see CollectedCountTests).
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            write(root, "test_x.py", "import unittest\n")
+            write(
+                root,
+                "test_x.py",
+                "import unittest\n\n\n"
+                "class X(unittest.TestCase):\n"
+                "    def test_x(self):\n"
+                "        pass\n",
+            )
             ids = [c.id for c in discover_verification_commands(root)]
             self.assertEqual(ids, ["unittest"])
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            write(root, "y_test.py", "from unittest import TestCase\n")
+            write(
+                root,
+                "y_test.py",
+                "from unittest import TestCase\n\n\n"
+                "class Y(TestCase):\n"
+                "    def test_y(self):\n"
+                "        pass\n",
+            )
             ids = [c.id for c in discover_verification_commands(root)]
             self.assertEqual(ids, ["unittest"])
+
+    def test_discovers_unittest_from_aliased_or_indirect_testcase(self):
+        # Aliases of TestCase (import-as, assignment) and subclasses of
+        # a module-local TestCase subclass are still the unittest leg:
+        # the unittest loader collects them all.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "test_alias.py",
+                "from unittest import TestCase as Base\n\n\n"
+                "class Sub(Base):\n"
+                "    def test_x(self):\n"
+                "        pass\n",
+            )
+            ids = [c.id for c in discover_verification_commands(root)]
+            self.assertEqual(ids, ["unittest"])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "test_indirect.py",
+                "import unittest\n\n\n"
+                "class Base(unittest.TestCase):\n"
+                "    def test_x(self):\n"
+                "        pass\n\n\n"
+                "class Sub(Base):\n"
+                "    pass\n",
+            )
+            ids = [c.id for c in discover_verification_commands(root)]
+            self.assertEqual(ids, ["unittest"])
+
+    def test_pure_testcase_tree_keeps_unittest_argv_byte_identical(self):
+        # RC2: a module whose only collectable content is TestCase
+        # subclasses does NOT trigger the pytest command, so a
+        # pure-unittest tree keeps exactly the argv it had before
+        # AST classification.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "test_a.py",
+                "import unittest\n\n\n"
+                "class A(unittest.TestCase):\n"
+                "    def test_a(self):\n"
+                "        pass\n",
+            )
+            write(
+                root,
+                "b_test.py",
+                "from unittest import TestCase\n\n\n"
+                "class B(TestCase):\n"
+                "    def test_b(self):\n"
+                "        pass\n",
+            )
+            commands = discover_verification_commands(root)
+            self.assertEqual([c.id for c in commands], ["unittest"])
+            self.assertEqual(
+                commands[0].argv,
+                ("python3", "-m", "unittest", "-v", "b_test", "test_a"),
+            )
 
     def test_discovers_pytest_fallback_when_test_files_lack_unittest(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -103,9 +184,21 @@ class DiscoveryTests(unittest.TestCase):
         # the unittest-style modules, and the remaining modules fall to
         # the pytest command — otherwise plain test functions in the
         # non-unittest modules are silently never collected.
+        # Fixture modernization (same class as the Task 4 named
+        # exception): the unittest-side modules define real TestCase
+        # subclasses — import-only stubs no longer classify as
+        # unittest under runner collection semantics. Every assertion
+        # below is unchanged.
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            write(root, "test_ok.py", "import unittest\n")
+            write(
+                root,
+                "test_ok.py",
+                "import unittest\n\n\n"
+                "class Ok(unittest.TestCase):\n"
+                "    def test_ok(self):\n"
+                "        pass\n",
+            )
             write(root, "test_bad.py", "def test_bad():\n    assert True\n")
             commands = discover_verification_commands(root)
             self.assertEqual([c.id for c in commands], ["unittest", "pytest"])
@@ -118,7 +211,14 @@ class DiscoveryTests(unittest.TestCase):
             )
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            write(root, "ok_test.py", "from unittest import TestCase\n")
+            write(
+                root,
+                "ok_test.py",
+                "from unittest import TestCase\n\n\n"
+                "class Ok(TestCase):\n"
+                "    def test_ok(self):\n"
+                "        pass\n",
+            )
             write(root, "plain_test.py", "def test_plain():\n    assert True\n")
             commands = discover_verification_commands(root)
             self.assertEqual([c.id for c in commands], ["unittest", "pytest"])
@@ -528,6 +628,186 @@ class ScriptsUnittestExecutionTests(unittest.TestCase):
             with contextlib.redirect_stdout(check_stdout):
                 check_rc = mechanical_verify.check_receipts(receipts, "t")
             self.assertEqual(check_rc, 0, check_stdout.getvalue())
+def _path_pytest_available() -> bool:
+    """The verifier's pytest command is literal `python3 -m pytest`:
+    what matters is the python3 on PATH, not this test process."""
+    try:
+        proc = subprocess.run(
+            ["python3", "-m", "pytest", "--version"],
+            capture_output=True,
+            timeout=30,
+        )
+    except OSError:
+        return False
+    return proc.returncode == 0
+
+
+class CollectedCountTests(unittest.TestCase):
+    """Task 4 (overseer remediation R3, closes P1-1): rule 5 proves
+    execution, not routing. Classification follows the runners'
+    collection semantics, and every Python command must prove a
+    collected-test count > 0 — a zero or unparseable count fails the
+    command even when the runner exits 0."""
+
+    def run_fixture(self, root: Path):
+        commands = discover_verification_commands(root)
+        results = []
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            rc = run_all(
+                root,
+                commands,
+                mem_available_kb=lambda: 10**9,
+                on_result=results.append,
+            )
+        return commands, results, rc, stdout.getvalue()
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_decoy_testcase_cannot_shield_failing_plain_function(self):
+        # The panel P1-1 decoy: a passing TestCase in the same module
+        # must not route the module away from pytest — the failing
+        # plain function beside it has to execute.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "test_decoy.py",
+                "import unittest\n\n\n"
+                "def test_companion():\n"
+                "    assert False, 'plain function beside a TestCase "
+                "must run'\n\n\n"
+                "class Decoy(unittest.TestCase):\n"
+                "    def test_ok(self):\n"
+                "        pass\n",
+            )
+            commands, _, rc, _ = self.run_fixture(root)
+            self.assertEqual([c.id for c in commands], ["unittest", "pytest"])
+            self.assertEqual(rc, 1)
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_unittest_mock_import_alone_does_not_route_to_unittest(self):
+        # `import unittest.mock` is a mundane trigger of the old
+        # substring routing: no TestCase is defined, so there is no
+        # unittest leg and the plain function runs under pytest.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "test_mock.py",
+                "import unittest.mock\n\n\n"
+                "def test_fails():\n"
+                "    assert False, 'plain function must run under "
+                "pytest'\n",
+            )
+            commands, _, rc, _ = self.run_fixture(root)
+            self.assertEqual([c.id for c in commands], ["pytest"])
+            self.assertEqual(rc, 1)
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_test_star_class_without_testcase_runs_under_pytest(self):
+        # A Test* class that is not a TestCase subclass is collected
+        # by pytest only — even when the module imports unittest, the
+        # unittest loader would collect nothing from it.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "test_widget.py",
+                "import unittest\n\n\n"
+                "class TestWidget:\n"
+                "    def test_fails(self):\n"
+                "        assert False, 'Test* class method must run "
+                "under pytest'\n",
+            )
+            commands, _, rc, _ = self.run_fixture(root)
+            self.assertEqual([c.id for c in commands], ["pytest"])
+            self.assertEqual(rc, 1)
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_all_skipped_module_passes_with_positive_collected_count(self):
+        # Deliberate ruling: skips count as collected. The guarantee
+        # is "routed to a runner that collects the test"; whether a
+        # collected test skips is the test author's signal.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "test_skip.py",
+                "import pytest\n\n\n"
+                "@pytest.mark.skip(reason='deliberate')\n"
+                "def test_skipped():\n"
+                "    assert False, 'a skipped test never executes'\n",
+            )
+            commands, results, rc, _ = self.run_fixture(root)
+            self.assertEqual([c.id for c in commands], ["pytest"])
+            self.assertEqual(rc, 0)
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0].tests_collected, 1)
+            # The receipt written from this result carries the count.
+            receipts = root / "r.jsonl"
+            mechanical_verify.append_receipt(receipts, "t", results[0])
+            record = json.loads(receipts.read_text().splitlines()[0])
+            self.assertEqual(record["tests_collected"], 1)
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_collection_error_module_fails_verification(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "test_boom.py",
+                "raise RuntimeError('import-time failure')\n\n\n"
+                "def test_never_collected():\n"
+                "    pass\n",
+            )
+            commands, _, rc, _ = self.run_fixture(root)
+            self.assertEqual([c.id for c in commands], ["pytest"])
+            self.assertEqual(rc, 1)
+
+    def test_unittest_module_collecting_zero_fails(self):
+        # A TestCase subclass with no test methods exits 0 under
+        # unittest ("Ran 0 tests") — the count gate must fail it.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "test_empty.py",
+                "import unittest\n\n\n"
+                "class Empty(unittest.TestCase):\n"
+                "    pass\n",
+            )
+            commands, results, rc, output = self.run_fixture(root)
+            self.assertEqual([c.id for c in commands], ["unittest"])
+            self.assertEqual(rc, 1)
+            self.assertIn("zero tests collected", output)
+            self.assertEqual(results[0].tests_collected, 0)
+
+    def test_zero_or_unparseable_count_fails_despite_zero_exit(self):
+        # The count verdict rides on VerificationResult, consulted by
+        # run_all exactly like survivors_killed: exit 0 with no
+        # parseable count is a failure, for both Python runners.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_verification(
+                root,
+                VerificationCommand(
+                    "pytest",
+                    "Python tests",
+                    (sys.executable, "-c", "print('no summary here')"),
+                ),
+            )
+            self.assertEqual(result.exit_code, 0)
+            self.assertEqual(result.tests_collected, 0)
+            self.assertFalse(result.passed)
+            result = run_verification(
+                root,
+                VerificationCommand(
+                    "unittest", "Python unittest", ("true",)
+                ),
+            )
+            self.assertEqual(result.exit_code, 0)
+            self.assertEqual(result.tests_collected, 0)
+            self.assertFalse(result.passed)
 
 
 class CliTests(unittest.TestCase):

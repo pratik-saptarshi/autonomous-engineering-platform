@@ -10,6 +10,7 @@ first failure. Stdlib only.
 from __future__ import annotations
 
 import argparse
+import ast
 import ctypes
 import fcntl
 import hashlib
@@ -59,6 +60,7 @@ class VerificationResult:
     output_truncated: bool
     survivors_killed: tuple[int, ...] = ()
     survivors_remaining: bool = False
+    tests_collected: int | None = None
 
     @property
     def passed(self) -> bool:
@@ -66,7 +68,104 @@ class VerificationResult:
             self.exit_code == 0
             and not self.timed_out
             and not self.survivors_remaining
+            and self.tests_collected != 0
         )
+
+
+def _dotted_name(node: ast.expr) -> str | None:
+    """Dotted name for a Name/Attribute chain (`unittest.TestCase`),
+    else None (calls, subscripts, and other expressions have none)."""
+    parts: list[str] = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if isinstance(node, ast.Name):
+        parts.append(node.id)
+        return ".".join(reversed(parts))
+    return None
+
+
+def _classify_test_module(text: str) -> tuple[bool, bool]:
+    """(has_unittest_leg, triggers_pytest) for one test module.
+
+    Classification follows the runners' collection semantics, by AST:
+
+    - unittest leg iff the module defines a class whose bases include
+      a dotted name ending in `TestCase`, a name imported as an alias
+      of `unittest.TestCase`, or a module-local TestCase subclass
+      (transitively — the unittest loader collects them all). Imports
+      alone never create the leg: `import unittest.mock` defines
+      nothing the unittest loader could collect.
+    - pytest trigger iff the module defines module-level (or async)
+      `test_*` functions, OR `Test*` classes containing `test_*`
+      methods that are NOT TestCase subclasses, OR the module has no
+      leg at all (default). A module whose only collectable content
+      is TestCase subclasses does NOT by itself trigger the pytest
+      command (RC2 — pure-unittest trees keep byte-identical argv);
+      when the bare pytest command exists for other reasons it
+      collects those modules too.
+    - An AST parse failure falls back to the pre-Task-4 substring
+      classification for that module (discovery never crashes).
+    """
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        if "import unittest" in text or "from unittest" in text:
+            return True, False
+        return False, True
+
+    # Names that denote unittest.TestCase within this module: direct
+    # imports, import aliases, assignment aliases, and module-local
+    # subclasses (added as the ordered pass reaches them).
+    testcase_names: set[str] = set()
+    has_unittest = False
+    triggers_pytest = False
+    for stmt in tree.body:
+        if isinstance(stmt, ast.ImportFrom):
+            if stmt.module == "unittest" or (
+                stmt.module is not None
+                and stmt.module.startswith("unittest.")
+            ):
+                for alias in stmt.names:
+                    if alias.name == "TestCase":
+                        testcase_names.add(alias.asname or alias.name)
+        elif isinstance(stmt, ast.Assign):
+            value_name = _dotted_name(stmt.value)
+            value_is_testcase = value_name is not None and (
+                value_name.rsplit(".", 1)[-1] == "TestCase"
+                or value_name in testcase_names
+            )
+            if value_is_testcase:
+                for target in stmt.targets:
+                    if isinstance(target, ast.Name):
+                        testcase_names.add(target.id)
+        elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if stmt.name.startswith("test_"):
+                triggers_pytest = True
+        elif isinstance(stmt, ast.ClassDef):
+            is_testcase = False
+            for base in stmt.bases:
+                dotted = _dotted_name(base)
+                if dotted is None:
+                    continue
+                if (
+                    dotted.rsplit(".", 1)[-1] == "TestCase"
+                    or dotted in testcase_names
+                ):
+                    is_testcase = True
+                    break
+            if is_testcase:
+                has_unittest = True
+                testcase_names.add(stmt.name)
+            elif stmt.name.startswith("Test") and any(
+                isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and item.name.startswith("test_")
+                for item in stmt.body
+            ):
+                triggers_pytest = True
+    if not has_unittest and not triggers_pytest:
+        triggers_pytest = True  # no leg at all: the pytest default
+    return has_unittest, triggers_pytest
 
 
 def discover_verification_commands(root: Path) -> tuple[VerificationCommand, ...]:
@@ -121,14 +220,16 @@ def discover_verification_commands(root: Path) -> tuple[VerificationCommand, ...
             )
         )
 
-    # 5. Root-level python test files, partitioned by style: modules
-    # importing unittest run under the unittest runner (named
-    # explicitly — discover's default pattern (test*.py) would
-    # silently skip the *_test.py files discovery accepts), and the
-    # remaining modules fall to the pytest command, which collects
-    # plain test functions the unittest runner never would. A mixed
-    # suite therefore runs BOTH runners; a single-style suite runs
-    # exactly the one command it ran before.
+    # 5. Root-level python test files, partitioned by runner
+    # collection semantics (Task 4, per-module AST classification —
+    # see _classify_test_module): modules defining TestCase
+    # subclasses run under the unittest runner (named explicitly —
+    # discover's default pattern (test*.py) would silently skip the
+    # *_test.py files discovery accepts), and modules that trigger
+    # the pytest leg fall to the shared bare pytest command, which
+    # collects plain test functions the unittest runner never would.
+    # A mixed suite therefore runs BOTH runners; a single-style
+    # suite runs exactly the one command it ran before.
     test_files: list[Path] = []
     if root.is_dir():
         for entry in sorted(root.iterdir()):
@@ -138,17 +239,18 @@ def discover_verification_commands(root: Path) -> tuple[VerificationCommand, ...
                 test_files.append(entry)
     if test_files:
         unittest_modules: list[str] = []
-        pytest_modules: list[str] = []
+        pytest_triggered = False
         for path in test_files:
             try:
                 with path.open("r", encoding="utf-8", errors="ignore") as fh:
                     text = fh.read(SCAN_CHARS)
             except OSError:
                 text = ""
-            if "import unittest" in text or "from unittest" in text:
+            has_unittest, triggers_pytest = _classify_test_module(text)
+            if has_unittest:
                 unittest_modules.append(path.stem)
-            else:
-                pytest_modules.append(path.stem)
+            if triggers_pytest:
+                pytest_triggered = True
         if unittest_modules:
             add(
                 VerificationCommand(
@@ -157,7 +259,7 @@ def discover_verification_commands(root: Path) -> tuple[VerificationCommand, ...
                     ("python3", "-m", "unittest", "-v", *unittest_modules),
                 )
             )
-        if pytest_modules:
+        if pytest_triggered:
             add(
                 VerificationCommand(
                     "pytest", "Python tests", ("python3", "-m", "pytest", "-q")
@@ -382,6 +484,48 @@ def _set_child_subreaper() -> bool:
         return False
 
 
+_UNITTEST_RAN_RE = re.compile(r"^Ran (\d+) tests?\b", re.MULTILINE)
+_PYTEST_COUNT_RE = re.compile(
+    r"(\d+)\s+(passed|failed|skipped|deselected|errors?|xfailed|xpassed)\b"
+)
+_PYTEST_SUMMARY_TAIL_RE = re.compile(r" in \d+(?:\.\d+)?s\b")
+
+
+def _count_collected(
+    command_id: str, stdout: str, stderr: str
+) -> int | None:
+    """Collected-test count for a Python command; None for other
+    commands (the count gate does not apply to them).
+
+    unittest: parse `Ran (\\d+) tests?` from stdout+stderr combined
+    (unittest writes it to stderr). pytest: the collected count is
+    the sum of all outcome groups in the summary line
+    (passed+failed+skipped+deselected+errors+xfailed+xpassed);
+    `no tests ran` is 0. An unparseable count is 0 — a Python command
+    that cannot prove it collected anything fails the count gate in
+    VerificationResult.passed. Skips count as collected (deliberate
+    ruling): the guarantee is "routed to a runner that collects the
+    test"; whether a collected test skips is the test author's
+    signal, not a routing failure.
+    """
+    if command_id == "unittest":
+        match = _UNITTEST_RAN_RE.search(stdout + "\n" + stderr)
+        return int(match.group(1)) if match is not None else 0
+    if command_id == "pytest":
+        combined = stdout + "\n" + stderr
+        if "no tests ran" in combined:
+            return 0
+        total: int | None = None
+        for line in combined.splitlines():
+            if not _PYTEST_SUMMARY_TAIL_RE.search(line):
+                continue
+            groups = _PYTEST_COUNT_RE.findall(line)
+            if groups:
+                total = sum(int(count) for count, _ in groups)
+        return total if total is not None else 0
+    return None
+
+
 def run_verification(
     root: Path,
     command: VerificationCommand,
@@ -462,16 +606,21 @@ def run_verification(
     for thread in threads:
         thread.join(timeout=5)
 
+    stdout_text = stdout_buf.text()
+    stderr_text = stderr_buf.text()
     return VerificationResult(
         command=command,
         exit_code=proc.returncode,
         timed_out=timed_out,
         duration_ms=int((time.monotonic() - started) * 1000),
-        stdout=stdout_buf.text(),
-        stderr=stderr_buf.text(),
+        stdout=stdout_text,
+        stderr=stderr_text,
         output_truncated=stdout_buf.truncated or stderr_buf.truncated,
         survivors_killed=survivors_killed,
         survivors_remaining=survivors_remaining,
+        tests_collected=_count_collected(
+            command.id, stdout_text, stderr_text
+        ),
     )
 
 
@@ -534,6 +683,8 @@ def run_all(
             )
             if result.survivors_remaining:
                 print("VERIFY: survivors remain after reap bound")
+            if result.tests_collected == 0:
+                print("VERIFY: zero tests collected")
             print(f"VERIFY: stopped at first failure ({command.id})")
             return 1
     return 0 if executed else 1
@@ -864,6 +1015,8 @@ def append_receipt(
         body["run_id"] = run_id
     if result.survivors_killed:
         body["survivors_killed"] = list(result.survivors_killed)
+    if result.tests_collected is not None:
+        body["tests_collected"] = result.tests_collected
     _append_record(receipts_path, body)
 
 
