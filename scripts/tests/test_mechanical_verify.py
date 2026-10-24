@@ -230,6 +230,54 @@ class RunVerificationTests(unittest.TestCase):
             self.assertTrue(result.output_truncated)
 
 
+class UnittestExecutionTests(unittest.TestCase):
+    """The executed unittest set must equal the discovered set: rule 5
+    discovers both test_*.py and *_test.py files."""
+
+    def run_fixture(self, root: Path) -> int:
+        commands = discover_verification_commands(root)
+        self.assertEqual([c.id for c in commands], ["unittest"])
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            return run_all(root, commands, mem_available_kb=lambda: 10**9)
+
+    def test_failing_suffix_named_test_file_fails_verification(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "test_ok.py",
+                "import unittest\n\n\n"
+                "class Ok(unittest.TestCase):\n"
+                "    def test_ok(self):\n"
+                "        pass\n",
+            )
+            write(
+                root,
+                "broken_test.py",
+                "import unittest\n\n\n"
+                "class Broken(unittest.TestCase):\n"
+                "    def test_broken(self):\n"
+                "        self.fail('suffix-named failure must run')\n",
+            )
+            self.assertEqual(self.run_fixture(root), 1)
+
+    def test_passing_suffix_named_test_file_actually_runs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "marker_test.py",
+                "import unittest\n"
+                "from pathlib import Path\n\n\n"
+                "class Marker(unittest.TestCase):\n"
+                "    def test_marker(self):\n"
+                "        Path('marker.ran').write_text('ran')\n",
+            )
+            self.assertEqual(self.run_fixture(root), 0)
+            self.assertTrue((root / "marker.ran").is_file())
+
+
 class CliTests(unittest.TestCase):
     def run_cli(self, root: Path, env=None):
         return subprocess.run(

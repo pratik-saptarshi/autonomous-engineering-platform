@@ -133,11 +133,15 @@ def discover_verification_commands(root: Path) -> tuple[VerificationCommand, ...
                 imports_unittest = True
                 break
         if imports_unittest:
+            # Execute the discovered modules directly: unittest discover's
+            # default pattern (test*.py) would silently skip the *_test.py
+            # files discovery accepts, so the executed set must be named.
+            modules = tuple(path.stem for path in test_files)
             add(
                 VerificationCommand(
                     "unittest",
                     "Python unittest",
-                    ("python3", "-m", "unittest", "discover", "-v"),
+                    ("python3", "-m", "unittest", "-v", *modules),
                 )
             )
         else:
