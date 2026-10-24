@@ -83,8 +83,12 @@ check_policy() {
     echo "BOOT-GATE: policy SKIP: no policy data at $policy (launch-policy integrity inactive)"
     return 0
   fi
-  ref_sha=$(git -C "$gate_dir" show HEAD:scripts/policy.data 2>/dev/null | sha256sum | cut -d' ' -f1)
-  [ -n "$ref_sha" ] || fail policy "cannot read committed scripts/policy.data via git"
+  # The blob streams straight into sha256sum (no intermediate variable, so
+  # no trailing-newline stripping — the hash is byte-exact). The `|| fail`
+  # guard is load-bearing: under `set -euo pipefail` a bare assignment whose
+  # pipeline fails would terminate the script silently before any FAIL line.
+  ref_sha=$(git -C "$gate_dir" show HEAD:scripts/policy.data 2>/dev/null | sha256sum | cut -d' ' -f1) ||
+    fail policy "cannot read committed scripts/policy.data via git"
   work_sha=$(sha256sum "$policy" | cut -d' ' -f1)
   [ "$work_sha" = "$ref_sha" ] ||
     fail policy "policy.data differs from the committed version (unreviewed edit?) — policy changes land via git/PR"
@@ -169,6 +173,20 @@ EOF
     echo "SELF-TEST: policy-skip ok"
   else
     echo "SELF-TEST: policy-skip FAIL: expected exit 0 with 'BOOT-GATE: policy SKIP:' (rc=$policy_rc)"
+    printf '%s\n' "$policy_out"
+    fails=$((fails + 1))
+  fi
+  # policy-unreadable: a fixture copy of the gate outside any git repo, so
+  # `git show HEAD:scripts/policy.data` fails deterministically; the gate
+  # must fail closed WITH the contracted FAIL line, not silently.
+  mkdir -p "$stubdir/fixture"
+  cp "$gate" "$stubdir/fixture/boot-gate.sh"
+  cp "$gate_dir/policy.data" "$stubdir/fixture/policy.data"
+  policy_out=$(bash "$stubdir/fixture/boot-gate.sh" 2>&1) && policy_rc=0 || policy_rc=$?
+  if [ "$policy_rc" -ne 0 ] && printf '%s\n' "$policy_out" | grep -q "BOOT-GATE: policy FAIL: cannot read committed scripts/policy.data via git"; then
+    echo "SELF-TEST: policy-unreadable ok"
+  else
+    echo "SELF-TEST: policy-unreadable FAIL: expected non-zero exit with 'BOOT-GATE: policy FAIL: cannot read committed scripts/policy.data via git' (rc=$policy_rc)"
     printf '%s\n' "$policy_out"
     fails=$((fails + 1))
   fi
