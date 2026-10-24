@@ -24,7 +24,7 @@ The three mechanisms:
 | 2 | `cargo-test` | `Cargo.toml` | `cargo test` | DeepCode |
 | 3 | `npm-test` | `package.json` with a real `scripts.test` string (non-empty, not npm's "no test specified" placeholder) | `npm test` | DeepCode |
 | 4 | `pytest` | `pytest.ini`, `pyproject.toml`, `setup.cfg`, or a `tests` entry | `python3 -m pytest -q` | DeepCode |
-| 5 | `unittest` (or `pytest` fallback) | root-level `test_*.py` or `*_test.py` files | `python3 -m unittest discover -v` if any file imports `unittest`, else the rule-4 pytest command | DeepCode fallback; `*_test.py` glob is an AEP delta |
+| 5 | `unittest` (or `pytest` fallback) | root-level `test_*.py` or `*_test.py` files | `python3 -m unittest discover -v` if any file imports `unittest`, else the rule-4 pytest command | DeepCode, adapted |
 | 6 | `make-test` | `Makefile` with a `test:` target | `make test` | AEP addition |
 | 7 | `markdownlint` | `.markdownlint.yaml` present **and** `markdownlint-cli2` on PATH | `markdownlint-cli2 "**/*.md" "!reference/esf/**/*.md" "!skills/archify/**/*.md"` | AEP addition |
 
@@ -65,7 +65,7 @@ With `--receipts <file>`, `verify` appends one JSON line per executed command. A
 | `stderr_sha256` | SHA-256 of the captured (tail-capped) stderr |
 | `chain_sha256` | SHA-256 of the previous receipt's `chain_sha256` concatenated with the canonical JSON of this receipt's other fields |
 
-The genesis link is 64 zero characters. Appends are a single `os.write` under `flock` on an `O_APPEND` descriptor, so concurrent runs cannot interleave a line. `check-receipts` validates the chain over the **whole file** before filtering to the requested task, so per-task verdicts over one shared file stay meaningful, and a deleted or tampered line is detected at the following line.
+The genesis link is 64 zero characters. Appends are a single `os.write` under `flock` on an `O_APPEND` descriptor, so concurrent runs cannot interleave a line. `check-receipts` validates the chain over the **whole file** before filtering to the requested task, so per-task verdicts over one shared file stay meaningful, and a deleted line is detected at the following line, while a tampered line is detected at the tampered line itself.
 
 ### The trust shape, in plain words
 
@@ -124,7 +124,7 @@ Scope statement: this check runs whenever an operator or a cron invokes `boot-ga
 | `claim --repo <abs path> --project <slug> --lane <slug> --branch <name> [--base <ref>] --worker <id> [--capacity <n>] [--path <extra> ...] --exec <command...>` | Claim a lane and run the worker in it. Prints `LANE: claimed <name> path=... branch=... epoch=...`; when the worker exits, prints `LANE: released <name> (worker exit <n>)` and exits with the worker's status. |
 | `release --name <name> [--clean [--force-dirty]]` | The normal teardown path (see below). Without `--clean`, settles the claim and leaves the worktree in place. |
 | `reap --name <name>` | Settle a claim whose launcher is provably dead, without touching the worktree. Refuses while the fence is held. |
-| `status [--name <name>]` | Show each lane's state, epoch, worker, fence state, and path, plus the pool line (`LANE: pool: <n> claimed of <capacity>`). |
+| `status [--name <name>] [--capacity <n>]` | Show each lane's state, epoch, worker, fence state, and path, plus the pool line (`LANE: pool: <n> claimed of <capacity>`). |
 | `--self-test` | The built-in 19-case suite (also run in CI by the `script-tests` job). |
 
 ### Exit codes
@@ -140,7 +140,7 @@ Scope statement: this check runs whenever an operator or a cron invokes `boot-ga
 
 ### Manifest
 
-Each lane has one JSON manifest, `<name>.json` in the lanes directory, written inside the capacity lock (temp file + rename) from charset-validated fields:
+Each lane has one JSON manifest, `<name>.json` in the lanes directory, written atomically (temp file + rename) from charset-validated fields: the claim-time write happens inside the capacity lock, as do reap/release updates; only the launcher's post-worker `released` update runs outside the lock (still temp file + rename, so atomicity is unaffected):
 
 | Field | Content |
 | --- | --- |
