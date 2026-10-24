@@ -1,0 +1,349 @@
+{
+  "version": 2,
+  "scanner_version": "2.12.0",
+  "rules": [],
+  "fingerprints": [
+    {
+      "hash": "sha256:aacd77265d25eeaa3d6fa2cefb358795fcd6351ca24260efdb656ee0393fd510",
+      "rule_id": "AE4",
+      "file": "examples/locales/ru.json",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:b60f4fc97e5df0436dcef69badb248f33abf95387d1dbeb35f70c49df0212da0",
+      "rule_id": "AE3",
+      "file": "renderers/shared/diagnostics.mjs",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:204ac9eb104eacf62da7dcf030adb6dec1862893f81548518d3530cfd5c26272",
+      "rule_id": "LP3",
+      "file": "SKILL.md",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:a41268a62a883d72a54fed7832011fedd758985ee5eff7ad3638815c2bf81eb1",
+      "rule_id": "EA3",
+      "file": "assets/template.html",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:f057e2bd8548234e4f8a9e4b79cc18e1bf673d1f28ce3db7e2ad53c5bc0b79f4",
+      "rule_id": "EA3",
+      "file": "examples/class-payment-processors-rendered.html",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:5b43b192a11283beb73bbd25a8e902850ea7a810dc47b81a1992e6bf1af8ce66",
+      "rule_id": "EA3",
+      "file": "examples/class-payments-rendered.html",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:ff2605718d2aa3c541ff0c57e9ad60a74b4148d7f7ec2cb265919c08b614482b",
+      "rule_id": "EA3",
+      "file": "examples/dataflow-product-analytics.html",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:a6db6af073a9884eb38ce65959c2e4b5106e1829737cd9f0036e155edc00a4d0",
+      "rule_id": "EA3",
+      "file": "examples/erd-orders-rendered.html",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:36ac9fe8a150040f822d86b11a6fff6328f649462f2ffdd5356aa9e7422ad106",
+      "rule_id": "EA3",
+      "file": "examples/lifecycle-agent-run.html",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:1b744a03ebe7d4c4bdff1f7b6b94f8aa34fce71e7f51d1e732921f1eed9876e7",
+      "rule_id": "EA3",
+      "file": "examples/sequence-cache-miss-request.html",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:db784709cff8bc6fce0cd90e97a2495e9e78a7713827c40e032face8736ae1df",
+      "rule_id": "EA3",
+      "file": "examples/subscription-billing-rendered.html",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:a9f50c1c6dbac0d2a3d73bc5f40f8a303b48ff1098758e6b06ff88321e2d30a7",
+      "rule_id": "EA3",
+      "file": "examples/timeline-archify-dev-activity-rendered.html",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:83977a7a85f14f5ced681982338c61a80d29b5a0196d5007bf237b990bbd2dea",
+      "rule_id": "AE1",
+      "file": "SKILL.md",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:0e58b63b767e068612dbe6b9f6d84211d4f10e9e72b177864dafb2cf128b2489",
+      "rule_id": "AE1",
+      "file": "SKILL.md",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:fdee713b429f3b66b50986c126a3f61cb29968968dc3d5d3a2cb90dfc10130dc",
+      "rule_id": "AE1",
+      "file": "SKILL.md",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:91838454b0732f51bc9b69f15730ca1f42b34553d823f2a0553eb2b75704969a",
+      "rule_id": "AE1",
+      "file": "SKILL.md",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:fb34c0ba89e21bfdb15bd288344d933ad86074f1fecc14f5491b445a810a7441",
+      "rule_id": "AE1",
+      "file": "SKILL.md",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:d2c748826299baa946e3193195767771f024a20c56c9ec4c4af3feeb98c02642",
+      "rule_id": "AE1",
+      "file": "SKILL.md",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:f34ffb99543b9080c56ea0373d62a9660bb6a47efa74c1c015b8e34d7de64722",
+      "rule_id": "AE1",
+      "file": "SKILL.md",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:b2f6c92494c154013ba89a50e174d6891d4b6a3055de74850e6d95a33ef2ab9e",
+      "rule_id": "AE1",
+      "file": "SKILL.md",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:440c4f87ec43b12b9e2fc2a72f48a28dcc269cfe7373c5da496fe6ea4231826f",
+      "rule_id": "AE1",
+      "file": "SKILL.md",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:0267acf1b00bc9da2332114e3c7e5c8e409c641d9a03f12b4a5dd313b3c73e10",
+      "rule_id": "AE1",
+      "file": "SKILL.md",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:c0abdabf7568a0a4801c63c9622353fd3c9342d217880ef94df5eac158f0dade",
+      "rule_id": "AE1",
+      "file": "SKILL.md",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:43a1879031d19e72d3ae69af3ba88c58acd149e851530596369f5f5fb296b362",
+      "rule_id": "AE1",
+      "file": "SKILL.md",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:57f1890874201b64f153917ff8982753034d22d0b60f27a2534760019d240bb3",
+      "rule_id": "AE1",
+      "file": "SKILL.md",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:6805b4c8c774827cf37ffcb26460fba4252f0ea5caf6b6c28a00cb09e901ecfd",
+      "rule_id": "AE1",
+      "file": "SKILL.md",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:0577a7b7f2ac3032e3d53fdb664b7cc9fe8a05712131943b5e691a0474548226",
+      "rule_id": "AE1",
+      "file": "SKILL.md",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:2160a481577f6acbf6e7419d5c7d6a79f43625be1c32a7e4263f912aefff2eee",
+      "rule_id": "AE1",
+      "file": "SKILL.md",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:2e7d5f49415ab3e8738b9d36f0cc1b5c47779a680b7e328833c62f33d31756fa",
+      "rule_id": "AE1",
+      "file": "SKILL.md",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:120fb6eacbf9b9843c5198c0bb8d1898114787654dc6936fcbbf735b06743830",
+      "rule_id": "AE1",
+      "file": "SKILL.md",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:602e630c9a8dbdf28892b752e9cd8269b8e68b5b625022acac493595877d8443",
+      "rule_id": "AE1",
+      "file": "SKILL.md",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:fde6549357670b72658e09d8daed9a51323070f93c732324942a98dc875fea04",
+      "rule_id": "AE1",
+      "file": "SKILL.md",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:6258b16ab1a2a7d25cafe8c8e68caca5d2efd6ee01d905f35b053515e7527179",
+      "rule_id": "AE1",
+      "file": "SKILL.md",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:5a5ade891582d8fbefcc0cabaf9da3021f6e300e7c9438f1913d2b90862fe305",
+      "rule_id": "AE1",
+      "file": "SKILL.md",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:de7290db464093b02dc2306160a174f293a93edfe42d6c3c535461ea968114c8",
+      "rule_id": "AE1",
+      "file": "SKILL.md",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:fdf441a994c061e9249ea734340ed63a6c5a51186a22bf0066496e0536280941",
+      "rule_id": "AE1",
+      "file": "SKILL.md",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:aee5522dc324caa39a6de23549b49e9d79cb746400f76382f80b54e0ffb3724a",
+      "rule_id": "AE1",
+      "file": "SKILL.md",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:0936dd2f107fa149ebe6da3fbf824e5171b9c72f0969b677af685056afc1f9b4",
+      "rule_id": "AE1",
+      "file": "SKILL.md",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:5a4c29426b2100c960aac3b8a16eb07fc52855a226e2b7333621932e19d1f970",
+      "rule_id": "AE1",
+      "file": "SKILL.md",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:5383212735cc0331cad2ac2ee03b3681fdc8ecaee83d7b7bb50feca1251fe295",
+      "rule_id": "AE1",
+      "file": "SKILL.md",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:7830060543de0f1fe24fb04964c67a2b133cc8bcaaf08d1bec593c6fc47791bc",
+      "rule_id": "AE1",
+      "file": "SKILL.md",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:9a41e675b60f379e63fbd41df4b66a109f1dd117e97e0a648393f5885cf88973",
+      "rule_id": "AE1",
+      "file": "SKILL.md",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:ffcbb03c72dcf9ed4837dd73f05fa88a52b09312b43b4c5fee34fda84d7c0a8e",
+      "rule_id": "AE1",
+      "file": "SKILL.md",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:dc357e5bad8ea520998b8d6267c806bce1eb207739ed4cf4e71dcdcd90f4921a",
+      "rule_id": "AE1",
+      "file": "SKILL.md",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:fb8cfe8f151b898ea4043001e49877a30d408a42d73f4aa9913541e2bdb5cd02",
+      "rule_id": "AE1",
+      "file": "SKILL.md",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:b32a8efa61e644f0f03d3b7d26160e2fa9c38ff7f303ccfe375dd9e6c7ba6a58",
+      "rule_id": "AE1",
+      "file": "SKILL.md",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:22a17ad3969c9739eca867376abe1b32eff78852df9fc572d03b32448989f915",
+      "rule_id": "AE1",
+      "file": "SKILL.md",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:f065d8441045ce54b95d437f9e46454b5364cae0ecf7278bd00e9500d45f287f",
+      "rule_id": "AE1",
+      "file": "SKILL.md",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:1cf8543307f1e8c69226a11100faa899b8bb01bb61ab5d56b7314b45eaa5df58",
+      "rule_id": "AE1",
+      "file": "SKILL.md",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:f9b9e076a4c64e6bc1cafd1e657b55958b1aa6254ce1de4e16c19286bdcc583d",
+      "rule_id": "AE1",
+      "file": "SKILL.md",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:be426c38bb082cfe004479b05f5abe53e6c2b00af12f480d7b1ed8128dbd7a64",
+      "rule_id": "AE1",
+      "file": "SKILL.md",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:e6169f122a4f20d7aab22b2befc928b5a7501e032addb0ab3b0442ca9dc5a37e",
+      "rule_id": "AE1",
+      "file": "SKILL.md",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:93c899778ec16d3a5d64ecbb54a29d7bb95a1f9c4797e8a230724d4364144e34",
+      "rule_id": "AE1",
+      "file": "SKILL.md",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:8e907046a621be4ee982b420ba1284b934a9f093a82048c70c21ccbf5b7afa80",
+      "rule_id": "AE1",
+      "file": "SKILL.md",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:ec0710259008df1b129bb524c88f6af094d664f7b7106ad9585c72e7f9b78f4a",
+      "rule_id": "AE1",
+      "file": "SKILL.md",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:541dcebbe4071555960061c03bc91939c479bc6533cef07d2c0264c9d8087e9a",
+      "rule_id": "AE1",
+      "file": "SKILL.md",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    },
+    {
+      "hash": "sha256:274cd081dd1fdfe63abab0b4a7d542d255b0edff40122ff32201181fc43ceb2b",
+      "rule_id": "AE1",
+      "file": "SKILL.md",
+      "reason": "Reviewed and dispositioned 2026-10-23 (AE1 scanner coverage limit; AE3, LP3, AE4, EA3 reviewed). See skillspector-baselines/archify.json."
+    }
+  ]
+}

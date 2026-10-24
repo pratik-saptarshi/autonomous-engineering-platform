@@ -1,0 +1,349 @@
+{
+ "skill": "archify",
+ "accepted": [
+  {
+   "pattern": "LP3",
+   "location": "SKILL.md:1",
+   "confidence": 0.7,
+   "justification": "Accepted: the skill declares no 'permissions'/'allowed-tools' scope. The detected env/network capabilities are inherent to its function as a local diagram-renderer CLI: it reads environment configuration and, only on an explicit user request, fetches a brand-mark from a user-provided URL (documented in SKILL.md). No hidden capability is introduced; the vendored upstream skill predates tool-scope declarations."
+  }
+ ],
+ "dismissed": [
+  {
+   "pattern": "AE1",
+   "location": "SKILL.md:14",
+   "confidence": 1.0,
+   "disposition": "Referenced artifact: bin/archify.mjs. Scanner coverage failure, not a finding about the skill: the scan's own ledger records reason_code 'runtime_limit' with 0 of 199 files fully inspected (analysis_completeness: partial, 0.0% coverage), so every artifact referenced from SKILL.md was reported 'partial' and raised as AE1. The referenced artifact is one of the skill's own bundled files; incomplete scanner coverage is not evidence of obfuscation or malice in it."
+  },
+  {
+   "pattern": "AE1",
+   "location": "SKILL.md:40",
+   "confidence": 1.0,
+   "disposition": "Referenced artifact: bin/archify.mjs. Scanner coverage failure, not a finding about the skill: the scan's own ledger records reason_code 'runtime_limit' with 0 of 199 files fully inspected (analysis_completeness: partial, 0.0% coverage), so every artifact referenced from SKILL.md was reported 'partial' and raised as AE1. The referenced artifact is one of the skill's own bundled files; incomplete scanner coverage is not evidence of obfuscation or malice in it."
+  },
+  {
+   "pattern": "AE1",
+   "location": "SKILL.md:43",
+   "confidence": 1.0,
+   "disposition": "Referenced artifact: bin/archify.mjs. Scanner coverage failure, not a finding about the skill: the scan's own ledger records reason_code 'runtime_limit' with 0 of 199 files fully inspected (analysis_completeness: partial, 0.0% coverage), so every artifact referenced from SKILL.md was reported 'partial' and raised as AE1. The referenced artifact is one of the skill's own bundled files; incomplete scanner coverage is not evidence of obfuscation or malice in it."
+  },
+  {
+   "pattern": "AE1",
+   "location": "SKILL.md:67",
+   "confidence": 1.0,
+   "disposition": "Referenced artifact: bin/archify.mjs. Scanner coverage failure, not a finding about the skill: the scan's own ledger records reason_code 'runtime_limit' with 0 of 199 files fully inspected (analysis_completeness: partial, 0.0% coverage), so every artifact referenced from SKILL.md was reported 'partial' and raised as AE1. The referenced artifact is one of the skill's own bundled files; incomplete scanner coverage is not evidence of obfuscation or malice in it."
+  },
+  {
+   "pattern": "AE1",
+   "location": "SKILL.md:110",
+   "confidence": 1.0,
+   "disposition": "Referenced artifact: bin/archify.mjs. Scanner coverage failure, not a finding about the skill: the scan's own ledger records reason_code 'runtime_limit' with 0 of 199 files fully inspected (analysis_completeness: partial, 0.0% coverage), so every artifact referenced from SKILL.md was reported 'partial' and raised as AE1. The referenced artifact is one of the skill's own bundled files; incomplete scanner coverage is not evidence of obfuscation or malice in it."
+  },
+  {
+   "pattern": "AE1",
+   "location": "SKILL.md:111",
+   "confidence": 1.0,
+   "disposition": "Referenced artifact: bin/archify.mjs. Scanner coverage failure, not a finding about the skill: the scan's own ledger records reason_code 'runtime_limit' with 0 of 199 files fully inspected (analysis_completeness: partial, 0.0% coverage), so every artifact referenced from SKILL.md was reported 'partial' and raised as AE1. The referenced artifact is one of the skill's own bundled files; incomplete scanner coverage is not evidence of obfuscation or malice in it."
+  },
+  {
+   "pattern": "AE1",
+   "location": "SKILL.md:16",
+   "confidence": 1.0,
+   "disposition": "Referenced artifact: references/repository-authoring.md. Scanner coverage failure, not a finding about the skill: the scan's own ledger records reason_code 'runtime_limit' with 0 of 199 files fully inspected (analysis_completeness: partial, 0.0% coverage), so every artifact referenced from SKILL.md was reported 'partial' and raised as AE1. The referenced artifact is one of the skill's own bundled files; incomplete scanner coverage is not evidence of obfuscation or malice in it."
+  },
+  {
+   "pattern": "AE1",
+   "location": "SKILL.md:36",
+   "confidence": 1.0,
+   "disposition": "Referenced artifact: references/repository-authoring.md. Scanner coverage failure, not a finding about the skill: the scan's own ledger records reason_code 'runtime_limit' with 0 of 199 files fully inspected (analysis_completeness: partial, 0.0% coverage), so every artifact referenced from SKILL.md was reported 'partial' and raised as AE1. The referenced artifact is one of the skill's own bundled files; incomplete scanner coverage is not evidence of obfuscation or malice in it."
+  },
+  {
+   "pattern": "AE1",
+   "location": "SKILL.md:24",
+   "confidence": 1.0,
+   "disposition": "Referenced artifact: references/explainer-authoring.md. Scanner coverage failure, not a finding about the skill: the scan's own ledger records reason_code 'runtime_limit' with 0 of 199 files fully inspected (analysis_completeness: partial, 0.0% coverage), so every artifact referenced from SKILL.md was reported 'partial' and raised as AE1. The referenced artifact is one of the skill's own bundled files; incomplete scanner coverage is not evidence of obfuscation or malice in it."
+  },
+  {
+   "pattern": "AE1",
+   "location": "SKILL.md:35",
+   "confidence": 1.0,
+   "disposition": "Referenced artifact: references/authoring-defaults.md. Scanner coverage failure, not a finding about the skill: the scan's own ledger records reason_code 'runtime_limit' with 0 of 199 files fully inspected (analysis_completeness: partial, 0.0% coverage), so every artifact referenced from SKILL.md was reported 'partial' and raised as AE1. The referenced artifact is one of the skill's own bundled files; incomplete scanner coverage is not evidence of obfuscation or malice in it."
+  },
+  {
+   "pattern": "AE1",
+   "location": "SKILL.md:35",
+   "confidence": 1.0,
+   "disposition": "Referenced artifact: references/brand-marks.md. Scanner coverage failure, not a finding about the skill: the scan's own ledger records reason_code 'runtime_limit' with 0 of 199 files fully inspected (analysis_completeness: partial, 0.0% coverage), so every artifact referenced from SKILL.md was reported 'partial' and raised as AE1. The referenced artifact is one of the skill's own bundled files; incomplete scanner coverage is not evidence of obfuscation or malice in it."
+  },
+  {
+   "pattern": "AE1",
+   "location": "SKILL.md:47",
+   "confidence": 1.0,
+   "disposition": "Referenced artifact: references/architecture-layout-repair.md. Scanner coverage failure, not a finding about the skill: the scan's own ledger records reason_code 'runtime_limit' with 0 of 199 files fully inspected (analysis_completeness: partial, 0.0% coverage), so every artifact referenced from SKILL.md was reported 'partial' and raised as AE1. The referenced artifact is one of the skill's own bundled files; incomplete scanner coverage is not evidence of obfuscation or malice in it."
+  },
+  {
+   "pattern": "AE1",
+   "location": "SKILL.md:47",
+   "confidence": 1.0,
+   "disposition": "Referenced artifact: references/authoring-contract.md. Scanner coverage failure, not a finding about the skill: the scan's own ledger records reason_code 'runtime_limit' with 0 of 199 files fully inspected (analysis_completeness: partial, 0.0% coverage), so every artifact referenced from SKILL.md was reported 'partial' and raised as AE1. The referenced artifact is one of the skill's own bundled files; incomplete scanner coverage is not evidence of obfuscation or malice in it."
+  },
+  {
+   "pattern": "AE1",
+   "location": "SKILL.md:69",
+   "confidence": 1.0,
+   "disposition": "Referenced artifact: references/authoring-contract.md. Scanner coverage failure, not a finding about the skill: the scan's own ledger records reason_code 'runtime_limit' with 0 of 199 files fully inspected (analysis_completeness: partial, 0.0% coverage), so every artifact referenced from SKILL.md was reported 'partial' and raised as AE1. The referenced artifact is one of the skill's own bundled files; incomplete scanner coverage is not evidence of obfuscation or malice in it."
+  },
+  {
+   "pattern": "AE1",
+   "location": "SKILL.md:95",
+   "confidence": 1.0,
+   "disposition": "Referenced artifact: references/authoring-contract.md. Scanner coverage failure, not a finding about the skill: the scan's own ledger records reason_code 'runtime_limit' with 0 of 199 files fully inspected (analysis_completeness: partial, 0.0% coverage), so every artifact referenced from SKILL.md was reported 'partial' and raised as AE1. The referenced artifact is one of the skill's own bundled files; incomplete scanner coverage is not evidence of obfuscation or malice in it."
+  },
+  {
+   "pattern": "AE1",
+   "location": "SKILL.md:47",
+   "confidence": 1.0,
+   "disposition": "Referenced artifact: references/delivery-contract.md. Scanner coverage failure, not a finding about the skill: the scan's own ledger records reason_code 'runtime_limit' with 0 of 199 files fully inspected (analysis_completeness: partial, 0.0% coverage), so every artifact referenced from SKILL.md was reported 'partial' and raised as AE1. The referenced artifact is one of the skill's own bundled files; incomplete scanner coverage is not evidence of obfuscation or malice in it."
+  },
+  {
+   "pattern": "AE1",
+   "location": "SKILL.md:87",
+   "confidence": 1.0,
+   "disposition": "Referenced artifact: references/delivery-contract.md. Scanner coverage failure, not a finding about the skill: the scan's own ledger records reason_code 'runtime_limit' with 0 of 199 files fully inspected (analysis_completeness: partial, 0.0% coverage), so every artifact referenced from SKILL.md was reported 'partial' and raised as AE1. The referenced artifact is one of the skill's own bundled files; incomplete scanner coverage is not evidence of obfuscation or malice in it."
+  },
+  {
+   "pattern": "AE1",
+   "location": "SKILL.md:89",
+   "confidence": 1.0,
+   "disposition": "Referenced artifact: references/delivery-contract.md. Scanner coverage failure, not a finding about the skill: the scan's own ledger records reason_code 'runtime_limit' with 0 of 199 files fully inspected (analysis_completeness: partial, 0.0% coverage), so every artifact referenced from SKILL.md was reported 'partial' and raised as AE1. The referenced artifact is one of the skill's own bundled files; incomplete scanner coverage is not evidence of obfuscation or malice in it."
+  },
+  {
+   "pattern": "AE1",
+   "location": "SKILL.md:91",
+   "confidence": 1.0,
+   "disposition": "Referenced artifact: references/delivery-contract.md. Scanner coverage failure, not a finding about the skill: the scan's own ledger records reason_code 'runtime_limit' with 0 of 199 files fully inspected (analysis_completeness: partial, 0.0% coverage), so every artifact referenced from SKILL.md was reported 'partial' and raised as AE1. The referenced artifact is one of the skill's own bundled files; incomplete scanner coverage is not evidence of obfuscation or malice in it."
+  },
+  {
+   "pattern": "AE1",
+   "location": "SKILL.md:93",
+   "confidence": 1.0,
+   "disposition": "Referenced artifact: references/delivery-contract.md. Scanner coverage failure, not a finding about the skill: the scan's own ledger records reason_code 'runtime_limit' with 0 of 199 files fully inspected (analysis_completeness: partial, 0.0% coverage), so every artifact referenced from SKILL.md was reported 'partial' and raised as AE1. The referenced artifact is one of the skill's own bundled files; incomplete scanner coverage is not evidence of obfuscation or malice in it."
+  },
+  {
+   "pattern": "AE1",
+   "location": "SKILL.md:97",
+   "confidence": 1.0,
+   "disposition": "Referenced artifact: references/delivery-contract.md. Scanner coverage failure, not a finding about the skill: the scan's own ledger records reason_code 'runtime_limit' with 0 of 199 files fully inspected (analysis_completeness: partial, 0.0% coverage), so every artifact referenced from SKILL.md was reported 'partial' and raised as AE1. The referenced artifact is one of the skill's own bundled files; incomplete scanner coverage is not evidence of obfuscation or malice in it."
+  },
+  {
+   "pattern": "AE1",
+   "location": "SKILL.md:114",
+   "confidence": 1.0,
+   "disposition": "Referenced artifact: references/delivery-contract.md. Scanner coverage failure, not a finding about the skill: the scan's own ledger records reason_code 'runtime_limit' with 0 of 199 files fully inspected (analysis_completeness: partial, 0.0% coverage), so every artifact referenced from SKILL.md was reported 'partial' and raised as AE1. The referenced artifact is one of the skill's own bundled files; incomplete scanner coverage is not evidence of obfuscation or malice in it."
+  },
+  {
+   "pattern": "AE1",
+   "location": "SKILL.md:56",
+   "confidence": 1.0,
+   "disposition": "Referenced artifact: examples/production-deployment.architecture.json. Scanner coverage failure, not a finding about the skill: the scan's own ledger records reason_code 'runtime_limit' with 0 of 199 files fully inspected (analysis_completeness: partial, 0.0% coverage), so every artifact referenced from SKILL.md was reported 'partial' and raised as AE1. The referenced artifact is one of the skill's own bundled files; incomplete scanner coverage is not evidence of obfuscation or malice in it."
+  },
+  {
+   "pattern": "AE1",
+   "location": "SKILL.md:56",
+   "confidence": 1.0,
+   "disposition": "Referenced artifact: examples/web-app.architecture.json. Scanner coverage failure, not a finding about the skill: the scan's own ledger records reason_code 'runtime_limit' with 0 of 199 files fully inspected (analysis_completeness: partial, 0.0% coverage), so every artifact referenced from SKILL.md was reported 'partial' and raised as AE1. The referenced artifact is one of the skill's own bundled files; incomplete scanner coverage is not evidence of obfuscation or malice in it."
+  },
+  {
+   "pattern": "AE1",
+   "location": "SKILL.md:56",
+   "confidence": 1.0,
+   "disposition": "Referenced artifact: schemas/architecture.schema.json. Scanner coverage failure, not a finding about the skill: the scan's own ledger records reason_code 'runtime_limit' with 0 of 199 files fully inspected (analysis_completeness: partial, 0.0% coverage), so every artifact referenced from SKILL.md was reported 'partial' and raised as AE1. The referenced artifact is one of the skill's own bundled files; incomplete scanner coverage is not evidence of obfuscation or malice in it."
+  },
+  {
+   "pattern": "AE1",
+   "location": "SKILL.md:57",
+   "confidence": 1.0,
+   "disposition": "Referenced artifact: examples/agent-tool-call.workflow.json. Scanner coverage failure, not a finding about the skill: the scan's own ledger records reason_code 'runtime_limit' with 0 of 199 files fully inspected (analysis_completeness: partial, 0.0% coverage), so every artifact referenced from SKILL.md was reported 'partial' and raised as AE1. The referenced artifact is one of the skill's own bundled files; incomplete scanner coverage is not evidence of obfuscation or malice in it."
+  },
+  {
+   "pattern": "AE1",
+   "location": "SKILL.md:57",
+   "confidence": 1.0,
+   "disposition": "Referenced artifact: schemas/workflow.schema.json. Scanner coverage failure, not a finding about the skill: the scan's own ledger records reason_code 'runtime_limit' with 0 of 199 files fully inspected (analysis_completeness: partial, 0.0% coverage), so every artifact referenced from SKILL.md was reported 'partial' and raised as AE1. The referenced artifact is one of the skill's own bundled files; incomplete scanner coverage is not evidence of obfuscation or malice in it."
+  },
+  {
+   "pattern": "AE1",
+   "location": "SKILL.md:58",
+   "confidence": 1.0,
+   "disposition": "Referenced artifact: examples/cache-miss-request.sequence.json. Scanner coverage failure, not a finding about the skill: the scan's own ledger records reason_code 'runtime_limit' with 0 of 199 files fully inspected (analysis_completeness: partial, 0.0% coverage), so every artifact referenced from SKILL.md was reported 'partial' and raised as AE1. The referenced artifact is one of the skill's own bundled files; incomplete scanner coverage is not evidence of obfuscation or malice in it."
+  },
+  {
+   "pattern": "AE1",
+   "location": "SKILL.md:58",
+   "confidence": 1.0,
+   "disposition": "Referenced artifact: schemas/sequence.schema.json. Scanner coverage failure, not a finding about the skill: the scan's own ledger records reason_code 'runtime_limit' with 0 of 199 files fully inspected (analysis_completeness: partial, 0.0% coverage), so every artifact referenced from SKILL.md was reported 'partial' and raised as AE1. The referenced artifact is one of the skill's own bundled files; incomplete scanner coverage is not evidence of obfuscation or malice in it."
+  },
+  {
+   "pattern": "AE1",
+   "location": "SKILL.md:59",
+   "confidence": 1.0,
+   "disposition": "Referenced artifact: examples/product-analytics.dataflow.json. Scanner coverage failure, not a finding about the skill: the scan's own ledger records reason_code 'runtime_limit' with 0 of 199 files fully inspected (analysis_completeness: partial, 0.0% coverage), so every artifact referenced from SKILL.md was reported 'partial' and raised as AE1. The referenced artifact is one of the skill's own bundled files; incomplete scanner coverage is not evidence of obfuscation or malice in it."
+  },
+  {
+   "pattern": "AE1",
+   "location": "SKILL.md:59",
+   "confidence": 1.0,
+   "disposition": "Referenced artifact: schemas/dataflow.schema.json. Scanner coverage failure, not a finding about the skill: the scan's own ledger records reason_code 'runtime_limit' with 0 of 199 files fully inspected (analysis_completeness: partial, 0.0% coverage), so every artifact referenced from SKILL.md was reported 'partial' and raised as AE1. The referenced artifact is one of the skill's own bundled files; incomplete scanner coverage is not evidence of obfuscation or malice in it."
+  },
+  {
+   "pattern": "AE1",
+   "location": "SKILL.md:60",
+   "confidence": 1.0,
+   "disposition": "Referenced artifact: examples/deployment-release.lifecycle.json. Scanner coverage failure, not a finding about the skill: the scan's own ledger records reason_code 'runtime_limit' with 0 of 199 files fully inspected (analysis_completeness: partial, 0.0% coverage), so every artifact referenced from SKILL.md was reported 'partial' and raised as AE1. The referenced artifact is one of the skill's own bundled files; incomplete scanner coverage is not evidence of obfuscation or malice in it."
+  },
+  {
+   "pattern": "AE1",
+   "location": "SKILL.md:60",
+   "confidence": 1.0,
+   "disposition": "Referenced artifact: schemas/lifecycle.schema.json. Scanner coverage failure, not a finding about the skill: the scan's own ledger records reason_code 'runtime_limit' with 0 of 199 files fully inspected (analysis_completeness: partial, 0.0% coverage), so every artifact referenced from SKILL.md was reported 'partial' and raised as AE1. The referenced artifact is one of the skill's own bundled files; incomplete scanner coverage is not evidence of obfuscation or malice in it."
+  },
+  {
+   "pattern": "AE1",
+   "location": "SKILL.md:61",
+   "confidence": 1.0,
+   "disposition": "Referenced artifact: examples/orders.erd.json. Scanner coverage failure, not a finding about the skill: the scan's own ledger records reason_code 'runtime_limit' with 0 of 199 files fully inspected (analysis_completeness: partial, 0.0% coverage), so every artifact referenced from SKILL.md was reported 'partial' and raised as AE1. The referenced artifact is one of the skill's own bundled files; incomplete scanner coverage is not evidence of obfuscation or malice in it."
+  },
+  {
+   "pattern": "AE1",
+   "location": "SKILL.md:61",
+   "confidence": 1.0,
+   "disposition": "Referenced artifact: schemas/erd.schema.json. Scanner coverage failure, not a finding about the skill: the scan's own ledger records reason_code 'runtime_limit' with 0 of 199 files fully inspected (analysis_completeness: partial, 0.0% coverage), so every artifact referenced from SKILL.md was reported 'partial' and raised as AE1. The referenced artifact is one of the skill's own bundled files; incomplete scanner coverage is not evidence of obfuscation or malice in it."
+  },
+  {
+   "pattern": "AE1",
+   "location": "SKILL.md:62",
+   "confidence": 1.0,
+   "disposition": "Referenced artifact: examples/payment-platform.tree.json. Scanner coverage failure, not a finding about the skill: the scan's own ledger records reason_code 'runtime_limit' with 0 of 199 files fully inspected (analysis_completeness: partial, 0.0% coverage), so every artifact referenced from SKILL.md was reported 'partial' and raised as AE1. The referenced artifact is one of the skill's own bundled files; incomplete scanner coverage is not evidence of obfuscation or malice in it."
+  },
+  {
+   "pattern": "AE1",
+   "location": "SKILL.md:62",
+   "confidence": 1.0,
+   "disposition": "Referenced artifact: schemas/tree.schema.json. Scanner coverage failure, not a finding about the skill: the scan's own ledger records reason_code 'runtime_limit' with 0 of 199 files fully inspected (analysis_completeness: partial, 0.0% coverage), so every artifact referenced from SKILL.md was reported 'partial' and raised as AE1. The referenced artifact is one of the skill's own bundled files; incomplete scanner coverage is not evidence of obfuscation or malice in it."
+  },
+  {
+   "pattern": "AE1",
+   "location": "SKILL.md:63",
+   "confidence": 1.0,
+   "disposition": "Referenced artifact: examples/payments.class.json. Scanner coverage failure, not a finding about the skill: the scan's own ledger records reason_code 'runtime_limit' with 0 of 199 files fully inspected (analysis_completeness: partial, 0.0% coverage), so every artifact referenced from SKILL.md was reported 'partial' and raised as AE1. The referenced artifact is one of the skill's own bundled files; incomplete scanner coverage is not evidence of obfuscation or malice in it."
+  },
+  {
+   "pattern": "AE1",
+   "location": "SKILL.md:63",
+   "confidence": 1.0,
+   "disposition": "Referenced artifact: schemas/class.schema.json. Scanner coverage failure, not a finding about the skill: the scan's own ledger records reason_code 'runtime_limit' with 0 of 199 files fully inspected (analysis_completeness: partial, 0.0% coverage), so every artifact referenced from SKILL.md was reported 'partial' and raised as AE1. The referenced artifact is one of the skill's own bundled files; incomplete scanner coverage is not evidence of obfuscation or malice in it."
+  },
+  {
+   "pattern": "AE1",
+   "location": "SKILL.md:64",
+   "confidence": 1.0,
+   "disposition": "Referenced artifact: examples/payment-incident.timeline.json. Scanner coverage failure, not a finding about the skill: the scan's own ledger records reason_code 'runtime_limit' with 0 of 199 files fully inspected (analysis_completeness: partial, 0.0% coverage), so every artifact referenced from SKILL.md was reported 'partial' and raised as AE1. The referenced artifact is one of the skill's own bundled files; incomplete scanner coverage is not evidence of obfuscation or malice in it."
+  },
+  {
+   "pattern": "AE1",
+   "location": "SKILL.md:64",
+   "confidence": 1.0,
+   "disposition": "Referenced artifact: schemas/timeline.schema.json. Scanner coverage failure, not a finding about the skill: the scan's own ledger records reason_code 'runtime_limit' with 0 of 199 files fully inspected (analysis_completeness: partial, 0.0% coverage), so every artifact referenced from SKILL.md was reported 'partial' and raised as AE1. The referenced artifact is one of the skill's own bundled files; incomplete scanner coverage is not evidence of obfuscation or malice in it."
+  },
+  {
+   "pattern": "AE1",
+   "location": "SKILL.md:65",
+   "confidence": 1.0,
+   "disposition": "Referenced artifact: examples/checkout-request.waterfall.json. Scanner coverage failure, not a finding about the skill: the scan's own ledger records reason_code 'runtime_limit' with 0 of 199 files fully inspected (analysis_completeness: partial, 0.0% coverage), so every artifact referenced from SKILL.md was reported 'partial' and raised as AE1. The referenced artifact is one of the skill's own bundled files; incomplete scanner coverage is not evidence of obfuscation or malice in it."
+  },
+  {
+   "pattern": "AE1",
+   "location": "SKILL.md:65",
+   "confidence": 1.0,
+   "disposition": "Referenced artifact: schemas/waterfall.schema.json. Scanner coverage failure, not a finding about the skill: the scan's own ledger records reason_code 'runtime_limit' with 0 of 199 files fully inspected (analysis_completeness: partial, 0.0% coverage), so every artifact referenced from SKILL.md was reported 'partial' and raised as AE1. The referenced artifact is one of the skill's own bundled files; incomplete scanner coverage is not evidence of obfuscation or malice in it."
+  },
+  {
+   "pattern": "AE1",
+   "location": "SKILL.md:103",
+   "confidence": 1.0,
+   "disposition": "Referenced artifact: references/viewer-runtime.md. Scanner coverage failure, not a finding about the skill: the scan's own ledger records reason_code 'runtime_limit' with 0 of 199 files fully inspected (analysis_completeness: partial, 0.0% coverage), so every artifact referenced from SKILL.md was reported 'partial' and raised as AE1. The referenced artifact is one of the skill's own bundled files; incomplete scanner coverage is not evidence of obfuscation or malice in it."
+  },
+  {
+   "pattern": "AE1",
+   "location": "SKILL.md:114",
+   "confidence": 1.0,
+   "disposition": "Referenced artifact: assets/template.html. Scanner coverage failure, not a finding about the skill: the scan's own ledger records reason_code 'runtime_limit' with 0 of 199 files fully inspected (analysis_completeness: partial, 0.0% coverage), so every artifact referenced from SKILL.md was reported 'partial' and raised as AE1. The referenced artifact is one of the skill's own bundled files; incomplete scanner coverage is not evidence of obfuscation or malice in it."
+  },
+  {
+   "pattern": "AE3",
+   "location": "renderers/shared/diagnostics.mjs:37",
+   "confidence": 0.9,
+   "disposition": "False positive. The flagged NUL bytes are literal separator characters inside a dedupe-key template string in recordDiagnostic(): `${normalized.code}<NUL>${normalized.message}<NUL>${JSON.stringify(normalized.subject)}`. NUL is used as an unambiguous field separator that cannot collide with diagnostic text — a standard join-key idiom, verified in context. No hidden or obfuscated payload."
+  },
+  {
+   "pattern": "AE4",
+   "location": "examples/locales/ru.json:1",
+   "confidence": 0.8,
+   "disposition": "False positive. examples/locales/ru.json is the skill's Russian locale file; the flagged Cyrillic strings are the translation content itself (e.g. page titles), not mixed-script spoofing or deceptive Unicode."
+  },
+  {
+   "pattern": "EA3",
+   "location": "assets/template.html:135",
+   "confidence": 0.7,
+   "disposition": "False positive (Scope Creep). The flagged text 'NOT LIMITED TO' is part of the SIL Open Font License warranty disclaimer embedded in the HTML template and its rendered example outputs — third-party font license boilerplate, not instructions or scope creep."
+  },
+  {
+   "pattern": "EA3",
+   "location": "examples/class-payment-processors-rendered.html:135",
+   "confidence": 0.7,
+   "disposition": "False positive (Scope Creep). The flagged text 'NOT LIMITED TO' is part of the SIL Open Font License warranty disclaimer embedded in the HTML template and its rendered example outputs — third-party font license boilerplate, not instructions or scope creep."
+  },
+  {
+   "pattern": "EA3",
+   "location": "examples/class-payments-rendered.html:135",
+   "confidence": 0.7,
+   "disposition": "False positive (Scope Creep). The flagged text 'NOT LIMITED TO' is part of the SIL Open Font License warranty disclaimer embedded in the HTML template and its rendered example outputs — third-party font license boilerplate, not instructions or scope creep."
+  },
+  {
+   "pattern": "EA3",
+   "location": "examples/dataflow-product-analytics.html:135",
+   "confidence": 0.7,
+   "disposition": "False positive (Scope Creep). The flagged text 'NOT LIMITED TO' is part of the SIL Open Font License warranty disclaimer embedded in the HTML template and its rendered example outputs — third-party font license boilerplate, not instructions or scope creep."
+  },
+  {
+   "pattern": "EA3",
+   "location": "examples/erd-orders-rendered.html:135",
+   "confidence": 0.7,
+   "disposition": "False positive (Scope Creep). The flagged text 'NOT LIMITED TO' is part of the SIL Open Font License warranty disclaimer embedded in the HTML template and its rendered example outputs — third-party font license boilerplate, not instructions or scope creep."
+  },
+  {
+   "pattern": "EA3",
+   "location": "examples/lifecycle-agent-run.html:135",
+   "confidence": 0.7,
+   "disposition": "False positive (Scope Creep). The flagged text 'NOT LIMITED TO' is part of the SIL Open Font License warranty disclaimer embedded in the HTML template and its rendered example outputs — third-party font license boilerplate, not instructions or scope creep."
+  },
+  {
+   "pattern": "EA3",
+   "location": "examples/sequence-cache-miss-request.html:135",
+   "confidence": 0.7,
+   "disposition": "False positive (Scope Creep). The flagged text 'NOT LIMITED TO' is part of the SIL Open Font License warranty disclaimer embedded in the HTML template and its rendered example outputs — third-party font license boilerplate, not instructions or scope creep."
+  },
+  {
+   "pattern": "EA3",
+   "location": "examples/subscription-billing-rendered.html:135",
+   "confidence": 0.7,
+   "disposition": "False positive (Scope Creep). The flagged text 'NOT LIMITED TO' is part of the SIL Open Font License warranty disclaimer embedded in the HTML template and its rendered example outputs — third-party font license boilerplate, not instructions or scope creep."
+  },
+  {
+   "pattern": "EA3",
+   "location": "examples/timeline-archify-dev-activity-rendered.html:135",
+   "confidence": 0.7,
+   "disposition": "False positive (Scope Creep). The flagged text 'NOT LIMITED TO' is part of the SIL Open Font License warranty disclaimer embedded in the HTML template and its rendered example outputs — third-party font license boilerplate, not instructions or scope creep."
+  }
+ ]
+}
