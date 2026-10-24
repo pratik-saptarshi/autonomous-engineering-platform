@@ -37,16 +37,17 @@ Discovery is deduplicated by command id and capped at the first match per rule. 
 | Code | Meaning |
 | --- | --- |
 | 0 | Every discovered command executed and passed. |
-| 1 | A command failed (the run stops at the first failure), the budget was exhausted with commands unrun, or `verify` refused to append to a receipts file whose last line is malformed. |
+| 1 | A command failed (the run stops at the first failure), the budget was exhausted with commands unrun, `verify` refused to append to a receipts file whose last line is malformed, a receipts run's tree was not clean at HEAD (git roots — see *Tree binding*), or the tree changed during the run so no completion record was written. |
 | 2 | Zero commands discovered — a named "no mechanical evidence available" state (`VERIFY: no verification commands discovered ...`). It is neither a pass nor a failure; callers record it openly. |
 | 3 | Memory preflight refusal: less than 512 MiB available; nothing was run. |
 
-`check-receipts --receipts <file> --task <id>`:
+`check-receipts --receipts <file> --task <id> --root <repo> [--historical]` (`--root` is required):
 
 | Code | Meaning |
 | --- | --- |
-| 0 | The whole file's chain validates, every receipt in the task's latest run records `exit_code` 0 with no timeout, and that run ends in a run-completion record matching its command receipts (`RECEIPTS: PASS`). |
-| 1 | The file is corrupt at a named line, the chain is broken at a named line, the task has no receipts, one of the latest run's receipts records a failure, or the task's latest run has no matching run-completion record — the partial receipt set of a run that stopped early is rejected (`RECEIPTS: FAIL` / `RECEIPTS: corrupt` / `RECEIPTS: chain broken`). |
+| 0 | The whole file's chain validates, every receipt in the task's latest run records `exit_code` 0 with no timeout, that run ends in a run-completion record matching its command receipts, and the segment's tree binding validates (`RECEIPTS: PASS`). In default mode the binding check also requires the worktree's current HEAD to equal the bound head and the tree to be clean. |
+| 1 | The file is corrupt at a named line, the chain is broken at a named line, the task has no receipts, one of the latest run's receipts records a failure, or the task's latest run has no matching run-completion record — the partial receipt set of a run that stopped early is rejected (`RECEIPTS: FAIL` / `RECEIPTS: corrupt` / `RECEIPTS: chain broken`). Also exit 1: the segment's stated digest does not match its stated head or the live fs tree (`RECEIPTS: STALE`), the worktree's HEAD has moved past the bound head (`RECEIPTS: HEAD-MOVED`), or the working tree is dirty (default mode, `RECEIPTS: DIRTY`). |
+| 2 | The segment carries no tree binding — it predates binding (`RECEIPTS: UNBOUND`) — or its recorded commit can no longer be read (`RECEIPTS: UNVERIFIABLE`). Exit 2 is never evidence. |
 
 ### Receipts format and chain
 
@@ -68,9 +69,18 @@ With `--receipts <file>`, `verify` first appends a run-start record (`kind: run-
 
 The genesis link is 64 zero characters. Appends are a single `os.write` under `flock` on an `O_APPEND` descriptor, so concurrent runs cannot interleave a line. `check-receipts` validates the chain over the **whole file** before filtering to the requested task, so per-task verdicts over one shared file stay meaningful, and a deleted line is detected at the following line, while a tampered line is detected at the tampered line itself.
 
+### Tree binding
+
+A receipts segment must describe a tree, not just a run. A receipts run computes a **binding** before its first command and records it on both the run-start and the run-completion record as a `binding` object: `{root, head, tree_digest, mode}` (`root` is the canonicalized `--root` path). The `binding` field is deliberately absent from the records' required-field sets: `check-receipts` reads it directly, and its absence is the `UNBOUND` verdict (exit 2), never corruption and never a silent pass — pre-binding segments are refused, not reinterpreted.
+
+- **Git mode** (the root is inside a git worktree): `head` is `git rev-parse HEAD` and `tree_digest` is a SHA-256 over the entries of `git ls-tree -r -z <head>` — computed from git objects, never from working-tree content, so it can be recomputed at any later time while the commit exists. A receipts run in git mode refuses a dirty tree up front (`tree not clean at HEAD — commit or stash before verifying`, no completion record): `git status` must be empty after dropping the receipts file itself, anything under `.superpowers/`, and untracked tool-cache/build directories (`__pycache__`, `.pytest_cache`, `node_modules`, `dist`, and kin) — the workflow's own bookkeeping and the outputs a run itself creates, never tree evidence. Modified or staged tracked files always count as dirty. If the tree is dirtied during the run, no completion record is written.
+- **Fs mode** (no git): `head` is null and `tree_digest` is a SHA-256 over the tree's files (relative path + content hash; symlinks contribute their target string), excluding the same cache/build directories and the receipts file. If the digest changes during the run, no completion record is written.
+
+`check-receipts` validates the binding after the chain and segment structure. A stated digest that does not match its stated head (git) or the live tree (fs) is `STALE` (exit 1); a recorded commit that no longer exists is `UNVERIFIABLE` (exit 2). Default mode — the completion gate — additionally requires the worktree's current HEAD to equal the bound head (`HEAD-MOVED`) and the tree to be clean (`DIRTY`). `--historical` skips only those two current-state requirements: it validates the segment as evidence about its own recorded head, which is what a cross-session resume needs — it never completes a task by itself.
+
 ### The trust shape, in plain words
 
-Receipts are evidence when the controlling side ran the verifier itself, or chain-validates receipts from its own runs. An implementer-produced receipts file is an audit artifact, not proof: the file format cannot distinguish who ran the verifier, and nothing here pretends otherwise. That is why the SDD completion step requires the *controller* to run `verify` fresh (or chain-validate its own receipts) before a task may be marked complete.
+Receipts are evidence when the controlling side ran the verifier itself, or validates receipts from its own runs with `check-receipts` against the tree the segment is bound to. An implementer-produced receipts file is an audit artifact, not proof: the file format cannot distinguish who ran the verifier, and nothing here pretends otherwise. That is why the SDD completion step requires the *controller* to run `verify` fresh (or validate its own receipts, in default mode, against the bound tree) before a task may be marked complete.
 
 And the symmetrical warning: `verify` executes the target repo's test code with the reviewer's full privileges. The timeout, budget, output cap, and memory preflight are accident guards against runaway test suites — they are not a sandbox, and they do not make an untrusted repo safe to verify.
 
