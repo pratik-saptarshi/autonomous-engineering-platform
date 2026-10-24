@@ -1,0 +1,39 @@
+# AEP launch policy data — read by scripts/lane-coord.sh at claim time;
+# integrity-verified by scripts/boot-gate.sh against the committed version.
+# Grammar: [section] headers, one pattern per line, '#' comments, blank
+# lines ignored; anything else is a load-time validation error.
+# Change policy by editing this file through git/PR — the committed
+# history is the audit trail. There is no other policy state.
+[sensitive-paths]
+*/.ssh
+*/.ssh/*
+*/.aws
+*/.aws/*
+*/.config/gcloud
+*/.config/gcloud/*
+*/.azure
+*/.azure/*
+*/.gnupg
+*/.gnupg/*
+*/.docker/config.json
+*/.kube/config
+*/.netrc
+*/.npmrc
+*/.pypirc
+*/.git-credentials
+*/secrets.json
+*/.env
+*/.env.*
+*.pem
+*.key
+*id_rsa*
+*id_ed25519*
+*/.config/gh
+*/.config/gh/*
+[env-scrub]
+KEY
+PASSWORD
+SECRET
+TOKEN
+CREDENTIAL
+AUTH
