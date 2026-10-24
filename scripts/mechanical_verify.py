@@ -526,12 +526,122 @@ def _count_collected(
     return None
 
 
+def _policy_path() -> Path:
+    """Resolve the launch-policy file: $AEP_POLICY_DATA when set, else
+    the policy.data beside this script — the same rule lane-coord.sh's
+    load_policy applies."""
+    override = os.environ.get("AEP_POLICY_DATA")
+    if override:
+        return Path(override)
+    return Path(__file__).resolve().parent / "policy.data"
+
+
+def policy_env_scrub(policy_path) -> tuple[str, ...]:
+    """Read the [env-scrub] fragments from a policy.data file.
+
+    A new Python reader for the section grammar lane-coord.sh's
+    load_policy validates (lane-coord's parser exists only as an
+    embedded python3 heredoc, so it is not importable from here; this
+    reader ports its extraction semantics). A missing or unreadable
+    file yields no fragments.
+    """
+    try:
+        lines = Path(policy_path).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ()
+    section = None
+    fragments: list[str] = []
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("["):
+            section = line[1:-1] if line.endswith("]") else line[1:]
+            continue
+        if section == "env-scrub":
+            fragments.append(line)
+    return tuple(fragments)
+
+
+def _auth_occurrence_is_sensitive(upper: str) -> bool:
+    """True if an (already uppercased) name has an AUTH occurrence that
+    is NOT boundary-exempt — a port of lane-coord.sh's
+    auth_occurrence_is_sensitive. An occurrence is exempt when
+    immediately preceded by SSH_ (spares SSH_AUTH_SOCK) or immediately
+    followed by OR + ('_' or end-of-name) (spares GIT_AUTHOR_NAME,
+    ...AUTHOR / ...AUTHOR_ names). AUTHORITY is not exempt: its AUTH
+    is followed by ORI..., not OR_/end.
+    """
+    start = 0
+    while True:
+        i = upper.find("AUTH", start)
+        if i < 0:
+            return False
+        if i >= 4 and upper[i - 4 : i] == "SSH_":
+            start = i + 1
+            continue
+        after = upper[i + 4 :]
+        if after == "OR" or after.startswith("OR_"):
+            start = i + 1
+            continue
+        return True
+
+
+def _name_is_sensitive(name: str, fragments) -> bool:
+    """Port of lane-coord.sh's name_is_sensitive: a name is sensitive
+    when it contains any [env-scrub] fragment as a case-insensitive
+    substring (the AUTH fragment applies its boundary exemptions;
+    other fragments have none)."""
+    upper = name.upper()
+    for fragment in fragments:
+        frag_upper = fragment.upper()
+        if frag_upper == "AUTH":
+            if _auth_occurrence_is_sensitive(upper):
+                return True
+        elif frag_upper and frag_upper in upper:
+            return True
+    return False
+
+
+def build_run_env(policy_path) -> dict:
+    """The environment verification commands run with: os.environ
+    minus every name the policy's [env-scrub] fragments mark sensitive.
+
+    AEP_VERIFY_FULL_ENV=1 opts out (mirroring lane-coord's
+    AEP_LANE_FULL_ENV) and the full environment passes through. With
+    no fragments — e.g. a missing policy file — nothing is scrubbed.
+    """
+    env = dict(os.environ)
+    if os.environ.get("AEP_VERIFY_FULL_ENV") == "1":
+        return env
+    fragments = policy_env_scrub(policy_path)
+    if not fragments:
+        return env
+    return {
+        name: value
+        for name, value in env.items()
+        if not _name_is_sensitive(name, fragments)
+    }
+
+
+def run_env_mode(policy_path) -> str:
+    """The env mode stated on the run-start record. The record never
+    claims a scrub that did not happen: a missing policy file is
+    'unscrubbed (no policy)'; the explicit opt-out is
+    'full (AEP_VERIFY_FULL_ENV)'; otherwise 'scrubbed'."""
+    if os.environ.get("AEP_VERIFY_FULL_ENV") == "1":
+        return "full (AEP_VERIFY_FULL_ENV)"
+    if not Path(policy_path).is_file():
+        return "unscrubbed (no policy)"
+    return "scrubbed"
+
+
 def run_verification(
     root: Path,
     command: VerificationCommand,
     timeout_seconds: float = 300,
 ) -> VerificationResult:
-    env = dict(os.environ)
+    env = build_run_env(_policy_path())
     env["CI"] = "1"
     env["PYTHONUNBUFFERED"] = "1"
     started = time.monotonic()
@@ -1026,6 +1136,7 @@ def append_run_start(
     run_id: str,
     binding: dict | None = None,
     subreaper: bool | None = None,
+    env: str | None = None,
 ) -> None:
     """Append the run-boundary record that opens a run segment.
 
@@ -1038,7 +1149,8 @@ def append_run_start(
     do not include it, so its absence routes to the UNBOUND verdict
     rather than a corruption verdict (RC3). `subreaper`, when given,
     records whether main() set PR_SET_CHILD_SUBREAPER for the run —
-    likewise an extra field.
+    likewise an extra field. `env`, when given, states the run's env
+    mode (see run_env_mode) — an extra field in the same style.
     """
     body = {
         "ts": datetime.now(timezone.utc).isoformat(),
@@ -1050,6 +1162,8 @@ def append_run_start(
         body["binding"] = binding
     if subreaper is not None:
         body["subreaper"] = subreaper
+    if env is not None:
+        body["env"] = env
     _append_record(receipts_path, body)
 
 
@@ -1304,6 +1418,16 @@ def main(argv: list[str] | None = None) -> int:
             historical=args.historical,
         )
 
+    if os.environ.get("AEP_VERIFY_FULL_ENV") == "1":
+        # The env-scrub opt-out is loud, never silent (mirrors
+        # lane-coord's AEP_LANE_FULL_ENV warning): stderr on every
+        # run, and the run-start record states the mode.
+        print(
+            "VERIFY: warning AEP_VERIFY_FULL_ENV=1: commands receive "
+            "the full environment (credential scrub disabled)",
+            file=sys.stderr,
+        )
+
     receipts_path = Path(args.receipts) if args.receipts is not None else None
     if receipts_path is not None:
         # Fail closed before running anything: never append to a receipts
@@ -1364,7 +1488,12 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
         append_run_start(
-            receipts_path, task, run_id, binding=binding, subreaper=subreaper
+            receipts_path,
+            task,
+            run_id,
+            binding=binding,
+            subreaper=subreaper,
+            env=run_env_mode(_policy_path()),
         )
         if binding["mode"] == "git" and not tree_clean(root, receipts_path):
             print(

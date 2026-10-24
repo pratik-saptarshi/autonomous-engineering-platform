@@ -810,6 +810,205 @@ class CollectedCountTests(unittest.TestCase):
             self.assertFalse(result.passed)
 
 
+POLICY_DATA = Path(__file__).resolve().parent.parent / "policy.data"
+
+
+def _env_scrub_fragments() -> tuple[str, ...]:
+    """Independently parse the [env-scrub] section of the repo policy.
+
+    Tests derive fragment-dependent names from the policy file itself
+    (never from a hard-coded fragment list), so a policy edit that
+    changes the fragments changes the fixtures with it.
+    """
+    fragments = []
+    section = None
+    for raw in POLICY_DATA.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("["):
+            section = line[1:-1]
+            continue
+        if section == "env-scrub":
+            fragments.append(line)
+    return tuple(fragments)
+
+
+class EnvScrubTests(unittest.TestCase):
+    def test_policy_env_scrub_reads_repo_policy_fragments(self):
+        expected = _env_scrub_fragments()
+        self.assertTrue(expected)
+        self.assertEqual(
+            mechanical_verify.policy_env_scrub(POLICY_DATA), expected
+        )
+
+    def test_policy_env_scrub_reads_only_the_env_scrub_section(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            policy = write(
+                Path(tmp),
+                "policy.data",
+                "# comment\n"
+                "[sensitive-paths]\n"
+                "*/.ssh\n"
+                "NOT_A_FRAGMENT\n"
+                "\n"
+                "[env-scrub]\n"
+                "ALPHA\n"
+                "# another comment\n"
+                "BETA\n",
+            )
+            self.assertEqual(
+                mechanical_verify.policy_env_scrub(policy),
+                ("ALPHA", "BETA"),
+            )
+
+    def test_policy_env_scrub_missing_file_returns_no_fragments(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(
+                mechanical_verify.policy_env_scrub(Path(tmp) / "absent.data"),
+                (),
+            )
+
+    def test_build_run_env_scrubs_every_fragment_case_insensitively(self):
+        for fragment in _env_scrub_fragments():
+            name = f"AEP_TEST_{fragment.upper()}_MARKER"
+            for variant in (name, name.lower()):
+                with self.subTest(variant=variant):
+                    with mock.patch.dict(
+                        os.environ,
+                        {variant: "v", "AEP_TEST_PLAIN_KEEP": "v"},
+                    ):
+                        env = mechanical_verify.build_run_env(POLICY_DATA)
+                    self.assertNotIn(variant, env)
+                    self.assertIn("AEP_TEST_PLAIN_KEEP", env)
+
+    def test_build_run_env_auth_boundary_rows(self):
+        # lane-coord's name_is_sensitive truth table: an AUTH occurrence
+        # is exempt when preceded by SSH_ (SSH_AUTH_SOCK) or followed
+        # by OR + '_'/end (GIT_AUTHOR_*, ...AUTHOR); AUTHORITY's AUTH
+        # is followed by ORI... and is NOT exempt.
+        rows = {
+            "SSH_AUTH_SOCK": True,
+            "GIT_AUTHOR_NAME": True,
+            "GIT_AUTHOR_EMAIL": True,
+            "SOME_AUTHOR": True,
+            "AEP_TEST_AUTHORITY": False,
+            "AUTH": False,
+            "SSH_AUTH_SOCK_AUTH": False,
+        }
+        for name, survives in rows.items():
+            with self.subTest(name=name):
+                with mock.patch.dict(os.environ, {name: "v"}):
+                    env = mechanical_verify.build_run_env(POLICY_DATA)
+                self.assertEqual(name in env, survives)
+
+    def test_build_run_env_full_env_opt_out_keeps_sentinel(self):
+        fragment = _env_scrub_fragments()[0]
+        name = f"AEP_TEST_{fragment.upper()}_SENTINEL"
+        with mock.patch.dict(
+            os.environ, {name: "sentinel", "AEP_VERIFY_FULL_ENV": "1"}
+        ):
+            env = mechanical_verify.build_run_env(POLICY_DATA)
+        self.assertEqual(env.get(name), "sentinel")
+
+    def test_build_run_env_missing_policy_keeps_everything(self):
+        fragment = _env_scrub_fragments()[0]
+        name = f"AEP_TEST_{fragment.upper()}_SENTINEL"
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict(os.environ, {name: "sentinel"}):
+                env = mechanical_verify.build_run_env(
+                    Path(tmp) / "absent.data"
+                )
+        self.assertEqual(env.get(name), "sentinel")
+
+    def test_run_env_mode_strings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "absent.data"
+            self.assertEqual(
+                mechanical_verify.run_env_mode(missing),
+                "unscrubbed (no policy)",
+            )
+            self.assertEqual(
+                mechanical_verify.run_env_mode(POLICY_DATA), "scrubbed"
+            )
+            with mock.patch.dict(os.environ, {"AEP_VERIFY_FULL_ENV": "1"}):
+                self.assertEqual(
+                    mechanical_verify.run_env_mode(POLICY_DATA),
+                    "full (AEP_VERIFY_FULL_ENV)",
+                )
+
+    def test_run_verification_scrubs_sentinel_end_to_end(self):
+        fragment = _env_scrub_fragments()[0]
+        name = f"AEP_TEST_{fragment.upper()}_SENTINEL"
+        script = (
+            "import os, sys; "
+            f"sys.stdout.write(os.environ.get({name!r}, 'ABSENT'))"
+        )
+        command = VerificationCommand(
+            "t", "t", (sys.executable, "-c", script)
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch.dict(
+                os.environ,
+                {name: "sentinel-value", "AEP_POLICY_DATA": str(POLICY_DATA)},
+            ):
+                result = run_verification(root, command)
+                self.assertEqual(result.exit_code, 0, result.stderr)
+                self.assertEqual(result.stdout, "ABSENT")
+                with mock.patch.dict(
+                    os.environ, {"AEP_VERIFY_FULL_ENV": "1"}
+                ):
+                    opted = run_verification(root, command)
+                self.assertEqual(opted.exit_code, 0, opted.stderr)
+                self.assertEqual(opted.stdout, "sentinel-value")
+
+    def test_cli_run_start_record_states_env_mode(self):
+        variants = (
+            ("unscrubbed (no policy)", {"AEP_POLICY_DATA": "ABSENT_FILE"}),
+            ("scrubbed", {}),
+            ("full (AEP_VERIFY_FULL_ENV)", {"AEP_VERIFY_FULL_ENV": "1"}),
+        )
+        for expected, overrides in variants:
+            with self.subTest(expected=expected):
+                with tempfile.TemporaryDirectory() as tmp:
+                    base = Path(tmp)
+                    root = base / "root"
+                    root.mkdir()
+                    write(root, "Makefile", "test:\n\ttrue\n")
+                    receipts = base / "receipts.jsonl"
+                    env = dict(os.environ)
+                    env.pop("AEP_POLICY_DATA", None)
+                    env.pop("AEP_VERIFY_FULL_ENV", None)
+                    for key, value in overrides.items():
+                        if value == "ABSENT_FILE":
+                            env[key] = str(base / "absent.data")
+                        else:
+                            env[key] = value
+                    subprocess.run(
+                        [
+                            sys.executable,
+                            str(SCRIPT),
+                            "verify",
+                            "--root",
+                            str(root),
+                            "--task",
+                            "envmode",
+                            "--receipts",
+                            str(receipts),
+                        ],
+                        capture_output=True,
+                        text=True,
+                        env=env,
+                        timeout=60,
+                    )
+                    first = json.loads(
+                        receipts.read_text(encoding="utf-8").splitlines()[0]
+                    )
+                    self.assertEqual(first["kind"], "run-start")
+                    self.assertEqual(first["env"], expected)
+
+
 class CliTests(unittest.TestCase):
     def run_cli(self, root: Path, env=None):
         return subprocess.run(
