@@ -23,6 +23,13 @@ jobs:
           shellcheck scripts/*.sh
           test -z "$(shfmt -d -i 2 scripts/*.sh)"
 
+  script-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -m unittest discover -s scripts/tests -v
+      - run: bash scripts/lane-coord.sh --self-test
+
   go-checks:
     runs-on: ubuntu-latest
     steps:
