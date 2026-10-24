@@ -16,6 +16,10 @@ The three mechanisms:
 
 `mechanical_verify.py verify --root <repo> --task <id>` discovers verification commands from a fixed allowlist of project markers, then executes them in discovery order, stopping at the first failure. Each command runs with a per-command timeout (default 300 s, `--timeout`), the whole run has a wall-clock budget (default 600 s, `--budget`), captured stdout/stderr are tail-capped at 65536 bytes, and a timed-out command is sent SIGTERM, given a 0.75 s grace, then SIGKILL — the killed process's return code is what gets recorded. Before running anything, a memory preflight refuses to start when the machine reports less than 512 MiB available (`MemAvailable`); like the budget, it is an accident guard against starving the host, not a security boundary.
 
+Python commands must also prove execution, not just routing: each `pytest`/`unittest` receipt records `tests_collected` (for unittest, the `Ran N` line parsed from stdout+stderr; for pytest, the sum of the summary line's outcome groups — skips count as collected, deliberately: whether a collected test skips is the test author's signal, not a routing failure). A Python command that collects zero tests, or whose count cannot be parsed, fails the run even when the runner itself exits 0.
+
+Verification commands do not inherit the caller's environment untouched. Each command runs with `os.environ` minus every name the `[env-scrub]` fragments of `scripts/policy.data` (resolved from `$AEP_POLICY_DATA`, else the `policy.data` beside the script) mark sensitive — the same fragments and the same `AUTH` boundary exemptions as the lane scrub under Mechanism 2. `AEP_VERIFY_FULL_ENV=1` opts out and passes the full environment through. The run-start record states the mode in all cases as `env`: `scrubbed`, `full (AEP_VERIFY_FULL_ENV)`, or `unscrubbed (no policy)` — the last when no policy file exists, so the record never claims a scrub that did not happen.
+
 ### Discovery allowlist
 
 | # | Command id | Marker at the repo root | Runs | Provenance |
@@ -24,9 +28,9 @@ The three mechanisms:
 | 2 | `cargo-test` | `Cargo.toml` | `cargo test` | DeepCode |
 | 3 | `npm-test` | `package.json` with a real `scripts.test` string (non-empty, not npm's "no test specified" placeholder) | `npm test` | DeepCode |
 | 4 | `pytest` | `pytest.ini`, `pyproject.toml`, `setup.cfg`, or a `tests` entry | `python3 -m pytest -q` | DeepCode |
-| 5 | `unittest` and/or `pytest` | root-level `test_*.py` or `*_test.py` files | partitioned by style: `python3 -m unittest -v` naming the modules that import `unittest` (their file stems), plus the rule-4 pytest command for the remaining modules — a mixed suite runs both runners, a single-style suite runs only its own | DeepCode, adapted |
+| 5 | `unittest` and/or `pytest` | root-level `test_*.py` or `*_test.py` files | partitioned by AST classification: `python3 -m unittest -v` naming the modules that define a `TestCase` subclass (their file stems), plus the rule-4 pytest command when any module triggers it — module-level `test_*` functions, `Test*` classes with `test_*` methods that are not `TestCase` subclasses, or a module with no leg at all. A module whose only collectable content is `TestCase` subclasses does not by itself trigger the pytest command; imports alone never create the unittest leg; a module that fails to parse falls back to substring classification — a mixed suite runs both runners, a single-style suite runs only its own | DeepCode, adapted |
 | 6 | `make-test` | `Makefile` with a `test:` target | `make test` | AEP addition |
-| 7 | `markdownlint` | `.markdownlint.yaml` present **and** `markdownlint-cli2` on PATH | `markdownlint-cli2 "**/*.md" "!reference/esf/**/*.md" "!skills/archify/**/*.md"` | AEP addition |
+| 7 | `markdownlint` | `.markdownlint.yaml` present **and** `markdownlint-cli2` on PATH | `markdownlint-cli2 "**/*.md" "!reference/esf/**/*.md" "!reference/neurostrata/**/*.md" "!skills/archify/**/*.md"` | AEP addition |
 
 Discovery is deduplicated by command id and capped at the first match per rule. Rule 7 calls the binary directly — nothing in any verification path fetches from the network (no `npx --yes` at gate time). If the config file exists but the binary is missing, the run prints a named `VERIFY: markdownlint SKIPPED tool missing` line instead of discovering the command.
 
@@ -38,7 +42,7 @@ Discovery is deduplicated by command id and capped at the first match per rule. 
 | --- | --- |
 | 0 | Every discovered command executed and passed. |
 | 1 | A command failed (the run stops at the first failure), the budget was exhausted with commands unrun, `verify` refused to append to a receipts file whose last line is malformed, a receipts run's tree was not clean at HEAD (git roots — see *Tree binding*), or the tree changed during the run so no completion record was written. |
-| 2 | Zero commands discovered — a named "no mechanical evidence available" state (`VERIFY: no verification commands discovered ...`). It is neither a pass nor a failure; callers record it openly. |
+| 2 | Zero commands discovered — a named "no mechanical evidence available" state (`VERIFY: no verification commands discovered ...`). It is neither a pass nor a failure; callers record it openly. Also exit 2: `verify` refused to write receipts to a file tracked by git inside the root — evidence must not be part of the artifact it describes (untracked receipts inside the root, the SDD layout, are allowed). |
 | 3 | Memory preflight refusal: less than 512 MiB available; nothing was run. |
 
 `check-receipts --receipts <file> --task <id> --root <repo> [--historical]` (`--root` is required):
@@ -46,12 +50,12 @@ Discovery is deduplicated by command id and capped at the first match per rule. 
 | Code | Meaning |
 | --- | --- |
 | 0 | The whole file's chain validates, every receipt in the task's latest run records `exit_code` 0 with no timeout, that run ends in a run-completion record matching its command receipts, and the segment's tree binding validates (`RECEIPTS: PASS`). In default mode the binding check also requires the worktree's current HEAD to equal the bound head and the tree to be clean. |
-| 1 | The file is corrupt at a named line, the chain is broken at a named line, the task has no receipts, one of the latest run's receipts records a failure, or the task's latest run has no matching run-completion record — the partial receipt set of a run that stopped early is rejected (`RECEIPTS: FAIL` / `RECEIPTS: corrupt` / `RECEIPTS: chain broken`). Also exit 1: the segment's stated digest does not match its stated head or the live fs tree (`RECEIPTS: STALE`), the worktree's HEAD has moved past the bound head (`RECEIPTS: HEAD-MOVED`), or the working tree is dirty (default mode, `RECEIPTS: DIRTY`). |
+| 1 | The file is corrupt at a named line, the chain is broken at a named line, the task has no receipts, one of the latest run's receipts records a failure, or the task's latest run has no matching run-completion record — the partial receipt set of a run that stopped early is rejected (`RECEIPTS: FAIL` / `RECEIPTS: corrupt` / `RECEIPTS: chain broken`). Also exit 1: the segment's stated digest does not match its stated head or the live fs tree (`RECEIPTS: STALE`), the worktree's HEAD has moved past the bound head (`RECEIPTS: HEAD-MOVED`), the working tree is dirty (default mode, `RECEIPTS: DIRTY`), or the segment is bound to a different root than `--root` names (`RECEIPTS: FAIL ... segment is bound to root ..., not ...`). |
 | 2 | The segment carries no tree binding — it predates binding (`RECEIPTS: UNBOUND`) — or its recorded commit can no longer be read (`RECEIPTS: UNVERIFIABLE`). Exit 2 is never evidence. |
 
 ### Receipts format and chain
 
-With `--receipts <file>`, `verify` first appends a run-start record (`kind: run-start`) carrying a unique `run_id` for the run; it then appends one JSON line per executed command, and each receipt carries the same `run_id`. A receipt contains hashes, never output text. When — and only when — every discovered command has executed and passed, `verify` appends a final run-completion record (`kind: run-complete`, same `run_id`) carrying the run's command count and a SHA-256 digest of the ordered command ids; a run that stops early writes no such record. `check-receipts` validates only the task's latest run segment (from its run-start record to its completion record); earlier segments in the same file remain audit history, so an interrupted run cannot poison a later successful retry. The command-receipt fields:
+With `--receipts <file>`, `verify` first appends a run-start record (`kind: run-start`) carrying a unique `run_id` for the run, the run's `env` mode (see *What it does*), and — on the CLI path — `subreaper`, whether the child-subreaper flag was set for the survivor sweep; it then appends one JSON line per executed command, and each receipt carries the same `run_id`. A receipt contains hashes, never output text. When — and only when — every discovered command has executed and passed, `verify` appends a final run-completion record (`kind: run-complete`, same `run_id`) carrying the run's command count and a SHA-256 digest of the ordered command ids; a run that stops early writes no such record. `check-receipts` validates only the task's latest run segment (from its run-start record to its completion record); earlier segments in the same file remain audit history, so an interrupted run cannot poison a later successful retry. The command-receipt fields:
 
 | Field | Content |
 | --- | --- |
@@ -65,6 +69,8 @@ With `--receipts <file>`, `verify` first appends a run-start record (`kind: run-
 | `duration_ms` | wall-clock duration of the command |
 | `stdout_sha256` | SHA-256 of the captured (tail-capped) stdout |
 | `stderr_sha256` | SHA-256 of the captured (tail-capped) stderr |
+| `tests_collected` | collected-test count — `pytest`/`unittest` receipts only (see *What it does*) |
+| `survivors_killed` | pids of detached descendants the post-command sweep killed — present only when non-empty |
 | `chain_sha256` | SHA-256 of the previous receipt's `chain_sha256` concatenated with the canonical JSON of this receipt's other fields |
 
 The genesis link is 64 zero characters. Appends are a single `os.write` under `flock` on an `O_APPEND` descriptor, so concurrent runs cannot interleave a line. `check-receipts` validates the chain over the **whole file** before filtering to the requested task, so per-task verdicts over one shared file stay meaningful, and a deleted line is detected at the following line, while a tampered line is detected at the tampered line itself.
@@ -76,7 +82,7 @@ A receipts segment must describe a tree, not just a run. A receipts run computes
 - **Git mode** (the root is inside a git worktree): `head` is `git rev-parse HEAD` and `tree_digest` is a SHA-256 over the entries of `git ls-tree -r -z <head>` — computed from git objects, never from working-tree content, so it can be recomputed at any later time while the commit exists. A receipts run in git mode refuses a dirty tree up front (`tree not clean at HEAD — commit or stash before verifying`, no completion record): `git status` must be empty after dropping the receipts file itself, anything under `.superpowers/`, and untracked tool-cache/build directories (`__pycache__`, `.pytest_cache`, `node_modules`, `dist`, and kin) — the workflow's own bookkeeping and the outputs a run itself creates, never tree evidence. Modified or staged tracked files always count as dirty. If the tree is dirtied during the run, no completion record is written.
 - **Fs mode** (no git): `head` is null and `tree_digest` is a SHA-256 over the tree's files (relative path + content hash; symlinks contribute their target string), excluding the same cache/build directories and the receipts file. If the digest changes during the run, no completion record is written.
 
-`check-receipts` validates the binding after the chain and segment structure. A stated digest that does not match its stated head (git) or the live tree (fs) is `STALE` (exit 1); a recorded commit that no longer exists is `UNVERIFIABLE` (exit 2). Default mode — the completion gate — additionally requires the worktree's current HEAD to equal the bound head (`HEAD-MOVED`) and the tree to be clean (`DIRTY`). `--historical` skips only those two current-state requirements: it validates the segment as evidence about its own recorded head, which is what a cross-session resume needs — it never completes a task by itself.
+`check-receipts` validates the binding after the chain and segment structure. A segment whose recorded `root` differs from the canonicalized `--root` is refused first (`RECEIPTS: FAIL`, exit 1) — a segment is evidence about the tree it was bound to, and is checked only against that tree. A stated digest that does not match its stated head (git) or the live tree (fs) is `STALE` (exit 1); a recorded commit that no longer exists is `UNVERIFIABLE` (exit 2). Default mode — the completion gate — additionally requires the worktree's current HEAD to equal the bound head (`HEAD-MOVED`) and the tree to be clean (`DIRTY`). `--historical` skips only those two current-state requirements: it validates the segment as evidence about its own recorded head, which is what a cross-session resume needs — it never completes a task by itself.
 
 ### The trust shape, in plain words
 
@@ -86,7 +92,7 @@ And the symmetrical warning: `verify` executes the target repo's test code with 
 
 ## Mechanism 2: launch-point controls
 
-There is no command-string policy evaluator in AEP. Policy lives at the launch point: `scripts/lane-coord.sh` loads and validates `scripts/policy.data` on every claim, applies its controls to the lane it is about to start, and `scripts/boot-gate.sh` verifies the policy file itself has not been edited outside git.
+There is no command-string policy evaluator in AEP. Policy lives at the launch point: `scripts/lane-coord.sh` loads and validates `scripts/policy.data` on every claim, binds it to its committed source (see *Claim-time policy integrity*), applies its controls to the lane it is about to start, and `scripts/boot-gate.sh` verifies the policy file itself has not been edited outside git.
 
 ### `policy.data` grammar
 
@@ -107,13 +113,25 @@ A claim declares a working set: the lane's worktree path plus every `--path <ext
 
 The limit, stated plainly: this check bounds the **declared** set. It does not confine a running worker, which can still open any path its own permissions allow. It exists to catch a lane being *aimed* at a credential store by declaration or by symlink — not to sandbox the worker.
 
+### Claim-time policy integrity
+
+Loading a valid policy file is not the same as loading the *committed* one. On the claim path only (release/reap act on already-claimed state and never re-check), `lane-coord.sh` binds the loaded policy to its source and records the outcome in the lane manifest:
+
+- `AEP_POLICY_DATA` set (non-empty): no blob check. Outcome `operator-override` — the override is durable evidence in the manifest, not a console line.
+- Unset, and `HEAD` of the script's own repo carries `scripts/policy.data`: the loaded file's SHA-256 must equal the committed blob's (the blob is streamed into the hash — never captured in a shell variable, whose trailing-newline stripping would mismatch every claim). A mismatch refuses the claim (exit 1) with the remedy named: commit the policy change, or set `AEP_POLICY_DATA` and be recorded as an override. Outcome `verified`.
+- Unset, and the probe fails (not a repo, or the repo has no such path — the installed-copy case): no check. Outcome `not-applicable`.
+
+Every claim manifest records the outcome as `policy_integrity`, with `policy_path` and `policy_sha256` (see *Manifest*).
+
 ### Boot-gate policy integrity check
 
 `boot-gate.sh` runs `check_policy` as its fifth check. It hashes the working-tree policy file (`AEP_POLICY_DATA`, defaulting to the `policy.data` beside the script) and the committed blob (`git show HEAD:scripts/policy.data`) and compares them byte-exact:
 
-- Match → `BOOT-GATE: policy ok`.
-- Differ, or the committed blob cannot be read → `BOOT-GATE: policy FAIL: ...` and the gate exits non-zero. An uncommitted policy edit fails the gate **by design**.
-- No policy file at the configured path → `BOOT-GATE: policy SKIP: no policy data at ... (launch-policy integrity inactive)` and the gate proceeds (exit unaffected). SKIP means the integrity check is inactive, not that policy passed.
+- Match → `BOOT-GATE: policy ok: <path> (sha256 <digest prefix>)`, followed by the token line `BOOT-GATE-RESULT: POLICY-OK`.
+- Differ, or the committed blob cannot be read → `BOOT-GATE: policy FAIL: ...` and the gate exits non-zero (no token line). An uncommitted policy edit fails the gate **by design**.
+- No policy file at the configured path → `BOOT-GATE: policy SKIP: no policy data at ... (launch-policy integrity inactive)`, followed by `BOOT-GATE-RESULT: POLICY-INACTIVE`, and the gate proceeds (exit unaffected). SKIP means the integrity check is inactive, not that policy passed.
+
+The token line is the machine-readable form of the outcome — a SKIP is distinguishable from a pass without parsing prose. The gate's exit contract is unchanged: SKIP still exits 0.
 
 Scope statement: this check runs whenever an operator or a cron invokes `boot-gate.sh`. Wiring boot-gate into crons is issue #17 and is **not** delivered here — nothing in this mechanism claims cron enforcement.
 
@@ -154,7 +172,7 @@ The state directory used to default to `~/workspace/worktrees/.lanes` — inside
 | `release --name <name> [--clean [--force-dirty]]` | The normal teardown path (see below). Without `--clean`, settles the claim and leaves the worktree in place. |
 | `reap --name <name>` | Settle a claim whose launcher is provably dead, without touching the worktree. Refuses while the fence is held. |
 | `status [--name <name>] [--capacity <n>]` | Show each lane's state, epoch, worker, fence state, and path, plus the pool line (`LANE: pool: <n> claimed of <capacity>`). |
-| `--self-test` | The built-in 25-case suite (also run in CI by the `script-tests` job). |
+| `--self-test` | The built-in 29-case suite (also run in CI by the `script-tests` job). |
 
 ### Exit codes
 
@@ -184,6 +202,7 @@ Each lane has one JSON manifest, `<name>.json` in the lanes directory, written a
 | `worker_pid` | the spawned worker's PID, recorded by the launcher just after the spawn (0 until then); probed for liveness — never signalled — by takeover claims and `release --clean` |
 | `worker_start` | the worker's `/proc` start time; pid + start time together identify the exact process across pid recycling (0 when the worker exited before it could be read) |
 | `epoch` | claim generation: starts at 1, increments monotonically per lane across takeovers |
+| `policy_integrity`, `policy_path`, `policy_sha256` | the claim-time policy outcome (`verified` / `operator-override` / `not-applicable`), the resolved policy path, and its SHA-256 (see *Claim-time policy integrity*) |
 | `state` | `claimed`, `released`, `reaped`, or `cleaned` (set by `release --clean` once the validated worktree removal completes) |
 | `claimed_at`, `updated_at` | UTC timestamps |
 
@@ -218,7 +237,7 @@ What is **not** fenced: any lane, worktree, or process not launched through the 
 Merging code is not activation. After this branch lands, verify each item against the **live** environment:
 
 - [ ] Both skill copies carry the wiring (Tasks 3 and 8 edited the repo copies in `skills/` and the live copies the runtime loads in `~/workspace/custom-skills/`). Check with the Acceptance Criterion 6 greps against the live files: `mechanical_verify.py` appears 2× in the live SDD skill; `lane-coord.sh` appears 3× in the live overnight-parallel-lanes skill.
-- [ ] Run one real `bash scripts/boot-gate.sh` and confirm the fifth check line is `BOOT-GATE: policy ok` (or an understood SKIP).
+- [ ] Run one real `bash scripts/boot-gate.sh` and confirm the fifth check line is `BOOT-GATE: policy ok: ...` (or an understood SKIP).
 - [ ] Run one real claim against a scratch repo — `lane-coord.sh claim ... --exec true` — and confirm the `LANE: claimed ...` line on launch and the `LANE: released ... (worker exit 0)` line when it finishes.
 - [ ] Confirm the `script-tests` CI job is green on the merge PR (docs-lint, shell-lint, go-checks, security, vendor-integrity, script-tests — six jobs).
 
