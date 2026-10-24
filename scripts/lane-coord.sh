@@ -477,7 +477,7 @@ cmd_claim() {
 
   mkdir -p "$LANES_DIR" "$WT_ROOT"
 
-  local prev_exists=0 prev_epoch=0 prev_state=""
+  local prev_exists=0 prev_epoch=0 prev_state="" prev_path=""
 
   # --- Claim transaction, under the capacity lock ---
   exec 9>"$LANES_DIR/.capacity.lock"
@@ -497,6 +497,7 @@ cmd_claim() {
       prev_epoch="${prev_snap%% *}"
       prev_state="${prev_snap##* }"
       prev_exists=1
+      prev_path=$(manifest_get "$manifest_file" path 2>/dev/null || true)
     fi
   fi
 
@@ -561,6 +562,25 @@ cmd_claim() {
   if ! base_sha=$(git -C "$repo" rev-parse --verify "$base^{commit}" 2>/dev/null); then
     echo "LANE: refuse $name: cannot resolve base $base"
     exit 1
+  fi
+
+  # Ownership gate (before the manifest write): an existing registered
+  # worktree at the lane path may be adopted only when the previous
+  # coordinator manifest proves this lane owned that exact path — the
+  # takeover flow. A foreign worktree (created by hand, even on the
+  # requested branch) must never be adopted: the manifest written
+  # below is what later licenses release --clean to remove the
+  # worktree, so adopting a foreign one would let cleanup delete a
+  # worktree the coordinator never created. Refuse with no manifest
+  # written.
+  if [ -e "$wt_path" ]; then
+    local reg_now
+    reg_now=$(registered_worktree_branch "$repo" "$wt_path" || true)
+    if [ -n "$reg_now" ] &&
+      { [ "$prev_exists" -eq 0 ] || [ "$prev_path" != "$wt_path" ]; }; then
+      echo "LANE: refuse $name: existing worktree at $wt_path is not coordinator-owned (no manifest proves ownership)"
+      exit 1
+    fi
   fi
 
   # 6. Write the manifest (temp + mv, inside the lock) and history.
@@ -1406,6 +1426,25 @@ json.dump(data, open(sys.argv[1], "w"))
   bash "$self_path" status --name ../mu-nineteen >"$out19s" 2>&1 || rc19s=$?
   [ "$rc19s" -eq 2 ] || case_fails=1
   report_case "clean-refuses-foreign-path"
+
+  # --- Case 20: claim-refuses-foreign-worktree ---
+  # A worktree created by hand at the deterministic lane path, on the
+  # requested branch, is not coordinator-owned: with no pre-existing
+  # manifest the claim must refuse BEFORE writing any manifest, and
+  # the foreign worktree must survive untouched (a manifest is what
+  # would later license release --clean to remove it).
+  local wt20="$WT_ROOT/nu-twenty"
+  git -C "$repo" worktree add -q -b br-twenty "$wt20" HEAD || case_fails=1
+  local out20="$selftest_root/out20.txt" rc20=0
+  bash "$self_path" claim --repo "$repo" --project nu --lane twenty \
+    --branch br-twenty --base HEAD --worker w20 \
+    --exec true >"$out20" 2>&1 || rc20=$?
+  [ "$rc20" -eq 1 ] || case_fails=1
+  grep -qF "LANE: refuse nu-twenty: existing worktree at $wt20 is not coordinator-owned" "$out20" || case_fails=1
+  [ ! -f "$LANES_DIR/nu-twenty.json" ] || case_fails=1
+  [ -d "$wt20" ] || case_fails=1
+  [ "$(git -C "$wt20" branch --show-current 2>/dev/null || true)" = "br-twenty" ] || case_fails=1
+  report_case "claim-refuses-foreign-worktree"
 
   return "$fails"
 }
