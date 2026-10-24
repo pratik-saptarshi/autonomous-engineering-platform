@@ -20,6 +20,14 @@
 #   * Manifests are JSON written with printf from charset-validated
 #     fields (temp file + mv, inside the lock) and read back only via
 #     python3 JSON parsing — never grep.
+#   * Launch-point controls: every claim loads and validates the
+#     launch policy data (scripts/policy.data, sibling of this script;
+#     AEP_POLICY_DATA overrides it for tests) before any state changes.
+#     The declared working set (the worktree path plus every --path
+#     extra) is checked against the sensitive-path patterns after the
+#     claim transaction, before worktree setup; the worker child — and
+#     only the child — runs with credential-named environment variables
+#     scrubbed, unless AEP_LANE_FULL_ENV=1 disables the scrub loudly.
 set -euo pipefail
 
 # Platform-standard tool locations (see TOOLS.md): non-interactive runs
@@ -147,6 +155,138 @@ resolve_capacity() { # $1 = flag value (may be empty)
   printf '%s\n' "$cap"
 }
 
+# --- Launch policy data (scripts/policy.data) ---
+# Grammar (validated on every claim by the embedded python3 loader):
+# [section] headers ([sensitive-paths], [env-scrub]), one
+# whitespace-free pattern/fragment per line, '#' comments and blank
+# lines ignored; anything else — an unknown section, a pattern before
+# any section, a token containing whitespace, an empty section — is a
+# validation error and refuses the claim before anything is created.
+POLICY_SENSITIVE_PATTERNS=()
+POLICY_ENV_SCRUB=()
+
+load_policy() {
+  local policy_file="${AEP_POLICY_DATA:-$(dirname "${BASH_SOURCE[0]}")/policy.data}"
+  local parsed line section=""
+  if ! parsed=$(python3 -c '
+import sys
+
+path = sys.argv[1]
+try:
+    with open(path) as fh:
+        lines = fh.read().splitlines()
+except OSError:
+    print("LANE: refuse policy data invalid: cannot read " + path)
+    sys.exit(1)
+
+section = None
+data = {"sensitive-paths": [], "env-scrub": []}
+for num, raw in enumerate(lines, 1):
+    line = raw.strip()
+    if not line or line.startswith("#"):
+        continue
+    if line.startswith("["):
+        if line in ("[sensitive-paths]", "[env-scrub]"):
+            section = line[1:-1]
+            continue
+        print("LANE: refuse policy data invalid: line %d: %s" % (num, raw))
+        sys.exit(1)
+    if section is None:
+        print("LANE: refuse policy data invalid: line %d: %s" % (num, raw))
+        sys.exit(1)
+    if any(ch.isspace() for ch in line):
+        print("LANE: refuse policy data invalid: line %d: %s" % (num, raw))
+        sys.exit(1)
+    data[section].append(line)
+
+for name in ("sensitive-paths", "env-scrub"):
+    if not data[name]:
+        last = lines[-1] if lines else ""
+        print("LANE: refuse policy data invalid: line %d: %s" % (len(lines), last))
+        sys.exit(1)
+
+for name in ("sensitive-paths", "env-scrub"):
+    print("[" + name + "]")
+    for entry in data[name]:
+        print(entry)
+' "$policy_file"); then
+    printf '%s\n' "$parsed"
+    exit 1
+  fi
+  POLICY_SENSITIVE_PATTERNS=()
+  POLICY_ENV_SCRUB=()
+  while IFS= read -r line; do
+    case "$line" in
+    "[sensitive-paths]") section="sensitive" ;;
+    "[env-scrub]") section="scrub" ;;
+    *)
+      case "$section" in
+      sensitive) POLICY_SENSITIVE_PATTERNS+=("$line") ;;
+      scrub) POLICY_ENV_SCRUB+=("$line") ;;
+      esac
+      ;;
+    esac
+  done <<<"$parsed"
+}
+
+canonical_path() { # $1 = path — realpath, symlinks resolved
+  python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$1"
+}
+
+# sensitive_match <canonical path> — print the first [sensitive-paths]
+# pattern matching the path (fnmatchcase semantics: '*' spans '/'),
+# or nothing.
+sensitive_match() {
+  python3 -c '
+import fnmatch, sys
+for pat in sys.argv[2:]:
+    if fnmatch.fnmatchcase(sys.argv[1], pat):
+        print(pat)
+        break
+' "$1" "${POLICY_SENSITIVE_PATTERNS[@]}"
+}
+
+# auth_occurrence_is_sensitive <UPPERCASED name> — true if the name has
+# an AUTH occurrence that is NOT boundary-exempt: an occurrence is
+# exempt when immediately preceded by SSH_ (spares SSH_AUTH_SOCK) or
+# immediately followed by OR + ('_' or end-of-name) (spares
+# GIT_AUTHOR_NAME, GIT_AUTHOR_EMAIL, ...AUTHOR / ...AUTHOR_ names).
+# AUTHORITY is not exempt: its AUTH is followed by ORI..., not OR_/end.
+auth_occurrence_is_sensitive() {
+  local s="$1" i after
+  local len=${#s}
+  for ((i = 0; i + 4 <= len; i++)); do
+    if [ "${s:i:4}" = "AUTH" ]; then
+      if [ "$i" -ge 4 ] && [ "${s:$((i - 4)):4}" = "SSH_" ]; then
+        continue
+      fi
+      after="${s:$((i + 4))}"
+      if [ "$after" = "OR" ] || [[ "$after" == OR_* ]]; then
+        continue
+      fi
+      return 0
+    fi
+  done
+  return 1
+}
+
+# name_is_sensitive <name> — true if the variable name contains any
+# [env-scrub] fragment as a case-insensitive substring (the AUTH
+# fragment applies its boundary exemptions above; other fragments have
+# none).
+name_is_sensitive() {
+  local upper="${1^^}" frag frag_upper
+  for frag in "${POLICY_ENV_SCRUB[@]}"; do
+    frag_upper="${frag^^}"
+    if [ "$frag_upper" = "AUTH" ]; then
+      if auth_occurrence_is_sensitive "$upper"; then return 0; fi
+    elif [[ "$upper" == *"$frag_upper"* ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 # registered_worktree_branch <repo> <path> — print the branch registered
 # for that exact worktree path in the repo, or nothing.
 registered_worktree_branch() {
@@ -178,6 +318,12 @@ CLAIM_WORKER=""
 claim_setup_failed() { # $1 = name — manifest was written; settle it, then exit 1
   update_manifest_state "$1" "released" || true
   history_append "$1" "setup-failed" "$CLAIM_EPOCH" "$CLAIM_WORKER"
+  exit 1
+}
+
+claim_refused() { # $1 = name — manifest was written; settle it as a refusal, then exit 1
+  update_manifest_state "$1" "released" || true
+  history_append "$1" "claim-refused" "$CLAIM_EPOCH" "$CLAIM_WORKER"
   exit 1
 }
 
@@ -240,6 +386,11 @@ cmd_claim() {
 
   local capacity
   capacity=$(resolve_capacity "$capacity_flag")
+
+  # Launch policy: load and validate first thing, before any state
+  # changes — a malformed policy file refuses the claim with nothing
+  # created (no lanes dir, no manifest, no worktree).
+  load_policy
 
   local name="$project-$lane"
   local wt_path="$WT_ROOT/$name"
@@ -344,6 +495,32 @@ cmd_claim() {
   flock -u 9 || true
   exec 9>&-
 
+  # --- Declared-path check (after the transaction, before worktree setup) ---
+  # The declared working set is the deterministic worktree path plus
+  # every --path extra. Each path is canonicalized (symlinks resolved:
+  # a declared symlink into a sensitive directory IS the sensitive
+  # directory) and matched against [sensitive-paths]. Declared extras
+  # must exist at claim time — canonicalizing a nonexistent path's
+  # parent chain is guesswork.
+  local -a all_declared=("$wt_path")
+  if [ ${#declared_paths[@]} -gt 0 ]; then
+    all_declared+=("${declared_paths[@]}")
+  fi
+  local check_idx=0 check_path canon matched
+  for check_path in "${all_declared[@]}"; do
+    if [ "$check_idx" -gt 0 ] && [ ! -e "$check_path" ]; then
+      echo "LANE: refuse $name: declared path $check_path does not exist"
+      claim_refused "$name"
+    fi
+    check_idx=$((check_idx + 1))
+    canon=$(canonical_path "$check_path")
+    matched=$(sensitive_match "$canon")
+    if [ -n "$matched" ]; then
+      echo "LANE: refuse $name: declared path $canon matches sensitive pattern $matched"
+      claim_refused "$name"
+    fi
+  done
+
   # --- Worktree setup (after the capacity lock is released) ---
   if [ ! -e "$wt_path" ]; then
     if git -C "$repo" show-ref --verify --quiet "refs/heads/$branch"; then
@@ -368,7 +545,28 @@ cmd_claim() {
   echo "LANE: claimed $name path=$wt_path branch=$branch epoch=$epoch"
   cd "$wt_path" || claim_setup_failed "$name"
   local worker_status=0
-  "${worker_cmd[@]}" 8>&- 9>&- || worker_status=$?
+  if [ "${AEP_LANE_FULL_ENV:-}" = "1" ]; then
+    # Opt-out is loud, never silent: the warning goes to stderr on
+    # every launch and the worker receives the full environment.
+    echo "LANE: warning AEP_LANE_FULL_ENV=1: worker receives the full environment (credential scrub disabled)" >&2
+    "${worker_cmd[@]}" 8>&- 9>&- || worker_status=$?
+  else
+    # Env sanitization applies to the worker child only: the scrub
+    # runs in the subshell wrapping the spawn, so the launcher keeps
+    # its own environment for its bookkeeping. The subshell closes the
+    # fence/capacity fds itself first — otherwise it would hold the
+    # fence open as an orphan after the launcher dies, defeating the
+    # fence-lifetime contract above.
+    (
+      exec 8>&- 9>&-
+      while IFS= read -r scrub_var; do
+        if name_is_sensitive "$scrub_var"; then
+          unset "$scrub_var"
+        fi
+      done < <(compgen -e)
+      "${worker_cmd[@]}" 8>&- 9>&-
+    ) || worker_status=$?
+  fi
 
   update_manifest_state "$name" "released" || true
   history_append "$name" "released" "$epoch" "$worker"
@@ -719,6 +917,88 @@ self_test() {
   [ "$zeros" -eq 1 ] || case_fails=1
   [ "$threes" -eq 1 ] || case_fails=1
   report_case "parallel-claim-race"
+
+  # --- Case 7: working-set-refuses-sensitive-dir ---
+  local out7="$selftest_root/out7.txt" rc7=0
+  local canon7
+  canon7=$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$HOME/.ssh")
+  bash "$self_path" claim --repo "$repo" --project eta --lane seven \
+    --branch br-seven --base HEAD --worker w7 \
+    --path "$HOME/.ssh" \
+    --exec true >"$out7" 2>&1 || rc7=$?
+  [ "$rc7" -eq 1 ] || case_fails=1
+  grep -qF "LANE: refuse eta-seven: declared path $canon7 matches sensitive pattern */.ssh" "$out7" || case_fails=1
+  [ ! -e "$WT_ROOT/eta-seven" ] || case_fails=1
+  [ "$(mget eta-seven state)" = "released" ] || case_fails=1
+  grep -q " claim-refused epoch=1 worker=w7" "$LANES_DIR/eta-seven.log" || case_fails=1
+  report_case "working-set-refuses-sensitive-dir"
+
+  # --- Case 8: working-set-refuses-symlink-into-sensitive ---
+  mkdir -p "$selftest_root/home/.aws"
+  ln -s "$selftest_root/home/.aws" "$selftest_root/link-aws"
+  local out8="$selftest_root/out8.txt" rc8=0
+  local canon8
+  canon8=$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$selftest_root/link-aws")
+  bash "$self_path" claim --repo "$repo" --project eta --lane eight \
+    --branch br-eight --base HEAD --worker w8 \
+    --path "$selftest_root/link-aws" \
+    --exec true >"$out8" 2>&1 || rc8=$?
+  [ "$rc8" -eq 1 ] || case_fails=1
+  [ "$canon8" != "$selftest_root/link-aws" ] || case_fails=1
+  grep -qF "LANE: refuse eta-eight: declared path $canon8 matches sensitive pattern */.aws" "$out8" || case_fails=1
+  [ ! -e "$WT_ROOT/eta-eight" ] || case_fails=1
+  report_case "working-set-refuses-symlink-into-sensitive"
+
+  # --- Case 9: working-set-refuses-secrets-file ---
+  printf 'fixture\n' >"$selftest_root/secrets.json"
+  local out9="$selftest_root/out9.txt" rc9=0
+  local canon9
+  canon9=$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$selftest_root/secrets.json")
+  bash "$self_path" claim --repo "$repo" --project eta --lane nine \
+    --branch br-nine --base HEAD --worker w9 \
+    --path "$selftest_root/secrets.json" \
+    --exec true >"$out9" 2>&1 || rc9=$?
+  [ "$rc9" -eq 1 ] || case_fails=1
+  grep -qF "LANE: refuse eta-nine: declared path $canon9 matches sensitive pattern */secrets.json" "$out9" || case_fails=1
+  [ ! -e "$WT_ROOT/eta-nine" ] || case_fails=1
+  report_case "working-set-refuses-secrets-file"
+
+  # --- Case 10: exec-scrubs-credential-env ---
+  export AEP_TEST_API_KEY=not-a-real-secret
+  export AEP_TEST_AUTHORITY=not-a-real-secret
+  export SSH_AUTH_SOCK=/tmp/fake.sock
+  export GIT_AUTHOR_NAME="Lane Test"
+  local out10="$selftest_root/out10.txt" rc10=0
+  bash "$self_path" claim --repo "$repo" --project theta --lane ten \
+    --branch br-ten --base HEAD --worker w10 \
+    --exec sh -c 'printf "%s|%s|%s|%s" "${AEP_TEST_API_KEY:-unset}" "${SSH_AUTH_SOCK:-unset}" "${GIT_AUTHOR_NAME:-unset}" "${AEP_TEST_AUTHORITY:-unset}"' >"$out10" 2>&1 || rc10=$?
+  [ "$rc10" -eq 0 ] || case_fails=1
+  grep -qF "unset|/tmp/fake.sock|Lane Test|unset" "$out10" || case_fails=1
+  report_case "exec-scrubs-credential-env"
+
+  # --- Case 11: full-env-opt-out-warns ---
+  local out11="$selftest_root/out11.txt" err11="$selftest_root/err11.txt" rc11=0
+  AEP_LANE_FULL_ENV=1 bash "$self_path" claim --repo "$repo" --project theta --lane eleven \
+    --branch br-eleven --base HEAD --worker w11 \
+    --exec sh -c 'printf "%s|%s|%s|%s" "${AEP_TEST_API_KEY:-unset}" "${SSH_AUTH_SOCK:-unset}" "${GIT_AUTHOR_NAME:-unset}" "${AEP_TEST_AUTHORITY:-unset}"' >"$out11" 2>"$err11" || rc11=$?
+  [ "$rc11" -eq 0 ] || case_fails=1
+  grep -qF "not-a-real-secret|/tmp/fake.sock|Lane Test|not-a-real-secret" "$out11" || case_fails=1
+  grep -qF "LANE: warning AEP_LANE_FULL_ENV=1: worker receives the full environment (credential scrub disabled)" "$err11" || case_fails=1
+  report_case "full-env-opt-out-warns"
+
+  # --- Case 12: policy-data-malformed-refuses ---
+  local bad_policy="$selftest_root/policy-bad.data"
+  printf '# fixture comment\n[sensitive-paths]\nbogus line here\n' >"$bad_policy"
+  local out12="$selftest_root/out12.txt" rc12=0
+  AEP_POLICY_DATA="$bad_policy" bash "$self_path" claim --repo "$repo" \
+    --project kappa --lane twelve \
+    --branch br-twelve --base HEAD --worker w12 \
+    --exec true >"$out12" 2>&1 || rc12=$?
+  [ "$rc12" -eq 1 ] || case_fails=1
+  grep -qF "LANE: refuse policy data invalid: line 3: bogus line here" "$out12" || case_fails=1
+  [ ! -e "$WT_ROOT/kappa-twelve" ] || case_fails=1
+  [ ! -f "$LANES_DIR/kappa-twelve.json" ] || case_fails=1
+  report_case "policy-data-malformed-refuses"
 
   return "$fails"
 }
