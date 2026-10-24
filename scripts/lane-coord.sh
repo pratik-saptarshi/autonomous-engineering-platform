@@ -17,9 +17,10 @@
 #     manifest is operator information only. The only signalling in this
 #     file lives inside the --self-test harness, which signals only
 #     processes the test itself spawned.
-#   * Manifests are JSON written with printf from charset-validated
-#     fields (temp file + mv, inside the lock) and read back only via
-#     python3 JSON parsing — never grep.
+#   * Manifests are JSON serialized by python3 (temp file + mv,
+#     inside the lock) so arbitrary path characters round-trip
+#     exactly, and read back only via python3 JSON parsing — never
+#     grep.
 #   * Launch-point controls: every claim loads and validates the
 #     launch policy data (scripts/policy.data, sibling of this script;
 #     AEP_POLICY_DATA overrides it for tests) before any state changes.
@@ -86,13 +87,34 @@ print(data["epoch"], data["state"])
 }
 
 # write_manifest <name> <repo> <path> <branch> <base> <worker> <pid> <epoch> <state> <claimed_at>
+# Fields are serialized by python3's JSON encoder — never printf
+# interpolation — so paths containing quotes, backslashes, or control
+# characters round-trip exactly through the JSON readers.
 write_manifest() {
   local name="$1" repo="$2" path="$3" branch="$4" base="$5" worker="$6"
   local pid="$7" epoch="$8" state="$9" claimed_at="${10}"
   local tmp="$LANES_DIR/$name.json.tmp.$$"
-  printf '{"version": 1, "name": "%s", "repo": "%s", "path": "%s", "branch": "%s", "base": "%s", "worker": "%s", "launcher_pid": %s, "epoch": %s, "state": "%s", "claimed_at": "%s", "updated_at": "%s"}\n' \
-    "$name" "$repo" "$path" "$branch" "$base" "$worker" "$pid" "$epoch" \
-    "$state" "$claimed_at" "$(now_iso)" >"$tmp"
+  python3 -c '
+import json, sys
+
+data = {
+    "version": 1,
+    "name": sys.argv[2],
+    "repo": sys.argv[3],
+    "path": sys.argv[4],
+    "branch": sys.argv[5],
+    "base": sys.argv[6],
+    "worker": sys.argv[7],
+    "launcher_pid": int(sys.argv[8]),
+    "epoch": int(sys.argv[9]),
+    "state": sys.argv[10],
+    "claimed_at": sys.argv[11],
+    "updated_at": sys.argv[12],
+}
+with open(sys.argv[1], "w") as fh:
+    fh.write(json.dumps(data) + "\n")
+' "$tmp" "$name" "$repo" "$path" "$branch" "$base" "$worker" "$pid" "$epoch" \
+    "$state" "$claimed_at" "$(now_iso)"
   mv "$tmp" "$LANES_DIR/$name.json"
 }
 
@@ -1445,6 +1467,57 @@ json.dump(data, open(sys.argv[1], "w"))
   [ -d "$wt20" ] || case_fails=1
   [ "$(git -C "$wt20" branch --show-current 2>/dev/null || true)" = "br-twenty" ] || case_fails=1
   report_case "claim-refuses-foreign-worktree"
+
+  # --- Case 21: manifest-json-escapes-paths ---
+  # Repo and lanes/worktree roots containing a double quote and a
+  # backslash: the manifest must still be valid JSON (fields are
+  # serialized, never printf-interpolated), the stored path must
+  # round-trip exactly, and the lane must stay visible to status and
+  # capacity accounting and release normally.
+  local weird_repo="$selftest_root/"'we"ird\repo'
+  local weird_lanes="$selftest_root/"'we"ird\lanes'
+  local weird_wts="$selftest_root/"'we"ird\worktrees'
+  mkdir -p "$weird_repo" "$weird_lanes" "$weird_wts"
+  git init -q "$weird_repo"
+  printf 'weird\n' >"$weird_repo/file.txt"
+  git -C "$weird_repo" add file.txt
+  git -C "$weird_repo" -c user.name=LaneTest -c user.email=lane@test.invalid commit -q -m "weird fixture"
+  local out21="$selftest_root/out21.txt" out21b="$selftest_root/out21b.txt"
+  local out21s="$selftest_root/out21s.txt" out21r="$selftest_root/out21r.txt"
+  local rc21b=0 rc21s=0 rc21r=0
+  AEP_LANES_DIR="$weird_lanes" AEP_WORKTREES_ROOT="$weird_wts" \
+    bash "$self_path" claim --repo "$weird_repo" --project xi --lane twentyone \
+    --branch br-twentyone --base HEAD --worker w21 \
+    --exec sleep 10 >"$out21" 2>&1 &
+  local launcher21=$!
+  BG_PIDS+=("$launcher21")
+  local wi=0
+  while [ $wi -lt 50 ] && [ ! -f "$weird_lanes/xi-twentyone.json" ]; do
+    sleep 0.1
+    wi=$((wi + 1))
+  done
+  [ -f "$weird_lanes/xi-twentyone.json" ] || case_fails=1
+  local stored21=""
+  stored21=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["path"])' "$weird_lanes/xi-twentyone.json" 2>/dev/null || true)
+  [ "$stored21" = "$weird_wts/xi-twentyone" ] || case_fails=1
+  AEP_LANES_DIR="$weird_lanes" AEP_WORKTREES_ROOT="$weird_wts" \
+    bash "$self_path" status --name xi-twentyone >"$out21s" 2>&1 || rc21s=$?
+  [ "$rc21s" -eq 0 ] || case_fails=1
+  grep -q "xi-twentyone state=claimed" "$out21s" || case_fails=1
+  AEP_LANES_DIR="$weird_lanes" AEP_WORKTREES_ROOT="$weird_wts" \
+    bash "$self_path" claim --repo "$weird_repo" --project xi --lane twentytwo \
+    --branch br-twentytwo --base HEAD --worker w21b --capacity 1 \
+    --exec true >"$out21b" 2>&1 || rc21b=$?
+  [ "$rc21b" -eq 4 ] || case_fails=1
+  grep -q "LANE: capacity reached (1 active lanes)" "$out21b" || case_fails=1
+  kill "$launcher21" 2>/dev/null || true
+  wait "$launcher21" 2>/dev/null || true
+  sleep 0.2
+  AEP_LANES_DIR="$weird_lanes" AEP_WORKTREES_ROOT="$weird_wts" \
+    bash "$self_path" release --name xi-twentyone >"$out21r" 2>&1 || rc21r=$?
+  [ "$rc21r" -eq 0 ] || case_fails=1
+  grep -q "LANE: released xi-twentyone" "$out21r" || case_fails=1
+  report_case "manifest-json-escapes-paths"
 
   return "$fails"
 }

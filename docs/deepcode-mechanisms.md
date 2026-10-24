@@ -126,7 +126,7 @@ Scope statement: this check runs whenever an operator or a cron invokes `boot-ga
 | `release --name <name> [--clean [--force-dirty]]` | The normal teardown path (see below). Without `--clean`, settles the claim and leaves the worktree in place. |
 | `reap --name <name>` | Settle a claim whose launcher is provably dead, without touching the worktree. Refuses while the fence is held. |
 | `status [--name <name>] [--capacity <n>]` | Show each lane's state, epoch, worker, fence state, and path, plus the pool line (`LANE: pool: <n> claimed of <capacity>`). |
-| `--self-test` | The built-in 19-case suite (also run in CI by the `script-tests` job). |
+| `--self-test` | The built-in 21-case suite (also run in CI by the `script-tests` job). |
 
 ### Exit codes
 
@@ -141,7 +141,7 @@ Scope statement: this check runs whenever an operator or a cron invokes `boot-ga
 
 ### Manifest
 
-Each lane has one JSON manifest, `<name>.json` in the lanes directory, written atomically (temp file + rename) from charset-validated fields: the claim-time write happens inside the capacity lock, as do reap/release updates; only the launcher's post-worker `released` update runs outside the lock (still temp file + rename, so atomicity is unaffected):
+Each lane has one JSON manifest, `<name>.json` in the lanes directory, written atomically (temp file + rename) with fields serialized by a JSON encoder, so paths containing quotes or backslashes round-trip exactly: the claim-time write happens inside the capacity lock, as do reap/release updates; only the launcher's post-worker `released` update runs outside the lock (still temp file + rename, so atomicity is unaffected):
 
 | Field | Content |
 | --- | --- |
