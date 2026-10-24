@@ -137,6 +137,34 @@ def recompute_chain(receipt: dict, prev_chain: str) -> str:
     return hashlib.sha256((prev_chain + canonical).encode("utf-8")).hexdigest()
 
 
+def rewrite_rechained(receipts: Path, records: list[dict]) -> None:
+    """Write records back with a freshly computed hash chain, so a
+    test can tamper with exactly one field and have the tamper be the
+    ONLY thing validation can object to."""
+    prev = GENESIS
+    lines = []
+    for record in records:
+        record = dict(record)
+        record["chain_sha256"] = recompute_chain(record, prev)
+        prev = record["chain_sha256"]
+        lines.append(json.dumps(record, sort_keys=True, ensure_ascii=False))
+    receipts.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _path_pytest_available() -> bool:
+    """The verifier's pytest command is literal `python3 -m pytest`:
+    what matters is the python3 on PATH, not this test process."""
+    try:
+        proc = subprocess.run(
+            ["python3", "-m", "pytest", "--version"],
+            capture_output=True,
+            timeout=30,
+        )
+    except OSError:
+        return False
+    return proc.returncode == 0
+
+
 def two_command_fixture(root: Path) -> None:
     write(root, "package.json", json.dumps({"scripts": {"test": "true"}}))
     write(root, "Makefile", "test:\n\ttrue\n")
@@ -809,6 +837,205 @@ class BindingTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertIn("--root", proc.stdout)
         self.assertIn("--historical", proc.stdout)
+
+
+class PlacementAndStrictTypeTests(unittest.TestCase):
+    """Task 8 (overseer remediation R7): (a) verify refuses a receipts
+    file that is tracked by git inside the root — evidence must not be
+    part of the artifact (P2-1 residue); (b) check_receipts validates
+    field TYPES in the selected segment, so a bool wearing an int's
+    clothes reads corrupt instead of passing (panel EXP5 / P3-1)."""
+
+    # -- (a) receipts placement ------------------------------------
+
+    def test_verify_refuses_receipts_tracked_in_index(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_git_repo(root)
+            receipts = write(root, "r.jsonl", "")
+            git(root, "add", "r.jsonl")
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+            self.assertIn("tracked", proc.stdout)
+
+    def test_verify_refuses_receipts_committed_in_subdir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_git_repo(root)
+            receipts = write(root, "sub/r.jsonl", "")
+            git(root, "add", "sub/r.jsonl")
+            git(
+                root,
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "-q",
+                "-m",
+                "track the receipts file",
+            )
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+            self.assertIn("tracked", proc.stdout)
+
+    def test_verify_allows_untracked_receipts_inside_root(self):
+        # The SDD layout: an untracked receipts file inside the root
+        # is explicitly allowed.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_git_repo(root)
+            receipts = root / "r.jsonl"
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
+    # -- (b) strict field types ------------------------------------
+
+    def _bound_segment(self, root: Path, receipts: Path) -> list[dict]:
+        init_git_repo(root)
+        proc = verify(root, "1", receipts)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        return read_receipts(receipts)
+
+    def test_bool_exit_code_in_selected_segment_is_corrupt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            receipts = root / "r.jsonl"
+            parsed = self._bound_segment(root, receipts)
+            receipt = next(r for r in parsed if "exit_code" in r)
+            receipt["exit_code"] = False
+            rewrite_rechained(receipts, parsed)
+            proc = check_bound(receipts, "1", root)
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("corrupt", proc.stdout)
+            self.assertIn("exit_code", proc.stdout)
+
+    def test_bool_duration_ms_in_selected_segment_is_corrupt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            receipts = root / "r.jsonl"
+            parsed = self._bound_segment(root, receipts)
+            receipt = next(r for r in parsed if "duration_ms" in r)
+            receipt["duration_ms"] = True
+            rewrite_rechained(receipts, parsed)
+            proc = check_bound(receipts, "1", root)
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("corrupt", proc.stdout)
+            self.assertIn("duration_ms", proc.stdout)
+
+    def test_bool_command_count_in_selected_segment_is_corrupt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            receipts = root / "r.jsonl"
+            parsed = self._bound_segment(root, receipts)
+            parsed[-1]["command_count"] = True
+            rewrite_rechained(receipts, parsed)
+            proc = check_bound(receipts, "1", root)
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("corrupt", proc.stdout)
+            self.assertIn("command_count", proc.stdout)
+
+    def test_wrong_type_in_earlier_segment_does_not_poison_retry(self):
+        # Type validation is scoped to the SELECTED segment: an oddity
+        # in a superseded segment is audit history, not corruption of
+        # the segment under validation.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            receipts = root / "r.jsonl"
+            parsed = self._bound_segment(root, receipts)
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            parsed = read_receipts(receipts)
+            first_segment_receipt = next(
+                r for r in parsed if "duration_ms" in r
+            )
+            first_segment_receipt["duration_ms"] = True
+            rewrite_rechained(receipts, parsed)
+            proc = check_bound(receipts, "1", root)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("RECEIPTS: PASS", proc.stdout)
+
+    def test_null_exit_code_spawn_error_then_valid_retry_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_git_repo(root)
+            receipts = root / "r.jsonl"
+            # An interrupted run whose only receipt is a spawn error:
+            # exit_code is legitimately null there.
+            run_id = "spawn-error-run"
+            mechanical_verify.append_run_start(receipts, "1", run_id)
+            command = next(
+                c
+                for c in mechanical_verify.discover_verification_commands(
+                    root
+                )
+                if c.id == "make-test"
+            )
+            result = VerificationResult(
+                command=command,
+                exit_code=None,
+                timed_out=False,
+                duration_ms=0,
+                stdout="",
+                stderr="",
+                output_truncated=False,
+            )
+            mechanical_verify.append_receipt(
+                receipts, "1", result, run_id=run_id
+            )
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            proc = check_bound(receipts, "1", root)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("RECEIPTS: PASS", proc.stdout)
+
+    def test_unknown_field_in_selected_segment_is_ignored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            receipts = root / "r.jsonl"
+            parsed = self._bound_segment(root, receipts)
+            receipt = next(r for r in parsed if "exit_code" in r)
+            receipt["future_field"] = {"anything": [1, 2]}
+            rewrite_rechained(receipts, parsed)
+            proc = check_bound(receipts, "1", root)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("RECEIPTS: PASS", proc.stdout)
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_real_bound_segment_with_collected_counts_validates(self):
+        # A REAL segment from a fixture verify run — carrying the
+        # Task 1/2/4/5 record extensions (binding dict, subreaper
+        # bool, env str, tests_collected int) — validates clean under
+        # the strict type map: the plan's own records never read as
+        # corrupt.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "test_ok.py", "def test_ok():\n    assert True\n")
+            git(root, "init", "-q", "-b", "main")
+            git(root, "add", "test_ok.py")
+            git(
+                root,
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "-q",
+                "-m",
+                "fixture",
+            )
+            receipts = root / "r.jsonl"
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            parsed = read_receipts(receipts)
+            self.assertIsInstance(parsed[0]["binding"], dict)
+            self.assertIsInstance(parsed[0]["subreaper"], bool)
+            self.assertIsInstance(parsed[0]["env"], str)
+            receipt = next(r for r in parsed if "exit_code" in r)
+            self.assertIsInstance(receipt["tests_collected"], int)
+            proc = check_bound(receipts, "1", root)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("RECEIPTS: PASS", proc.stdout)
 
 
 if __name__ == "__main__":

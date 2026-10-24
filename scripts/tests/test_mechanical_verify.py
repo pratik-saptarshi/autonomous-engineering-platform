@@ -260,6 +260,7 @@ class DiscoveryTests(unittest.TestCase):
                     "markdownlint-cli2",
                     "**/*.md",
                     "!reference/esf/**/*.md",
+                    "!reference/neurostrata/**/*.md",
                     "!skills/archify/**/*.md",
                 ),
             )
@@ -321,6 +322,20 @@ class DiscoveryTests(unittest.TestCase):
             root = Path(tmp)
             write(root, "src/app.py", "VALUE = 1\n")
             self.assertEqual(discover_verification_commands(root), ())
+    def test_markdownlint_argv_matches_ci_exclusion_set(self):
+        # Task 8 (R7, P2-9): the verifier's lint gate must exclude
+        # exactly what CI's docs-lint job excludes — the vendored
+        # neurostrata tree is not first-party prose.
+        self.assertEqual(
+            mechanical_verify.MARKDOWNLINT_ARGV,
+            (
+                "markdownlint-cli2",
+                "**/*.md",
+                "!reference/esf/**/*.md",
+                "!reference/neurostrata/**/*.md",
+                "!skills/archify/**/*.md",
+            ),
+        )
 
     def test_no_markers_discovers_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:

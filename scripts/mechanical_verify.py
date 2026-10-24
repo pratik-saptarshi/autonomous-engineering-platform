@@ -38,6 +38,7 @@ MARKDOWNLINT_ARGV = (
     "markdownlint-cli2",
     "**/*.md",
     "!reference/esf/**/*.md",
+    "!reference/neurostrata/**/*.md",
     "!skills/archify/**/*.md",
 )
 
@@ -837,6 +838,86 @@ RUN_START_FIELDS = (
     "chain_sha256",
 )
 
+# Strict field types for the records of the SELECTED segment (Task 8,
+# R7 — panel EXP5 / P3-1). A JSON bool wearing an int's clothes fails
+# open under `==` checks (False == 0, True == 1), so validation uses
+# `type(v) is ...` semantics, never isinstance (bool subclasses int).
+# The map covers every field the writers can emit across the three
+# record kinds — the base fields above plus the Task 1/2/4/5
+# extensions (binding, subreaper, env, survivors_killed,
+# tests_collected). exit_code alone may also be null: a spawn-error
+# receipt legitimately records it. Fields absent from the map are
+# ignored — the schema must not freeze against follow-ups (issue #38,
+# P2-2). Element types are pinned for the two list fields.
+SEGMENT_FIELD_TYPES: dict[str, tuple[type, ...]] = {
+    "ts": (str,),
+    "task": (str,),
+    "kind": (str,),
+    "run_id": (str,),
+    "command_id": (str,),
+    "argv": (list,),
+    "exit_code": (int, type(None)),
+    "timed_out": (bool,),
+    "duration_ms": (int,),
+    "stdout_sha256": (str,),
+    "stderr_sha256": (str,),
+    "chain_sha256": (str,),
+    "command_count": (int,),
+    "commands_sha256": (str,),
+    "binding": (dict,),
+    "subreaper": (bool,),
+    "env": (str,),
+    "survivors_killed": (list,),
+    "tests_collected": (int,),
+}
+
+SEGMENT_LIST_ELEMENT_TYPES: dict[str, type] = {
+    "argv": str,
+    "survivors_killed": int,
+}
+
+
+def _segment_field_type_error(record: dict) -> str | None:
+    """The first field of `record` whose value violates
+    SEGMENT_FIELD_TYPES, else None. Unknown fields are ignored."""
+    for field, value in record.items():
+        allowed = SEGMENT_FIELD_TYPES.get(field)
+        if allowed is None:
+            continue
+        if type(value) not in allowed:
+            return field
+        element = SEGMENT_LIST_ELEMENT_TYPES.get(field)
+        if element is not None and any(
+            type(item) is not element for item in value
+        ):
+            return field
+    return None
+
+
+def _receipts_file_tracked(root: Path, receipts_path: Path) -> bool:
+    """True when the receipts file is tracked by git in root's repo.
+
+    Path computation (N2): resolve the receipts path absolutely, take
+    its path relative to the git toplevel of the root, and ask
+    `git -C <toplevel> ls-files --error-unmatch` — correct for
+    root-as-repo, root-as-subdirectory, and symlinked receipts paths.
+    A root outside any git worktree tracks nothing: no rule applies.
+    """
+    top = _git(root, "rev-parse", "--show-toplevel")
+    if top.returncode != 0:
+        return False
+    toplevel = Path(
+        top.stdout.decode("utf-8", errors="replace").strip()
+    ).resolve()
+    try:
+        rel = receipts_path.resolve().relative_to(toplevel)
+    except ValueError:
+        return False
+    proc = _git(
+        toplevel, "ls-files", "--error-unmatch", "--", rel.as_posix()
+    )
+    return proc.returncode == 0
+
 
 def _commands_digest(command_ids) -> str:
     canonical = json.dumps(list(command_ids), ensure_ascii=False)
@@ -1261,6 +1342,29 @@ def check_receipts(
             if r.get("run_id") == segment_run_id
         ]
 
+    # Strict field types (R7), scoped to the SELECTED segment only —
+    # an oddity in a superseded segment is audit history and must not
+    # poison this validation. This runs before any value comparison:
+    # under `==`, a bool exit_code/duration/command_count would
+    # otherwise impersonate 0/1 and fail open (panel EXP5).
+    selected = (
+        segment if start_record is None else [start_record, *segment]
+    )
+    for record in selected:
+        bad_field = _segment_field_type_error(record)
+        if bad_field is not None:
+            expected = " or ".join(
+                "null" if t is type(None) else t.__name__
+                for t in SEGMENT_FIELD_TYPES[bad_field]
+            )
+            print(
+                f"RECEIPTS: corrupt: field '{bad_field}' in the "
+                f"selected segment has type "
+                f"{type(record[bad_field]).__name__}, expected "
+                f"{expected}"
+            )
+            return 1
+
     mine = [r for r in segment if r.get("kind") != COMPLETION_KIND]
     if not mine and segment_run_id is None:
         print(f"RECEIPTS: FAIL task {task}: no receipts")
@@ -1444,6 +1548,19 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
 
     root = Path(args.root)
+    if receipts_path is not None and _receipts_file_tracked(
+        root, receipts_path
+    ):
+        # Evidence must not be part of the artifact (P2-1 residue):
+        # a receipts file tracked by git inside the root would be
+        # sealed into the very tree it describes. Untracked receipts
+        # inside the root — the SDD layout — are explicitly allowed.
+        print(
+            f"VERIFY: FAIL receipts file {receipts_path} is tracked "
+            f"by git inside {root} — point --receipts at an "
+            "untracked path"
+        )
+        return 2
     commands = discover_verification_commands(root)
     markdownlint_skipped = (root / ".markdownlint.yaml").is_file() and all(
         c.id != "markdownlint" for c in commands
