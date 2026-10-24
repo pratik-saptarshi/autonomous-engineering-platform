@@ -1,0 +1,961 @@
+use crate::parser::get_language;
+use crate::parser::schema::ParserSchema;
+use crate::traits::{Embedder, MemoryPayload, VectorStore};
+use ignore::WalkBuilder;
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::Arc;
+use tokio::sync::mpsc;
+use tree_sitter::{Parser, Query, QueryCursor, StreamingIterator};
+
+/// Schemas declare extensions bare ("rs"), but one passed via --schema-path may
+/// use the dotted form. Both sides go through here so either convention matches.
+fn normalize_ext(ext: &str) -> String {
+    ext.trim_start_matches('.').to_ascii_lowercase()
+}
+
+fn build_ext_map(schema: &ParserSchema) -> HashMap<String, String> {
+    let mut ext_to_lang = HashMap::new();
+    for (lang_name, lang_schema) in &schema.languages {
+        for ext in &lang_schema.extensions {
+            ext_to_lang.insert(normalize_ext(ext), lang_name.clone());
+        }
+    }
+    ext_to_lang
+}
+
+/// Upper bound on the source text stored and embedded for one symbol. The
+/// embedder truncates its input anyway (see MAX_EMBED_TOKENS in src/embed.rs);
+/// cutting here keeps the stored content and the vector describing the same
+/// text instead of letting them drift apart on large definitions.
+const MAX_SYMBOL_CHARS: usize = 4000;
+
+fn truncate_for_embedding(body: &str) -> String {
+    if body.chars().count() <= MAX_SYMBOL_CHARS {
+        return body.to_string();
+    }
+    let cut: String = body.chars().take(MAX_SYMBOL_CHARS).collect();
+    format!(
+        "{}\n... (truncated at {} characters)",
+        cut, MAX_SYMBOL_CHARS
+    )
+}
+
+/// Node ids are paths, and a memory written by an agent names a file the way a
+/// human does: `src/parser/ingest.rs`. The walker yields a platform path with
+/// backslashes and a leading `./` on Windows, and an edge only forms when the
+/// two strings match exactly, so every id goes through here first.
+pub fn normalize_node_path(path: &str) -> String {
+    let forward = path.replace('\\', "/");
+    let trimmed = forward.strip_prefix("./").unwrap_or(&forward);
+    trimmed.trim_end_matches('/').to_string()
+}
+
+/// The separator between a namespace and the path it qualifies.
+///
+/// Two colons because a path cannot contain them on any platform we ingest
+/// from, so splitting a qualified id back apart is unambiguous.
+pub const NAMESPACE_SEPARATOR: &str = "::";
+
+/// A node id, qualified by the namespace that owns it.
+///
+/// Node ids are paths, and the Memory table is PRIMARY KEY (id) -- one column,
+/// because lbug 0.15.3 has no composite key (see examples/composite_pk_repro.rs
+/// for the parser refusing one). So an id is unique across the WHOLE database,
+/// while paths are only unique within a project. Every repository has a `src`
+/// and a `README.md`, and the database is shared by all of them, which meant the
+/// second project ingested silently took the first project's nodes: upsert
+/// MERGEs on the id, finds the existing row, and updates it.
+///
+/// Qualifying the id with its namespace is what makes "projects are separated by
+/// namespace" true in the schema rather than only in the documentation. It is
+/// also the only one of the three candidate fixes the engine allows.
+///
+/// The bare path is still what a memory's `location` carries and what a rule
+/// names, so declarations keep reading the way a human writes them --
+/// `resolve_declared_target` bridges the two.
+pub fn qualified_id(namespace: &str, node_path: &str) -> String {
+    format!("{}{}{}", namespace, NAMESPACE_SEPARATOR, node_path)
+}
+
+/// Whether an ingested id names the namespace holding it.
+///
+/// False for anything written before ids carried a namespace. Such a node still
+/// resolves -- KnownIds matches a bare path either way -- but its id is unique
+/// only within its project rather than within the database, so another project
+/// ingesting the same path can still take it. `doctor` reports these so the
+/// state is visible instead of silent; a re-ingest is what migrates them.
+pub fn is_qualified(namespace: &str, id: &str) -> bool {
+    id.starts_with(&qualified_id(namespace, ""))
+}
+
+/// The id a node gets, relative to the directory being ingested.
+///
+/// Ids used to inherit whatever the caller passed: the CLI walked a relative
+/// path and produced `src/store/ladybug.rs`, while the GUI passes an absolute
+/// project path and produced `C:/dev/projects/neurostrata/src/store/ladybug.rs`.
+/// GOVERNS edges match ids by exact string, so a rule an agent wrote against
+/// `src/store/ladybug.rs` could never link to the same file ingested from the
+/// GUI -- and an absolute id does not survive the repository being checked out
+/// anywhere else (bead neurostrata-fld).
+pub fn node_id_for(root: &Path, path: &Path) -> String {
+    // A relative walk already produces the documented form. `ingest ./src <ns>`
+    // is the example in CLI-readme.md, and it must keep yielding src/lib.rs --
+    // the same shape a rule names when it says "src/lib.rs" -- rather than the
+    // lib.rs that stripping the ingest root would leave.
+    let relative = if path.is_relative() {
+        path.to_path_buf()
+    } else {
+        // Absolute: relative to the root being ingested. This used to try the
+        // process's working directory first, which made an id depend on where
+        // the daemon happened to be launched -- ingesting /workspace/Project
+        // from /workspace produced Project/src/main.rs, which no rule names.
+        // The CLI's subdirectory case is handled where the CLI reads its path.
+        path.strip_prefix(root).unwrap_or(path).to_path_buf()
+    };
+
+    let normalized = normalize_node_path(&relative.to_string_lossy());
+    if normalized.is_empty() {
+        // The root itself. Name it, rather than leaving an empty id.
+        normalize_node_path(
+            &root
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| root.to_string_lossy().to_string()),
+        )
+    } else {
+        normalized
+    }
+}
+
+/// One extracted symbol, owned so that no tree-sitter type is alive when the
+/// embedding and upsert futures are awaited.
+struct SymbolRow {
+    name: String,
+    kind: String,
+    start_line: usize,
+    end_line: usize,
+    body: String,
+}
+
+/// Stable identity for one symbol. Re-ingesting unchanged code produces the same
+/// id, so the store upserts instead of accumulating a second copy under a fresh
+/// UUID. The line number keeps overloads and repeated names distinct.
+fn symbol_id(path: &str, kind: &str, name: &str, start_line: usize) -> String {
+    format!("{}#{}:{}@{}", path, kind, name, start_line)
+}
+
+/// Told what the walk has done so far, so a caller does not have to wait for
+/// the whole thing to find out. Implementations are called from the walk, so
+/// they must be cheap and must not block.
+pub trait IngestObserver: Send + Sync {
+    fn file_ingested(&self, path: &str, symbols: usize);
+    fn relinked(&self, edges: usize);
+}
+
+/// An owned item streamed from the blocking producer to the async consumer.
+/// No borrowed tree-sitter or filesystem types cross the channel boundary.
+enum IngestItem {
+    /// A structural (directory/file/markdown) node to upsert with zero vector.
+    NodeUpsert {
+        node_id: String,
+        node_path: String,
+        contained_by: Vec<String>,
+        mem_type: String,
+        abs_path: String,
+    },
+    /// Parsed symbols from a file, ready for embed + store.
+    ParsedSymbols {
+        node_path: String,
+        lang_name: String,
+        symbols: Vec<SymbolRow>,
+        path_display: String,
+    },
+}
+
+/// Blocking producer: walks the directory tree, reads files, parses ASTs,
+/// and streams owned results through `tx`. Runs on the blocking thread pool
+/// so filesystem I/O never stalls the async runtime.
+fn run_producer(
+    dir_path: std::path::PathBuf,
+    ext_to_lang: HashMap<String, String>,
+    schema: crate::parser::schema::ParserSchema,
+    tx: mpsc::Sender<IngestItem>,
+    namespace: String,
+) -> anyhow::Result<()> {
+    let skipped_dirs = [
+        "node_modules",
+        "target",
+        "vendor",
+        ".venv",
+        "venv",
+        "env",
+        ".env",
+        "dist",
+        "build",
+        "out",
+        ".dolt",
+        ".git",
+        ".next",
+        ".nuxt",
+        "__pycache__",
+        ".fastembed_cache",
+        ".idea",
+        ".vscode",
+        "coverage",
+    ];
+
+    let walker = WalkBuilder::new(&dir_path).build();
+
+    let mut unreadable = 0usize;
+
+    for result in walker {
+        let entry = match result {
+            Ok(e) => e,
+            Err(e) => {
+                unreadable += 1;
+                if unreadable <= 5 {
+                    eprintln!("Could not read part of {:?}: {}", dir_path, e);
+                }
+                continue;
+            }
+        };
+
+        let path = entry.path();
+        let path_str = path.to_string_lossy();
+
+        let mut should_skip = false;
+        for skip_dir in &skipped_dirs {
+            let skip_pattern = format!("/{}/", skip_dir);
+            let skip_start = format!("{}/", skip_dir);
+            let skip_exact = format!("./{}", skip_dir);
+            if path_str.contains(&skip_pattern)
+                || path_str.starts_with(&skip_start)
+                || path_str == skip_exact
+            {
+                should_skip = true;
+                break;
+            }
+        }
+        if should_skip {
+            continue;
+        }
+
+        let abs_path = if path.is_absolute() {
+            path.to_string_lossy().to_string()
+        } else {
+            std::env::current_dir()
+                .unwrap_or_default()
+                .join(path)
+                .to_string_lossy()
+                .to_string()
+        };
+
+        let node_path = node_id_for(&dir_path, path);
+
+        let parent_id = if let Some(p) = path.parent() {
+            let p_str = node_id_for(&dir_path, p);
+            if p_str != "." && p_str != "" && p_str != node_path {
+                Some(p_str)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let mut contained_by = Vec::new();
+        if let Some(pid) = parent_id {
+            contained_by.push(qualified_id(&namespace, &pid));
+        }
+
+        let is_dir = entry.file_type().map_or(false, |ft| ft.is_dir());
+        let is_file = entry.file_type().map_or(false, |ft| ft.is_file());
+
+        let mem_type = if is_dir {
+            "directory"
+        } else if is_file {
+            if path_str.ends_with(".md") {
+                "markdown"
+            } else {
+                "file"
+            }
+        } else {
+            continue;
+        };
+
+        let node_id = qualified_id(&namespace, &node_path);
+
+        // If the consumer has dropped (e.g. it errored), stop walking.
+        if tx
+            .try_send(IngestItem::NodeUpsert {
+                node_id,
+                node_path: node_path.clone(),
+                contained_by,
+                mem_type: mem_type.to_string(),
+                abs_path,
+            })
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        if !is_file {
+            continue;
+        }
+
+        // Parseable file: read, parse, extract symbols, send.
+        if let Some(ext_os) = path.extension() {
+            let ext = normalize_ext(&ext_os.to_string_lossy());
+            if let Some(lang_name) = ext_to_lang.get(&ext) {
+                if let Some(ts_lang) = get_language(lang_name) {
+                    let content = match std::fs::read_to_string(path) {
+                        Ok(c) => c,
+                        Err(_) => continue,
+                    };
+
+                    let mut parser = Parser::new();
+                    parser.set_language(&ts_lang)?;
+
+                    let tree = match parser.parse(&content, None) {
+                        Some(t) => t,
+                        None => continue,
+                    };
+
+                    let lang_schema = &schema.languages[lang_name];
+                    let mut pending: Vec<SymbolRow> = Vec::new();
+
+                    for (query_name, query_str) in &lang_schema.queries {
+                        let query = match Query::new(&ts_lang, query_str) {
+                            Ok(q) => q,
+                            Err(e) => {
+                                eprintln!("Invalid query for {}: {}", lang_name, e);
+                                continue;
+                            }
+                        };
+
+                        let mut cursor = QueryCursor::new();
+                        let mut iter = cursor.matches(&query, tree.root_node(), content.as_bytes());
+
+                        while let Some(m) = iter.next() {
+                            let mut name: Option<&str> = None;
+                            let mut definition: Option<tree_sitter::Node> = None;
+
+                            for capture in m.captures {
+                                let capture_name = query.capture_names()[capture.index as usize];
+                                if capture_name == "name" {
+                                    name = capture.node.utf8_text(content.as_bytes()).ok();
+                                } else if definition.map_or(true, |d: tree_sitter::Node| {
+                                    capture.node.byte_range().len() > d.byte_range().len()
+                                }) {
+                                    definition = Some(capture.node);
+                                }
+                            }
+
+                            let (name, definition) = match (name, definition) {
+                                (Some(n), Some(d)) => (n, d),
+                                _ => continue,
+                            };
+
+                            pending.push(SymbolRow {
+                                name: name.to_string(),
+                                kind: query_name.clone(),
+                                start_line: definition.start_position().row + 1,
+                                end_line: definition.end_position().row + 1,
+                                body: truncate_for_embedding(
+                                    definition.utf8_text(content.as_bytes()).unwrap_or(""),
+                                ),
+                            });
+                        }
+                    }
+
+                    if !pending.is_empty() {
+                        let path_display = path.display().to_string();
+                        if tx
+                            .try_send(IngestItem::ParsedSymbols {
+                                node_path,
+                                lang_name: lang_name.clone(),
+                                symbols: pending,
+                                path_display,
+                            })
+                            .is_err()
+                        {
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if unreadable > 0 {
+        eprintln!(
+            "WARNING: {} path(s) under {:?} could not be read, so they are missing from this ingest of namespace {}.",
+            unreadable, dir_path, namespace
+        );
+    }
+
+    Ok(())
+}
+
+/// Async consumer: receives owned items from the producer, embeds symbols,
+/// and upserts everything to the vector store.
+async fn run_consumer(
+    mut rx: mpsc::Receiver<IngestItem>,
+    embedder: Arc<dyn Embedder>,
+    vector_store: Arc<dyn VectorStore>,
+    namespace: &str,
+    observer: Option<Arc<dyn IngestObserver>>,
+    zero_vector: Vec<f32>,
+) -> anyhow::Result<()> {
+    while let Some(item) = rx.recv().await {
+        match item {
+            IngestItem::NodeUpsert {
+                node_id,
+                node_path,
+                contained_by,
+                mem_type,
+                abs_path,
+            } => {
+                let mut metadata = serde_json::Map::new();
+                metadata.insert("absolute_path".to_string(), serde_json::json!(abs_path));
+                metadata.insert("contained_by".to_string(), serde_json::json!(contained_by));
+
+                let payload = MemoryPayload {
+                    content: format!("Path: {}", node_path),
+                    location: node_path,
+                    location_lines: String::new(),
+                    memory_type: mem_type,
+                    metadata: serde_json::Value::Object(metadata),
+                    user_id: "auto-ingestor".to_string(),
+                    agent_name: Some("neurostrata-mcp-ingestor".to_string()),
+                };
+
+                if let Err(e) = vector_store
+                    .upsert(namespace, &node_id, zero_vector.clone(), payload)
+                    .await
+                {
+                    eprintln!("Failed to upsert graph node {}: {}", node_id, e);
+                }
+            }
+            IngestItem::ParsedSymbols {
+                node_path,
+                lang_name,
+                symbols,
+                path_display,
+            } => {
+                let mut symbols_stored = 0usize;
+                for symbol in symbols {
+                    let summary = format!(
+                        "{} {} in {}\nlines {}-{}\n\n{}",
+                        symbol.kind,
+                        symbol.name,
+                        node_path,
+                        symbol.start_line,
+                        symbol.end_line,
+                        symbol.body
+                    );
+                    let id = qualified_id(
+                        namespace,
+                        &symbol_id(&node_path, &symbol.kind, &symbol.name, symbol.start_line),
+                    );
+                    let lines = format!("{}-{}", symbol.start_line, symbol.end_line);
+
+                    let mut metadata = serde_json::Map::new();
+                    metadata.insert("domain".to_string(), serde_json::json!("code_ast"));
+                    metadata.insert("symbol".to_string(), serde_json::json!(symbol.name));
+                    metadata.insert("symbol_kind".to_string(), serde_json::json!(symbol.kind));
+                    metadata.insert("language".to_string(), serde_json::json!(lang_name));
+                    metadata.insert(
+                        "contained_by".to_string(),
+                        serde_json::json!([qualified_id(namespace, &node_path)]),
+                    );
+                    metadata.insert(
+                        "refs".to_string(),
+                        serde_json::json!([
+                            { "file": node_path.clone(), "lines": lines.clone() }
+                        ]),
+                    );
+
+                    let payload = MemoryPayload {
+                        content: summary.clone(),
+                        location: node_path.clone(),
+                        location_lines: lines,
+                        memory_type: "code_ast".to_string(),
+                        metadata: serde_json::Value::Object(metadata),
+                        user_id: "auto-ingestor".to_string(),
+                        agent_name: Some("neurostrata-mcp-ingestor".to_string()),
+                    };
+
+                    match embedder.embed(&summary).await {
+                        Ok(embedding) => {
+                            if let Err(e) = vector_store
+                                .upsert(namespace, &id, embedding, payload)
+                                .await
+                            {
+                                eprintln!(
+                                    "Failed to store symbol {} from {}: {}",
+                                    symbol.name, path_display, e
+                                );
+                            } else {
+                                symbols_stored += 1;
+                            }
+                        }
+                        Err(e) => eprintln!(
+                            "Failed to embed symbol {} from {}: {}",
+                            symbol.name, path_display, e
+                        ),
+                    }
+                }
+
+                if symbols_stored > 0 {
+                    println!("Ingested {} symbols from {}", symbols_stored, path_display);
+                    if let Some(observer) = &observer {
+                        observer.file_ingested(&path_display, symbols_stored);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+pub async fn ingest_directory(
+    dir_path: &Path,
+    schema: &ParserSchema,
+    embedder: Arc<dyn Embedder>,
+    vector_store: Arc<dyn VectorStore>,
+    namespace: &str,
+    observer: Option<Arc<dyn IngestObserver>>,
+) -> anyhow::Result<()> {
+    // Prove the root is a readable directory before anything is deleted. A
+    // missing or mistyped path used to clear the namespace, walk nothing -- the
+    // walker's errors were skipped -- and report success over an emptied graph.
+    std::fs::read_dir(dir_path).map_err(|e| {
+        anyhow::anyhow!(
+            "Refusing to ingest {:?} into namespace {}: it is not a readable directory, so nothing was cleared: {}",
+            dir_path,
+            namespace,
+            e
+        )
+    })?;
+
+    // Rebuild this namespace's ingested rows from scratch. Failing here is fatal:
+    // ingesting on top of a stale tree would leave rows for files that no longer exist.
+    vector_store.clear_ingested(namespace).await.map_err(|e| {
+        anyhow::anyhow!(
+            "Refusing to ingest: could not clear the previous ingest of namespace {}: {}",
+            namespace,
+            e
+        )
+    })?;
+
+    let ext_to_lang = build_ext_map(schema);
+    let zero_vector = vec![0.0; embedder.dimensions()];
+    let namespace_owned = namespace.to_string();
+    let dir_path_owned = dir_path.to_path_buf();
+    let schema_clone = schema.clone();
+
+    let (tx, rx) = mpsc::channel::<IngestItem>(256);
+
+    // The blocking producer walks the filesystem and parses files on a
+    // blocking thread, streaming owned results through the channel.
+    let producer = tokio::task::spawn_blocking(move || {
+        run_producer(
+            dir_path_owned,
+            ext_to_lang,
+            schema_clone,
+            tx,
+            namespace_owned,
+        )
+    });
+
+    // The async consumer embeds and stores each item on the async runtime.
+    let observer_clone = observer.clone();
+    let consumer_result = run_consumer(
+        rx,
+        embedder,
+        vector_store.clone(),
+        namespace,
+        observer_clone,
+        zero_vector,
+    )
+    .await;
+
+    let producer_result = producer.await;
+
+    // Consumer errors are the primary concern.
+    consumer_result?;
+
+    match producer_result {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => return Err(e),
+        Err(e) => return Err(anyhow::anyhow!("ingest producer panicked: {}", e)),
+    }
+
+    // Clearing the previous ingest took every edge attached to those nodes with
+    // it, including the GOVERNS edges rules had to them -- and a rule is not
+    // rewritten just because its file came back. Replay what the memories still
+    // declare, now that the nodes they point at exist again (bead
+    // neurostrata-sij).
+    //
+    // A failure here fails the ingest rather than warning about it. The clear
+    // above already took every GOVERNS edge, so reporting success would hand
+    // back a graph whose rules reach none of their code.
+    let linked = vector_store.relink_edges(namespace).await.map_err(|e| {
+        anyhow::anyhow!(
+            "stored the nodes of namespace {} but could not relink the edges its memories declare, so rules do not reach their code; ingest again to retry: {}",
+            namespace,
+            e
+        )
+    })?;
+    println!(
+        "Relinked {} declared edges in namespace {}",
+        linked, namespace
+    );
+    if let Some(observer) = &observer {
+        observer.relinked(linked);
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn map_from(json: &str) -> HashMap<String, String> {
+        build_ext_map(&ParserSchema::load(json).expect("schema parses"))
+    }
+
+    /// The shipped src/schema.json declares extensions without a dot. The lookup
+    /// used to prepend one, so nothing ever matched and no symbols were extracted.
+    #[test]
+    fn bare_schema_extension_matches_a_file_extension() {
+        let map = map_from(r#"{"languages":{"rust":{"extensions":["rs"],"queries":{}}}}"#);
+        assert_eq!(map.get(&normalize_ext("rs")), Some(&"rust".to_string()));
+    }
+
+    #[test]
+    fn dotted_schema_extension_matches_too() {
+        let map = map_from(r#"{"languages":{"rust":{"extensions":[".rs"],"queries":{}}}}"#);
+        assert_eq!(map.get(&normalize_ext("rs")), Some(&"rust".to_string()));
+    }
+
+    #[test]
+    fn lookup_is_case_insensitive() {
+        let map = map_from(r#"{"languages":{"python":{"extensions":["py"],"queries":{}}}}"#);
+        assert_eq!(map.get(&normalize_ext("PY")), Some(&"python".to_string()));
+    }
+
+    /// The shipped schema once declared a language key ("javascript") that
+    /// get_language() had no arm for, so those files silently produced nothing.
+    #[test]
+    fn every_language_in_the_shipped_schema_has_a_grammar() {
+        let schema =
+            ParserSchema::load(include_str!("../schema.json")).expect("shipped schema parses");
+        for lang in schema.languages.keys() {
+            assert!(
+                get_language(lang).is_some(),
+                "schema.json declares language '{}' but get_language() has no arm for it",
+                lang
+            );
+        }
+    }
+
+    /// And the reverse gap: a grammar nothing can reach, because no extension maps to it.
+    #[test]
+    fn every_shipped_extension_resolves_to_a_grammar() {
+        let schema =
+            ParserSchema::load(include_str!("../schema.json")).expect("shipped schema parses");
+        let map = build_ext_map(&schema);
+        for (ext, lang) in &map {
+            assert!(
+                get_language(lang).is_some(),
+                "extension '{}' maps to '{}', which has no grammar",
+                ext,
+                lang
+            );
+        }
+        assert_eq!(map.get(&normalize_ext("rs")), Some(&"rust".to_string()));
+        assert_eq!(map.get(&normalize_ext("tsx")), Some(&"tsx".to_string()));
+    }
+
+    /// A project root that is absolute on the platform running the test.
+    ///
+    /// A literal `C:\dev\projects\neurostrata` is absolute only on Windows. On
+    /// Linux and macOS it has no leading separator, so `node_id_for` would take
+    /// its `is_relative()` branch and return the whole string instead of
+    /// stripping the root.
+    fn absolute_root() -> std::path::PathBuf {
+        if cfg!(windows) {
+            std::path::PathBuf::from(r"C:\dev\projects\neurostrata")
+        } else {
+            std::path::PathBuf::from("/dev/projects/neurostrata")
+        }
+    }
+
+    /// Node ids double as edge targets, so a path an agent writes
+    /// ("src/lib.rs") has to land on the same string the walker produced.
+    #[test]
+    fn a_node_id_is_relative_to_the_directory_being_ingested() {
+        let root = absolute_root();
+
+        assert_eq!(
+            node_id_for(&root, &root.join("src").join("store").join("ladybug.rs")),
+            "src/store/ladybug.rs",
+            "an absolute walk must produce the same id as a relative one"
+        );
+        assert_eq!(
+            node_id_for(Path::new("."), Path::new("./src/store/ladybug.rs")),
+            "src/store/ladybug.rs"
+        );
+    }
+
+    #[test]
+    fn ingesting_a_subdirectory_keeps_the_documented_repo_relative_form() {
+        // CLI-readme.md documents `neurostrata-mcp ingest ./src my-rust-project`,
+        // and rules name files as "src/lib.rs". Stripping the ingest root would
+        // leave "lib.rs" and quietly unlink every rule that names the file.
+        assert_eq!(
+            node_id_for(Path::new("./src"), Path::new("./src/store/ladybug.rs")),
+            "src/store/ladybug.rs"
+        );
+        assert_eq!(
+            node_id_for(Path::new("src"), Path::new("src/lib.rs")),
+            "src/lib.rs"
+        );
+    }
+
+    /// The daemon inherits the working directory of whatever launched it, and a
+    /// parent of the project used to win over the ingest root.
+    #[test]
+    fn a_node_id_does_not_depend_on_the_working_directory() {
+        let root = std::env::current_dir()
+            .expect("working directory")
+            .join("sub");
+        assert_eq!(node_id_for(&root, &root.join("a.rs")), "a.rs");
+    }
+
+    #[test]
+    fn the_ingest_root_is_named_rather_than_left_empty() {
+        let root = absolute_root();
+        assert_eq!(node_id_for(&root, &root), "neurostrata");
+    }
+
+    #[test]
+    fn a_path_outside_everything_keeps_its_absolute_shape() {
+        // Neither the working directory nor the ingest root is a prefix, so
+        // there is nothing to strip. A usable absolute id beats a panic.
+        assert_eq!(
+            node_id_for(
+                Path::new(r"C:\dev\projects\other"),
+                Path::new(r"D:\elsewhere\a.rs")
+            ),
+            "D:/elsewhere/a.rs"
+        );
+    }
+
+    #[test]
+    fn node_paths_normalise_to_one_form() {
+        assert_eq!(normalize_node_path(r".\src\lib.rs"), "src/lib.rs");
+        assert_eq!(normalize_node_path("./src/lib.rs"), "src/lib.rs");
+        assert_eq!(normalize_node_path("src/lib.rs"), "src/lib.rs");
+        assert_eq!(normalize_node_path("src/"), "src");
+    }
+
+    /// The whole point: two projects both have a `src`, the Memory table has a
+    /// single-column primary key, and the database is shared. Without the
+    /// namespace in the id the second project ingested takes the first's node.
+    /// doctor reports migration state from this, so a wrong answer either hides
+    /// a namespace that is still collidable or nags about one that is not.
+    #[test]
+    fn an_id_is_qualified_only_by_its_own_namespace() {
+        assert!(is_qualified("NeuroStrata", "NeuroStrata::src/main.rs"));
+        // Written before ids carried a namespace.
+        assert!(!is_qualified("NeuroStrata", "src/main.rs"));
+        // Another project's node, which this namespace must not count as its own.
+        assert!(!is_qualified("NeuroStrata", "Other::src/main.rs"));
+        // A namespace that merely starts the same way is a different namespace.
+        assert!(!is_qualified("Neuro", "NeuroStrata::src/main.rs"));
+    }
+
+    #[test]
+    fn two_projects_sharing_a_path_get_different_ids() {
+        assert_ne!(
+            qualified_id("ProjectA", "src/main.rs"),
+            qualified_id("ProjectB", "src/main.rs")
+        );
+        assert_eq!(qualified_id("NeuroStrata", "src"), "NeuroStrata::src");
+    }
+
+    /// A rule names a file the way a human writes it. The id it has to reach is
+    /// qualified. If that bridge breaks, every GOVERNS edge silently stops
+    /// forming and the graph looks fine while meaning nothing.
+    #[test]
+    fn a_bare_declaration_still_reaches_its_qualified_id() {
+        let known = vec![
+            qualified_id("NeuroStrata", "src/store/ladybug.rs"),
+            qualified_id("NeuroStrata", "src/daemon.rs"),
+        ];
+        let index = crate::store::ladybug::KnownIds::new(known.iter().map(String::as_str));
+        assert_eq!(
+            index.resolve("src/store/ladybug.rs").as_deref(),
+            Some("NeuroStrata::src/store/ladybug.rs")
+        );
+    }
+
+    /// A suffix must not match a longer filename that merely ends the same way.
+    #[test]
+    fn a_suffix_does_not_match_a_longer_name() {
+        let known = vec![qualified_id("NeuroStrata", "src/mylib.rs")];
+        let index = crate::store::ladybug::KnownIds::new(known.iter().map(String::as_str));
+        assert_eq!(index.resolve("lib.rs"), None);
+    }
+
+    /// The same path under two namespaces must resolve to neither. A wrong
+    /// GOVERNS edge points a rule at another project's file, which is worse
+    /// than the rule having no edge at all.
+    #[test]
+    fn a_path_held_by_two_namespaces_is_ambiguous() {
+        let known = vec![
+            qualified_id("ProjectA", "src/main.rs"),
+            qualified_id("ProjectB", "src/main.rs"),
+        ];
+        let index = crate::store::ladybug::KnownIds::new(known.iter().map(String::as_str));
+        assert_eq!(index.resolve("src/main.rs"), None);
+    }
+
+    #[test]
+    fn symbol_ids_are_stable_and_distinguish_repeated_names() {
+        let a = symbol_id("src/lib.rs", "functions", "main", 12);
+        assert_eq!(a, symbol_id("src/lib.rs", "functions", "main", 12));
+        assert_ne!(a, symbol_id("src/lib.rs", "functions", "main", 40));
+        assert_ne!(a, symbol_id("src/other.rs", "functions", "main", 12));
+        assert_ne!(a, symbol_id("src/lib.rs", "structs", "main", 12));
+    }
+
+    #[test]
+    fn short_bodies_are_stored_verbatim_and_long_ones_are_cut() {
+        let short = "fn main() {}";
+        assert_eq!(truncate_for_embedding(short), short);
+
+        let long = "x".repeat(MAX_SYMBOL_CHARS + 500);
+        let cut = truncate_for_embedding(&long);
+        assert!(cut.starts_with(&"x".repeat(MAX_SYMBOL_CHARS)));
+        assert!(cut.contains("truncated"));
+        assert!(cut.chars().filter(|c| *c == 'x').count() == MAX_SYMBOL_CHARS);
+    }
+
+    #[test]
+    fn unknown_extension_has_no_language() {
+        let map = map_from(r#"{"languages":{"rust":{"extensions":["rs"],"queries":{}}}}"#);
+        assert_eq!(map.get(&normalize_ext("toml")), None);
+    }
+
+    struct ZeroEmbedder;
+
+    #[async_trait::async_trait]
+    impl Embedder for ZeroEmbedder {
+        async fn embed(&self, _text: &str) -> anyhow::Result<Vec<f32>> {
+            Ok(vec![0.0; 4])
+        }
+
+        fn dimensions(&self) -> usize {
+            4
+        }
+    }
+
+    #[tokio::test]
+    async fn a_missing_root_is_refused_before_anything_is_cleared() {
+        let db = std::env::temp_dir().join(format!("ns-missing-root-{}", uuid::Uuid::new_v4()));
+        let store: Arc<dyn VectorStore> =
+            Arc::new(crate::store::LadybugStore::for_testing(&db, 4).expect("open temp database"));
+        store.init("probe").await.expect("create the schema");
+
+        let node = qualified_id("probe", "src/lib.rs");
+        let previous = MemoryPayload {
+            content: "Path: src/lib.rs".to_string(),
+            user_id: "auto-ingestor".to_string(),
+            memory_type: "file".to_string(),
+            agent_name: None,
+            location: "src/lib.rs".to_string(),
+            location_lines: String::new(),
+            metadata: serde_json::json!({}),
+        };
+        store
+            .upsert("probe", &node, vec![0.0; 4], previous)
+            .await
+            .expect("seed a previous ingest");
+
+        let missing = std::env::temp_dir().join(format!("ns-no-such-dir-{}", uuid::Uuid::new_v4()));
+        let schema =
+            ParserSchema::load(include_str!("../schema.json")).expect("shipped schema parses");
+        let outcome = ingest_directory(
+            &missing,
+            &schema,
+            Arc::new(ZeroEmbedder),
+            store.clone(),
+            "probe",
+            None,
+        )
+        .await;
+
+        assert!(
+            outcome.is_err(),
+            "a root that does not exist is an error, not an empty ingest"
+        );
+        assert!(
+            store
+                .get("probe", &node)
+                .await
+                .expect("read back")
+                .is_some(),
+            "and the previous ingest is still there"
+        );
+    }
+
+    #[tokio::test]
+    async fn producer_consumer_streams_items_to_store() {
+        // Create a temp directory with a parseable file.
+        let tmp =
+            std::env::temp_dir().join(format!("ns-producer-consumer-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        std::fs::write(tmp.join("hello.rs"), "fn main() {}").expect("write test file");
+
+        let db =
+            std::env::temp_dir().join(format!("ns-producer-consumer-db-{}", uuid::Uuid::new_v4()));
+        let store: Arc<dyn VectorStore> =
+            Arc::new(crate::store::LadybugStore::for_testing(&db, 4).expect("open temp database"));
+        store.init("test-ns").await.expect("create the schema");
+
+        let schema =
+            ParserSchema::load(include_str!("../schema.json")).expect("shipped schema parses");
+        let outcome = ingest_directory(
+            &tmp,
+            &schema,
+            Arc::new(ZeroEmbedder),
+            store.clone(),
+            "test-ns",
+            None,
+        )
+        .await;
+
+        assert!(outcome.is_ok(), "ingestion succeeded: {:?}", outcome.err());
+
+        // The file node should exist.
+        let file_id = qualified_id("test-ns", "hello.rs");
+        let entry = store.get("test-ns", &file_id).await.expect("read back");
+        assert!(entry.is_some(), "file node was stored");
+
+        // The symbol node should exist (fn main).
+        let sym_id = qualified_id("test-ns", &symbol_id("hello.rs", "functions", "main", 1));
+        let sym_entry = store.get("test-ns", &sym_id).await.expect("read back");
+        assert!(sym_entry.is_some(), "symbol node was stored");
+
+        // Clean up.
+        std::fs::remove_dir_all(&tmp).ok();
+        std::fs::remove_dir_all(&db).ok();
+    }
+}

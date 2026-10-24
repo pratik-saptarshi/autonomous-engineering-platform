@@ -1,0 +1,31 @@
+[package]
+name = "neurostrata"
+version = "0.1.1"
+description = "NeuroStrata Graph Explorer"
+authors = ["Cognilogical"]
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+tauri = { version = "2.11.5", features = [] }
+open = "5.4.4"
+tauri-plugin-shell = "2.3.6"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tauri-plugin-dialog = "2.7.3"
+tauri-plugin-store = "2.4.5"
+dirs = "6.0.0"
+reqwest = { version = "0.12.28", features = ["blocking", "json"] }
+
+[features]
+# The tauri crate's build script sets `dev = !custom_protocol`. Without this
+# alias every build is a dev build, and the webview loads tauri.conf.json's
+# devUrl -- http://localhost:5173 -- rather than the bundled web-ui/dist. A
+# release built that way shows whatever happens to be serving on that port on
+# the user's machine, which is how this was found. DO NOT REMOVE.
+#
+# `tauri build` passes it; a plain cargo build needs --features custom-protocol.
+custom-protocol = ["tauri/custom-protocol"]
+

@@ -1,0 +1,65 @@
+[package]
+name = "neurostrata-mcp"
+version = "1.11.0"
+edition = "2021"
+
+[[bin]]
+name = "neurostrata-mcp"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1.53", features = ["full"] }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+async-trait = "0.1"
+anyhow = "1.0"
+fastembed = { version = "7", default-features = false, features = [
+    "ort-download-binaries-rustls-tls",
+    "hf-hub-rustls-tls",
+] }
+tracing = "0.1"
+
+futures = "0.3.34"
+dirs = "7.0.0"
+toml = "1.1.6"
+dunce = "1"
+uuid = { version = "1.26", features = ["v4", "v5", "serde"] }
+chrono = { version = "0.4.45", features = ["serde"] }
+tree-sitter = "0.26.8"
+ignore = "0.4.33"
+tree-sitter-rust = "0.24.2"
+tree-sitter-typescript = "0.23.2"
+tree-sitter-python = "0.25.0"
+tree-sitter-go = "0.25.0"
+tree-sitter-java = "0.23.5"
+regex = "1.13"
+cxx = "=1.0.138"
+lbug = "0.20.4"
+axum = "0.8"
+reqwest = { version = "0.13", features = ["json"] }
+# The crash breadcrumb needs the signal and file syscalls directly; it was
+# already in the tree as a transitive dependency, so this adds no download.
+libc = "0.2"
+sha2 = "0.10"
+hex = "0.4"
+
+# native-tls (pulled in by reqwest, ureq and hf-hub) only needs OpenSSL on
+# platforms without a system TLS stack: Windows uses SChannel and Apple targets
+# use Security.framework, so vendoring OpenSSL there would compile it from
+# source for nothing -- and on Windows that build additionally needs Perl and
+# NASM. This condition mirrors native-tls's own target gate.
+#
+# Except: lbug 0.20.4's build script unconditionally emits link directives for
+# libssl/libcrypto on every target (its C++ core hard-requires OpenSSL), so
+# Windows now needs a vendored build to satisfy the linker. Apple targets keep
+# the system-path resolution that already works.
+[target.'cfg(not(target_vendor = "apple"))'.dependencies]
+openssl = { version = "0.10.81", features = ["vendored"] }
+
+[build-dependencies]
+cxx-build = "=1.0.138"
+
+[features]
+default = []
+learning-laya = []

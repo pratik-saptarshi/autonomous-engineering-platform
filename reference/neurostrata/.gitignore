@@ -1,0 +1,40 @@
+*.canvas
+/bin/
+/dist/
+mcp/bin/
+mcp/dist/
+*.exe
+
+# AI Chat Sessions
+.sessions/
+mcp/neurostrata-mcp
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+
+target/
+.fastembed_cache/
+.NeuroStrata/
+*.log
+*.pid
+
+# IDE / editor settings - never tracked
+.idea/
+*.iml
+.vscode/
+
+# fastembed ONNX model cache (~523 MB). Created in-repo whenever the daemon
+# runs with HOME unset.
+.cache/
+
+# Cygwin/MSYS crash dumps
+*.stackdump
+
+# transient bead gate lock
+.beads.gate.lock
+.neuroplasticity/
+.worktrees/
+
+.superpowers/sdd/

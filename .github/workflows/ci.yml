@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: npx --yes markdownlint-cli2 "**/*.md" "!reference/esf/**/*.md" "!skills/archify/**/*.md"
+      - run: npx --yes markdownlint-cli2 "**/*.md" "!reference/esf/**/*.md" "!reference/neurostrata/**/*.md" "!skills/archify/**/*.md"
 
   shell-lint:
     runs-on: ubuntu-latest
@@ -56,4 +56,9 @@ jobs:
           cd reference/esf
           sha256sum -c ../../.github/vendor-esf.sha256
           comm -23 <(find . -type f | sort) <(cut -d' ' -f3- ../../.github/vendor-esf.sha256 | sed 's|^\./|./|' | sort) | grep -q . && { echo "ERROR: unlisted files"; exit 1; } || true
+          find . -type l | while read -r link; do test -e "$link" || { echo "ERROR: broken symlink $link"; exit 1; }; done
+      - run: |
+          cd reference/neurostrata
+          sha256sum -c ../../.github/vendor-neurostrata.sha256
+          comm -23 <(find . -type f | sort) <(cut -d' ' -f3- ../../.github/vendor-neurostrata.sha256 | sed 's|^\./|./|' | sort) | grep -q . && { echo "ERROR: unlisted files"; exit 1; } || true
           find . -type l | while read -r link; do test -e "$link" || { echo "ERROR: broken symlink $link"; exit 1; }; done
