@@ -2,6 +2,7 @@ import contextlib
 import hashlib
 import io
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -51,9 +52,75 @@ def verify(root: Path, task: str, receipts: Path) -> subprocess.CompletedProcess
     )
 
 
-def check(receipts: Path, task: str) -> subprocess.CompletedProcess:
-    return run_cli(
-        "check-receipts", "--receipts", str(receipts), "--task", task
+def check(
+    receipts: Path, task: str, historical: bool = False
+) -> subprocess.CompletedProcess:
+    # Every fixture keeps its receipts file directly in the tree root.
+    return check_bound(receipts, task, receipts.parent, historical)
+
+
+def check_bound(
+    receipts: Path,
+    task: str,
+    root: Path,
+    historical: bool = False,
+) -> subprocess.CompletedProcess:
+    args = [
+        "check-receipts",
+        "--receipts",
+        str(receipts),
+        "--task",
+        task,
+        "--root",
+        str(root),
+    ]
+    if historical:
+        args.append("--historical")
+    return run_cli(*args)
+
+
+def git(root: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", "-C", str(root), *args],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=60,
+    )
+
+
+def init_git_repo(
+    root: Path, makefile: str = "test:\n\ttrue\n", message: str = "fixture"
+) -> None:
+    git(root, "init", "-q", "-b", "main")
+    write(root, "Makefile", makefile)
+    git(root, "add", "Makefile")
+    git(
+        root,
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@example.invalid",
+        "commit",
+        "-q",
+        "-m",
+        message,
+    )
+
+
+def commit_file(root: Path, name: str, content: str, message: str) -> None:
+    write(root, name, content)
+    git(root, "add", name)
+    git(
+        root,
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@example.invalid",
+        "commit",
+        "-q",
+        "-m",
+        message,
     )
 
 
@@ -253,7 +320,14 @@ class ReceiptTests(unittest.TestCase):
         # The receipts state a budget-exhausted run leaves behind: the
         # first command's passing receipt, and nothing after it.
         with tempfile.TemporaryDirectory() as tmp:
-            receipts = Path(tmp) / "r.jsonl"
+            root = Path(tmp)
+            receipts = root / "r.jsonl"
+            binding = mechanical_verify.tree_binding(
+                root, receipts_path=receipts
+            )
+            mechanical_verify.append_run_start(
+                receipts, "1", "run-x", binding=binding
+            )
             result = VerificationResult(
                 command=VerificationCommand(
                     "npm-test", "Node tests", ("npm", "test")
@@ -265,10 +339,10 @@ class ReceiptTests(unittest.TestCase):
                 stderr="",
                 output_truncated=False,
             )
-            append_receipt(receipts, "1", result)
+            append_receipt(receipts, "1", result, run_id="run-x")
             stdout = io.StringIO()
             with contextlib.redirect_stdout(stdout):
-                rc = check_receipts(receipts, "1")
+                rc = check_receipts(receipts, "1", root)
             self.assertEqual(rc, 1)
             self.assertIn("no completion record", stdout.getvalue())
 
@@ -310,8 +384,14 @@ class ReceiptTests(unittest.TestCase):
         # A run-start plus one passing receipt, no completion record,
         # must FAIL — the interrupted run is not evidence.
         with tempfile.TemporaryDirectory() as tmp:
-            receipts = Path(tmp) / "r.jsonl"
-            mechanical_verify.append_run_start(receipts, "1", "run-a")
+            root = Path(tmp)
+            receipts = root / "r.jsonl"
+            binding = mechanical_verify.tree_binding(
+                root, receipts_path=receipts
+            )
+            mechanical_verify.append_run_start(
+                receipts, "1", "run-a", binding=binding
+            )
             result = VerificationResult(
                 command=VerificationCommand(
                     "npm-test", "Node tests", ("npm", "test")
@@ -335,9 +415,15 @@ class ReceiptTests(unittest.TestCase):
         # completion record, so the check must FAIL even though the
         # earlier run's receipts are all passing.
         with tempfile.TemporaryDirectory() as tmp:
-            receipts = Path(tmp) / "r.jsonl"
+            root = Path(tmp)
+            receipts = root / "r.jsonl"
+            binding = mechanical_verify.tree_binding(
+                root, receipts_path=receipts
+            )
             for run_id in ("run-a", "run-b"):
-                mechanical_verify.append_run_start(receipts, "1", run_id)
+                mechanical_verify.append_run_start(
+                    receipts, "1", run_id, binding=binding
+                )
                 result = VerificationResult(
                     command=VerificationCommand(
                         "npm-test", "Node tests", ("npm", "test")
@@ -357,20 +443,28 @@ class ReceiptTests(unittest.TestCase):
             self.assertIn("no completion record", proc.stdout)
 
     def test_check_receipts_scoped_per_task(self):
+        # Per-task scoping under binding: task A's segment stays valid
+        # evidence about its own head after task B's failing run on a
+        # later commit (validated with --historical — the default
+        # completion gate for A correctly reports HEAD-MOVED), and B's
+        # failure is B's alone.
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            init_git_repo(root)
             receipts = root / "r.jsonl"
-            write(root, "Makefile", "test:\n\ttrue\n")
             proc = verify(root, "A", receipts)
             self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-            write(root, "Makefile", "test:\n\tfalse\n")
+            commit_file(root, "Makefile", "test:\n\tfalse\n", "break it")
             proc = verify(root, "B", receipts)
             self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
-            proc = check(receipts, "A")
+            proc = check(receipts, "A", historical=True)
             self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
             self.assertIn(
                 "RECEIPTS: PASS task A: 1 receipts, chain valid", proc.stdout
             )
+            proc = check(receipts, "A")
+            self.assertEqual(proc.returncode, 1)
+            self.assertIn("RECEIPTS: HEAD-MOVED", proc.stdout)
             proc = check(receipts, "B")
             self.assertEqual(proc.returncode, 1)
             self.assertIn(
@@ -436,7 +530,11 @@ class MixedRunnerReceiptTests(unittest.TestCase):
 
     def test_mixed_suite_all_passing_runs_both_runners(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
+            # The root is a subdirectory so the plain function's marker
+            # lands OUTSIDE the tree — a file created inside the root
+            # during the run is tree mutation and must not seal.
+            root = Path(tmp) / "repo"
+            root.mkdir()
             receipts = root / "r.jsonl"
             write(root, "test_ok.py", MIXED_OK)
             write(
@@ -444,12 +542,14 @@ class MixedRunnerReceiptTests(unittest.TestCase):
                 "test_good.py",
                 "from pathlib import Path\n\n\n"
                 "def test_good():\n"
-                "    Path('pytest-side.ran').write_text('ran')\n",
+                "    marker = Path(__file__).resolve().parent.parent"
+                " / 'pytest-side.ran'\n"
+                "    marker.write_text('ran')\n",
             )
             proc = verify(root, "1", receipts)
             self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
             # The plain pytest function demonstrably executed.
-            self.assertTrue((root / "pytest-side.ran").is_file())
+            self.assertTrue((Path(tmp) / "pytest-side.ran").is_file())
             parsed = read_receipts(receipts)
             command_receipts = [
                 r for r in parsed if r.get("command_id") is not None
@@ -466,6 +566,249 @@ class MixedRunnerReceiptTests(unittest.TestCase):
             self.assertIn(
                 "RECEIPTS: PASS task 1: 2 receipts, chain valid", proc.stdout
             )
+
+
+class BindingTests(unittest.TestCase):
+    """Task 1 (overseer remediation R1): receipts segments bind to the
+    tree at their recorded HEAD, so a sealed PASS describes a tree —
+    not just a label (panel P0-1)."""
+
+    def test_tree_binding_git_mode_uses_objects_not_worktree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_git_repo(root)
+            binding = mechanical_verify.tree_binding(root)
+            self.assertEqual(binding["mode"], "git")
+            self.assertEqual(binding["root"], str(root.resolve()))
+            head = git(root, "rev-parse", "HEAD").stdout.strip()
+            self.assertEqual(binding["head"], head)
+            # An uncommitted working-tree edit must NOT move the
+            # digest: it is computed from git objects at HEAD.
+            write(root, "Makefile", "test:\n\tfalse\n")
+            self.assertEqual(
+                mechanical_verify.tree_binding(root)["tree_digest"],
+                binding["tree_digest"],
+            )
+            commit_file(root, "Makefile", "test:\n\tfalse\n", "break")
+            self.assertNotEqual(
+                mechanical_verify.tree_binding(root)["tree_digest"],
+                binding["tree_digest"],
+            )
+
+    def test_tree_binding_fs_mode_exclusions_and_symlinks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "a.txt", "one\n")
+            write(root, "sub/b.txt", "two\n")
+            write(root, "__pycache__/c.txt", "cache\n")
+            receipts = write(root, "r.jsonl", "")
+            (root / "link.txt").symlink_to("a.txt")
+            binding = mechanical_verify.tree_binding(
+                root, receipts_path=receipts
+            )
+            self.assertEqual(binding["mode"], "fs")
+            self.assertIsNone(binding["head"])
+            # Excluded content never moves the digest.
+            write(root, "__pycache__/c.txt", "changed\n")
+            write(root, "r.jsonl", "appended\n")
+            self.assertEqual(
+                mechanical_verify.tree_binding(
+                    root, receipts_path=receipts
+                )["tree_digest"],
+                binding["tree_digest"],
+            )
+            # A symlink's target string is hashed, not followed.
+            (root / "link.txt").unlink()
+            (root / "link.txt").symlink_to("sub/b.txt")
+            self.assertNotEqual(
+                mechanical_verify.tree_binding(
+                    root, receipts_path=receipts
+                )["tree_digest"],
+                binding["tree_digest"],
+            )
+
+    def test_bound_check_passes_on_clean_tree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_git_repo(root)
+            receipts = root / "r.jsonl"
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            parsed = read_receipts(receipts)
+            binding = parsed[-1]["binding"]
+            self.assertEqual(binding, parsed[0]["binding"])
+            self.assertEqual(binding["mode"], "git")
+            self.assertEqual(
+                binding["head"], git(root, "rev-parse", "HEAD").stdout.strip()
+            )
+            proc = check_bound(receipts, "1", root)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("RECEIPTS: PASS", proc.stdout)
+
+    def test_head_moved_default_fails_historical_passes(self):
+        # Panel stale-PASS repro, git form: seal on a passing tree,
+        # then commit a breaking change. The segment honestly
+        # describes its own head (historical PASS) but must not gate
+        # completion for the moved HEAD (default HEAD-MOVED).
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_git_repo(root)
+            receipts = root / "r.jsonl"
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            commit_file(root, "Makefile", "test:\n\tfalse\n", "break it")
+            proc = check_bound(receipts, "1", root)
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("RECEIPTS: HEAD-MOVED", proc.stdout)
+            proc = check_bound(receipts, "1", root, historical=True)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("RECEIPTS: PASS", proc.stdout)
+
+    def test_forged_tree_digest_fails_stale_historical(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_git_repo(root)
+            receipts = root / "r.jsonl"
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            parsed = read_receipts(receipts)
+            completion = parsed[-1]
+            digest = completion["binding"]["tree_digest"]
+            completion["binding"] = dict(completion["binding"])
+            completion["binding"]["tree_digest"] = (
+                "0" if digest[0] != "0" else "1"
+            ) + digest[1:]
+            # Re-chain the forged record so only the binding is wrong.
+            prev = parsed[-2]["chain_sha256"]
+            completion["chain_sha256"] = recompute_chain(completion, prev)
+            receipts.write_text(
+                "".join(
+                    json.dumps(r, sort_keys=True, ensure_ascii=False) + "\n"
+                    for r in parsed
+                ),
+                encoding="utf-8",
+            )
+            proc = check_bound(receipts, "1", root, historical=True)
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("RECEIPTS: STALE", proc.stdout)
+
+    def test_unreadable_recorded_commit_is_unverifiable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_git_repo(root)
+            receipts = root / "r.jsonl"
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            # Destroy the recorded commit: fresh history at the same path.
+            shutil.rmtree(root / ".git")
+            init_git_repo(root, "test:\n\ttrue\n", message="second history")
+            proc = check_bound(receipts, "1", root, historical=True)
+            self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+            self.assertIn("RECEIPTS: UNVERIFIABLE", proc.stdout)
+
+    def test_uncommitted_mutation_default_dirty_historical_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_git_repo(root)
+            receipts = root / "r.jsonl"
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            write(root, "Makefile", "test:\n\tfalse\n")
+            proc = check_bound(receipts, "1", root)
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("RECEIPTS: DIRTY", proc.stdout)
+            proc = check_bound(receipts, "1", root, historical=True)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
+    def test_dirty_tree_at_verify_fails_without_completion(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_git_repo(root)
+            write(root, "Makefile", "test:\n\ttrue\n# uncommitted edit\n")
+            receipts = root / "r.jsonl"
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("tree not clean at HEAD", proc.stdout)
+            parsed = read_receipts(receipts)
+            self.assertEqual(
+                [r.get("kind") for r in parsed], ["run-start"]
+            )
+
+    def test_bookkeeping_writes_do_not_break_default_check(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_git_repo(root)
+            receipts = root / "r.jsonl"
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            # The workflow's own state moves inside the root: SDD
+            # bookkeeping under .superpowers/ and further chained
+            # records appended to the receipts file itself.
+            write(root, ".superpowers/ledger.md", "progress\n")
+            proc = verify(root, "2", receipts)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            proc = check_bound(receipts, "1", root)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("RECEIPTS: PASS", proc.stdout)
+
+    def test_legacy_segment_without_binding_is_unbound(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "Makefile", "test:\n\ttrue\n")
+            receipts = root / "r.jsonl"
+            # Pre-change format: no binding on any record.
+            run_id = "legacy-run"
+            mechanical_verify.append_run_start(receipts, "1", run_id)
+            command = next(
+                c
+                for c in mechanical_verify.discover_verification_commands(
+                    root
+                )
+                if c.id == "make-test"
+            )
+            result = run_verification(root, command)
+            mechanical_verify.append_receipt(
+                receipts, "1", result, run_id=run_id
+            )
+            mechanical_verify.append_completion(
+                receipts, "1", [command], run_id=run_id
+            )
+            proc = check_bound(receipts, "1", root)
+            self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+            self.assertIn("RECEIPTS: UNBOUND", proc.stdout)
+
+    def test_fs_mode_mutation_after_verify_is_stale(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "Makefile", "test:\n\ttrue\n")
+            receipts = Path(tmp) / "outside" / "r.jsonl"
+            receipts.parent.mkdir()
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            proc = check_bound(receipts, "1", root)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            write(root, "Makefile", "test:\n\tfalse\n")
+            proc = check_bound(receipts, "1", root)
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("RECEIPTS: STALE", proc.stdout)
+
+    def test_skill_invocation_matches_cli(self):
+        repo_root = Path(__file__).resolve().parents[2]
+        skill = (
+            repo_root / "skills" / "subagent-driven-development" / "SKILL.md"
+        ).read_text(encoding="utf-8")
+        # The literal check-receipts invocation the skill teaches must
+        # be the CLI the code accepts (grep-pin, brief Step 4).
+        self.assertIn(
+            "check-receipts --receipts <workspace>/receipts.jsonl "
+            "--task <N> --root <task worktree>",
+            skill,
+        )
+        self.assertIn("--historical", skill)
+        proc = run_cli("check-receipts", "--help")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("--root", proc.stdout)
+        self.assertIn("--historical", proc.stdout)
 
 
 if __name__ == "__main__":

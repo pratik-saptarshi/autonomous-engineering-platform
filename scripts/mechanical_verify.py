@@ -433,6 +433,206 @@ def _commands_digest(command_ids) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+# ---------------------------------------------------------------------------
+# Tree binding (overseer remediation R1): a receipts segment records the
+# tree it describes, so a sealed PASS can be re-validated against that
+# tree later — never against whatever the working tree holds then.
+
+FS_EXCLUDED_DIRS = frozenset(
+    {
+        ".git",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        "target",
+        "node_modules",
+        "coverage",
+        "htmlcov",
+        "dist",
+        "build",
+        ".tox",
+        ".venv",
+    }
+)
+
+
+def _git(root: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", "-C", str(root), *args],
+        capture_output=True,
+        timeout=60,
+    )
+
+
+def _git_head(root: Path) -> str | None:
+    proc = _git(root, "rev-parse", "HEAD")
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.decode("utf-8", errors="replace").strip() or None
+
+
+def _git_tree_digest(root: Path, head: str) -> str | None:
+    """Digest of the tree at `head`, computed from git objects only.
+
+    For each entry of `git ls-tree -r -z <head>` (NUL-terminated, raw
+    path bytes), hash `mode + " " + blob_sha + " " + path + "\n"` in
+    ls-tree's own order. Working-tree content is never read, so the
+    digest is reproducible at any later time while the commit exists;
+    None when the commit is unreadable.
+    """
+    proc = _git(root, "ls-tree", "-r", "-z", head)
+    if proc.returncode != 0:
+        return None
+    digest = hashlib.sha256()
+    for entry in proc.stdout.split(b"\0"):
+        if not entry:
+            continue
+        meta, _, path = entry.partition(b"\t")
+        parts = meta.split(b" ")
+        if len(parts) != 3:
+            return None
+        digest.update(parts[0] + b" " + parts[2] + b" " + path + b"\n")
+    return digest.hexdigest()
+
+
+def _fs_tree_digest(root: Path, receipts_path: Path | None = None) -> str:
+    """Digest of a non-git tree: sha256 over sorted relative paths of
+    `relpath + "\\0" + content + "\\0"`, where content is the file's
+    sha256 hex (symlinks: the target string, never followed). Paths
+    with a component in FS_EXCLUDED_DIRS and the receipts file itself
+    are excluded.
+    """
+    resolved = root.resolve()
+    receipts_resolved = (
+        receipts_path.resolve() if receipts_path is not None else None
+    )
+    entries: list[tuple[str, str]] = []
+    for dirpath, dirnames, filenames in os.walk(resolved, followlinks=False):
+        current = Path(dirpath)
+        descend: list[str] = []
+        for name in dirnames:
+            if name in FS_EXCLUDED_DIRS:
+                continue
+            path = current / name
+            if path.is_symlink():
+                entries.append(
+                    (path.relative_to(resolved).as_posix(), os.readlink(path))
+                )
+            else:
+                descend.append(name)
+        dirnames[:] = descend
+        for name in filenames:
+            path = current / name
+            if (
+                receipts_resolved is not None
+                and path.resolve() == receipts_resolved
+            ):
+                continue
+            rel = path.relative_to(resolved).as_posix()
+            if path.is_symlink():
+                entries.append((rel, os.readlink(path)))
+            else:
+                entries.append(
+                    (
+                        rel,
+                        hashlib.sha256(path.read_bytes()).hexdigest(),
+                    )
+                )
+    entries.sort()
+    digest = hashlib.sha256()
+    for rel, content in entries:
+        digest.update(rel.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(content.encode("utf-8"))
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def tree_binding(
+    root: Path, receipts_path: Path | None = None
+) -> dict:
+    """The binding a run records for the tree it verifies.
+
+    git mode (root inside a git worktree): head + the ls-tree digest
+    at that head. fs mode: head None + the live-tree digest. Root is
+    canonicalized with Path.resolve(). Raises ValueError when a git
+    root has no readable HEAD/tree to bind to.
+    """
+    resolved = root.resolve()
+    if _git(resolved, "rev-parse", "--git-dir").returncode == 0:
+        head = _git_head(resolved)
+        digest = (
+            _git_tree_digest(resolved, head) if head is not None else None
+        )
+        if head is None or digest is None:
+            raise ValueError(
+                f"git root {resolved} has no readable HEAD to bind to"
+            )
+        return {
+            "root": str(resolved),
+            "head": head,
+            "tree_digest": digest,
+            "mode": "git",
+        }
+    return {
+        "root": str(resolved),
+        "head": None,
+        "tree_digest": _fs_tree_digest(resolved, receipts_path),
+        "mode": "fs",
+    }
+
+
+def tree_clean(root: Path, receipts_path: Path | None = None) -> bool:
+    """Git-mode cleanliness predicate for the binding gate.
+
+    `git status --porcelain` must be empty after dropping (i) the
+    receipts file itself and anything under `.superpowers/` (the
+    workflow's own bookkeeping) and (ii) untracked entries whose path
+    has a component in FS_EXCLUDED_DIRS (tool caches the run itself
+    creates). Modified or staged tracked entries always count as
+    dirty; the exclusions never hide a tracked change.
+    """
+    resolved = root.resolve()
+    top = _git(resolved, "rev-parse", "--show-toplevel")
+    if top.returncode != 0:
+        return False
+    toplevel = Path(
+        top.stdout.decode("utf-8", errors="replace").strip()
+    ).resolve()
+    receipts_rel: str | None = None
+    if receipts_path is not None:
+        try:
+            receipts_rel = (
+                receipts_path.resolve().relative_to(toplevel).as_posix()
+            )
+        except ValueError:
+            receipts_rel = None
+    proc = _git(resolved, "status", "--porcelain", "-z")
+    if proc.returncode != 0:
+        return False
+    fields = proc.stdout.split(b"\0")
+    idx = 0
+    while idx < len(fields):
+        entry = fields[idx]
+        idx += 1
+        if not entry:
+            continue
+        status = entry[:2]
+        path = entry[3:].decode("utf-8", errors="surrogateescape")
+        if status[:1] in (b"R", b"C"):
+            idx += 1  # rename/copy: the source path field follows
+        if receipts_rel is not None and path == receipts_rel:
+            continue
+        if path == ".superpowers" or path.startswith(".superpowers/"):
+            continue
+        if status == b"??" and any(
+            part in FS_EXCLUDED_DIRS for part in path.split("/")
+        ):
+            continue
+        return False
+    return True
+
+
 def _chain_sha256(body: dict, prev_chain: str) -> str:
     canonical = json.dumps(body, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256((prev_chain + canonical).encode("utf-8")).hexdigest()
@@ -516,13 +716,22 @@ def append_receipt(
     _append_record(receipts_path, body)
 
 
-def append_run_start(receipts_path: Path, task: str, run_id: str) -> None:
+def append_run_start(
+    receipts_path: Path,
+    task: str,
+    run_id: str,
+    binding: dict | None = None,
+) -> None:
     """Append the run-boundary record that opens a run segment.
 
     Written before a verify run executes any command; the run's
     receipts and its completion record carry the same run_id, so
     check_receipts can validate the latest run independently of any
-    earlier (possibly interrupted) segments in the same file.
+    earlier (possibly interrupted) segments in the same file. When a
+    tree binding is given it is recorded here (and on the completion
+    record) as an EXTRA field — the required-field tuples deliberately
+    do not include it, so its absence routes to the UNBOUND verdict
+    rather than a corruption verdict (RC3).
     """
     body = {
         "ts": datetime.now(timezone.utc).isoformat(),
@@ -530,6 +739,8 @@ def append_run_start(receipts_path: Path, task: str, run_id: str) -> None:
         "kind": RUN_START_KIND,
         "run_id": run_id,
     }
+    if binding is not None:
+        body["binding"] = binding
     _append_record(receipts_path, body)
 
 
@@ -538,13 +749,15 @@ def append_completion(
     task: str,
     commands,
     run_id: str | None = None,
+    binding: dict | None = None,
 ) -> None:
     """Append the run-completion record for a fully successful run.
 
     Written only when every discovered command executed and passed; it
     carries the expected command count and a digest of the ordered
     command set, so check_receipts can reject the partial receipt set
-    of a run that stopped early.
+    of a run that stopped early. `binding`, when given, is the tree
+    binding computed at run start (see append_run_start).
     """
     body = {
         "ts": datetime.now(timezone.utc).isoformat(),
@@ -555,10 +768,17 @@ def append_completion(
     }
     if run_id is not None:
         body["run_id"] = run_id
+    if binding is not None:
+        body["binding"] = binding
     _append_record(receipts_path, body)
 
 
-def check_receipts(receipts_path: Path, task: str) -> int:
+def check_receipts(
+    receipts_path: Path,
+    task: str,
+    root: Path,
+    historical: bool = False,
+) -> int:
     lines = _receipt_lines(receipts_path)
     records: list[dict] = []
     for number, line in enumerate(lines, start=1):
@@ -608,8 +828,10 @@ def check_receipts(receipts_path: Path, task: str) -> int:
     if start_idx is None:
         segment = list(task_records)
         segment_run_id = None
+        start_record = None
     else:
-        segment_run_id = task_records[start_idx]["run_id"]
+        start_record = task_records[start_idx]
+        segment_run_id = start_record["run_id"]
         segment = [
             r
             for r in task_records[start_idx + 1 :]
@@ -660,6 +882,91 @@ def check_receipts(receipts_path: Path, task: str) -> int:
             "completion record does not match run receipts"
         )
         return 1
+
+    # Tree binding (R1): the segment must describe a tree. `binding`
+    # is read directly — it is deliberately absent from the required
+    # field tuples, so a pre-binding (legacy) segment reaches this
+    # branch and is refused as UNBOUND, never misread as corrupt and
+    # never silently validated (RC3).
+    binding = completion.get("binding")
+    start_binding = (
+        start_record.get("binding") if start_record is not None else None
+    )
+    if binding is not None and start_binding is not None:
+        if binding != start_binding:
+            print(
+                f"RECEIPTS: STALE task {task}: "
+                "run-start and completion bindings disagree"
+            )
+            return 1
+    if binding is None:
+        binding = start_binding
+    if (
+        not isinstance(binding, dict)
+        or binding.get("mode") not in ("git", "fs")
+        or not isinstance(binding.get("tree_digest"), str)
+        or not isinstance(binding.get("root"), str)
+    ):
+        print(
+            f"RECEIPTS: UNBOUND task {task}: "
+            "segment carries no tree binding"
+        )
+        return 2
+    resolved_root = root.resolve()
+    if binding["root"] != str(resolved_root):
+        print(
+            f"RECEIPTS: FAIL task {task}: segment is bound to root "
+            f"{binding['root']}, not {resolved_root}"
+        )
+        return 1
+    if binding["mode"] == "git":
+        recorded_head = binding.get("head")
+        digest = (
+            _git_tree_digest(resolved_root, recorded_head)
+            if isinstance(recorded_head, str)
+            else None
+        )
+        if digest is None:
+            print(
+                f"RECEIPTS: UNVERIFIABLE task {task}: recorded commit "
+                f"{recorded_head} is not readable"
+            )
+            return 2
+        if digest != binding["tree_digest"]:
+            print(
+                f"RECEIPTS: STALE task {task}: tree digest does not "
+                "match the recorded head"
+            )
+            return 1
+        if not historical:
+            current_head = _git_head(resolved_root)
+            if current_head != recorded_head:
+                print(
+                    f"RECEIPTS: HEAD-MOVED task {task}: HEAD is "
+                    f"{current_head}, segment bound to {recorded_head}"
+                )
+                return 1
+            if not tree_clean(resolved_root, receipts_path):
+                print(
+                    f"RECEIPTS: DIRTY task {task}: "
+                    "working tree is not clean"
+                )
+                return 1
+    else:
+        try:
+            live_digest = _fs_tree_digest(resolved_root, receipts_path)
+        except OSError:
+            print(
+                f"RECEIPTS: UNVERIFIABLE task {task}: "
+                "live tree cannot be read"
+            )
+            return 2
+        if live_digest != binding["tree_digest"]:
+            print(
+                f"RECEIPTS: STALE task {task}: live tree digest does "
+                "not match the segment"
+            )
+            return 1
     print(f"RECEIPTS: PASS task {task}: {len(mine)} receipts, chain valid")
     return 0
 
@@ -676,10 +983,17 @@ def main(argv: list[str] | None = None) -> int:
     check_cmd = subparsers.add_parser("check-receipts")
     check_cmd.add_argument("--receipts", required=True)
     check_cmd.add_argument("--task", required=True)
+    check_cmd.add_argument("--root", required=True)
+    check_cmd.add_argument("--historical", action="store_true")
     args = parser.parse_args(argv)
 
     if args.subcommand == "check-receipts":
-        return check_receipts(Path(args.receipts), args.task)
+        return check_receipts(
+            Path(args.receipts),
+            args.task,
+            Path(args.root),
+            historical=args.historical,
+        )
 
     receipts_path = Path(args.receipts) if args.receipts is not None else None
     if receipts_path is not None:
@@ -718,11 +1032,30 @@ def main(argv: list[str] | None = None) -> int:
             "(markdownlint-cli2 not on PATH)"
         )
     run_id: str | None = None
+    binding: dict | None = None
     on_result = None
     if receipts_path is not None:
         task = args.task
         run_id = uuid.uuid4().hex
-        append_run_start(receipts_path, task, run_id)
+        # Tree binding (R1): an evidence run binds to the tree before
+        # its first command. Git mode refuses a dirty tree outright —
+        # a segment sealed over uncommitted state could never be
+        # re-validated against its recorded HEAD.
+        try:
+            binding = tree_binding(root, receipts_path)
+        except (OSError, ValueError) as exc:
+            print(
+                f"VERIFY: cannot bind receipts to the tree "
+                f"at {root}: {exc}"
+            )
+            return 1
+        append_run_start(receipts_path, task, run_id, binding=binding)
+        if binding["mode"] == "git" and not tree_clean(root, receipts_path):
+            print(
+                "VERIFY: FAIL tree not clean at HEAD "
+                "— commit or stash before verifying"
+            )
+            return 1
 
         def on_result(result: VerificationResult) -> None:
             append_receipt(receipts_path, task, result, run_id=run_id)
@@ -736,9 +1069,32 @@ def main(argv: list[str] | None = None) -> int:
         on_result=on_result,
     )
     if rc == 0 and receipts_path is not None:
-        # run_all returns 0 only when every command executed and passed;
-        # seal the run so check_receipts can reject a partial receipt set.
-        append_completion(receipts_path, task, commands, run_id=run_id)
+        # run_all returns 0 only when every command executed and
+        # passed; seal the run so check_receipts can reject a partial
+        # receipt set — but only if the tree is still the tree the run
+        # bound to. Dirtied during the run (git) or changed (fs): no
+        # completion record; the incomplete segment is the verdict.
+        if binding is not None and binding["mode"] == "git":
+            seal = tree_clean(root, receipts_path)
+        elif binding is not None:
+            try:
+                seal = (
+                    tree_binding(root, receipts_path)["tree_digest"]
+                    == binding["tree_digest"]
+                )
+            except (OSError, ValueError):
+                seal = False
+        else:
+            seal = True
+        if not seal:
+            print(
+                "VERIFY: FAIL tree changed during the run "
+                "— no completion record written"
+            )
+            return 1
+        append_completion(
+            receipts_path, task, commands, run_id=run_id, binding=binding
+        )
     return rc
 
 
