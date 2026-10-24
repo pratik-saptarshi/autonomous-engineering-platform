@@ -353,36 +353,79 @@ cmd_claim() {
   while [ $# -gt 0 ]; do
     case "$1" in
     --repo)
-      [ $# -ge 2 ] || { usage; exit 2; }
-      repo="$2"; shift 2 ;;
+      [ $# -ge 2 ] || {
+        usage
+        exit 2
+      }
+      repo="$2"
+      shift 2
+      ;;
     --project)
-      [ $# -ge 2 ] || { usage; exit 2; }
-      project="$2"; shift 2 ;;
+      [ $# -ge 2 ] || {
+        usage
+        exit 2
+      }
+      project="$2"
+      shift 2
+      ;;
     --lane)
-      [ $# -ge 2 ] || { usage; exit 2; }
-      lane="$2"; shift 2 ;;
+      [ $# -ge 2 ] || {
+        usage
+        exit 2
+      }
+      lane="$2"
+      shift 2
+      ;;
     --branch)
-      [ $# -ge 2 ] || { usage; exit 2; }
-      branch="$2"; shift 2 ;;
+      [ $# -ge 2 ] || {
+        usage
+        exit 2
+      }
+      branch="$2"
+      shift 2
+      ;;
     --base)
-      [ $# -ge 2 ] || { usage; exit 2; }
-      base="$2"; shift 2 ;;
+      [ $# -ge 2 ] || {
+        usage
+        exit 2
+      }
+      base="$2"
+      shift 2
+      ;;
     --worker)
-      [ $# -ge 2 ] || { usage; exit 2; }
-      worker="$2"; shift 2 ;;
+      [ $# -ge 2 ] || {
+        usage
+        exit 2
+      }
+      worker="$2"
+      shift 2
+      ;;
     --capacity)
-      [ $# -ge 2 ] || { usage; exit 2; }
-      capacity_flag="$2"; shift 2 ;;
+      [ $# -ge 2 ] || {
+        usage
+        exit 2
+      }
+      capacity_flag="$2"
+      shift 2
+      ;;
     --path)
-      [ $# -ge 2 ] || { usage; exit 2; }
-      declared_paths+=("$2"); shift 2 ;;
+      [ $# -ge 2 ] || {
+        usage
+        exit 2
+      }
+      declared_paths+=("$2")
+      shift 2
+      ;;
     --exec)
       shift
       worker_cmd=("$@")
       seen_exec=1
-      break ;;
+      break
+      ;;
     *)
-      usage; exit 2 ;;
+      usage
+      exit 2
+      ;;
     esac
   done
 
@@ -396,12 +439,27 @@ cmd_claim() {
   fi
   case "$repo" in
   /*) ;;
-  *) usage; exit 2 ;;
+  *)
+    usage
+    exit 2
+    ;;
   esac
-  if ! [[ "$project" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then usage; exit 2; fi
-  if ! [[ "$lane" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then usage; exit 2; fi
-  if ! [[ "$worker" =~ ^[A-Za-z0-9_.-]+$ ]]; then usage; exit 2; fi
-  if ! git check-ref-format --branch "$branch" >/dev/null 2>&1; then usage; exit 2; fi
+  if ! [[ "$project" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    usage
+    exit 2
+  fi
+  if ! [[ "$lane" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    usage
+    exit 2
+  fi
+  if ! [[ "$worker" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+    usage
+    exit 2
+  fi
+  if ! git check-ref-format --branch "$branch" >/dev/null 2>&1; then
+    usage
+    exit 2
+  fi
 
   local capacity
   capacity=$(resolve_capacity "$capacity_flag")
@@ -598,14 +656,27 @@ cmd_reap() {
   while [ $# -gt 0 ]; do
     case "$1" in
     --name)
-      [ $# -ge 2 ] || { usage; exit 2; }
-      name="$2"; shift 2 ;;
+      [ $# -ge 2 ] || {
+        usage
+        exit 2
+      }
+      name="$2"
+      shift 2
+      ;;
     *)
-      usage; exit 2 ;;
+      usage
+      exit 2
+      ;;
     esac
   done
-  if [ -z "$name" ]; then usage; exit 2; fi
-  if ! [[ "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then usage; exit 2; fi
+  if [ -z "$name" ]; then
+    usage
+    exit 2
+  fi
+  if ! [[ "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    usage
+    exit 2
+  fi
 
   # Settle bookkeeping only, under the capacity lock (same
   # serialization as release): probe, check, and write can never
@@ -646,19 +717,39 @@ cmd_release() {
   while [ $# -gt 0 ]; do
     case "$1" in
     --name)
-      [ $# -ge 2 ] || { usage; exit 2; }
-      name="$2"; shift 2 ;;
+      [ $# -ge 2 ] || {
+        usage
+        exit 2
+      }
+      name="$2"
+      shift 2
+      ;;
     --clean)
-      clean=1; shift ;;
+      clean=1
+      shift
+      ;;
     --force-dirty)
-      force_dirty=1; shift ;;
+      force_dirty=1
+      shift
+      ;;
     *)
-      usage; exit 2 ;;
+      usage
+      exit 2
+      ;;
     esac
   done
-  if [ -z "$name" ]; then usage; exit 2; fi
-  if ! [[ "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then usage; exit 2; fi
-  if [ "$force_dirty" -eq 1 ] && [ "$clean" -ne 1 ]; then usage; exit 2; fi
+  if [ -z "$name" ]; then
+    usage
+    exit 2
+  fi
+  if ! [[ "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    usage
+    exit 2
+  fi
+  if [ "$force_dirty" -eq 1 ] && [ "$clean" -ne 1 ]; then
+    usage
+    exit 2
+  fi
 
   # Serialize against claim transactions: the fence probe, the state
   # check, and the manifest update below all run under the capacity
@@ -732,7 +823,10 @@ cmd_release() {
     if [ "$force_dirty" -eq 1 ]; then
       # Archive BEFORE removing (Risk R16): porcelain status first,
       # then the diff against HEAD, in one file.
-      if ! { git -C "$m_path" status --porcelain; git -C "$m_path" diff HEAD; } >"$LANES_DIR/$name.final-diff.patch"; then
+      if ! {
+        git -C "$m_path" status --porcelain
+        git -C "$m_path" diff HEAD
+      } >"$LANES_DIR/$name.final-diff.patch"; then
         echo "LANE: refuse clean $name: could not archive worktree state"
         exit 1
       fi
@@ -778,16 +872,31 @@ cmd_status() {
   while [ $# -gt 0 ]; do
     case "$1" in
     --name)
-      [ $# -ge 2 ] || { usage; exit 2; }
-      name="$2"; shift 2 ;;
+      [ $# -ge 2 ] || {
+        usage
+        exit 2
+      }
+      name="$2"
+      shift 2
+      ;;
     --capacity)
-      [ $# -ge 2 ] || { usage; exit 2; }
-      capacity_flag="$2"; shift 2 ;;
+      [ $# -ge 2 ] || {
+        usage
+        exit 2
+      }
+      capacity_flag="$2"
+      shift 2
+      ;;
     *)
-      usage; exit 2 ;;
+      usage
+      exit 2
+      ;;
     esac
   done
-  if [ -n "$name" ] && ! [[ "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then usage; exit 2; fi
+  if [ -n "$name" ] && ! [[ "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    usage
+    exit 2
+  fi
   local capacity
   capacity=$(resolve_capacity "$capacity_flag")
 
