@@ -787,6 +787,7 @@ cmd_status() {
       usage; exit 2 ;;
     esac
   done
+  if [ -n "$name" ] && ! [[ "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then usage; exit 2; fi
   local capacity
   capacity=$(resolve_capacity "$capacity_flag")
 
@@ -1282,6 +1283,12 @@ json.dump(data, open(sys.argv[1], "w"))
   grep -qF "LANE: refuse clean mu-nineteen: path not registered as a worktree of repo" "$out19r" || case_fails=1
   [ -d "$WT_ROOT/mu-nineteen" ] || case_fails=1
   [ "$(mget mu-nineteen state)" = "released" ] || case_fails=1
+  # Extension: status validates --name charset like reap/release do
+  # (a traversal name must be a usage refusal, exit 2 — never a path
+  # escape out of $LANES_DIR).
+  local out19s="$selftest_root/out19s.txt" rc19s=0
+  bash "$self_path" status --name ../mu-nineteen >"$out19s" 2>&1 || rc19s=$?
+  [ "$rc19s" -eq 2 ] || case_fails=1
   report_case "clean-refuses-foreign-path"
 
   return "$fails"
