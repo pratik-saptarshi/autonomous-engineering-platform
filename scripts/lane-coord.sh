@@ -1071,12 +1071,16 @@ self_test() {
   report_case "parallel-claim-race"
 
   # --- Case 7: working-set-refuses-sensitive-dir ---
+  # Fixture HOME with a real .ssh dir (mirrors case 8): on a clean runner
+  # $HOME/.ssh may not exist, and the claim would then refuse with
+  # "does not exist" instead of the sensitive-pattern refusal under test.
+  mkdir -p "$selftest_root/home7/.ssh"
   local out7="$selftest_root/out7.txt" rc7=0
   local canon7
-  canon7=$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$HOME/.ssh")
-  bash "$self_path" claim --repo "$repo" --project eta --lane seven \
+  canon7=$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$selftest_root/home7/.ssh")
+  HOME="$selftest_root/home7" bash "$self_path" claim --repo "$repo" --project eta --lane seven \
     --branch br-seven --base HEAD --worker w7 \
-    --path "$HOME/.ssh" \
+    --path "$selftest_root/home7/.ssh" \
     --exec true >"$out7" 2>&1 || rc7=$?
   [ "$rc7" -eq 1 ] || case_fails=1
   grep -qF "LANE: refuse eta-seven: declared path $canon7 matches sensitive pattern */.ssh" "$out7" || case_fails=1
