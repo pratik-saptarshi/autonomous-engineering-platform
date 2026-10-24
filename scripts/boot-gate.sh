@@ -16,7 +16,12 @@
 # It never warns-and-continues. The policy check additionally prints
 # "BOOT-GATE: policy SKIP: <reason>" and proceeds when no policy data is
 # present: a SKIP means the mechanism is not installed here, not that it
-# passed, so it never prints "ok" for a check that did not run.
+# passed, so it never prints "ok" for a check that did not run. The policy
+# check's ok line names the resolved path and short digest, and the check
+# ends with a machine-readable token line — "BOOT-GATE-RESULT: POLICY-OK"
+# on a pass, "BOOT-GATE-RESULT: POLICY-INACTIVE" on a SKIP — so exit-code
+# consumers can distinguish a passed policy check from an inactive one
+# (both exit 0; the exit contract itself is unchanged).
 # Scope: this wires the policy check into boot-gate.sh only. Whether and
 # when anything invokes boot-gate.sh is issue #17's unexecuted scope.
 # Run with --self-test to execute the stub-based negative tests
@@ -81,6 +86,7 @@ check_policy() {
   policy="${AEP_POLICY_DATA:-$gate_dir/policy.data}"
   if [ ! -f "$policy" ]; then
     echo "BOOT-GATE: policy SKIP: no policy data at $policy (launch-policy integrity inactive)"
+    echo "BOOT-GATE-RESULT: POLICY-INACTIVE"
     return 0
   fi
   # The blob streams straight into sha256sum (no intermediate variable, so
@@ -92,11 +98,12 @@ check_policy() {
   work_sha=$(sha256sum "$policy" | cut -d' ' -f1)
   [ "$work_sha" = "$ref_sha" ] ||
     fail policy "policy.data differs from the committed version (unreviewed edit?) — policy changes land via git/PR"
-  ok policy
+  echo "BOOT-GATE: policy ok: $policy (sha256 ${work_sha:0:12})"
+  echo "BOOT-GATE-RESULT: POLICY-OK"
 }
 
 self_test() {
-  local gate real_nsmcp fails gate_dir policy_out policy_rc
+  local gate real_nsmcp fails gate_dir policy_out policy_rc same_sha
   gate="$0"
   fails=0
   gate_dir="$(cd "$(dirname "$gate")" && pwd)"
@@ -169,10 +176,27 @@ EOF
     fails=$((fails + 1))
   fi
   policy_out=$(AEP_POLICY_DATA="$stubdir/no-such-policy.data" bash "$gate" 2>&1) && policy_rc=0 || policy_rc=$?
-  if [ "$policy_rc" -eq 0 ] && printf '%s\n' "$policy_out" | grep -q "BOOT-GATE: policy SKIP:"; then
+  if [ "$policy_rc" -eq 0 ] && printf '%s\n' "$policy_out" | grep -q "BOOT-GATE: policy SKIP:" &&
+    printf '%s\n' "$policy_out" | grep -q "^BOOT-GATE-RESULT: POLICY-INACTIVE$"; then
     echo "SELF-TEST: policy-skip ok"
   else
-    echo "SELF-TEST: policy-skip FAIL: expected exit 0 with 'BOOT-GATE: policy SKIP:' (rc=$policy_rc)"
+    echo "SELF-TEST: policy-skip FAIL: expected exit 0 with 'BOOT-GATE: policy SKIP:' and the POLICY-INACTIVE token (rc=$policy_rc)"
+    printf '%s\n' "$policy_out"
+    fails=$((fails + 1))
+  fi
+  # policy-token-ok: a byte-identical copy of the committed policy,
+  # passed via the override, passes the check; the ok line names the
+  # resolved path + short digest and the run ends with the POLICY-OK
+  # token, so exit-code consumers can distinguish pass from SKIP.
+  cp "$gate_dir/policy.data" "$stubdir/policy-same.data"
+  policy_out=$(AEP_POLICY_DATA="$stubdir/policy-same.data" bash "$gate" 2>&1) && policy_rc=0 || policy_rc=$?
+  same_sha=$(sha256sum "$stubdir/policy-same.data" | cut -d' ' -f1)
+  if [ "$policy_rc" -eq 0 ] &&
+    printf '%s\n' "$policy_out" | grep -qF "BOOT-GATE: policy ok: $stubdir/policy-same.data (sha256 ${same_sha:0:12})" &&
+    printf '%s\n' "$policy_out" | grep -q "^BOOT-GATE-RESULT: POLICY-OK$"; then
+    echo "SELF-TEST: policy-token-ok ok"
+  else
+    echo "SELF-TEST: policy-token-ok FAIL: expected exit 0 with the path+digest ok line and the POLICY-OK token (rc=$policy_rc)"
     printf '%s\n' "$policy_out"
     fails=$((fails + 1))
   fi

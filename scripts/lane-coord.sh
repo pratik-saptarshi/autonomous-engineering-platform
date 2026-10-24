@@ -35,6 +35,12 @@
 #   * Launch-point controls: every claim loads and validates the
 #     launch policy data (scripts/policy.data, sibling of this script;
 #     AEP_POLICY_DATA overrides it for tests) before any state changes.
+#     The claim also binds the loaded policy to its source: with no
+#     override, the file must hash to the committed blob at
+#     HEAD:scripts/policy.data of this script's own repo, or the
+#     claim refuses; the outcome (verified / operator-override /
+#     not-applicable), the resolved path, and the digest are recorded
+#     in the lane manifest, so an override is durable evidence.
 #     The declared working set (the worktree path plus every --path
 #     extra) is checked against the sensitive-path patterns after the
 #     claim transaction, before worktree setup; the worker child — and
@@ -152,16 +158,21 @@ print(data["epoch"], data["state"])
 ' "$1"
 }
 
-# write_manifest <name> <repo> <path> <branch> <base> <worker> <pid> <epoch> <state> <claimed_at> <worker-pid> <worker-start>
+# write_manifest <name> <repo> <path> <branch> <base> <worker> <pid> <epoch> <state> <claimed_at> <worker-pid> <worker-start> <policy-integrity> <policy-path> <policy-sha256>
 # Fields are serialized by python3's JSON encoder — never printf
 # interpolation — so paths containing quotes, backslashes, or control
 # characters round-trip exactly through the JSON readers. worker-pid /
 # worker-start are 0 until the launcher records the spawned worker's
-# identity (update_manifest_worker).
+# identity (update_manifest_worker). The policy triple (integrity
+# outcome, resolved path, digest — verify_policy_integrity) is written
+# only when non-empty, so manifests predating the integrity binding
+# keep their original field set; both update_manifest_* functions
+# read the triple back and pass it through (N4).
 write_manifest() {
   local name="$1" repo="$2" path="$3" branch="$4" base="$5" worker="$6"
   local pid="$7" epoch="$8" state="$9" claimed_at="${10}"
   local wpid="${11}" wstart="${12}"
+  local pintegrity="${13}" ppath="${14}" psha="${15}"
   local tmp="$LANES_DIR/$name.json.tmp.$$"
   python3 -c '
 import json, sys
@@ -182,10 +193,15 @@ data = {
     "worker_pid": int(sys.argv[13]),
     "worker_start": int(sys.argv[14]),
 }
+for key, idx in (("policy_integrity", 15), ("policy_path", 16),
+                 ("policy_sha256", 17)):
+    if sys.argv[idx]:
+        data[key] = sys.argv[idx]
 with open(sys.argv[1], "w") as fh:
     fh.write(json.dumps(data) + "\n")
 ' "$tmp" "$name" "$repo" "$path" "$branch" "$base" "$worker" "$pid" "$epoch" \
-    "$state" "$claimed_at" "$(now_iso)" "$wpid" "$wstart"
+    "$state" "$claimed_at" "$(now_iso)" "$wpid" "$wstart" \
+    "$pintegrity" "$ppath" "$psha"
   mv "$tmp" "$LANES_DIR/$name.json"
 }
 
@@ -194,6 +210,7 @@ with open(sys.argv[1], "w") as fh:
 update_manifest_state() {
   local name="$1" new_state="$2" file="$LANES_DIR/$1.json"
   local repo path branch base worker pid epoch claimed_at wpid wstart
+  local pintegrity ppath psha
   repo=$(manifest_get "$file" repo) || return 1
   path=$(manifest_get "$file" path) || return 1
   branch=$(manifest_get "$file" branch) || return 1
@@ -204,8 +221,12 @@ update_manifest_state() {
   claimed_at=$(manifest_get "$file" claimed_at) || return 1
   wpid=$(manifest_get "$file" worker_pid 2>/dev/null || echo 0)
   wstart=$(manifest_get "$file" worker_start 2>/dev/null || echo 0)
+  pintegrity=$(manifest_get "$file" policy_integrity 2>/dev/null || echo "")
+  ppath=$(manifest_get "$file" policy_path 2>/dev/null || echo "")
+  psha=$(manifest_get "$file" policy_sha256 2>/dev/null || echo "")
   write_manifest "$name" "$repo" "$path" "$branch" "$base" "$worker" \
-    "$pid" "$epoch" "$new_state" "$claimed_at" "$wpid" "$wstart"
+    "$pid" "$epoch" "$new_state" "$claimed_at" "$wpid" "$wstart" \
+    "$pintegrity" "$ppath" "$psha"
 }
 
 # update_manifest_worker <name> <worker-pid> <worker-start> — record the
@@ -216,6 +237,7 @@ update_manifest_state() {
 update_manifest_worker() {
   local name="$1" wpid="$2" wstart="$3" file="$LANES_DIR/$1.json"
   local repo path branch base worker pid epoch state claimed_at
+  local pintegrity ppath psha
   repo=$(manifest_get "$file" repo) || return 1
   path=$(manifest_get "$file" path) || return 1
   branch=$(manifest_get "$file" branch) || return 1
@@ -225,8 +247,12 @@ update_manifest_worker() {
   epoch=$(manifest_get "$file" epoch) || return 1
   state=$(manifest_get "$file" state) || return 1
   claimed_at=$(manifest_get "$file" claimed_at) || return 1
+  pintegrity=$(manifest_get "$file" policy_integrity 2>/dev/null || echo "")
+  ppath=$(manifest_get "$file" policy_path 2>/dev/null || echo "")
+  psha=$(manifest_get "$file" policy_sha256 2>/dev/null || echo "")
   write_manifest "$name" "$repo" "$path" "$branch" "$base" "$worker" \
-    "$pid" "$epoch" "$state" "$claimed_at" "$wpid" "$wstart"
+    "$pid" "$epoch" "$state" "$claimed_at" "$wpid" "$wstart" \
+    "$pintegrity" "$ppath" "$psha"
 }
 
 # proc_start_time <pid> — print the process's start time
@@ -350,9 +376,18 @@ resolve_capacity() { # $1 = flag value (may be empty)
 # validation error and refuses the claim before anything is created.
 POLICY_SENSITIVE_PATTERNS=()
 POLICY_ENV_SCRUB=()
+# Claim-path policy bookkeeping: set by load_policy (the resolved
+# file) and verify_policy_integrity (the outcome + digest), then
+# threaded into every manifest the claim writes — write_manifest's
+# field list carries them and both update_manifest_* reconstructions
+# preserve them, so the record survives the claim's own rewrites.
+POLICY_FILE_RESOLVED=""
+POLICY_INTEGRITY=""
+POLICY_SHA256=""
 
 load_policy() {
-  local policy_file="${AEP_POLICY_DATA:-$(dirname "${BASH_SOURCE[0]}")/policy.data}"
+  local policy_file="${AEP_POLICY_DATA:-$(canonical_path "$(dirname "${BASH_SOURCE[0]}")")/policy.data}"
+  POLICY_FILE_RESOLVED=$(canonical_path "$policy_file")
   local parsed line section=""
   if ! parsed=$(python3 -c '
 import sys
@@ -413,6 +448,50 @@ for name in ("sensitive-paths", "env-scrub"):
       ;;
     esac
   done <<<"$parsed"
+}
+
+# verify_policy_integrity — claim path only, called by cmd_claim
+# right after load_policy (release/reap act on already-claimed state
+# and never re-check). Binds the loaded policy to its source:
+#   AEP_POLICY_DATA set (non-empty — "set" means non-empty
+#     throughout, the ${VAR:-} idiom): no blob check; the outcome is
+#     recorded as "operator-override".
+#   Unset, and HEAD of the script's own repo carries
+#     scripts/policy.data: the loaded file's sha256 must equal the
+#     committed blob's, else the claim refuses. The blob is STREAMED
+#     into sha256sum (git show | sha256sum) — never captured in a
+#     shell variable, which would strip its trailing newline and
+#     mismatch every claim. Outcome "verified".
+#   Unset, and the probe fails (not a repo, or the repo has no such
+#     path — the installed-copy case): no check. Outcome
+#     "not-applicable".
+# Every probe runs git -C <canonical script dir>, so a linked
+# worktree's OWN HEAD is what resolves — never the parent repo's
+# (RC7). The outcome, resolved path, and digest are recorded in the
+# lane manifest by write_manifest: the override is durable evidence,
+# not a console line.
+verify_policy_integrity() {
+  POLICY_SHA256=$(sha256sum "$POLICY_FILE_RESOLVED" | cut -d' ' -f1)
+  if [ -n "${AEP_POLICY_DATA:-}" ]; then
+    POLICY_INTEGRITY="operator-override"
+    return 0
+  fi
+  local script_dir blob_sha
+  script_dir=$(canonical_path "$(dirname "${BASH_SOURCE[0]}")")
+  if git -C "$script_dir" cat-file -e HEAD:scripts/policy.data 2>/dev/null; then
+    if ! blob_sha=$(git -C "$script_dir" show HEAD:scripts/policy.data 2>/dev/null | sha256sum | cut -d' ' -f1); then
+      echo "LANE: refuse policy data integrity unverifiable: cannot read committed scripts/policy.data via git"
+      exit 1
+    fi
+    if [ "$blob_sha" != "$POLICY_SHA256" ]; then
+      echo "LANE: refuse policy data integrity mismatch: $POLICY_FILE_RESOLVED differs from the committed scripts/policy.data (HEAD)"
+      echo "LANE: remedy: commit the policy change, or set AEP_POLICY_DATA to proceed — the claim is then recorded as an operator override"
+      exit 1
+    fi
+    POLICY_INTEGRITY="verified"
+    return 0
+  fi
+  POLICY_INTEGRITY="not-applicable"
 }
 
 canonical_path() { # $1 = path — realpath, symlinks resolved
@@ -656,8 +735,11 @@ cmd_claim() {
 
   # Launch policy: load and validate first thing, before any state
   # changes — a malformed policy file refuses the claim with nothing
-  # created (no lanes dir, no manifest, no worktree).
+  # created (no lanes dir, no manifest, no worktree). The integrity
+  # check binds the loaded file to the committed blob and records
+  # the outcome in the manifest (verify_policy_integrity).
   load_policy
+  verify_policy_integrity
 
   local name="$project-$lane"
   local wt_path="$WT_ROOT/$name"
@@ -802,7 +884,8 @@ cmd_claim() {
 
   # 6. Write the manifest (temp + mv, inside the lock) and history.
   write_manifest "$name" "$repo" "$wt_path" "$branch" "$base_sha" "$worker" \
-    "$$" "$epoch" "claimed" "$(now_iso)" 0 0
+    "$$" "$epoch" "claimed" "$(now_iso)" 0 0 \
+    "$POLICY_INTEGRITY" "$POLICY_FILE_RESOLVED" "$POLICY_SHA256"
   history_append "$name" "claimed" "$epoch" "$worker"
 
   # Release the capacity lock — the transaction is over.
@@ -2023,6 +2106,114 @@ json.dump(data, open(sys.argv[1], "w"))
   [ -f "$fresh_home/.local/state/aep/lanes/tau-twentysix.json" ] || case_fails=1
   [ "$(stat -c %a "$fresh_home/.local/state/aep/lanes" 2>/dev/null || true)" = "700" ] || case_fails=1
   report_case "migrated-lane-settles-normally"
+
+  # --- Cases 26–29: policy integrity at claim (fixture-repo harness) ---
+  # The integrity check anchors to the git repo hosting the SCRIPT
+  # (every probe runs git -C <script dir>), so these cases need a
+  # real fixture repo: copies of both scripts and the policy under
+  # scripts/, a commit whose policy blob DIFFERS from the restored
+  # working-tree policy, and fixture HOME / lanes / worktrees roots.
+  local fix_scripts_src
+  fix_scripts_src="$(dirname "$self_path")"
+  local fixrepo="$selftest_root/fixrepo"
+  mkdir -p "$fixrepo/scripts"
+  cp "$self_path" "$fixrepo/scripts/lane-coord.sh"
+  cp "$fix_scripts_src/boot-gate.sh" "$fixrepo/scripts/boot-gate.sh"
+  cp "$fix_scripts_src/policy.data" "$fixrepo/scripts/policy.data"
+  printf '# fixture committed variant (bytes differ, grammar valid)\n' >>"$fixrepo/scripts/policy.data"
+  git init -q "$fixrepo"
+  git -C "$fixrepo" add scripts/lane-coord.sh scripts/boot-gate.sh scripts/policy.data
+  git -C "$fixrepo" -c user.name=LaneTest -c user.email=lane@test.invalid commit -q -m "fixture: divergent policy blob"
+  cp "$fix_scripts_src/policy.data" "$fixrepo/scripts/policy.data"
+  local fix_home="$selftest_root/fix-home" fix_lanes="$selftest_root/fix-lanes" fix_wts="$selftest_root/fix-worktrees"
+  mkdir -p "$fix_home"
+  local fix_lane="$fixrepo/scripts/lane-coord.sh"
+  local fix_policy="$fixrepo/scripts/policy.data"
+  local fix_policy_canon
+  fix_policy_canon=$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$fix_policy")
+
+  # --- Case 26: claim-refuses-dirty-policy ---
+  local out26="$selftest_root/out26.txt" rc26=0
+  env -u AEP_POLICY_DATA HOME="$fix_home" AEP_LANES_DIR="$fix_lanes" AEP_WORKTREES_ROOT="$fix_wts" \
+    bash "$fix_lane" claim --repo "$repo" --project pol --lane a \
+    --branch br-pol-a --base HEAD --worker w26 \
+    --exec true >"$out26" 2>&1 || rc26=$?
+  [ "$rc26" -eq 1 ] || case_fails=1
+  grep -qF "policy data integrity mismatch" "$out26" || case_fails=1
+  grep -qF "operator override" "$out26" || case_fails=1
+  # The refusal created nothing: no lanes dir, no manifest, no worktree.
+  [ ! -e "$fix_lanes" ] || case_fails=1
+  [ ! -e "$fix_wts" ] || case_fails=1
+  report_case "claim-refuses-dirty-policy"
+
+  # --- Case 27: claim-records-verified-policy ---
+  git -C "$fixrepo" add scripts/policy.data
+  git -C "$fixrepo" -c user.name=LaneTest -c user.email=lane@test.invalid commit -q -m "fixture: commit the working-tree policy"
+  local out27="$selftest_root/out27.txt" rc27=0
+  env -u AEP_POLICY_DATA HOME="$fix_home" AEP_LANES_DIR="$fix_lanes" AEP_WORKTREES_ROOT="$fix_wts" \
+    bash "$fix_lane" claim --repo "$repo" --project pol --lane b \
+    --branch br-pol-b --base HEAD --worker w27 \
+    --exec true >"$out27" 2>&1 || rc27=$?
+  [ "$rc27" -eq 0 ] || case_fails=1
+  # The claim flow rewrote the manifest twice after the initial write
+  # (worker update, then state update): the policy fields must have
+  # survived both reconstructions (N4).
+  [ "$(jget "$fix_lanes/pol-b.json" policy_integrity)" = "verified" ] || case_fails=1
+  [ "$(jget "$fix_lanes/pol-b.json" policy_path)" = "$fix_policy_canon" ] || case_fails=1
+  [ "$(jget "$fix_lanes/pol-b.json" policy_sha256)" = "$(sha256sum "$fix_policy" | cut -d' ' -f1)" ] || case_fails=1
+  report_case "claim-records-verified-policy"
+
+  # --- Case 28: claim-records-operator-override ---
+  local fix_modified="$selftest_root/policy-modified.data"
+  cp "$fix_policy" "$fix_modified"
+  printf '%s\n' 'EXTRA_SCRUB_FRAGMENT' >>"$fix_modified"
+  local out28="$selftest_root/out28.txt" rc28=0
+  HOME="$fix_home" AEP_LANES_DIR="$fix_lanes" AEP_WORKTREES_ROOT="$fix_wts" AEP_POLICY_DATA="$fix_modified" \
+    bash "$fix_lane" claim --repo "$repo" --project pol --lane c \
+    --branch br-pol-c --base HEAD --worker w28 \
+    --exec true >"$out28" 2>&1 || rc28=$?
+  [ "$rc28" -eq 0 ] || case_fails=1
+  [ "$(jget "$fix_lanes/pol-c.json" policy_integrity)" = "operator-override" ] || case_fails=1
+  [ "$(jget "$fix_lanes/pol-c.json" policy_sha256)" = "$(sha256sum "$fix_modified" | cut -d' ' -f1)" ] || case_fails=1
+  [ "$(jget "$fix_lanes/pol-c.json" policy_path)" = "$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$fix_modified")" ] || case_fails=1
+  report_case "claim-records-operator-override"
+
+  # --- Case 29: gate-and-claim-resolve-same-policy ---
+  # Run the fixture boot-gate with stub binaries so the run reaches
+  # the policy check deterministically; its ok line must name the
+  # same file Case 27's manifest recorded, with a matching digest.
+  local fix_stubs="$selftest_root/fix-stubs"
+  mkdir -p "$fix_stubs"
+  cat >"$fix_stubs/neurostrata-mcp" <<'STUBEOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+status) echo "daemon: listening on 127.0.0.1:34343, answering" ;;
+list) printf 'guard_rule a\nguard_rule b\nguard_rule c\nDestructive GitHub actions\n' ;;
+*) exit 1 ;;
+esac
+STUBEOF
+  printf '#!/usr/bin/env bash\nexit 0\n' >"$fix_stubs/gh"
+  printf '#!/usr/bin/env bash\nexit 0\n' >"$fix_stubs/bd"
+  printf '#!/usr/bin/env bash\nexit 0\n' >"$fix_stubs/ocr"
+  chmod +x "$fix_stubs/neurostrata-mcp" "$fix_stubs/gh" "$fix_stubs/bd" "$fix_stubs/ocr"
+  local out29="$selftest_root/out29.txt" rc29=0
+  env -u AEP_POLICY_DATA HOME="$fix_home" PATH="$fix_stubs:$PATH" \
+    bash "$fixrepo/scripts/boot-gate.sh" >"$out29" 2>&1 || rc29=$?
+  [ "$rc29" -eq 0 ] || case_fails=1
+  grep -q "^BOOT-GATE-RESULT: POLICY-OK$" "$out29" || case_fails=1
+  local bg_line bg_rest bg_path bg_short
+  bg_line=$(grep '^BOOT-GATE: policy ok: ' "$out29" || true)
+  [ -n "$bg_line" ] || case_fails=1
+  bg_rest="${bg_line#BOOT-GATE: policy ok: }"
+  bg_path="${bg_rest%% (sha256 *}"
+  bg_short="${bg_rest##* (sha256 }"
+  bg_short="${bg_short%)}"
+  [ "$(canonical_path "$bg_path")" = "$(jget "$fix_lanes/pol-b.json" policy_path)" ] || case_fails=1
+  case "$(jget "$fix_lanes/pol-b.json" policy_sha256)" in
+  "$bg_short"*) ;;
+  *) case_fails=1 ;;
+  esac
+  report_case "gate-and-claim-resolve-same-policy"
 
   return "$fails"
 }
