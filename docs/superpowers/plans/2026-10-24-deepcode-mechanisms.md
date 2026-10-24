@@ -375,9 +375,9 @@ AUTH
 
 - [ ] **Step 1: Extend the self-test first (cases 7–10, 12)**
 
-Add to `lane-coord.sh --self-test`, run, and watch the new cases fail. The self-test creates fixture credential dirs under its `mktemp -d` tree (a fake `$FIX/home/.aws` etc. — never the real `$HOME`; case 7 is the single exception: it canonicalizes the real `$HOME/.ssh` read-only — the path must exist for the declared-path check — and creates nothing):
+Add to `lane-coord.sh --self-test`, run, and watch the new cases fail. The self-test creates fixture credential dirs under its `mktemp -d` tree (a fake `$FIX/home/.aws` etc. — never the real `$HOME`; case 7 too uses a fixture: it creates `$FIX/home7/.ssh` and runs its claim with `HOME` overridden to the fixture home, so the declared path exists and the case exercises the sensitive-pattern refusal itself — hermetically, including on runners where the real `$HOME/.ssh` does not exist):
 
-1. Case 7 — `working-set-refuses-sensitive-dir` — claim with `--path "$HOME/.ssh"` → exit 1, line matches `LANE: refuse <name>: declared path */.ssh matches sensitive pattern */.ssh` (canonical path ends in `/.ssh`), and the worktree path was **not** created.
+1. Case 7 — `working-set-refuses-sensitive-dir` — claim with `--path "$FIX/home7/.ssh"` under the fixture `HOME` → exit 1, line matches `LANE: refuse <name>: declared path <canonical $FIX/home7/.ssh> matches sensitive pattern */.ssh` (canonical path ends in `/.ssh`), and the worktree path was **not** created.
 2. Case 8 — `working-set-refuses-symlink-into-sensitive` — fixture symlink `$FIX/link-aws` → `$FIX/home/.aws` (a real dir in the fixture): claim with `--path "$FIX/link-aws"` → exit 1, refusal names the **canonical** path (`$FIX/home/.aws`) and pattern `*/.aws`.
 3. Case 9 — `working-set-refuses-secrets-file` — fixture file `$FIX/secrets.json`: claim with `--path "$FIX/secrets.json"` → exit 1, refusal names pattern `*/secrets.json`.
 4. Case 10 — `exec-scrubs-credential-env` — with `AEP_TEST_API_KEY=not-a-real-secret`, `AEP_TEST_AUTHORITY=not-a-real-secret`, `SSH_AUTH_SOCK=/tmp/fake.sock`, and `GIT_AUTHOR_NAME=Lane Test` exported in the test shell, claim `--exec sh -c 'printf "%s|%s|%s|%s" "${AEP_TEST_API_KEY:-unset}" "${SSH_AUTH_SOCK:-unset}" "${GIT_AUTHOR_NAME:-unset}" "${AEP_TEST_AUTHORITY:-unset}"'` prints exactly `unset|/tmp/fake.sock|Lane Test|unset` in the worker's output.
@@ -507,7 +507,7 @@ Add the exact function from Interfaces and call it after `check_gh_auth` in the 
 - [ ] **Step 3: Run the boot-gate self-test**
 
 Run: `bash scripts/boot-gate.sh --self-test`
-Expected: 7 `SELF-TEST: ... ok` lines (the pre-existing daemon-down, zero-guards, missing-destructive-rule, gh-auth-fail, real-environment, plus `policy-mismatch` and `policy-skip`), then `SELF-TEST: all ok`, exit 0.
+Expected: 8 `SELF-TEST: ... ok` lines (the pre-existing daemon-down, zero-guards, missing-destructive-rule, gh-auth-fail, real-environment, plus `policy-mismatch` and `policy-skip`, and `policy-unreadable` — added by the Task 7 fix round for the unreadable-committed-blob path), then `SELF-TEST: all ok`, exit 0.
 
 - [ ] **Step 4: Verify a normal run and the tamper behavior in the worktree**
 
@@ -630,8 +630,8 @@ Four suites, all runnable locally and (except the boot-gate's) in CI. Every test
 **Self-test — lane coordinator (Tasks 4–6), `bash scripts/lane-coord.sh --self-test` → 19 cases:**
 Claim runs the worker in the worktree and completes the manifest lifecycle; busy exit 3; release frees and epoch survives; stale claims auto-settle inside a later claim's capacity pass; capacity exit 4; parallel-claim race yields exactly one winner; declared-path refusals (sensitive dir, symlink-into-sensitive, `secrets.json` file); env scrub (credential var and non-exempt `AUTHORITY` gone, `SSH_AUTH_SOCK` and `GIT_AUTHOR_NAME` survive); full-env opt-out is total and loud; malformed policy data refuses; takeover after proven launcher death (epoch increments, old claim settled interrupted, content untouched); reap refuses a live fence, settles a dead one, and never signals the innocent PID a crafted manifest names; dirty cleanup refused, `--force-dirty` archives the diff then removes; foreign-path cleanup refused with the directory intact.
 
-**Self-test — boot-gate (Task 7), `bash scripts/boot-gate.sh --self-test` → 7 cases:**
-The pre-existing daemon-down, zero-guards, missing-destructive-rule, gh-auth-fail, and real-environment cases, plus `policy-mismatch` (output-asserted FAIL line) and `policy-skip` (output-asserted SKIP line, exit 0). Local only; CI lacks the daemon.
+**Self-test — boot-gate (Task 7), `bash scripts/boot-gate.sh --self-test` → 8 cases:**
+The pre-existing daemon-down, zero-guards, missing-destructive-rule, gh-auth-fail, and real-environment cases, plus `policy-mismatch` (output-asserted FAIL line), `policy-skip` (output-asserted SKIP line, exit 0), and `policy-unreadable` (output-asserted FAIL line when the committed policy blob cannot be read; added by the Task 7 fix round). Local only; CI lacks the daemon.
 
 **End-to-end smoke (Task 2 Step 5):** a failing Makefile fixture proves the receipts flow *vetoes* — reviewer-side `verify` exits 1, `check-receipts` exits 1 naming the failed command; a passing fixture then extends the same chain and validates. A flow that only ever passes is not tested; this is the negative control.
 
@@ -643,14 +643,14 @@ Each criterion is checkable by running the stated command on the finished branch
 
 1. `python3 -m unittest discover -s scripts/tests` exits 0 and reports `Ran 26 tests`.
 2. `bash scripts/lane-coord.sh --self-test` exits 0 with 19 `SELF-TEST: <case> ok` lines, a final `SELF-TEST: all ok`, and no `FAIL` line.
-3. `bash scripts/boot-gate.sh --self-test` exits 0 with 7 `SELF-TEST: ... ok` lines including `policy-mismatch` and `policy-skip`, then `SELF-TEST: all ok`.
+3. `bash scripts/boot-gate.sh --self-test` exits 0 with 8 `SELF-TEST: ... ok` lines including `policy-mismatch`, `policy-skip`, and `policy-unreadable`, then `SELF-TEST: all ok`.
 4. Boot-gate behavior in the worktree: `bash scripts/boot-gate.sh` prints `BOOT-GATE: policy ok` as its fifth check line and exits 0; after appending one line to `scripts/policy.data` (uncommitted), it exits 1 printing `BOOT-GATE: policy FAIL:`; after `git checkout -- scripts/policy.data`, with `AEP_POLICY_DATA=/nonexistent` it prints `BOOT-GATE: policy SKIP:` and exits 0.
 5. Receipts behavior: the Task 2 Step 5 smoke sequence reproduces exactly — failing fixture: `verify` rc=1, `check-receipts` rc=1 naming `make-test`; passing fixture in the same receipts file: `verify` rc=0, `check-receipts` rc=0.
 6. Skill wiring, checked against the **live** copies the runtime loads: `grep -o "mechanical_verify.py" ~/workspace/custom-skills/subagent-driven-development/SKILL.md | wc -l` = 2; `grep -o "lane-coord.sh" ~/workspace/custom-skills/overnight-parallel-lanes/SKILL.md | wc -l` = 3; the same greps on the repo copies return 2 and ≥ 3 respectively, and `grep -c "git rev-parse --git-common-dir" skills/overnight-parallel-lanes/SKILL.md` = 1 (the isolation check sentence survived the repo-copy edit).
 7. No-kill invariant (operational code): `sed -e '/^self_test() {/,/^}/d' scripts/lane-coord.sh | grep -nE '(^|[[:space:];])kill([[:space:]]|$)'` returns no lines — the self-test section is deleted before grepping (delimiter lines adjusted to the implemented function boundaries; all `kill` usage is confined to `self_test`).
 8. `shellcheck scripts/*.sh` and `shfmt -d -i 2 scripts/*.sh` are clean (CI shell-lint is the authority where the local tools are absent); `npx --yes markdownlint-cli2 "**/*.md" "!reference/esf/**/*.md" "!skills/archify/**/*.md"` exits 0.
 9. On the PR (when authorized): all six CI jobs green — docs-lint, shell-lint, go-checks, security (gitleaks finds no secrets, including in test fixtures), vendor-integrity, script-tests.
-10. `git log --oneline origin/main..HEAD` shows 9 commits with Conventional Commit subjects, authored as `Musebot-Astro <6238157+pratik-saptarshi@users.noreply.github.com>`, and `git diff --stat origin/main..HEAD` touches only the files listed in this plan's File Structure plus this plan file. (The live skill edits are outside the repo by design; Criterion 6, not the diff, is their verification.)
+10. `git log --oneline origin/main..HEAD` shows the 9 task commits plus review fix rounds (13 commits at whole-branch review), all with Conventional Commit subjects, authored as `Musebot-Astro <6238157+pratik-saptarshi@users.noreply.github.com>`, and `git diff --stat origin/main..HEAD` touches only the files listed in this plan's File Structure plus this plan file. (The live skill edits are outside the repo by design; Criterion 6, not the diff, is their verification.)
 
 ---
 

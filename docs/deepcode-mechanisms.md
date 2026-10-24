@@ -153,7 +153,7 @@ Each lane has one JSON manifest, `<name>.json` in the lanes directory, written i
 | `worker` | the `--worker` id |
 | `launcher_pid` | the claiming process's PID — operator information only; nothing ever signals it |
 | `epoch` | claim generation: starts at 1, increments monotonically per lane across takeovers |
-| `state` | `claimed`, `released`, or `reaped` |
+| `state` | `claimed`, `released`, `reaped`, or `cleaned` (set by `release --clean` once the validated worktree removal completes) |
 | `claimed_at`, `updated_at` | UTC timestamps |
 
 A per-lane history records claim, release, and settled-interrupted events with their epoch and worker.
