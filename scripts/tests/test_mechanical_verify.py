@@ -318,6 +318,122 @@ class RunVerificationTests(unittest.TestCase):
             self.assertTrue(result.output_truncated)
 
 
+DRIVER = Path(__file__).resolve().parent / "survivor_driver.py"
+
+
+class SurvivorReapTests(unittest.TestCase):
+    """Task 2: a `setsid`-detached descendant must not outlive the run
+    that spawned it, on the success path or the timeout path — while a
+    bystander process that predates the run is never signalled.
+
+    The verifier runs inside the survivor_driver subprocess so the
+    subreaper flag main() sets never touches this test process.
+    """
+
+    def run_driver(self, base: Path, mode: str, timeout: int = 300) -> dict:
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(DRIVER),
+                "--root",
+                str(base / "root"),
+                "--mode",
+                mode,
+                "--timeout",
+                str(timeout),
+                "--marker",
+                str(base / "marker.log"),
+                "--writer-pid-file",
+                str(base / "writer.pid"),
+                "--receipts",
+                str(base / "receipts.jsonl"),
+                "--helper-pid-file",
+                str(base / "helper.pid"),
+                "--helper-status-file",
+                str(base / "helper.status"),
+                "--rc-file",
+                str(base / "verify.rc"),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        self.assertEqual(
+            proc.returncode, 0, f"driver failed:\n{proc.stdout}\n{proc.stderr}"
+        )
+        result = {
+            "rc": int((base / "verify.rc").read_text()),
+            "writer_pid": int((base / "writer.pid").read_text()),
+            "helper_pid": int((base / "helper.pid").read_text()),
+            "helper_status": (base / "helper.status").read_text(),
+            "receipts": [
+                json.loads(line)
+                for line in (base / "receipts.jsonl")
+                .read_text()
+                .splitlines()
+                if line.strip()
+            ],
+        }
+        # Never leak a surviving writer into later tests when running
+        # against a verifier that does not reap yet.
+        if not _pid_dead(result["writer_pid"]):
+            os.kill(result["writer_pid"], signal.SIGKILL)
+        return result
+
+    def marker_size(self, base: Path) -> int:
+        marker = base / "marker.log"
+        return marker.stat().st_size if marker.exists() else 0
+
+    def test_success_path_setsid_survivor_is_reaped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            result = self.run_driver(base, "success")
+            self.assertEqual(result["rc"], 0)
+            writer_pid = result["writer_pid"]
+            self.assertTrue(
+                _pid_dead(writer_pid),
+                f"setsid writer {writer_pid} survived a successful verify",
+            )
+            size = self.marker_size(base)
+            time.sleep(1)
+            self.assertEqual(
+                self.marker_size(base),
+                size,
+                "writer kept appending to the marker after the run",
+            )
+            command_receipts = [
+                r for r in result["receipts"] if r.get("command_id") == "make-test"
+            ]
+            self.assertEqual(len(command_receipts), 1)
+            self.assertIn(
+                writer_pid, command_receipts[0].get("survivors_killed", [])
+            )
+
+    def test_timeout_path_setsid_survivor_is_reaped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            result = self.run_driver(base, "timeout", timeout=2)
+            self.assertEqual(result["rc"], 1)
+            writer_pid = result["writer_pid"]
+            self.assertTrue(
+                _pid_dead(writer_pid),
+                f"setsid writer {writer_pid} survived a timed-out verify",
+            )
+            size = self.marker_size(base)
+            time.sleep(1)
+            self.assertEqual(self.marker_size(base), size)
+
+    def test_bystander_predating_the_run_is_never_signalled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            result = self.run_driver(base, "success")
+            self.assertEqual(result["helper_status"], "alive")
+            for record in result["receipts"]:
+                self.assertNotIn(
+                    result["helper_pid"], record.get("survivors_killed", [])
+                )
+
+
 class UnittestExecutionTests(unittest.TestCase):
     """The executed unittest set must equal the discovered set: rule 5
     discovers both test_*.py and *_test.py files."""

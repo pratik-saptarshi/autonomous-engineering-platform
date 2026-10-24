@@ -10,6 +10,7 @@ first failure. Stdlib only.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import fcntl
 import hashlib
 import json
@@ -30,6 +31,7 @@ OUTPUT_CAP_BYTES = 65536
 SCAN_CHARS = 65536
 MIN_MEMORY_KB = 524288  # 512 MiB
 TERM_GRACE_SECONDS = 0.75
+SWEEP_BOUND_SECONDS = 2.0
 
 MARKDOWNLINT_ARGV = (
     "markdownlint-cli2",
@@ -55,10 +57,16 @@ class VerificationResult:
     stdout: str
     stderr: str
     output_truncated: bool
+    survivors_killed: tuple[int, ...] = ()
+    survivors_remaining: bool = False
 
     @property
     def passed(self) -> bool:
-        return self.exit_code == 0 and not self.timed_out
+        return (
+            self.exit_code == 0
+            and not self.timed_out
+            and not self.survivors_remaining
+        )
 
 
 def discover_verification_commands(root: Path) -> tuple[VerificationCommand, ...]:
@@ -249,6 +257,131 @@ def _drain(stream, buffer: _TailBuffer) -> None:
             pass
 
 
+def _read_proc_stat(pid: int) -> tuple[int, int, int, str] | None:
+    """(ppid, pgrp, start_time, state) from /proc/<pid>/stat.
+
+    start_time (field 22) identifies a process incarnation: a pid
+    whose start_time differs from the one recorded earlier is a
+    different process that recycled the pid.
+    """
+    try:
+        text = Path(f"/proc/{pid}/stat").read_text(
+            encoding="utf-8", errors="replace"
+        )
+    except OSError:
+        return None
+    try:
+        rest = text.rsplit(")", 1)[1].split()
+        return int(rest[1]), int(rest[2]), int(rest[19]), rest[0]
+    except (IndexError, ValueError):
+        return None
+
+
+def _children_start_times() -> dict[int, int]:
+    """Map of this process's current child pids to their start times."""
+    me = os.getpid()
+    children: dict[int, int] = {}
+    try:
+        entries = list(Path("/proc").iterdir())
+    except OSError:
+        return children
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        stat = _read_proc_stat(pid)
+        if stat is not None and stat[0] == me:
+            children[pid] = stat[2]
+    return children
+
+
+def _sweep_survivors(
+    leader_pid: int, snapshot: dict[int, int]
+) -> tuple[tuple[int, ...], bool]:
+    """Kill everything a finished command left behind.
+
+    Targets are (a) this process's children that were NOT in the
+    pre-spawn snapshot — adoptees: descendants orphaned when the
+    leader exited, reparented here when the subreaper flag is set —
+    and (b) remaining members of the leader's process group. A
+    `setsid` descendant escapes (b) by construction but lands in (a).
+    Processes in the snapshot (bystanders that predate the command)
+    are never signalled. Each target's (pid, start_time) identity is
+    re-verified immediately before SIGKILL, and killed adoptees are
+    reaped per pid. Iterates until no live target remains or the
+    sweep bound elapses; returns (killed, exhausted) — exhausted
+    means a live survivor outlasted the bound, which the caller must
+    surface as a failure, never pass silently.
+    """
+    me = os.getpid()
+    killed: list[int] = []
+    deadline = time.monotonic() + SWEEP_BOUND_SECONDS
+    while True:
+        targets: dict[int, int] = {}
+        try:
+            entries = list(Path("/proc").iterdir())
+        except OSError:
+            entries = []
+        for entry in entries:
+            if not entry.name.isdigit():
+                continue
+            pid = int(entry.name)
+            if pid == me or pid == leader_pid:
+                continue
+            stat = _read_proc_stat(pid)
+            if stat is None:
+                continue
+            ppid, pgrp, start_time, state = stat
+            if state == "Z":
+                # Dead awaiting reaping — not a live survivor. If it
+                # is ours, collect it so it does not linger as a
+                # zombie for the rest of this process's life.
+                if ppid == me and snapshot.get(pid) != start_time:
+                    try:
+                        os.waitpid(pid, os.WNOHANG)
+                    except OSError:
+                        pass
+                continue
+            if (ppid == me and snapshot.get(pid) != start_time) or (
+                pgrp == leader_pid
+            ):
+                targets[pid] = start_time
+        if not targets:
+            return tuple(killed), False
+        if time.monotonic() >= deadline:
+            return tuple(killed), True
+        for pid, start_time in targets.items():
+            current = _read_proc_stat(pid)
+            if current is None or current[2] != start_time:
+                continue  # gone, or the pid was recycled — not ours
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                continue
+            if pid not in killed:
+                killed.append(pid)
+            try:
+                os.waitpid(pid, os.WNOHANG)
+            except OSError:
+                pass
+        time.sleep(0.05)
+
+
+def _set_child_subreaper() -> bool:
+    """Set PR_SET_CHILD_SUBREAPER on this process (Linux), best-effort.
+
+    With the flag set, descendants orphaned by a verification command
+    reparent here instead of to init, so the post-run sweep can find
+    and reap them. Set once from main() before append_run_start;
+    in-process callers do not set it — the sweep is snapshot-scoped
+    and safe either way. Returns whether the flag was set.
+    """
+    try:
+        return ctypes.CDLL(None).prctl(36, 1, 0, 0, 0) == 0
+    except Exception:
+        return False
+
+
 def run_verification(
     root: Path,
     command: VerificationCommand,
@@ -258,6 +391,11 @@ def run_verification(
     env["CI"] = "1"
     env["PYTHONUNBUFFERED"] = "1"
     started = time.monotonic()
+    # Snapshot this process's children immediately before the spawn:
+    # the post-run sweep kills only children that appear after this
+    # point (plus the leader's group), so bystanders that predate the
+    # command are never signalled.
+    snapshot = _children_start_times()
     try:
         proc = subprocess.Popen(
             list(command.argv),
@@ -314,6 +452,13 @@ def run_verification(
                 pass
         if proc.returncode is None:
             proc.wait()
+    # The leader has been waited on every path above — only now may
+    # the sweep run. Reaping concurrently with a live Popen would let
+    # a stray waitpid consume the leader's exit status and corrupt
+    # its reported exit code.
+    survivors_killed, survivors_remaining = _sweep_survivors(
+        proc.pid, snapshot
+    )
     for thread in threads:
         thread.join(timeout=5)
 
@@ -325,6 +470,8 @@ def run_verification(
         stdout=stdout_buf.text(),
         stderr=stderr_buf.text(),
         output_truncated=stdout_buf.truncated or stderr_buf.truncated,
+        survivors_killed=survivors_killed,
+        survivors_remaining=survivors_remaining,
     )
 
 
@@ -385,6 +532,8 @@ def run_all(
                 f"VERIFY: {command.id} FAIL exit={exit_repr} "
                 f"duration_ms={result.duration_ms}"
             )
+            if result.survivors_remaining:
+                print("VERIFY: survivors remain after reap bound")
             print(f"VERIFY: stopped at first failure ({command.id})")
             return 1
     return 0 if executed else 1
@@ -713,6 +862,8 @@ def append_receipt(
     }
     if run_id is not None:
         body["run_id"] = run_id
+    if result.survivors_killed:
+        body["survivors_killed"] = list(result.survivors_killed)
     _append_record(receipts_path, body)
 
 
@@ -721,6 +872,7 @@ def append_run_start(
     task: str,
     run_id: str,
     binding: dict | None = None,
+    subreaper: bool | None = None,
 ) -> None:
     """Append the run-boundary record that opens a run segment.
 
@@ -731,7 +883,9 @@ def append_run_start(
     tree binding is given it is recorded here (and on the completion
     record) as an EXTRA field — the required-field tuples deliberately
     do not include it, so its absence routes to the UNBOUND verdict
-    rather than a corruption verdict (RC3).
+    rather than a corruption verdict (RC3). `subreaper`, when given,
+    records whether main() set PR_SET_CHILD_SUBREAPER for the run —
+    likewise an extra field.
     """
     body = {
         "ts": datetime.now(timezone.utc).isoformat(),
@@ -741,6 +895,8 @@ def append_run_start(
     }
     if binding is not None:
         body["binding"] = binding
+    if subreaper is not None:
+        body["subreaper"] = subreaper
     _append_record(receipts_path, body)
 
 
@@ -1037,6 +1193,11 @@ def main(argv: list[str] | None = None) -> int:
     if receipts_path is not None:
         task = args.task
         run_id = uuid.uuid4().hex
+        # Orphaned descendants of the run's commands reparent to this
+        # process (PR_SET_CHILD_SUBREAPER) so run_verification's
+        # post-run sweep can find and reap them; the run-start record
+        # states whether the flag was actually set.
+        subreaper = _set_child_subreaper()
         # Tree binding (R1): an evidence run binds to the tree before
         # its first command. Git mode refuses a dirty tree outright —
         # a segment sealed over uncommitted state could never be
@@ -1049,7 +1210,9 @@ def main(argv: list[str] | None = None) -> int:
                 f"at {root}: {exc}"
             )
             return 1
-        append_run_start(receipts_path, task, run_id, binding=binding)
+        append_run_start(
+            receipts_path, task, run_id, binding=binding, subreaper=subreaper
+        )
         if binding["mode"] == "git" and not tree_clean(root, receipts_path):
             print(
                 "VERIFY: FAIL tree not clean at HEAD "
