@@ -377,11 +377,11 @@ AUTH
 
 Add to `lane-coord.sh --self-test`, run, and watch the new cases fail. The self-test creates fixture credential dirs under its `mktemp -d` tree (a fake `$FIX/home/.aws` etc. — never the real `$HOME`; case 7 is the single exception: it canonicalizes the real `$HOME/.ssh` read-only — the path must exist for the declared-path check — and creates nothing):
 
-7. `working-set-refuses-sensitive-dir` — claim with `--path "$HOME/.ssh"` → exit 1, line matches `LANE: refuse <name>: declared path */.ssh matches sensitive pattern */.ssh` (canonical path ends in `/.ssh`), and the worktree path was **not** created.
-8. `working-set-refuses-symlink-into-sensitive` — fixture symlink `$FIX/link-aws` → `$FIX/home/.aws` (a real dir in the fixture): claim with `--path "$FIX/link-aws"` → exit 1, refusal names the **canonical** path (`$FIX/home/.aws`) and pattern `*/.aws`.
-9. `working-set-refuses-secrets-file` — fixture file `$FIX/secrets.json`: claim with `--path "$FIX/secrets.json"` → exit 1, refusal names pattern `*/secrets.json`.
-10. `exec-scrubs-credential-env` — with `AEP_TEST_API_KEY=not-a-real-secret`, `AEP_TEST_AUTHORITY=not-a-real-secret`, `SSH_AUTH_SOCK=/tmp/fake.sock`, and `GIT_AUTHOR_NAME=Lane Test` exported in the test shell, claim `--exec sh -c 'printf "%s|%s|%s|%s" "${AEP_TEST_API_KEY:-unset}" "${SSH_AUTH_SOCK:-unset}" "${GIT_AUTHOR_NAME:-unset}" "${AEP_TEST_AUTHORITY:-unset}"'` prints exactly `unset|/tmp/fake.sock|Lane Test|unset` in the worker's output.
-12. `policy-data-malformed-refuses` — `AEP_POLICY_DATA` pointed at a fixture file whose line 3 is `bogus line here` (after a comment and the `[sensitive-paths]` header): claim → exit 1 with `LANE: refuse policy data invalid: line 3: bogus line here`; nothing created.
+1. Case 7 — `working-set-refuses-sensitive-dir` — claim with `--path "$HOME/.ssh"` → exit 1, line matches `LANE: refuse <name>: declared path */.ssh matches sensitive pattern */.ssh` (canonical path ends in `/.ssh`), and the worktree path was **not** created.
+2. Case 8 — `working-set-refuses-symlink-into-sensitive` — fixture symlink `$FIX/link-aws` → `$FIX/home/.aws` (a real dir in the fixture): claim with `--path "$FIX/link-aws"` → exit 1, refusal names the **canonical** path (`$FIX/home/.aws`) and pattern `*/.aws`.
+3. Case 9 — `working-set-refuses-secrets-file` — fixture file `$FIX/secrets.json`: claim with `--path "$FIX/secrets.json"` → exit 1, refusal names pattern `*/secrets.json`.
+4. Case 10 — `exec-scrubs-credential-env` — with `AEP_TEST_API_KEY=not-a-real-secret`, `AEP_TEST_AUTHORITY=not-a-real-secret`, `SSH_AUTH_SOCK=/tmp/fake.sock`, and `GIT_AUTHOR_NAME=Lane Test` exported in the test shell, claim `--exec sh -c 'printf "%s|%s|%s|%s" "${AEP_TEST_API_KEY:-unset}" "${SSH_AUTH_SOCK:-unset}" "${GIT_AUTHOR_NAME:-unset}" "${AEP_TEST_AUTHORITY:-unset}"'` prints exactly `unset|/tmp/fake.sock|Lane Test|unset` in the worker's output.
+5. Case 12 — `policy-data-malformed-refuses` — `AEP_POLICY_DATA` pointed at a fixture file whose line 3 is `bogus line here` (after a comment and the `[sensitive-paths]` header): claim → exit 1 with `LANE: refuse policy data invalid: line 3: bogus line here`; nothing created.
 
 Run: `bash scripts/lane-coord.sh --self-test`
 Expected at this step: the 5 new cases FAIL; cases 1–6 still pass.
@@ -392,7 +392,7 @@ Per Interfaces. The loader emits the two lists (e.g. as newline-joined strings t
 
 - [ ] **Step 3: Add the full-env opt-out self-test case (11) and run the suite**
 
-11. `full-env-opt-out-warns` — case 10's setup plus `AEP_LANE_FULL_ENV=1`: the worker prints `not-a-real-secret` in the first field (the value is visible, proving the opt-out is deliberate and total), and the claim's stderr contains the `LANE: warning AEP_LANE_FULL_ENV=1` line.
+1. Case 11 — `full-env-opt-out-warns` — case 10's setup plus `AEP_LANE_FULL_ENV=1`: the worker prints `not-a-real-secret` in the first field (the value is visible, proving the opt-out is deliberate and total), and the claim's stderr contains the `LANE: warning AEP_LANE_FULL_ENV=1` line.
 
 Run: `bash scripts/lane-coord.sh --self-test`
 Expected: 12 `SELF-TEST: <case> ok` lines (cases 1–12), then `SELF-TEST: all ok`, exit 0.
@@ -427,13 +427,13 @@ git commit -m "feat(lanes): launch-point controls — policy data, declared-path
 
 Add to `--self-test`, run, watch them fail:
 
-13. `takeover-after-launcher-death` — background claim (`--exec sleep 30`); the test kills the launcher PID; claim the same name again (`--exec true`) → exit 0, stdout contains `LANE: note previous claim on <name> settled interrupted at epoch 1`, new manifest `epoch: 2`.
-14. `reap-refuses-live-fence` — background claim; `reap` → exit 1 with the `fence held (launcher alive)` line; the manifest stays `claimed`.
-15. `reap-settles-dead-claim` — background claim; kill the launcher; `reap` → exit 0 with the `LANE: reaped` line; manifest `state: "reaped"`; a subsequent claim succeeds.
-16. `reap-never-signals` — start an innocent `sleep 60` in the test; hand-write a manifest for a fresh lane name with `launcher_pid` = that sleep's PID, `state: "claimed"`, and no live fence; `reap` → exit 0; afterwards `kill -0 <sleep pid>` still succeeds (the process was never signaled — the assertion is on the process, run by the *test*, not the tool).
-17. `clean-refuses-dirty` — claim `--exec true` completes; create an untracked file in the worktree; `release --clean` → exit 1 `worktree dirty`, worktree still on disk.
-18. `clean-force-dirty-archives-and-removes` — continuing a dirty lane: `release --clean --force-dirty` → exit 0, path gone, `git worktree list` no longer shows it, manifest `state: "cleaned"`, and `$LANES_DIR/<name>.final-diff.patch` exists and contains the untracked file's name (from the archived porcelain status).
-19. `clean-refuses-foreign-path` — hand-write a manifest whose `repo` names a *different* fixture repo while the path holds the first repo's worktree: `release --clean` → exit 1 naming the failed signal, directory intact, nothing removed.
+1. Case 13 — `takeover-after-launcher-death` — background claim (`--exec sleep 30`); the test kills the launcher PID; claim the same name again (`--exec true`) → exit 0, stdout contains `LANE: note previous claim on <name> settled interrupted at epoch 1`, new manifest `epoch: 2`.
+2. Case 14 — `reap-refuses-live-fence` — background claim; `reap` → exit 1 with the `fence held (launcher alive)` line; the manifest stays `claimed`.
+3. Case 15 — `reap-settles-dead-claim` — background claim; kill the launcher; `reap` → exit 0 with the `LANE: reaped` line; manifest `state: "reaped"`; a subsequent claim succeeds.
+4. Case 16 — `reap-never-signals` — start an innocent `sleep 60` in the test; hand-write a manifest for a fresh lane name with `launcher_pid` = that sleep's PID, `state: "claimed"`, and no live fence; `reap` → exit 0; afterwards `kill -0 <sleep pid>` still succeeds (the process was never signaled — the assertion is on the process, run by the *test*, not the tool).
+5. Case 17 — `clean-refuses-dirty` — claim `--exec true` completes; create an untracked file in the worktree; `release --clean` → exit 1 `worktree dirty`, worktree still on disk.
+6. Case 18 — `clean-force-dirty-archives-and-removes` — continuing a dirty lane: `release --clean --force-dirty` → exit 0, path gone, `git worktree list` no longer shows it, manifest `state: "cleaned"`, and `$LANES_DIR/<name>.final-diff.patch` exists and contains the untracked file's name (from the archived porcelain status).
+7. Case 19 — `clean-refuses-foreign-path` — hand-write a manifest whose `repo` names a *different* fixture repo while the path holds the first repo's worktree: `release --clean` → exit 1 naming the failed signal, directory intact, nothing removed.
 
 Run: `bash scripts/lane-coord.sh --self-test`
 Expected at this step: the 7 new cases FAIL; the 12 from Tasks 4–5 pass.
