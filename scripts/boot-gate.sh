@@ -7,11 +7,20 @@
 #   2. daemon    — the NeuroStrata daemon is answering
 #   3. guards    — the guard namespace holds the standing guard rules
 #   4. gh-auth   — the GitHub CLI is authenticated
+#   5. policy    — the policy data matches the committed version (read-only:
+#                  it creates, copies, and freezes nothing; the committed
+#                  git blob is the policy)
 #
 # Contract: prints "BOOT-GATE: <name> ok" per passing check; on the first
 # failure prints "BOOT-GATE: <name> FAIL: <reason>" and exits 1 immediately.
-# It never warns-and-continues. Run with --self-test to execute the
-# stub-based negative tests (each prints "SELF-TEST: <case> ok").
+# It never warns-and-continues. The policy check additionally prints
+# "BOOT-GATE: policy SKIP: <reason>" and proceeds when no policy data is
+# present: a SKIP means the mechanism is not installed here, not that it
+# passed, so it never prints "ok" for a check that did not run.
+# Scope: this wires the policy check into boot-gate.sh only. Whether and
+# when anything invokes boot-gate.sh is issue #17's unexecuted scope.
+# Run with --self-test to execute the stub-based negative tests
+# (each prints "SELF-TEST: <case> ok").
 set -euo pipefail
 
 # Platform-standard tool locations (see TOOLS.md): non-interactive runs
@@ -66,10 +75,27 @@ check_gh_auth() {
   ok gh-auth
 }
 
+check_policy() {
+  local gate_dir policy ref_sha work_sha
+  gate_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  policy="${AEP_POLICY_DATA:-$gate_dir/policy.data}"
+  if [ ! -f "$policy" ]; then
+    echo "BOOT-GATE: policy SKIP: no policy data at $policy (launch-policy integrity inactive)"
+    return 0
+  fi
+  ref_sha=$(git -C "$gate_dir" show HEAD:scripts/policy.data 2>/dev/null | sha256sum | cut -d' ' -f1)
+  [ -n "$ref_sha" ] || fail policy "cannot read committed scripts/policy.data via git"
+  work_sha=$(sha256sum "$policy" | cut -d' ' -f1)
+  [ "$work_sha" = "$ref_sha" ] ||
+    fail policy "policy.data differs from the committed version (unreviewed edit?) — policy changes land via git/PR"
+  ok policy
+}
+
 self_test() {
-  local gate real_nsmcp fails
+  local gate real_nsmcp fails gate_dir policy_out policy_rc
   gate="$0"
   fails=0
+  gate_dir="$(cd "$(dirname "$gate")" && pwd)"
   real_nsmcp=$(command -v neurostrata-mcp)
   # NB: stubdir is intentionally global (not local) so the EXIT trap can
   # still see it under `set -u` after this function returns.
@@ -125,6 +151,27 @@ EOF
     echo "SELF-TEST: real-environment FAIL: gate failed against the real environment"
     fails=$((fails + 1))
   fi
+  # policy cases run the gate WITHOUT the stubdir on PATH, so the real
+  # binaries serve the first four checks and the run reaches policy; both
+  # assert on captured output, not exit code alone.
+  cp "$gate_dir/policy.data" "$stubdir/policy-extra.data"
+  printf '%s\n' '*/extra-pattern' >>"$stubdir/policy-extra.data"
+  policy_out=$(AEP_POLICY_DATA="$stubdir/policy-extra.data" bash "$gate" 2>&1) && policy_rc=0 || policy_rc=$?
+  if [ "$policy_rc" -ne 0 ] && printf '%s\n' "$policy_out" | grep -q "BOOT-GATE: policy FAIL:"; then
+    echo "SELF-TEST: policy-mismatch ok"
+  else
+    echo "SELF-TEST: policy-mismatch FAIL: expected non-zero exit with 'BOOT-GATE: policy FAIL:' (rc=$policy_rc)"
+    printf '%s\n' "$policy_out"
+    fails=$((fails + 1))
+  fi
+  policy_out=$(AEP_POLICY_DATA="$stubdir/no-such-policy.data" bash "$gate" 2>&1) && policy_rc=0 || policy_rc=$?
+  if [ "$policy_rc" -eq 0 ] && printf '%s\n' "$policy_out" | grep -q "BOOT-GATE: policy SKIP:"; then
+    echo "SELF-TEST: policy-skip ok"
+  else
+    echo "SELF-TEST: policy-skip FAIL: expected exit 0 with 'BOOT-GATE: policy SKIP:' (rc=$policy_rc)"
+    printf '%s\n' "$policy_out"
+    fails=$((fails + 1))
+  fi
   return "$fails"
 }
 
@@ -143,6 +190,7 @@ case "${1:-}" in
   check_daemon
   check_guards
   check_gh_auth
+  check_policy
   ;;
 *)
   echo "usage: $0 [--self-test]" >&2
