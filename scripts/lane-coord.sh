@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# lane-coord.sh — lane coordinator: claim, release, status for worktree lanes.
+# lane-coord.sh — lane coordinator: claim, release, reap, status for worktree lanes.
 #
 # Contract:
 #   * A claim is held by a launcher process for the lane's whole lifetime:
@@ -45,7 +45,8 @@ now_iso() {
 
 usage() {
   echo "usage: lane-coord.sh claim --repo <abs path> --project <slug> --lane <slug> --branch <name> [--base <ref>] --worker <id> [--capacity <n>] [--path <extra> ...] --exec <command...>" >&2
-  echo "usage: lane-coord.sh release --name <name>" >&2
+  echo "usage: lane-coord.sh release --name <name> [--clean [--force-dirty]]" >&2
+  echo "usage: lane-coord.sh reap --name <name>" >&2
   echo "usage: lane-coord.sh status [--name <name>]" >&2
   echo "usage: lane-coord.sh --self-test" >&2
 }
@@ -311,6 +312,24 @@ EOF
   fi
 }
 
+# worktree_path_registered <repo> <path> — true if that exact path
+# appears as a worktree in the repo's porcelain worktree list.
+worktree_path_registered() {
+  local repo="$1" want_path="$2" line
+  while IFS= read -r line; do
+    case "$line" in
+    "worktree "*)
+      if [ "${line#worktree }" = "$want_path" ]; then
+        return 0
+      fi
+      ;;
+    esac
+  done <<EOF
+$(git -C "$repo" worktree list --porcelain 2>/dev/null || true)
+EOF
+  return 1
+}
+
 # Globals set by cmd_claim for the setup-failure path.
 CLAIM_EPOCH=0
 CLAIM_WORKER=""
@@ -574,7 +593,7 @@ cmd_claim() {
   exit "$worker_status"
 }
 
-cmd_release() {
+cmd_reap() {
   local name=""
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -588,6 +607,59 @@ cmd_release() {
   if [ -z "$name" ]; then usage; exit 2; fi
   if ! [[ "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then usage; exit 2; fi
 
+  # Settle bookkeeping only, under the capacity lock (same
+  # serialization as release): probe, check, and write can never
+  # interleave with a claim transaction. Reap signals nothing, ever —
+  # launcher_pid is operator information only and is never consulted.
+  mkdir -p "$LANES_DIR"
+  exec 9>"$LANES_DIR/.capacity.lock"
+  if ! flock -w 60 9; then
+    echo "LANE: lock timeout after 60s waiting for the capacity lock"
+    exit 5
+  fi
+
+  if fence_is_held "$name"; then
+    echo "LANE: reap refused $name: fence held (launcher alive)"
+    exit 1
+  fi
+  local manifest_file="$LANES_DIR/$name.json"
+  if [ ! -f "$manifest_file" ]; then
+    echo "LANE: refuse reap $name: no manifest"
+    exit 1
+  fi
+  local state epoch worker
+  state=$(manifest_get "$manifest_file" state 2>/dev/null || true)
+  if [ "$state" != "claimed" ]; then
+    echo "LANE: refuse reap $name: state is $state"
+    exit 1
+  fi
+  epoch=$(manifest_get "$manifest_file" epoch 2>/dev/null || echo 0)
+  worker=$(manifest_get "$manifest_file" worker 2>/dev/null || echo unknown)
+  update_manifest_state "$name" "reaped"
+  history_append "$name" "settled-interrupted" "$epoch" "$worker"
+  history_append "$name" "reaped" "$epoch" "$worker"
+  echo "LANE: reaped $name (claim settled interrupted at epoch $epoch)"
+}
+
+cmd_release() {
+  local name="" clean=0 force_dirty=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+    --name)
+      [ $# -ge 2 ] || { usage; exit 2; }
+      name="$2"; shift 2 ;;
+    --clean)
+      clean=1; shift ;;
+    --force-dirty)
+      force_dirty=1; shift ;;
+    *)
+      usage; exit 2 ;;
+    esac
+  done
+  if [ -z "$name" ]; then usage; exit 2; fi
+  if ! [[ "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then usage; exit 2; fi
+  if [ "$force_dirty" -eq 1 ] && [ "$clean" -ne 1 ]; then usage; exit 2; fi
+
   # Serialize against claim transactions: the fence probe, the state
   # check, and the manifest update below all run under the capacity
   # lock, so a claim can never interleave between probe and write and
@@ -600,6 +672,86 @@ cmd_release() {
   fi
 
   local manifest_file="$LANES_DIR/$name.json"
+
+  if [ "$clean" -eq 1 ]; then
+    # Validated cleanup: the release preconditions first (a released
+    # lane whose worktree remains is also cleanable — that is the
+    # normal end-of-lane state), then the four ownership signals in
+    # order 1→4. Any mismatch removes nothing.
+    if [ ! -f "$manifest_file" ]; then
+      echo "LANE: refuse clean $name: no manifest"
+      exit 1
+    fi
+    if fence_is_held "$name"; then
+      echo "LANE: refuse clean $name: fence held (launcher alive)"
+      exit 1
+    fi
+    local c_state c_epoch c_worker m_name m_repo m_path m_branch
+    c_state=$(manifest_get "$manifest_file" state 2>/dev/null || true)
+    if [ "$c_state" != "claimed" ] && [ "$c_state" != "released" ]; then
+      echo "LANE: refuse clean $name: state is $c_state"
+      exit 1
+    fi
+    c_epoch=$(manifest_get "$manifest_file" epoch 2>/dev/null || echo 0)
+    c_worker=$(manifest_get "$manifest_file" worker 2>/dev/null || echo unknown)
+
+    # Signal 1: the manifest exists and its repo/path/branch name
+    # this lane.
+    m_name=$(manifest_get "$manifest_file" name 2>/dev/null || true)
+    m_repo=$(manifest_get "$manifest_file" repo 2>/dev/null || true)
+    m_path=$(manifest_get "$manifest_file" path 2>/dev/null || true)
+    m_branch=$(manifest_get "$manifest_file" branch 2>/dev/null || true)
+    if [ "$m_name" != "$name" ] || [ -z "$m_repo" ] || [ -z "$m_path" ] || [ -z "$m_branch" ]; then
+      echo "LANE: refuse clean $name: manifest does not name this lane"
+      exit 1
+    fi
+    # Signal 2: the repo's worktree list registers the path.
+    if ! worktree_path_registered "$m_repo" "$m_path"; then
+      echo "LANE: refuse clean $name: path not registered as a worktree of repo"
+      exit 1
+    fi
+    # Signal 3: the branch checked out at the path is the manifest's.
+    local cur_branch
+    cur_branch=$(git -C "$m_path" branch --show-current 2>/dev/null || true)
+    if [ "$cur_branch" != "$m_branch" ]; then
+      echo "LANE: refuse clean $name: branch checked out at path does not match manifest branch"
+      exit 1
+    fi
+    # Signal 4: the path is exactly the deterministic managed location.
+    if [ "$m_path" != "$WT_ROOT/$name" ]; then
+      echo "LANE: refuse clean $name: path is not the managed location $WT_ROOT/$name"
+      exit 1
+    fi
+
+    local dirty_status
+    dirty_status=$(git -C "$m_path" status --porcelain 2>/dev/null || true)
+    if [ -n "$dirty_status" ] && [ "$force_dirty" -ne 1 ]; then
+      echo "LANE: refuse clean $name: worktree dirty (use --force-dirty)"
+      exit 1
+    fi
+    if [ "$force_dirty" -eq 1 ]; then
+      # Archive BEFORE removing (Risk R16): porcelain status first,
+      # then the diff against HEAD, in one file.
+      if ! { git -C "$m_path" status --porcelain; git -C "$m_path" diff HEAD; } >"$LANES_DIR/$name.final-diff.patch"; then
+        echo "LANE: refuse clean $name: could not archive worktree state"
+        exit 1
+      fi
+      if ! git -C "$m_repo" worktree remove --force "$m_path" >/dev/null 2>&1; then
+        echo "LANE: refuse clean $name: worktree removal failed"
+        exit 1
+      fi
+    else
+      if ! git -C "$m_repo" worktree remove "$m_path" >/dev/null 2>&1; then
+        echo "LANE: refuse clean $name: worktree removal failed"
+        exit 1
+      fi
+    fi
+    update_manifest_state "$name" "cleaned"
+    history_append "$name" "cleaned" "$c_epoch" "$c_worker"
+    echo "LANE: cleaned $name"
+    exit 0
+  fi
+
   if [ ! -f "$manifest_file" ]; then
     echo "LANE: refuse release $name: no manifest"
     exit 1
@@ -1000,6 +1152,134 @@ self_test() {
   [ ! -f "$LANES_DIR/kappa-twelve.json" ] || case_fails=1
   report_case "policy-data-malformed-refuses"
 
+  # --- Case 13: takeover-after-launcher-death ---
+  local out13a="$selftest_root/out13a.txt" out13b="$selftest_root/out13b.txt" rc13b=0
+  bash "$self_path" claim --repo "$repo" --project iota --lane thirteen \
+    --branch br-thirteen --base HEAD --worker w13 \
+    --exec sleep 30 >"$out13a" 2>&1 &
+  local launcher13=$!
+  BG_PIDS+=("$launcher13")
+  wait_for_claimed "iota-thirteen" 1 || case_fails=1
+  kill "$launcher13" 2>/dev/null || true
+  wait "$launcher13" 2>/dev/null || true
+  sleep 0.2
+  bash "$self_path" claim --repo "$repo" --project iota --lane thirteen \
+    --branch br-thirteen --base HEAD --worker w13b \
+    --exec true >"$out13b" 2>&1 || rc13b=$?
+  [ "$rc13b" -eq 0 ] || case_fails=1
+  grep -q "LANE: note previous claim on iota-thirteen settled interrupted at epoch 1" "$out13b" || case_fails=1
+  [ "$(mget iota-thirteen epoch)" = "2" ] || case_fails=1
+  report_case "takeover-after-launcher-death"
+
+  # --- Case 14: reap-refuses-live-fence ---
+  local out14="$selftest_root/out14.txt" out14r="$selftest_root/out14r.txt" rc14r=0
+  bash "$self_path" claim --repo "$repo" --project iota --lane fourteen \
+    --branch br-fourteen --base HEAD --worker w14 \
+    --exec sleep 30 >"$out14" 2>&1 &
+  local launcher14=$!
+  BG_PIDS+=("$launcher14")
+  wait_for_claimed "iota-fourteen" 1 || case_fails=1
+  bash "$self_path" reap --name iota-fourteen >"$out14r" 2>&1 || rc14r=$?
+  [ "$rc14r" -eq 1 ] || case_fails=1
+  grep -q "LANE: reap refused iota-fourteen: fence held (launcher alive)" "$out14r" || case_fails=1
+  [ "$(mget iota-fourteen state)" = "claimed" ] || case_fails=1
+  kill "$launcher14" 2>/dev/null || true
+  wait "$launcher14" 2>/dev/null || true
+  report_case "reap-refuses-live-fence"
+
+  # --- Case 15: reap-settles-dead-claim ---
+  local out15="$selftest_root/out15.txt" out15r="$selftest_root/out15r.txt" rc15r=0 rc15b=0
+  local out15b="$selftest_root/out15b.txt"
+  bash "$self_path" claim --repo "$repo" --project iota --lane fifteen \
+    --branch br-fifteen --base HEAD --worker w15 \
+    --exec sleep 30 >"$out15" 2>&1 &
+  local launcher15=$!
+  BG_PIDS+=("$launcher15")
+  wait_for_claimed "iota-fifteen" 1 || case_fails=1
+  kill "$launcher15" 2>/dev/null || true
+  wait "$launcher15" 2>/dev/null || true
+  sleep 0.2
+  bash "$self_path" reap --name iota-fifteen >"$out15r" 2>&1 || rc15r=$?
+  [ "$rc15r" -eq 0 ] || case_fails=1
+  grep -q "LANE: reaped iota-fifteen (claim settled interrupted at epoch 1)" "$out15r" || case_fails=1
+  [ "$(mget iota-fifteen state)" = "reaped" ] || case_fails=1
+  grep -q " settled-interrupted epoch=1 worker=w15" "$LANES_DIR/iota-fifteen.log" || case_fails=1
+  grep -q " reaped epoch=1 worker=w15" "$LANES_DIR/iota-fifteen.log" || case_fails=1
+  bash "$self_path" claim --repo "$repo" --project iota --lane fifteen \
+    --branch br-fifteen --base HEAD --worker w15b \
+    --exec true >"$out15b" 2>&1 || rc15b=$?
+  [ "$rc15b" -eq 0 ] || case_fails=1
+  report_case "reap-settles-dead-claim"
+
+  # --- Case 16: reap-never-signals ---
+  sleep 60 &
+  local innocent16=$!
+  BG_PIDS+=("$innocent16")
+  python3 -c '
+import json, sys
+data = {"version": 1, "name": "lambda-sixteen", "repo": sys.argv[2],
+        "path": sys.argv[3], "branch": "br-sixteen", "base": sys.argv[4],
+        "worker": "w16", "launcher_pid": int(sys.argv[5]), "epoch": 1,
+        "state": "claimed", "claimed_at": "2026-01-01T00:00:00Z",
+        "updated_at": "2026-01-01T00:00:00Z"}
+json.dump(data, open(sys.argv[1], "w"))
+' "$LANES_DIR/lambda-sixteen.json" "$repo" "$WT_ROOT/lambda-sixteen" "$head_sha" "$innocent16" || case_fails=1
+  local out16="$selftest_root/out16.txt" rc16=0
+  bash "$self_path" reap --name lambda-sixteen >"$out16" 2>&1 || rc16=$?
+  [ "$rc16" -eq 0 ] || case_fails=1
+  [ "$(mget lambda-sixteen state)" = "reaped" ] || case_fails=1
+  kill -0 "$innocent16" 2>/dev/null || case_fails=1
+  kill "$innocent16" 2>/dev/null || true
+  wait "$innocent16" 2>/dev/null || true
+  report_case "reap-never-signals"
+
+  # --- Case 17: clean-refuses-dirty ---
+  local out17="$selftest_root/out17.txt" out17r="$selftest_root/out17r.txt" rc17=0 rc17r=0
+  bash "$self_path" claim --repo "$repo" --project mu --lane seventeen \
+    --branch br-seventeen --base HEAD --worker w17 \
+    --exec true >"$out17" 2>&1 || rc17=$?
+  [ "$rc17" -eq 0 ] || case_fails=1
+  printf 'dirty\n' >"$WT_ROOT/mu-seventeen/untracked.txt"
+  bash "$self_path" release --name mu-seventeen --clean >"$out17r" 2>&1 || rc17r=$?
+  [ "$rc17r" -eq 1 ] || case_fails=1
+  grep -q "LANE: refuse clean mu-seventeen: worktree dirty (use --force-dirty)" "$out17r" || case_fails=1
+  [ -d "$WT_ROOT/mu-seventeen" ] || case_fails=1
+  report_case "clean-refuses-dirty"
+
+  # --- Case 18: clean-force-dirty-archives-and-removes ---
+  local out18="$selftest_root/out18.txt" rc18=0
+  bash "$self_path" release --name mu-seventeen --clean --force-dirty >"$out18" 2>&1 || rc18=$?
+  [ "$rc18" -eq 0 ] || case_fails=1
+  grep -q "LANE: cleaned mu-seventeen" "$out18" || case_fails=1
+  [ ! -e "$WT_ROOT/mu-seventeen" ] || case_fails=1
+  if git -C "$repo" worktree list | grep -q "mu-seventeen"; then case_fails=1; fi
+  [ "$(mget mu-seventeen state)" = "cleaned" ] || case_fails=1
+  [ -f "$LANES_DIR/mu-seventeen.final-diff.patch" ] || case_fails=1
+  grep -q "untracked.txt" "$LANES_DIR/mu-seventeen.final-diff.patch" || case_fails=1
+  grep -q " cleaned epoch=1 worker=w17" "$LANES_DIR/mu-seventeen.log" || case_fails=1
+  report_case "clean-force-dirty-archives-and-removes"
+
+  # --- Case 19: clean-refuses-foreign-path ---
+  local repo2="$selftest_root/repo2"
+  mkdir -p "$repo2"
+  git init -q "$repo2"
+  printf 'fixture2\n' >"$repo2/file2.txt"
+  git -C "$repo2" add file2.txt
+  git -C "$repo2" -c user.name=LaneTest -c user.email=lane@test.invalid commit -q -m "fixture2 commit"
+  local out19="$selftest_root/out19.txt" out19r="$selftest_root/out19r.txt" rc19=0 rc19r=0
+  bash "$self_path" claim --repo "$repo" --project mu --lane nineteen \
+    --branch br-nineteen --base HEAD --worker w19 \
+    --exec true >"$out19" 2>&1 || rc19=$?
+  [ "$rc19" -eq 0 ] || case_fails=1
+  python3 -c 'import json, sys; p = sys.argv[1]; d = json.load(open(p)); d["repo"] = sys.argv[2]; json.dump(d, open(p, "w"))' \
+    "$LANES_DIR/mu-nineteen.json" "$repo2" || case_fails=1
+  bash "$self_path" release --name mu-nineteen --clean >"$out19r" 2>&1 || rc19r=$?
+  [ "$rc19r" -eq 1 ] || case_fails=1
+  grep -qF "LANE: refuse clean mu-nineteen: path not registered as a worktree of repo" "$out19r" || case_fails=1
+  [ -d "$WT_ROOT/mu-nineteen" ] || case_fails=1
+  [ "$(mget mu-nineteen state)" = "released" ] || case_fails=1
+  report_case "clean-refuses-foreign-path"
+
   return "$fails"
 }
 
@@ -1020,6 +1300,10 @@ claim)
 release)
   shift
   cmd_release "$@"
+  ;;
+reap)
+  shift
+  cmd_reap "$@"
   ;;
 status)
   shift
