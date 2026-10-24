@@ -24,7 +24,7 @@ The three mechanisms:
 | 2 | `cargo-test` | `Cargo.toml` | `cargo test` | DeepCode |
 | 3 | `npm-test` | `package.json` with a real `scripts.test` string (non-empty, not npm's "no test specified" placeholder) | `npm test` | DeepCode |
 | 4 | `pytest` | `pytest.ini`, `pyproject.toml`, `setup.cfg`, or a `tests` entry | `python3 -m pytest -q` | DeepCode |
-| 5 | `unittest` (or `pytest` fallback) | root-level `test_*.py` or `*_test.py` files | `python3 -m unittest discover -v` if any file imports `unittest`, else the rule-4 pytest command | DeepCode, adapted |
+| 5 | `unittest` (or `pytest` fallback) | root-level `test_*.py` or `*_test.py` files | `python3 -m unittest -v` with the discovered modules named explicitly (their file stems) if any file imports `unittest`, else the rule-4 pytest command | DeepCode, adapted |
 | 6 | `make-test` | `Makefile` with a `test:` target | `make test` | AEP addition |
 | 7 | `markdownlint` | `.markdownlint.yaml` present **and** `markdownlint-cli2` on PATH | `markdownlint-cli2 "**/*.md" "!reference/esf/**/*.md" "!skills/archify/**/*.md"` | AEP addition |
 
