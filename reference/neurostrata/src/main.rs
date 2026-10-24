@@ -1,0 +1,2954 @@
+mod attempt;
+mod buffer;
+mod config;
+mod crash;
+mod daemon;
+mod domain;
+mod embed;
+mod events;
+mod guard;
+mod handlers;
+mod ingest_jobs;
+mod judgment;
+mod learning;
+mod parser;
+mod recall_metrics;
+mod registry;
+mod secrets;
+mod server;
+mod setup;
+mod source_context;
+mod store;
+mod synaptic_mesh;
+mod task;
+mod tools;
+mod traits;
+
+use crate::traits::SearchResult;
+use crate::traits::{Embedder, VectorStore};
+use anyhow::Context;
+use clap::{Parser, Subcommand};
+use config::Config;
+use embed::build_embedder;
+use std::sync::Arc;
+use store::LadybugStore;
+
+#[derive(Parser, Debug)]
+#[command(name = "neurostrata-mcp")]
+#[command(about = "🧠 NeuroStrata — MCP Server & CLI Engine", version)]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// Start NeuroStrata in daemon-only mode
+    Daemon,
+
+    /// List all active namespaces
+    Namespaces,
+
+    /// List all memories in a given namespace
+    List {
+        /// The target namespace
+        namespace: String,
+    },
+
+    /// Ingest a directory of code symbols into a namespace
+    Ingest {
+        /// The directory path to ingest
+        dir: String,
+
+        /// The target namespace
+        namespace: String,
+
+        /// Optional path to the parser schema JSON file
+        schema_path: Option<String>,
+    },
+
+    /// Export the memory graph to a JSON file
+    #[command(name = "export-graph")]
+    ExportGraph {
+        /// Output path for the JSON graph export
+        out_path: Option<String>,
+
+        /// Select the registered source marker for the default output path
+        #[arg(long)]
+        source_id: Option<String>,
+
+        /// Leave superseded (retired) memories out of the export entirely
+        #[arg(long)]
+        exclude_superseded: bool,
+
+        /// Include tombstoned (archived) memories in the export. Archived
+        /// rows are hidden by default; this is the audit / second-look
+        /// escape hatch, the same shape `include_archived` carries on
+        /// search and snapshot.
+        #[arg(long)]
+        include_archived: bool,
+    },
+
+    /// Delete a memory from a namespace by ID
+    Delete {
+        /// The target namespace
+        namespace: String,
+
+        /// The memory ID to delete
+        id: String,
+    },
+
+    /// Archive a memory by ID: tombstone it, keeping its content
+    ///
+    /// Not `delete`. Archiving merges `archived: true` into the row's own
+    /// metadata, so the content, the id and the provenance survive the exact
+    /// moment someone stops trusting it. It goes through the same handler as
+    /// the `neurostrata_archive_memory` tool, so the two cannot disagree
+    /// about what "archived" means.
+    Archive {
+        /// The namespace the memory is in
+        namespace: String,
+
+        /// The memory ID to archive
+        id: String,
+    },
+
+    /// Report what the thalamic bus has done since the daemon started
+    ///
+    /// Reads the running daemon's bus: the pulses are emitted by the daemon
+    /// that owns the store, so a bus built here would count nothing and
+    /// answer with zeros meaning "no daemon" rather than "an idle bus".
+    #[command(name = "bus-metrics")]
+    BusMetrics,
+
+    /// Move a memory into another namespace, by ID
+    ///
+    /// Destructive: it copies the row and then deletes the original, so it is
+    /// a CLI command rather than an MCP tool. `doctor` prints one of these per
+    /// id when two spellings of a project need merging.
+    Move {
+        /// The namespace the memory is in now
+        source_namespace: String,
+
+        /// The memory ID to move
+        id: String,
+
+        /// The namespace to move it into
+        target_namespace: String,
+    },
+
+    /// Add a new memory to a namespace
+    Add {
+        /// The target namespace
+        namespace: String,
+
+        /// The memory type (e.g. symbol, text)
+        memory_type: String,
+
+        /// The memory content string
+        content: String,
+
+        /// Optional physical location metadata
+        location: Option<String>,
+    },
+
+    /// Stop a running daemon so it checkpoints before exiting
+    Shutdown,
+
+    /// Report what an upgrade left inconsistent, changing nothing
+    /// Report what an upgrade left inconsistent, changing nothing. Scoped and
+    /// labeled: `--namespace <ns>` for one project, omitted = every namespace
+    /// with each finding line carrying its own label (guinea-pig BUG-9).
+    Doctor {
+        /// Limit the report to one namespace (default: all namespaces)
+        #[arg(long)]
+        namespace: Option<String>,
+    },
+
+    /// Run an external plugin or helper, explicitly
+    ///
+    /// This used to happen implicitly for any unrecognised subcommand, which
+    /// meant a typo executed whatever it named. Ask for it by name instead:
+    ///   neurostrata-mcp run my-plugin --flag value
+    Run {
+        /// The program to execute
+        program: String,
+
+        /// Arguments passed to it unchanged
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+
+    /// Write a snapshot of the database to a directory (checkpointed file copy)
+    Backup {
+        /// Directory to write the backup into. Must not already exist
+        dir: String,
+    },
+
+    /// Report daemon and store state without touching anything
+    ///
+    /// Exit 0: a healthy daemon is serving. Exit 1: no daemon and the lock is
+    /// free -- safe to start one. Exit 2: the lock is held but nothing answers;
+    /// a daemon is busy or finishing, so do not start another.
+    Status,
+
+    /// Rebuild a database from a backup, into a file that does not exist yet
+    Restore {
+        /// Directory a backup was written to
+        dir: String,
+
+        /// Where to build the restored database. Defaults to the configured
+        /// db_path, which must not already exist
+        #[arg(long)]
+        into: Option<String>,
+    },
+
+    /// Edit an existing memory
+    Edit {
+        /// The target namespace
+        namespace: String,
+
+        /// The memory ID to edit
+        id: String,
+
+        /// The new namespace to move/save to
+        new_namespace: String,
+
+        /// The new content
+        content: String,
+
+        /// The new location
+        location: String,
+    },
+
+    /// Update metadata on an existing memory without changing its ID
+    #[command(name = "set-metadata")]
+    SetMetadata {
+        /// The target namespace
+        namespace: String,
+
+        /// The memory ID to update
+        id: String,
+
+        /// The new metadata as a JSON object string
+        metadata: String,
+    },
+
+    /// Task subsystem: the gate behind the pre-push hook (section 5)
+    Task {
+        #[command(subcommand)]
+        action: TaskCommands,
+    },
+
+    /// Install NeuroStrata as a managed service on this system.
+    /// Cross-platform: Linux uses systemd (user-level), macOS uses launchd,
+    /// Windows uses NSSM/SCM. Installs the daemon + the backup timer.
+    /// Idempotent — safe to re-run.
+    Setup {
+        /// Path to the NeuroStrata project root (where scripts/backup.sh lives).
+        /// Defaults to current directory.
+        #[arg(long)]
+        repo_path: Option<std::path::PathBuf>,
+    },
+
+    /// Manage stable source IDs and their local NeuroStrata marker directories
+    #[command(name = "project-context")]
+    ProjectContext {
+        #[command(subcommand)]
+        action: ProjectContextCommands,
+    },
+
+    /// Git hook management: installs the one hook that exists
+    Hooks {
+        #[command(subcommand)]
+        action: HooksCommands,
+    },
+
+    /// Share what your agents learn with the team's agents (SynapticMesh)
+    ///
+    /// The mesh is a standalone git repo the daemon owns; the project keeps
+    /// only a pointer. Nothing here touches the LadybugDB, so the command
+    /// runs without a daemon and without the store lock. `mesh` is the
+    /// documented short alias.
+    #[command(name = "synaptic-mesh", alias = "mesh")]
+    SynapticMesh {
+        #[command(subcommand)]
+        action: crate::synaptic_mesh::SynapticMeshCommands,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone, PartialEq)]
+enum ProjectContextCommands {
+    /// Bind a stable source ID to an existing .NeuroStrata marker directory
+    Bind {
+        source_id: String,
+        marker_path: std::path::PathBuf,
+    },
+    /// List configured source IDs and their marker directories
+    List,
+    /// Remove a source ID binding
+    Unbind { source_id: String },
+}
+
+#[derive(Subcommand, Debug, Clone, PartialEq)]
+pub(crate) enum TaskCommands {
+    /// Run the gate: 0 clean, 1 violations, 2 could-not-check (section 5.1)
+    ///
+    /// Mirrors the Backup dispatch: ask a live daemon, else open the database
+    /// for a metadata-only read, else report the infrastructure failure.
+    Gate {
+        /// The exact project name, e.g. 'NeuroStrata'
+        namespace: String,
+
+        /// With violations an unavailable database blocks the push too
+        #[arg(long)]
+        strict: bool,
+
+        /// Run the engine against an in-memory fixture of planted violations
+        /// (Q4.3 of docs/design-wiring-panel.md) and assert the produced
+        /// violation-kind set matches the canonical three. Metadata-only,
+        /// bypasses the daemon and the lock; `namespace` is ignored.
+        #[arg(long)]
+        self_test: bool,
+    },
+
+    /// The gate as an advisory report: violations, staleness, counts. Always exits 0
+    Validate {
+        /// The exact project name
+        namespace: String,
+    },
+
+    /// One-shot, idempotent beads import: .beads/issues.jsonl -> tasks (section 7)
+    Import {
+        /// The exact project name
+        namespace: String,
+
+        /// Path to the exported JSONL (bd export .beads/beads.jsonl)
+        #[arg(long)]
+        from_beads: String,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone, PartialEq)]
+pub(crate) enum HooksCommands {
+    /// Write .git/hooks/pre-push: the only hook the task system keeps
+    Install {
+        /// Replace a pre-push hook NeuroStrata did not write
+        #[arg(long)]
+        force: bool,
+    },
+}
+
+/// What a health probe actually found.
+///
+/// Silence is the case worth naming. A daemon busy inside the engine answers
+/// nothing for minutes at a time, and reporting that as "no daemon is running"
+/// sends people hunting a process that is very much alive -- or worse, killing
+/// it and losing every write since the last checkpoint. Silence cannot be
+/// resolved from here either: on this machine a connection to the port with
+/// nothing behind it hangs instead of being refused, so a timeout genuinely
+/// means "one of two things". Say that, rather than pick one.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum DaemonProbe {
+    Responsive,
+    Silent,
+    Absent,
+}
+
+/// Kept separate from the request so the distinction can be tested without a
+/// socket. Only an explicit refusal proves absence.
+fn classify_probe(reached: bool, refused: bool) -> DaemonProbe {
+    if reached {
+        DaemonProbe::Responsive
+    } else if refused {
+        DaemonProbe::Absent
+    } else {
+        DaemonProbe::Silent
+    }
+}
+
+/// Whether the answering daemon runs the build the binary on disk holds.
+enum Skew {
+    InSync(String),
+    Stale(String),
+}
+
+/// Kept separate from the request so the verdict is testable without a
+/// socket. A daemon that cannot answer /info predates build verification,
+/// so it is strictly older than any binary that asks -- stale by definition.
+fn skew_verdict(info: Option<&serde_json::Value>, own: (u64, u64)) -> Skew {
+    let info = match info {
+        Some(i) => i,
+        None => return Skew::Stale(
+            "the daemon predates build verification (no /info), so it is older than this binary"
+                .to_string(),
+        ),
+    };
+    let hash = info.get("exe_hash").and_then(|v| v.as_u64());
+    let len = info.get("exe_len").and_then(|v| v.as_u64());
+    let version = info
+        .get("version")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    if hash == Some(own.0) && len == Some(own.1) {
+        Skew::InSync(version.to_string())
+    } else {
+        Skew::Stale(format!(
+            "daemon runs a different build (exe hash {:016x}, this binary {:016x}, started at unix {})",
+            hash.unwrap_or(0),
+            own.0,
+            info.get("started_at").and_then(|v| v.as_i64()).unwrap_or(0)
+        ))
+    }
+}
+
+async fn fetch_daemon_info() -> Option<serde_json::Value> {
+    let res = reqwest::Client::new()
+        .get("http://127.0.0.1:34343/info")
+        .send()
+        .await
+        .ok()?;
+    if !res.status().is_success() {
+        return None;
+    }
+    res.json::<serde_json::Value>().await.ok()
+}
+
+/// Read the configured db_path, or None if the config cannot be read.
+/// Used by the proxy mode to locate the lock file before deciding whether
+/// to spawn a competing daemon.
+fn config_db_path() -> Option<String> {
+    Config::from_default_path()
+        .ok()
+        .map(|c| c.db_path.to_string_lossy().to_string())
+}
+
+/// Where crash breadcrumbs go: a `crash` directory beside the database.
+///
+/// The database already lives under the user's own config directory, so the
+/// breadcrumbs do too -- no privileged path, no setup, and nothing an
+/// operator has to remove by hand. When the config cannot be read there is
+/// no database path to follow, so the breadcrumbs go to the config
+/// directory itself.
+fn crash_dir() -> std::path::PathBuf {
+    if let Ok(config) = Config::from_default_path() {
+        if let Some(parent) = config.db_path.parent().and_then(|p| p.parent()) {
+            return parent.join("crash");
+        }
+    }
+    dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".config")
+        .join("neurostrata")
+        .join("crash")
+}
+
+fn dispatch_project_context(
+    action: &ProjectContextCommands,
+    config_path: &std::path::Path,
+) -> anyhow::Result<String> {
+    let mut config = Config::load_from(config_path)?;
+    let (output, changed) = match action {
+        ProjectContextCommands::Bind {
+            source_id,
+            marker_path,
+        } => {
+            config.bind_project_context(source_id, marker_path)?;
+            let canonical = config
+                .project_contexts
+                .get(source_id)
+                .expect("successful bind stores its source ID");
+            (
+                format!("Bound {source_id} to {}", canonical.display()),
+                true,
+            )
+        }
+        ProjectContextCommands::List => {
+            let mut entries: Vec<_> = config.project_contexts.iter().collect();
+            entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+            let output = if entries.is_empty() {
+                "No project contexts configured.".to_string()
+            } else {
+                entries
+                    .into_iter()
+                    .map(|(source_id, path)| format!("{source_id}\t{}", path.display()))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+            (output, false)
+        }
+        ProjectContextCommands::Unbind { source_id } => {
+            config.unbind_project_context(source_id)?;
+            (format!("Unbound {source_id}"), true)
+        }
+    };
+
+    if changed {
+        config.save_to(config_path)?;
+    }
+    Ok(output)
+}
+
+/// The daemon creates its lock by appending ".daemon.lock" to the db_path
+/// (see daemon_lock_path in main.rs). with_extension would produce
+/// "db.db.daemon.lock" for a file named "db", which is wrong.
+fn lock_path_for(db_path: &str) -> std::path::PathBuf {
+    let mut os = std::ffi::OsString::from(db_path);
+    os.push(".daemon.lock");
+    std::path::PathBuf::from(os)
+}
+
+async fn probe_daemon() -> DaemonProbe {
+    match reqwest::Client::new()
+        .get("http://127.0.0.1:34343/health")
+        .timeout(std::time::Duration::from_millis(500))
+        .send()
+        .await
+    {
+        Ok(_) => classify_probe(true, false),
+        Err(e) => classify_probe(false, e.is_connect()),
+    }
+}
+
+/// The file a daemon holds an exclusive lock on for its whole life.
+///
+/// The port cannot say when a daemon is finished: axum closes its listener
+/// before the final checkpoint runs, so a refused connection arrives while the
+/// process still owns the database. The OS releases this lock only when the
+/// process exits -- cleanly, killed or crashed -- so a held lock proves the
+/// daemon is still there, and a free one proves it is gone.
+fn daemon_lock_path(db_path: &std::path::Path) -> std::path::PathBuf {
+    let mut path = db_path.as_os_str().to_owned();
+    path.push(".daemon.lock");
+    std::path::PathBuf::from(path)
+}
+
+fn open_daemon_lock(db_path: &std::path::Path) -> std::io::Result<std::fs::File> {
+    let path = daemon_lock_path(db_path);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+}
+
+/// Held for the life of the daemon process and never dropped, so the lock goes
+/// with the process rather than with anything that runs before the database
+/// has closed.
+static DAEMON_LOCK: std::sync::OnceLock<std::fs::File> = std::sync::OnceLock::new();
+
+/// What a stopping daemon leaves in its lock file for `shutdown` to read.
+const FINAL_CHECKPOINT_OK: &str = "checkpointed";
+
+/// Takes the daemon lock, or refuses: a second daemon would open the database
+/// while the first one is writing to it.
+fn take_daemon_lock(db_path: &std::path::Path) -> anyhow::Result<std::fs::File> {
+    let file = open_daemon_lock(db_path)?;
+    match file.try_lock() {
+        Ok(()) => {
+            // Whatever the last daemon reported is not about this one.
+            file.set_len(0)?;
+            Ok(file)
+        }
+        Err(std::fs::TryLockError::WouldBlock) => Err(anyhow::anyhow!(
+            "Another NeuroStrata daemon is already running against {:?}.",
+            db_path
+        )),
+        Err(std::fs::TryLockError::Error(e)) => Err(e.into()),
+    }
+}
+
+/// Whether some process holds the daemon lock right now.
+fn daemon_holds_lock(db_path: &std::path::Path) -> bool {
+    match open_daemon_lock(db_path) {
+        Ok(file) => matches!(file.try_lock(), Err(std::fs::TryLockError::WouldBlock)),
+        Err(_) => false,
+    }
+}
+
+/// A daemon that holds the database but did not answer the probe is busy, not
+/// gone, and opening the database from here would contend with its writer. An
+/// answering daemon is not busy in this sense: it can be asked to do the work.
+fn daemon_busy(probe: DaemonProbe, lock_held: bool) -> bool {
+    lock_held && probe != DaemonProbe::Responsive
+}
+
+/// The pre-push hook, section 5.2 verbatim. Installed by `hooks install`.
+///
+/// One hook is the whole enforcement surface: tasks live in LadybugDB, never
+/// in the repo, so there is nothing to commit, sync, or rebuild. Blocks only
+/// on exit 1 -- an unavailable database (exit 2) passes here; `task gate
+/// --strict` maps its own infra failure to exit 1 instead of 2 (section 5.1).
+///
+/// Mesh piggyback (spec §"Hooks"), slice 7 decision: the mesh enqueue is
+/// deliberately NOT installed into this hook. Hooks are unreliable (spec:
+/// not inherited by clones, conflict with hook managers), rewriting this
+/// const would not retrofit already-installed hooks, and the gate stays
+/// single-purpose. `neurostrata-mcp mesh sync-enqueue` (hidden CLI,
+/// pull-then-push, one line, always exit 0) is the hook TARGET for sites
+/// that opt in; manual wiring line, if wanted:
+///   printf '\nneurostrata-mcp mesh sync-enqueue >/dev/null 2>&1 || true\n' >> .git/hooks/pre-push
+/// Manual push/pull remains first-class either way.
+const PRE_PUSH_HOOK: &str = r#"#!/bin/bash
+# NeuroStrata task gate. One hook is the whole enforcement surface:
+# tasks live in LadybugDB, never in the repo, so there is nothing to
+# commit, sync, or rebuild.
+command -v neurostrata-mcp >/dev/null || exit 0
+[ -n "$NEUROSTRATA_SKIP_GATE" ] && exit 0
+
+NAMESPACE=$(basename "$(git rev-parse --show-toplevel)")
+neurostrata-mcp task gate "$NAMESPACE" --strict
+code=$?
+if [ $code -eq 1 ]; then
+    echo "Push blocked: resolve the tasks above, or NEUROSTRATA_SKIP_GATE=1 git push" >&2
+    exit 1
+fi
+exit 0   # 0 and 2 both pass here unless --strict flips 2 to blocking
+"#;
+
+/// The gate's exit code: verdict known -> 0/1; verdict unavailable -> strict
+/// blocks (1), otherwise 2 (section 5.1). The hook only blocks on 1, so the
+/// non-strict infra path warns and lets the push through.
+fn gate_exit_code(ok: Option<bool>, strict: bool) -> i32 {
+    match ok {
+        Some(true) => 0,
+        Some(false) => 1,
+        None => {
+            if strict {
+                1
+            } else {
+                2
+            }
+        }
+    }
+}
+
+/// The enclosing git work tree, or None outside one.
+fn git_toplevel() -> Option<std::path::PathBuf> {
+    let out = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let path = String::from_utf8(out.stdout).ok()?;
+    let path = path.trim();
+    if path.is_empty() {
+        None
+    } else {
+        Some(std::path::PathBuf::from(path))
+    }
+}
+
+/// Section 5.1, path 2: no daemon to ask, so open the database for the
+/// metadata-only read. Dimensions come from config -- loading the embedding
+/// model would turn a `git push` into a model download.
+async fn direct_report(
+    config: &Config,
+    namespace: &str,
+) -> Result<crate::task::gate::GateReport, String> {
+    let dimensions = embed::configured_dimensions().map_err(|e| {
+        format!(
+            "the configured embedding dimensions could not be read: {}",
+            e
+        )
+    })?;
+    let store: Arc<dyn VectorStore> = Arc::new(
+        LadybugStore::new(config.db_path.to_string_lossy().to_string(), dimensions)
+            .map_err(|e| format!("the database could not be opened: {}", e))?,
+    );
+    store
+        .init(namespace)
+        .await
+        .map_err(|e| format!("the schema could not be opened: {}", e))?;
+    let namespace = crate::server::resolve_namespace(&store, namespace).await;
+    crate::task::gate::run(&store, &namespace)
+        .await
+        .map_err(|e| format!("the gate could not list the tasks: {}", e))
+}
+
+/// The CLI names ingested files relative to where it runs, as CLI-readme.md
+/// documents: `ingest ./src` from a project yields `src/lib.rs`. An absolute
+/// path to a subdirectory of the working directory is the same request written
+/// out in full, so it is walked as that relative path. The working directory
+/// itself stays absolute, so its root node is named the way the GUI names it.
+fn cli_ingest_root(dir: &str) -> String {
+    let path = std::path::Path::new(dir);
+    if path.is_absolute() {
+        if let Ok(cwd) = std::env::current_dir() {
+            if let Ok(rest) = path.strip_prefix(&cwd) {
+                if !rest.as_os_str().is_empty() {
+                    return rest.to_string_lossy().to_string();
+                }
+            }
+        }
+    }
+    dir.to_string()
+}
+
+const DAEMON_BUSY_MESSAGE: &str = "A NeuroStrata daemon holds the database but did not answer within 500ms, so it is busy rather than gone, and opening the database from here would contend with it. Retry in a moment, or run `neurostrata-mcp shutdown` and let it finish.";
+
+/// Mark a freshly-written hook file as executable. Git on POSIX runs a hook
+/// only when the mode bit is set; on Windows it uses the filename
+/// (`.git/hooks/<name>` without an extension, executed through Git Bash)
+/// rather than POSIX permissions, so the helper is a no-op there. Gating
+/// the Unix-only `PermissionsExt` import keeps the Windows build green.
+#[cfg(unix)]
+fn set_hook_executable(path: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+}
+
+#[cfg(not(unix))]
+fn set_hook_executable(_path: &std::path::Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+/// Records how the daemon's final checkpoint went, for `shutdown` to report.
+fn record_final_checkpoint(outcome: &anyhow::Result<()>) {
+    use std::io::Write;
+    if let Some(file) = DAEMON_LOCK.get() {
+        let report = match outcome {
+            Ok(()) => FINAL_CHECKPOINT_OK.to_string(),
+            Err(e) => format!("error: {}", e),
+        };
+        let _ = file.set_len(0);
+        let _ = (&*file).write_all(report.as_bytes());
+        let _ = file.sync_all();
+    }
+}
+
+/// Read-only queries against the store, transparently proxied to the daemon
+/// when one is running (guinea-pig BUG-8): `doctor`, `list` and `namespaces`
+/// are documented as changing nothing and must work while the system is up.
+/// The proxy holds no engine handle -- that is the whole point.
+enum ReadSource {
+    Direct(Arc<dyn VectorStore>),
+    Daemon,
+}
+
+impl ReadSource {
+    async fn namespaces(&self) -> anyhow::Result<Vec<String>> {
+        match self {
+            ReadSource::Direct(s) => s.list_namespaces().await,
+            ReadSource::Daemon => {
+                let res = reqwest::Client::new()
+                    .post("http://127.0.0.1:34343/cli/read")
+                    .json(&serde_json::json!({ "op": "namespaces" }))
+                    .send()
+                    .await?;
+                let v: serde_json::Value = res.json().await?;
+                Ok(serde_json::from_value(v["namespaces"].clone())?)
+            }
+        }
+    }
+
+    async fn list(&self, namespace: &str) -> anyhow::Result<Vec<SearchResult>> {
+        match self {
+            ReadSource::Direct(s) => s.list(namespace, None).await,
+            ReadSource::Daemon => {
+                let res = reqwest::Client::new()
+                    .post("http://127.0.0.1:34343/cli/read")
+                    .json(&serde_json::json!({ "op": "list", "namespace": namespace }))
+                    .send()
+                    .await?;
+                let v: serde_json::Value = res.json().await?;
+                Ok(serde_json::from_value(v["rows"].clone())?)
+            }
+        }
+    }
+}
+
+async fn run_doctor(read: &ReadSource, scope: Option<&str>) -> anyhow::Result<()> {
+    // Read-only by design: it names what an upgrade left
+    // behind and how to fix it, and touches nothing itself.
+    // Guinea-pig BUG-9: every result is scoped and labeled.
+    // Unscoped output is what produced a confident wrong
+    // answer about a different project's graph.
+    let mut namespaces = read.namespaces().await?;
+    namespaces.sort();
+    if let Some(want) = scope {
+        if !namespaces.iter().any(|n| n.eq_ignore_ascii_case(want)) {
+            anyhow::bail!(
+                "no namespace '{}' here; known: {:?}. Refusing to print unscoped results.",
+                want,
+                namespaces
+            );
+        }
+        namespaces.retain(|n| n.eq_ignore_ascii_case(want));
+        println!("Namespace: {:?}\n", namespaces);
+    } else {
+        println!("Namespaces (all): {:?}\n", namespaces);
+    }
+
+    let mut collisions = 0;
+    for (i, a) in namespaces.iter().enumerate() {
+        for b in namespaces.iter().skip(i + 1) {
+            if a.eq_ignore_ascii_case(b) {
+                collisions += 1;
+                let a_len = read.list(a).await.map(|m| m.len()).unwrap_or(0);
+                let b_len = read.list(b).await.map(|m| m.len()).unwrap_or(0);
+                println!("Two spellings of one project:");
+                println!("  '{}' holds {} memories", a, a_len);
+                println!("  '{}' holds {} memories", b, b_len);
+                let (from, to) = if a_len < b_len { (a, b) } else { (b, a) };
+                println!(
+                    "  Merge with: neurostrata-mcp move '{}' <id> '{}'  (one per id)\n",
+                    from, to
+                );
+            }
+        }
+    }
+    if collisions == 0 {
+        println!("No namespaces differ only by case.\n");
+    }
+
+    for ns in &namespaces {
+        let memories = read.list(ns).await?;
+        let known = crate::store::ladybug::KnownIds::new(memories.iter().map(|m| m.id.as_str()));
+
+        let mut resolvable = Vec::new();
+        let mut missing = Vec::new();
+        let mut never_read = 0;
+        let mut ingested = 0;
+        let mut unqualified = Vec::new();
+
+        for memory in &memories {
+            // Ingested ids carry the namespace that owns them.
+            // One written before that changed does not, and a
+            // bare path is unique to a project rather than to
+            // the database -- so two projects holding the same
+            // path still collide until each is re-ingested.
+            if memory.payload.user_id == "auto-ingestor" {
+                ingested += 1;
+                if !crate::parser::ingest::is_qualified(ns, &memory.id) {
+                    unqualified.push(memory.id.clone());
+                }
+            }
+
+            if memory
+                .payload
+                .metadata
+                .get("access_count")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0)
+                == 0
+            {
+                never_read += 1;
+            }
+            for edge in crate::store::ladybug::edge_specs(&memory.payload.metadata) {
+                if known.contains(&edge.target_id) {
+                    continue;
+                }
+                match known.resolve(&edge.target_id) {
+                    Some(_) => resolvable.push(edge.target_id.clone()),
+                    None => missing.push(edge.target_id.clone()),
+                }
+            }
+        }
+
+        println!("[{}] {} memories", ns, memories.len());
+        println!(
+            "  [{}] ingested nodes carrying this namespace in their id: {} of {}",
+            ns,
+            ingested - unqualified.len(),
+            ingested
+        );
+        if !unqualified.is_empty() {
+            println!(
+                "    {} predate namespace qualification. They resolve, but the next",
+                unqualified.len()
+            );
+            println!("    project ingesting a shared path takes them.");
+            for id in unqualified.iter().take(3) {
+                println!("      {}", id);
+            }
+            println!("    Migrate: neurostrata-mcp ingest <dir> {}", ns);
+            println!("    Backup first: re-ingest rewrites every id.");
+        }
+        println!(
+            "  [{}] declared targets that need the older absolute form resolved: {}",
+            ns,
+            resolvable.len()
+        );
+        for target in resolvable.iter().take(3) {
+            println!("    {}", target);
+        }
+        println!(
+            "  [{}] declared targets that match nothing ingested: {}",
+            ns,
+            missing.len()
+        );
+        for target in missing.iter().take(3) {
+            println!("    {}", target);
+        }
+        println!(
+            "  [{}] memories never counted as read: {} of {}",
+            ns,
+            never_read,
+            memories.len()
+        );
+        if never_read == memories.len() && !memories.is_empty() {
+            println!(
+                "    Every one. Before the embedding decode was fixed, each retrieval tried to"
+            );
+            println!(
+                "    write an empty vector and was refused, so the Neural Gain Filter had nothing"
+            );
+            println!("    to rank by. Counts start rising again from the next search.");
+        }
+        println!();
+    }
+
+    Ok(())
+}
+
+async fn run_namespaces(read: &ReadSource) -> anyhow::Result<()> {
+    let namespaces = read.namespaces().await?;
+    println!("Namespaces:");
+    for ns in namespaces {
+        println!("  - {}", ns);
+    }
+
+    Ok(())
+}
+
+async fn run_list(read: &ReadSource, namespace: &str) -> anyhow::Result<()> {
+    let results: Vec<SearchResult> = read.list(namespace).await?;
+    println!(
+        "Found {} memories in namespace '{}':\n",
+        results.len(),
+        namespace
+    );
+    for res in results {
+        let location_str = if res.payload.location.is_empty() {
+            "N/A".to_string()
+        } else {
+            res.payload.location.clone()
+        };
+        println!("--- ID: {} ---", res.id);
+        println!("Type: {}", res.payload.memory_type);
+        println!("Location: {}", location_str);
+        println!("Content: {}\n", res.payload.content);
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_mistyped_subcommand_is_an_error_not_an_execution() {
+        let parsed = Cli::try_parse_from(["neurostrata-mcp", "lsit"]);
+        assert!(
+            parsed.is_err(),
+            "a typo must never reach std::process::Command"
+        );
+    }
+
+    #[test]
+    fn source_id_option_parses_with_existing_export_flags() {
+        let cli = Cli::try_parse_from([
+            "neurostrata-mcp",
+            "export-graph",
+            "./graph.json",
+            "--source-id",
+            "source-a",
+            "--exclude-superseded",
+            "--include-archived",
+        ])
+        .expect("export-graph source selection parses");
+
+        assert!(matches!(
+            cli.command,
+            Some(Commands::ExportGraph {
+                out_path: Some(path),
+                source_id: Some(source_id),
+                exclude_superseded: true,
+                include_archived: true,
+            }) if path == "./graph.json" && source_id == "source-a"
+        ));
+    }
+
+    #[test]
+    fn project_context_bind_parses_source_id_and_path() {
+        let cli = Cli::try_parse_from([
+            "neurostrata-mcp",
+            "project-context",
+            "bind",
+            "source-a",
+            "/tmp/project/.NeuroStrata",
+        ])
+        .expect("project-context bind parses");
+
+        assert!(matches!(
+            cli.command,
+            Some(Commands::ProjectContext {
+                action: ProjectContextCommands::Bind {
+                    source_id,
+                    marker_path
+                }
+            }) if source_id == "source-a"
+                && marker_path == std::path::Path::new("/tmp/project/.NeuroStrata")
+        ));
+    }
+
+    #[test]
+    fn project_context_list_parses_without_arguments() {
+        let cli = Cli::try_parse_from(["neurostrata-mcp", "project-context", "list"])
+            .expect("project-context list parses");
+
+        assert!(matches!(
+            cli.command,
+            Some(Commands::ProjectContext {
+                action: ProjectContextCommands::List
+            })
+        ));
+    }
+
+    #[test]
+    fn project_context_unbind_parses_source_id() {
+        let cli = Cli::try_parse_from(["neurostrata-mcp", "project-context", "unbind", "source-a"])
+            .expect("project-context unbind parses");
+
+        assert!(matches!(
+            cli.command,
+            Some(Commands::ProjectContext {
+                action: ProjectContextCommands::Unbind { source_id }
+            }) if source_id == "source-a"
+        ));
+    }
+
+    #[test]
+    fn project_context_dispatch_persists_bind_lists_and_rejects_unknown_unbind() {
+        let root = std::env::temp_dir().join(format!(
+            "ns-project-context-dispatch-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let marker = root.join("project/.NeuroStrata");
+        std::fs::create_dir_all(&marker).unwrap();
+        let config_path = root.join("config.json");
+        let db_path = root.join("db/ladybug.db");
+        std::fs::write(
+            &config_path,
+            serde_json::json!({"db_path": db_path}).to_string(),
+        )
+        .unwrap();
+
+        let bound = dispatch_project_context(
+            &ProjectContextCommands::Bind {
+                source_id: "source-a".to_string(),
+                marker_path: marker.clone(),
+            },
+            &config_path,
+        )
+        .unwrap();
+        let canonical = std::fs::canonicalize(&marker).unwrap();
+        assert_eq!(bound, format!("Bound source-a to {}", canonical.display()));
+        assert_eq!(
+            Config::load_from(&config_path)
+                .unwrap()
+                .project_contexts
+                .get("source-a"),
+            Some(&canonical)
+        );
+        assert!(
+            !db_path.exists(),
+            "config dispatch never creates the database"
+        );
+
+        assert_eq!(
+            dispatch_project_context(&ProjectContextCommands::List, &config_path).unwrap(),
+            format!("source-a\t{}", canonical.display())
+        );
+
+        let original = std::fs::read(&config_path).unwrap();
+        let error = dispatch_project_context(
+            &ProjectContextCommands::Unbind {
+                source_id: "unknown".to_string(),
+            },
+            &config_path,
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("Unknown project context source ID"));
+        assert_eq!(std::fs::read(&config_path).unwrap(), original);
+
+        assert_eq!(
+            dispatch_project_context(
+                &ProjectContextCommands::Unbind {
+                    source_id: "source-a".to_string(),
+                },
+                &config_path,
+            )
+            .unwrap(),
+            "Unbound source-a"
+        );
+        assert!(Config::load_from(&config_path)
+            .unwrap()
+            .project_contexts
+            .is_empty());
+        assert!(!db_path.exists());
+    }
+
+    /// `set_hook_executable` is the only place the binary uses
+    /// `std::os::unix::fs::PermissionsExt` -- the Windows build gates that
+    /// branch out entirely, but the helper must compile and run on every
+    /// target so a single call site replaces the inline block. On Unix the
+    /// hook gets the executable bit; on Windows, git runs the hook via the
+    /// filename (`.git/hooks/<name>` without an extension, executed through
+    /// Git Bash) rather than POSIX permissions, so the helper is a no-op.
+    #[test]
+    fn set_hook_executable_marks_the_file_executable_on_unix() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!(
+            "ns-set-hook-exec-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("pre-push");
+        std::fs::write(&path, "#!/bin/sh\necho ok\n").unwrap();
+        // Pre-condition: the file is not executable yet (umask-dependent, but
+        // explicitly clear the bit so the assertion below is exact rather than
+        // umask-dependent).
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        set_hook_executable(&path).expect("the chmod lands");
+        let perms = std::fs::metadata(&path).unwrap().permissions();
+        assert_eq!(
+            perms.mode() & 0o111,
+            0o111,
+            "the executable bits are set for owner+group+other: {:o}",
+            perms.mode()
+        );
+    }
+
+    #[test]
+    fn running_a_plugin_has_to_be_asked_for_by_name() {
+        let cli = Cli::try_parse_from(["neurostrata-mcp", "run", "my-plugin", "--flag", "value"])
+            .expect("run takes a program and passes its arguments through");
+
+        match cli.command {
+            Some(Commands::Run { program, args }) => {
+                assert_eq!(program, "my-plugin");
+                assert_eq!(args, vec!["--flag".to_string(), "value".to_string()]);
+            }
+            other => panic!("expected Run, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn a_held_daemon_lock_is_seen_and_goes_with_its_holder() {
+        let db = std::env::temp_dir()
+            .join(format!("ns-daemon-lock-{}", uuid::Uuid::new_v4()))
+            .join("ladybug.db");
+        assert!(!daemon_holds_lock(&db), "nothing holds a fresh lock");
+
+        let held = take_daemon_lock(&db).expect("the first daemon takes the lock");
+        assert!(
+            daemon_holds_lock(&db),
+            "a live holder is visible to shutdown"
+        );
+        assert!(take_daemon_lock(&db).is_err(), "a second daemon is refused");
+
+        drop(held);
+        assert!(
+            !daemon_holds_lock(&db),
+            "the lock is free once its holder is gone"
+        );
+    }
+
+    #[test]
+    fn only_a_refusal_proves_no_daemon() {
+        assert_eq!(classify_probe(false, true), DaemonProbe::Absent);
+    }
+
+    #[test]
+    fn silence_is_not_reported_as_an_absent_daemon() {
+        assert_eq!(classify_probe(false, false), DaemonProbe::Silent);
+    }
+
+    #[test]
+    fn an_answered_probe_is_a_live_daemon() {
+        assert_eq!(classify_probe(true, false), DaemonProbe::Responsive);
+    }
+
+    #[test]
+    fn an_absolute_cli_path_under_the_working_directory_is_walked_relative() {
+        let cwd = std::env::current_dir().expect("working directory");
+        assert_eq!(cli_ingest_root(&cwd.join("src").to_string_lossy()), "src");
+        assert_eq!(
+            cli_ingest_root(&cwd.to_string_lossy()),
+            cwd.to_string_lossy(),
+            "the working directory itself stays absolute"
+        );
+        assert_eq!(cli_ingest_root("./src"), "./src");
+    }
+
+    #[test]
+    fn a_daemon_that_holds_the_lock_but_is_silent_is_busy_not_gone() {
+        assert!(daemon_busy(DaemonProbe::Silent, true));
+        assert!(
+            daemon_busy(DaemonProbe::Absent, true),
+            "listener closed, still checkpointing"
+        );
+        assert!(
+            !daemon_busy(DaemonProbe::Silent, false),
+            "silence with no holder is no daemon"
+        );
+        assert!(
+            !daemon_busy(DaemonProbe::Responsive, true),
+            "an answering daemon is asked, not refused"
+        );
+    }
+
+    /// Section 5.1: a verdict maps to 0/1; no verdict blocks only under
+    /// --strict and passes (2) otherwise -- and 2 is what the hook tolerates.
+    #[test]
+    fn the_gate_exit_code_flips_only_under_strict() {
+        assert_eq!(gate_exit_code(Some(true), false), 0);
+        assert_eq!(gate_exit_code(Some(true), true), 0);
+        assert_eq!(gate_exit_code(Some(false), false), 1);
+        assert_eq!(
+            gate_exit_code(Some(false), true),
+            1,
+            "a verdict never changes with the flag"
+        );
+        assert_eq!(
+            gate_exit_code(None, false),
+            2,
+            "infra warns and lets the push through"
+        );
+        assert_eq!(
+            gate_exit_code(None, true),
+            1,
+            "strict maps the infra failure to the one code the hook blocks on"
+        );
+    }
+
+    /// Section 5.2 verbatim: blocks on violations only, skips on the escape
+    /// hatch, and lets 0 and 2 pass.
+    #[test]
+    fn the_pre_push_hook_is_the_documented_script() {
+        assert!(PRE_PUSH_HOOK.starts_with("#!/bin/bash\n"));
+        assert!(PRE_PUSH_HOOK.contains("command -v neurostrata-mcp >/dev/null || exit 0"));
+        assert!(PRE_PUSH_HOOK.contains("[ -n \"$NEUROSTRATA_SKIP_GATE\" ] && exit 0"));
+        assert!(
+            PRE_PUSH_HOOK.contains("NAMESPACE=$(basename \"$(git rev-parse --show-toplevel)\")")
+        );
+        assert!(PRE_PUSH_HOOK.contains("neurostrata-mcp task gate \"$NAMESPACE\" --strict"));
+        assert!(PRE_PUSH_HOOK.contains("code=$?"));
+        assert!(PRE_PUSH_HOOK.contains("if [ $code -eq 1 ]; then"));
+        assert!(PRE_PUSH_HOOK.contains("NEUROSTRATA_SKIP_GATE=1 git push"));
+        assert!(PRE_PUSH_HOOK
+            .contains("exit 0   # 0 and 2 both pass here unless --strict flips 2 to blocking"));
+        assert!(
+            !PRE_PUSH_HOOK.contains("$code -eq 2"),
+            "2 never blocks in the hook itself"
+        );
+    }
+
+    #[test]
+    fn the_gate_and_hook_commands_parse_with_their_flags() {
+        let cli =
+            Cli::try_parse_from(["neurostrata-mcp", "task", "gate", "NeuroStrata", "--strict"])
+                .expect("task gate parses");
+        match cli.command {
+            Some(Commands::Task {
+                action:
+                    TaskCommands::Gate {
+                        namespace,
+                        strict,
+                        self_test,
+                    },
+            }) => {
+                assert_eq!(namespace, "NeuroStrata");
+                assert!(strict);
+                assert!(!self_test, "--self-test is not set in this invocation");
+            }
+            other => panic!("expected Task/Gate, got {:?}", other),
+        }
+
+        let cli = Cli::try_parse_from([
+            "neurostrata-mcp",
+            "task",
+            "gate",
+            "NeuroStrata",
+            "--self-test",
+        ])
+        .expect("task gate --self-test parses");
+        match cli.command {
+            Some(Commands::Task {
+                action:
+                    TaskCommands::Gate {
+                        namespace,
+                        strict,
+                        self_test,
+                    },
+            }) => {
+                assert_eq!(namespace, "NeuroStrata");
+                assert!(!strict);
+                assert!(self_test);
+            }
+            other => panic!("expected Task/Gate with --self-test, got {:?}", other),
+        }
+
+        let cli = Cli::try_parse_from(["neurostrata-mcp", "task", "validate", "MyProj"])
+            .expect("task validate parses");
+        match cli.command {
+            Some(Commands::Task {
+                action: TaskCommands::Validate { namespace },
+            }) => assert_eq!(namespace, "MyProj"),
+            other => panic!("expected Task/Validate, got {:?}", other),
+        }
+
+        let cli = Cli::try_parse_from([
+            "neurostrata-mcp",
+            "task",
+            "import",
+            "MyProj",
+            "--from-beads",
+            ".beads/issues.jsonl",
+        ])
+        .expect("task import parses");
+        match cli.command {
+            Some(Commands::Task {
+                action:
+                    TaskCommands::Import {
+                        namespace,
+                        from_beads,
+                    },
+            }) => {
+                assert_eq!(namespace, "MyProj");
+                assert_eq!(from_beads, ".beads/issues.jsonl");
+            }
+            other => panic!("expected Task/Import, got {:?}", other),
+        }
+
+        let cli = Cli::try_parse_from(["neurostrata-mcp", "doctor", "--namespace", "MyProj"])
+            .expect("doctor parses");
+        match cli.command {
+            Some(Commands::Doctor { namespace }) => {
+                assert_eq!(namespace.as_deref(), Some("MyProj"))
+            }
+            other => panic!("expected Doctor, got {:?}", other),
+        }
+        let cli =
+            Cli::try_parse_from(["neurostrata-mcp", "doctor"]).expect("doctor parses unscoped");
+        match cli.command {
+            Some(Commands::Doctor { namespace }) => assert!(namespace.is_none()),
+            other => panic!("expected Doctor, got {:?}", other),
+        }
+
+        let cli = Cli::try_parse_from(["neurostrata-mcp", "hooks", "install", "--force"])
+            .expect("hooks install parses");
+        match cli.command {
+            Some(Commands::Hooks {
+                action: HooksCommands::Install { force },
+            }) => assert!(force),
+            other => panic!("expected Hooks/Install, got {:?}", other),
+        }
+
+        // The flag stays optional: plain `hooks install` is the common case.
+        let cli = Cli::try_parse_from(["neurostrata-mcp", "hooks", "install"])
+            .expect("hooks install parses bare");
+        match cli.command {
+            Some(Commands::Hooks {
+                action: HooksCommands::Install { force },
+            }) => assert!(!force),
+            other => panic!("expected Hooks/Install, got {:?}", other),
+        }
+    }
+
+    /// Task 7's operator surface: both commands exist as spelled here, and
+    /// `archive` takes the namespace and the id in the order the tool surface
+    /// names them -- a swapped pair would archive a row that does not exist
+    /// and report only "no memory with that id".
+    #[test]
+    fn the_archive_and_bus_metrics_commands_parse() {
+        let cli = Cli::try_parse_from(["neurostrata-mcp", "bus-metrics"])
+            .expect("bus-metrics takes no arguments");
+        assert!(
+            matches!(cli.command, Some(Commands::BusMetrics)),
+            "bus-metrics takes no arguments: {:?}",
+            cli.command
+        );
+
+        let cli = Cli::try_parse_from(["neurostrata-mcp", "archive", "MyProj", "mem-1"])
+            .expect("archive takes a namespace and an id");
+        match cli.command {
+            Some(Commands::Archive { namespace, id }) => {
+                assert_eq!(namespace, "MyProj");
+                assert_eq!(id, "mem-1");
+            }
+            other => panic!("expected Archive, got {:?}", other),
+        }
+
+        assert!(
+            Cli::try_parse_from(["neurostrata-mcp", "archive", "MyProj"]).is_err(),
+            "an archive with no id names nothing to archive"
+        );
+    }
+
+    /// The SynapticMesh surface parses under its brand and its alias, and
+    /// `init` carries every field the spec's onboarding needs. A rename that
+    /// silently drops the alias orphans teammate docs the same way a tool
+    /// rename orphans client wiring.
+    #[test]
+    fn the_synaptic_mesh_commands_parse_under_brand_and_alias() {
+        let cli = Cli::try_parse_from([
+            "neurostrata-mcp",
+            "synaptic-mesh",
+            "init",
+            "platform-team",
+            "--namespace",
+            "proj-a",
+            "--namespace",
+            "proj-b",
+            "--remote",
+            "git@example:mesh.git",
+        ])
+        .expect("synaptic-mesh init with flags");
+        match cli.command {
+            Some(Commands::SynapticMesh {
+                action:
+                    crate::synaptic_mesh::SynapticMeshCommands::Init {
+                        name,
+                        namespace,
+                        remote,
+                    },
+            }) => {
+                assert_eq!(name, "platform-team");
+                assert_eq!(namespace, vec!["proj-a".to_string(), "proj-b".to_string()]);
+                assert_eq!(remote.as_deref(), Some("git@example:mesh.git"));
+            }
+            other => panic!("expected SynapticMesh/Init, got {:?}", other),
+        }
+
+        // The documented short alias must resolve to the same command.
+        let cli = Cli::try_parse_from(["neurostrata-mcp", "mesh", "status"])
+            .expect("mesh status parses via the short alias");
+        assert!(
+            matches!(
+                cli.command,
+                Some(Commands::SynapticMesh {
+                    action: crate::synaptic_mesh::SynapticMeshCommands::Status
+                })
+            ),
+            "alias broken: {:?}",
+            cli.command
+        );
+    }
+
+    /// Step 4's contract, both halves: with a daemon answering, stdout is that
+    /// daemon's `BusMetrics` JSON and nothing else -- it is what an operator
+    /// pipes into `jq` -- and the command exits 0.
+    ///
+    /// The stub answers with the shared handler's own bytes, so this also holds
+    /// the CLI and the route to one body rather than two shapes.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn bus_metrics_prints_the_daemons_json_and_exits_zero() {
+        let bus = Arc::new(crate::events::ThalamicBus::new(32));
+        bus.emit(
+            crate::events::ThalamicPulse::Archived {
+                id: "m1".to_string(),
+                namespace: "cli-bus-metrics".to_string(),
+            },
+            &crate::events::RecursionToken::root(),
+        );
+        let body = crate::handlers::handle_bus_metrics(bus).await;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let expected = body.clone();
+        let stub = tokio::spawn(async move {
+            let app = axum::Router::new().route(
+                "/bus/metrics",
+                axum::routing::post(move || {
+                    let body = expected.clone();
+                    async move { body }
+                }),
+            );
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let mut out: Vec<u8> = Vec::new();
+        let mut err: Vec<u8> = Vec::new();
+        let code = run_bus_metrics(true, &addr, &mut out, &mut err)
+            .await
+            .unwrap();
+        assert_eq!(
+            code,
+            0,
+            "a daemon answered: {:?}",
+            String::from_utf8_lossy(&err)
+        );
+
+        let printed = String::from_utf8(out).expect("stdout is UTF-8");
+        let snapshot: serde_json::Value =
+            serde_json::from_str(printed.trim()).unwrap_or_else(|e| {
+                panic!(
+                    "stdout must be the metrics JSON itself, not prose about it: {printed} ({e})"
+                )
+            });
+        assert_eq!(
+            snapshot["events_emitted"], 1,
+            "one pulse was emitted: {printed}"
+        );
+        for field in [
+            "events_emitted",
+            "dispatcher_handled",
+            "subscribers",
+            "queue_depth",
+            "drops_oldest",
+            "subscriber_panics",
+            "subscriber_timeouts",
+            "recursion_blocks",
+        ] {
+            assert!(
+                snapshot.get(field).is_some(),
+                "{field} must be in what the operator reads: {printed}"
+            );
+        }
+        assert_eq!(
+            printed.trim(),
+            body.trim(),
+            "stdout is the daemon's body verbatim"
+        );
+
+        stub.abort();
+    }
+
+    /// The other half of the same contract: no daemon is not an idle bus, and
+    /// saying so in a stderr caveat while printing zeros to stdout is the
+    /// hazard -- `bus-metrics | jq` cannot see the caveat. So: exit non-zero,
+    /// nothing on stdout, and the refusal names the address it looked at.
+    #[tokio::test]
+    async fn bus_metrics_without_a_daemon_exits_nonzero_and_prints_no_json() {
+        let mut out: Vec<u8> = Vec::new();
+        let mut err: Vec<u8> = Vec::new();
+        let code = run_bus_metrics(false, DAEMON_ADDR, &mut out, &mut err)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            code, BUS_METRICS_FAILURE_EXIT,
+            "no daemon is a failure, not an idle bus"
+        );
+        assert!(
+            out.is_empty(),
+            "a fabricated zeroed snapshot must never reach stdout: {:?}",
+            String::from_utf8_lossy(&out)
+        );
+        let said = String::from_utf8(err).expect("stderr is UTF-8");
+        assert!(
+            said.contains(DAEMON_ADDR) && said.contains("cannot read bus metrics"),
+            "the refusal must name the address it could not reach: {said}"
+        );
+    }
+
+    /// A daemon that answered the probe and then went away, or is wedged past
+    /// the timeout, is the same absence to a script: exit 1, no JSON. The
+    /// address is a dead local port, so the POST fails at once -- which is also
+    /// why the request needs a timeout at all, since an unbound port on some
+    /// machines hangs rather than refuses.
+    #[tokio::test]
+    async fn bus_metrics_exits_nonzero_when_the_daemon_never_answers() {
+        let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = probe.local_addr().unwrap().to_string();
+        drop(probe);
+
+        let mut out: Vec<u8> = Vec::new();
+        let mut err: Vec<u8> = Vec::new();
+        let code = run_bus_metrics(true, &addr, &mut out, &mut err)
+            .await
+            .unwrap();
+
+        assert_eq!(code, BUS_METRICS_FAILURE_EXIT, "the daemon never answered");
+        assert!(
+            out.is_empty(),
+            "no JSON is printed for an unreachable daemon: {:?}",
+            String::from_utf8_lossy(&out)
+        );
+        let said = String::from_utf8(err).expect("stderr is UTF-8");
+        assert!(
+            said.contains(&addr) && said.contains("cannot read bus metrics"),
+            "{said}"
+        );
+    }
+
+    /// The POST is bounded. Untimed it could hang on a port that accepts and
+    /// never replies, which is the behaviour this file documents at the
+    /// readiness wait; there is no way to assert a hang from a test, so the
+    /// bound itself is asserted instead.
+    #[test]
+    fn the_bus_metrics_post_is_bounded() {
+        assert_eq!(
+            BUS_METRICS_TIMEOUT,
+            std::time::Duration::from_secs(10),
+            "the other POSTs in this file use ten seconds; bus-metrics hangs the same way"
+        );
+    }
+
+    /// Round 3: a daemon that cannot answer /info predates build verification,
+    /// so it is older than any binary that asks -- stale by definition.
+    #[test]
+    fn a_daemon_without_build_info_is_stale_by_definition() {
+        assert!(matches!(skew_verdict(None, (1, 2)), Skew::Stale(_)));
+    }
+
+    #[test]
+    fn matching_fingerprints_are_in_sync_and_mismatches_are_stale() {
+        let info = serde_json::json!({ "version": "1.7.0", "exe_hash": 7u64, "exe_len": 8u64, "started_at": 1 });
+        assert!(matches!(skew_verdict(Some(&info), (7, 8)), Skew::InSync(_)));
+        assert!(matches!(skew_verdict(Some(&info), (7, 9)), Skew::Stale(_)));
+        assert!(matches!(skew_verdict(Some(&info), (6, 8)), Skew::Stale(_)));
+    }
+}
+
+/// Where every CLI HTTP call goes. A constant because `bus-metrics` names it
+/// in a refusal an operator has to be able to copy.
+const DAEMON_ADDR: &str = "127.0.0.1:34343";
+
+/// How long `bus-metrics` waits for the daemon's answer. Same ten seconds the
+/// other POSTs in this file use, and for the same reason an unbound port on
+/// this machine hangs rather than refuses: untimed, this command can hang with
+/// no output at all instead of reporting a daemon that is not there.
+const BUS_METRICS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The exit code both refusal paths use. Non-zero so `bus-metrics | jq` and any
+/// `set -e` script see the failure rather than reading absence of data as
+/// "the bus is idle".
+const BUS_METRICS_FAILURE_EXIT: i32 = 1;
+
+/// What `bus-metrics` prints on the success path, and nothing else.
+///
+/// Split out from the command arm so the stdout an operator pipes into `jq`
+/// is a thing with a test: it must be the daemon's JSON body, verbatim, with
+/// no banner or caveat wrapped around it. The caveat for a missing daemon
+/// goes to stderr on the other path instead.
+fn print_bus_metrics_to(out: &mut impl std::io::Write, body: &str) -> std::io::Result<()> {
+    writeln!(out, "{}", body)
+}
+
+/// `bus-metrics` with no daemon to ask, as the probe already found out.
+///
+/// No daemon is not "an idle bus": the pulses live in the process that owns the
+/// store, so a bus built here to answer for it would print zeros that a script
+/// cannot distinguish from a real, un-pulsed bus. So this refuses rather than
+/// reporting, and says which address it looked at.
+fn refuse_bus_metrics_to(err: &mut impl std::io::Write, addr: &str) -> std::io::Result<()> {
+    writeln!(
+        err,
+        "no NeuroStrata daemon is running at {} -- cannot read bus metrics",
+        addr
+    )
+}
+
+/// `bus-metrics` when the daemon answered the probe but not the POST: it
+/// stopped listening, or it is wedged past the timeout above. Reported like
+/// any other absence, with the transport's own words kept.
+fn refuse_bus_metrics_unreachable_to(
+    err: &mut impl std::io::Write,
+    addr: &str,
+    cause: &dyn std::fmt::Display,
+) -> std::io::Result<()> {
+    writeln!(
+        err,
+        "no NeuroStrata daemon answered at {} -- cannot read bus metrics: {}",
+        addr, cause
+    )
+}
+
+/// `neurostrata-mcp bus-metrics`, as a function that returns an exit code
+/// instead of taking the process with it.
+///
+/// Both halves of the contract live here so both can be tested: the success
+/// path prints the daemon's `BusMetrics` JSON to `out` and returns 0, and
+/// neither refusal path prints anything to `out`, says why on `err`, and
+/// returns non-zero. `daemon_running` is the caller's earlier probe: it is
+/// what keeps this command from touching the database at all when no daemon
+/// owns it.
+async fn run_bus_metrics(
+    daemon_running: bool,
+    addr: &str,
+    out: &mut impl std::io::Write,
+    err: &mut impl std::io::Write,
+) -> anyhow::Result<i32> {
+    if !daemon_running {
+        refuse_bus_metrics_to(err, addr)?;
+        return Ok(BUS_METRICS_FAILURE_EXIT);
+    }
+
+    let res = match reqwest::Client::new()
+        .post(format!("http://{addr}/bus/metrics"))
+        .timeout(BUS_METRICS_TIMEOUT)
+        .send()
+        .await
+    {
+        Ok(res) => res,
+        Err(e) => {
+            refuse_bus_metrics_unreachable_to(err, addr, &e)?;
+            return Ok(BUS_METRICS_FAILURE_EXIT);
+        }
+    };
+    let status = res.status();
+    let body = res.text().await.unwrap_or_default();
+    if !status.is_success() {
+        // 404 is the expected answer from a daemon older than this route, and
+        // saying so beats reporting an empty body as if the bus had said
+        // nothing at all.
+        writeln!(
+            err,
+            "POST /bus/metrics answered {}: {}",
+            status.as_u16(),
+            body
+        )?;
+        if status == reqwest::StatusCode::NOT_FOUND {
+            writeln!(err, "That daemon predates the route. `neurostrata-mcp status` reports a stale daemon by comparing build fingerprints.")?;
+        }
+        return Ok(BUS_METRICS_FAILURE_EXIT);
+    }
+
+    print_bus_metrics_to(out, &body)?;
+    Ok(0)
+}
+
+/// The tokio runtime, built by hand rather than by `#[tokio::main]`.
+///
+/// The only reason to build it by hand is the crash handler. `SA_ONSTACK`
+/// runs the handler on the thread's alternate signal stack, and the Rust
+/// standard library gives each thread an 8192-byte one -- too small for the
+/// handler's backtrace capture, which would then fault inside the handler
+/// and lose the breadcrumb. `on_thread_start` is the only hook tokio offers
+/// for a per-thread setup, and it covers the worker threads.
+fn runtime() -> anyhow::Result<tokio::runtime::Runtime> {
+    Ok(tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .on_thread_start(|| {
+            let _ = crash::install_alt_stack();
+        })
+        .build()?)
+}
+
+fn main() -> anyhow::Result<()> {
+    let runtime = runtime()?;
+    runtime.block_on(run())
+}
+
+async fn run() -> anyhow::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    let cli = Cli::parse();
+
+    // This config-only command must not probe, start, or stop a daemon, and it
+    // must not construct an embedder or open the database.
+    if let Some(Commands::ProjectContext { action }) = cli.command.as_ref() {
+        let config_path = Config::default_path()?;
+        if !config_path.exists() {
+            Config::from_default_path()?;
+        }
+        println!("{}", dispatch_project_context(action, &config_path)?);
+        return Ok(());
+    }
+
+    // The crash breadcrumb, installed before anything long-running so the
+    // daemon and the MCP proxy are both covered. A failure here costs a
+    // diagnostic, not the run: the handler is never a prerequisite, so the
+    // process carries on without it.
+    let dir = crash_dir();
+    if let Err(e) = crash::install(&dir) {
+        eprintln!("crash breadcrumbs are off ({}): {}", dir.display(), e);
+    }
+
+    // Check if the daemon is already running on port 34343
+    let probe = probe_daemon().await;
+    // Only a daemon that answered gets to hold the database lock as far as the
+    // CLI is concerned. Treating silence as "running" would refuse every local
+    // command on a machine where an empty port times out rather than refuses.
+    let daemon_running = probe == DaemonProbe::Responsive;
+
+    // If no arguments, start standard MCP stdio mode
+    if args.len() == 1 {
+        if daemon_running {
+            eprintln!("Daemon is already running. Starting MCP proxy...");
+            server::start_mcp_proxy(server::DaemonOrigin::AlreadyRunning).await?;
+            return Ok(());
+        } else {
+            // The probe can return Silent (timeout) for a daemon that is alive
+            // but briefly not answering -- a restart window, model load, etc.
+            // If the lock is held, a daemon exists: wait for it instead of
+            // spawning a second one that will fail the lock check and leave
+            // the proxy hung for 30s reporting "could not reach".
+            let lock_held = config_db_path()
+                .map(|p| lock_path_for(&p).exists())
+                .unwrap_or(false);
+
+            if lock_held {
+                eprintln!(
+                    "NeuroStrata daemon is starting (lock held); waiting for it to answer..."
+                );
+                let client = reqwest::Client::new();
+                for _ in 0..1200 {
+                    // up to 2 minutes
+                    if client
+                        .get("http://127.0.0.1:34343/health")
+                        .timeout(std::time::Duration::from_millis(500))
+                        .send()
+                        .await
+                        .is_ok()
+                    {
+                        eprintln!("Daemon is already running. Starting MCP proxy...");
+                        server::start_mcp_proxy(server::DaemonOrigin::AlreadyRunning).await?;
+                        return Ok(());
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+                eprintln!("A daemon holds the lock but did not answer within 2 minutes. Refusing to spawn a second instance.");
+                std::process::exit(1);
+            }
+
+            eprintln!("NeuroStrata MCP Server initializing...");
+
+            // Spawn the daemon as a detached process
+            let exe = std::env::current_exe()
+                .unwrap_or_else(|_| std::path::PathBuf::from("neurostrata-mcp"));
+            std::process::Command::new(exe)
+                .arg("daemon")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()?;
+
+            eprintln!(
+                "Waiting for daemon to become ready (this may take a moment while models load)..."
+            );
+
+            // Wait for daemon to become ready. Bounded per attempt as well as
+            // overall: an unbound port on this machine hangs rather than
+            // refusing -- the behaviour DaemonProbe exists to describe -- so an
+            // untimed send here could spend the whole "30 seconds max" inside
+            // one call.
+            let client = reqwest::Client::new();
+            for _ in 0..300 {
+                // 30 seconds max
+                if client
+                    .get("http://127.0.0.1:34343/health")
+                    .timeout(std::time::Duration::from_millis(500))
+                    .send()
+                    .await
+                    .is_ok()
+                {
+                    break;
+                }
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            }
+
+            // Deliberately not conditional on that loop having succeeded. A
+            // first run downloads the embedding model and takes far longer than
+            // 30s, and the proxy is told where the daemon came from so it waits
+            // rather than reporting a daemon it started itself as absent.
+            server::start_mcp_proxy(server::DaemonOrigin::SpawnedByUs).await?;
+            return Ok(());
+        }
+    }
+
+    // An unrecognised first argument used to be run as an external program.
+    // That made every typo an execution: `neurostrata-mcp lsit` ran whatever
+    // `lsit` resolved to on PATH, and anything that could put a file on the
+    // PATH could therefore have it invoked by a mistyped memory command. The
+    // capability now needs asking for, by name, through `run` (bead
+    // neurostrata-7s8). clap reports anything else as the unknown subcommand
+    // it is.
+
+    // Now parse using clap
+    if let Some(command) = cli.command {
+        match command {
+            Commands::Daemon => {
+                println!("NeuroStrata MCP Server initializing in DAEMON-ONLY mode...");
+                let config = Config::from_default_path()?;
+                // Taken before the database opens. `shutdown` waits for this lock
+                // to be released rather than for the port to close.
+                let _ = DAEMON_LOCK.set(take_daemon_lock(&config.db_path)?);
+                let embedder = build_embedder()?;
+                let vector_store: Arc<dyn VectorStore> = Arc::new(LadybugStore::new(
+                    config.db_path.to_string_lossy().to_string(),
+                    embedder.dimensions(),
+                )?);
+                vector_store.init("global").await?;
+                let outcome = daemon::start_daemon(
+                    embedder,
+                    vector_store,
+                    Some(config.deduplication.clone()),
+                )
+                .await;
+                record_final_checkpoint(&outcome);
+                outcome?;
+            }
+            Commands::Run { program, args } => {
+                // Deliberate, named, and it never touches the database.
+                match std::process::Command::new(&program).args(&args).status() {
+                    Ok(status) => std::process::exit(status.code().unwrap_or(1)),
+                    Err(e) => {
+                        eprintln!("Could not run '{}': {}", program, e);
+                        std::process::exit(1);
+                    }
+                }
+            }
+            Commands::SynapticMesh { action } => {
+                // Also never touches the database: the mesh is a standalone
+                // git repo the daemon owns. Call-site ambient resolution is
+                // legal HERE (cwd is what a CLI means by "this project"),
+                // which is exactly why it is resolved now and threaded,
+                // never sniffed inside the handler.
+                let project_root = std::env::current_dir()?;
+                let ctx = crate::synaptic_mesh::MeshContext {
+                    project_root: project_root.clone(),
+                    base_root: crate::synaptic_mesh::conventional_base_root(),
+                    node_id: crate::synaptic_mesh::resolve_node_id(),
+                };
+                let mut svc = crate::synaptic_mesh::MeshService::new(project_root);
+                let reply =
+                    crate::synaptic_mesh::handle_synaptic_mesh_command(&action, &ctx, &mut svc);
+                println!("{}", reply);
+                // Hook piggyback contract (spec §Hooks): the hook target
+                // ALWAYS exits 0, even when its reply carries a failure —
+                // a hook must never block the source push. The generic
+                // fallthrough also exits 0, but the invariant is stated
+                // (and enforced) explicitly here so a later refactor cannot
+                // silently gate a hook on mesh state.
+                if matches!(
+                    action,
+                    crate::synaptic_mesh::SynapticMeshCommands::SyncEnqueue
+                ) {
+                    return Ok(());
+                }
+            }
+            Commands::Shutdown => {
+                let config = Config::from_default_path()?;
+                let db_path = config.db_path.clone();
+                let held = daemon_holds_lock(&db_path);
+
+                match probe {
+                    DaemonProbe::Absent if !held => {
+                        println!("No daemon is running on 127.0.0.1:34343.");
+                        return Ok(());
+                    }
+                    DaemonProbe::Absent => {
+                        eprintln!("A daemon has stopped listening but still holds the database, so it is finishing its final checkpoint. Waiting for it to exit.");
+                    }
+                    DaemonProbe::Silent => {
+                        eprintln!("Nothing answered on 127.0.0.1:34343 within 500ms. Either no daemon is running, or one is busy in the database and cannot answer yet -- those look identical from here. Sending a stop request and waiting; if a daemon is there, this can take a couple of minutes. Do not kill it.");
+                    }
+                    DaemonProbe::Responsive => {}
+                }
+
+                let client = reqwest::Client::new();
+                // A busy daemon may not answer this either. That is not a
+                // failure: the request is queued, so fall through to the wait.
+                if probe != DaemonProbe::Absent {
+                    if let Err(e) = client
+                        .post("http://127.0.0.1:34343/shutdown")
+                        .timeout(std::time::Duration::from_secs(10))
+                        .send()
+                        .await
+                    {
+                        if e.is_connect() && !daemon_holds_lock(&db_path) {
+                            println!("Nothing is listening on 127.0.0.1:34343 now -- either a daemon stopped as this ran, or there was never one to stop.");
+                            return Ok(());
+                        }
+                        eprintln!("The stop request has not been acknowledged yet: {}. Waiting for the daemon to go anyway.", e);
+                    }
+                }
+
+                // Wait for the process, not the port. The listener closes before
+                // the final checkpoint runs, so a quiet port proves nothing; the
+                // lock is released only once the process has exited. A daemon
+                // that was already wedged gets longer, because engine waits of
+                // two and a half minutes have been measured.
+                let mut saw_lock = held;
+                let attempts = if probe == DaemonProbe::Responsive {
+                    900
+                } else {
+                    2400
+                };
+                for _ in 0..attempts {
+                    if daemon_holds_lock(&db_path) {
+                        saw_lock = true;
+                    } else if saw_lock {
+                        let report =
+                            std::fs::read_to_string(daemon_lock_path(&db_path)).unwrap_or_default();
+                        if report == FINAL_CHECKPOINT_OK {
+                            println!("Daemon stopped and checkpointed.");
+                            return Ok(());
+                        }
+                        if report.is_empty() {
+                            eprintln!("The daemon exited without reporting its final checkpoint, so writes since the last one may not be on disk.");
+                        } else {
+                            eprintln!(
+                                "The daemon exited, but its final checkpoint did not complete: {}",
+                                report
+                            );
+                        }
+                        std::process::exit(1);
+                    } else if let Err(e) = client
+                        .get("http://127.0.0.1:34343/health")
+                        .timeout(std::time::Duration::from_millis(500))
+                        .send()
+                        .await
+                    {
+                        // No lock was ever seen: a daemon built before the lock
+                        // existed. Only a refused connection counts as it having
+                        // gone, and its checkpoint cannot be confirmed.
+                        if e.is_connect() {
+                            println!("Daemon stopped. It predates the shutdown lock, so its final checkpoint cannot be confirmed from here.");
+                            return Ok(());
+                        }
+                    }
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                }
+                eprintln!(
+                    "The daemon was still listening after {} seconds. It is probably still finishing a database operation -- leave it, and do not kill it: writes since the last checkpoint would be lost.",
+                    attempts / 10
+                );
+                std::process::exit(1);
+            }
+            Commands::BusMetrics => {
+                // Answered from the daemon, never from a bus built here: the
+                // pulses are emitted by the daemon that owns the store, so a
+                // local bus reports zeros that read as "an idle bus" rather
+                // than "there is no bus". `probe` was taken before the
+                // database was touched, so this never opens the store.
+                let exit = run_bus_metrics(
+                    daemon_running,
+                    DAEMON_ADDR,
+                    &mut std::io::stdout(),
+                    &mut std::io::stderr(),
+                )
+                .await?;
+                if exit != 0 {
+                    std::process::exit(exit);
+                }
+                return Ok(());
+            }
+            Commands::Status => {
+                let config = Config::from_default_path()?;
+                let probe = probe_daemon().await;
+                let held = daemon_holds_lock(&config.db_path);
+                let size = std::fs::metadata(&config.db_path).map(|m| m.len()).ok();
+                println!("store: {:?}", config.db_path);
+                match size {
+                    Some(bytes) => println!("store size: {} bytes", bytes),
+                    None => println!("store size: (no file yet)"),
+                }
+                match probe {
+                    DaemonProbe::Responsive => {
+                        println!("daemon: listening on 127.0.0.1:34343, answering");
+                        println!("lock: held");
+                        // Runtime skew (round 3): the answering daemon may be
+                        // running an OLDER build than the binary on disk -- the
+                        // guinea pig re-verified a shipped fix through a
+                        // pre-fix daemon and filed a false "still open".
+                        let own = daemon::exe_fingerprint();
+                        match skew_verdict(fetch_daemon_info().await.as_ref(), own) {
+                            Skew::InSync(v) => {
+                                println!(
+                                    "build: in sync with this binary ({}, hash {:016x})",
+                                    v, own.0
+                                );
+                                println!("status: healthy -- one daemon is serving every console");
+                                std::process::exit(0);
+                            }
+                            Skew::Stale(detail) => {
+                                println!("build: STALE -- {}", detail);
+                                println!("skew: every tool and schema you see through the daemon belongs to that older build");
+                                println!("skew: fix: neurostrata-mcp shutdown, then neurostrata-mcp daemon (restart any session holding an old stdio server)");
+                                println!("status: stale -- answering, but not the build on disk");
+                                std::process::exit(3);
+                            }
+                        }
+                    }
+                    _ if held => {
+                        println!("daemon: NOT answering, but the store lock is held");
+                        println!("status: busy -- a daemon is still finishing. Do NOT start another; wait, or run neurostrata-mcp shutdown");
+                        std::process::exit(2);
+                    }
+                    _ => {
+                        println!("daemon: not running");
+                        println!("lock: free");
+                        println!(
+                            "status: down -- safe to start exactly one: neurostrata-mcp daemon"
+                        );
+                        std::process::exit(1);
+                    }
+                }
+            }
+            Commands::Backup { dir } => {
+                // The database is single-writer. When a daemon holds it, ask the
+                // daemon to do the work rather than fighting it for the lock.
+                if daemon_running {
+                    let res = reqwest::Client::new()
+                        .post("http://127.0.0.1:34343/backup")
+                        .json(&serde_json::json!({ "dir": dir }))
+                        .send()
+                        .await?;
+                    let status = res.status();
+                    let body = res.text().await.unwrap_or_default();
+                    if !status.is_success() {
+                        eprintln!("Backup failed: {}", body);
+                        std::process::exit(1);
+                    }
+                    println!("{}", body);
+                    return Ok(());
+                }
+
+                let config = Config::from_default_path()?;
+                if daemon_busy(probe, daemon_holds_lock(&config.db_path)) {
+                    eprintln!("{}", DAEMON_BUSY_MESSAGE);
+                    std::process::exit(1);
+                }
+                // The width opens the store; exporting never embeds anything.
+                let vector_store: Arc<dyn VectorStore> = Arc::new(LadybugStore::new(
+                    config.db_path.to_string_lossy().to_string(),
+                    embed::configured_dimensions()?,
+                )?);
+                vector_store.export_database(&dir).await?;
+                println!("Backed up to {}", dir);
+                return Ok(());
+            }
+            Commands::Restore { dir, into } => {
+                // A snapshot is a file copy, so restoring means copying it into
+                // place BEFORE any engine opens it -- an open engine maps the
+                // file it was created with, and copying under a live handle is
+                // exactly the memory-unsafety class the backup bug came from.
+                let config = Config::from_default_path()?;
+                let target = into
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|| config.db_path.clone());
+
+                if target.exists() {
+                    eprintln!("{:?} already exists, and restoring into it would mean replacing what it holds.", target);
+                    eprintln!("Restore into a new path instead: neurostrata-mcp restore <backup-dir> --into <new-db-path>");
+                    eprintln!("Then point db_path in ~/.config/neurostrata/config.json at it once you have checked it.");
+                    std::process::exit(1);
+                }
+                if let Some(parent) = target.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+
+                let snapshot = std::path::Path::new(&dir).join("ladybug.store");
+                if !snapshot.exists() {
+                    eprintln!(
+                        "{:?} does not look like a snapshot: no ladybug.store inside it.",
+                        dir
+                    );
+                    std::process::exit(1);
+                }
+                std::fs::copy(&snapshot, &target)?;
+                let mut wal = snapshot.clone().into_os_string();
+                wal.push(".wal");
+                let wal = std::path::PathBuf::from(wal);
+                if wal.exists() {
+                    let mut target_wal = target.clone().into_os_string();
+                    target_wal.push(".wal");
+                    std::fs::copy(&wal, std::path::PathBuf::from(target_wal))?;
+                }
+
+                // Opened only after the copy, to verify the restored store
+                // reads back and to report what it holds.
+                let vector_store: Arc<dyn VectorStore> = Arc::new(LadybugStore::new(
+                    target.to_string_lossy().to_string(),
+                    embed::configured_dimensions()?,
+                )?);
+
+                let namespaces = vector_store.list_namespaces().await.unwrap_or_default();
+                println!("Restored {} into {:?}", dir, target);
+                if !namespaces.is_empty() {
+                    println!(
+                        "It holds {} namespace(s): {}",
+                        namespaces.len(),
+                        namespaces.join(", ")
+                    );
+                }
+                if target != config.db_path {
+                    println!(
+                        "To use it, set db_path in ~/.config/neurostrata/config.json to {:?}",
+                        target
+                    );
+                }
+                return Ok(());
+            }
+            Commands::Task { action } => match action {
+                // Read-only, so it never needs the mutating-DB refusal: ask a
+                // live daemon, else open the database metadata-only (5.1).
+                TaskCommands::Gate {
+                    namespace,
+                    strict,
+                    self_test,
+                } => {
+                    // Q4.3 of docs/design-wiring-panel.md: the gate self-tests
+                    // itself against a synthetic in-memory fixture so it can
+                    // prove it is still a gate. No daemon, no lock, no DB --
+                    // short-circuit BEFORE any probe or lock check.
+                    if self_test {
+                        let report = crate::task::gate::self_test();
+                        let json = report.to_json();
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&json).unwrap_or_default()
+                        );
+                        if report.passed {
+                            println!(
+                                "Task gate self-test PASS -- engine produces exactly {:?} ({} violation(s) on {} planted task(s)).",
+                                report.expected_kinds,
+                                report.total_violations,
+                                report.counts.total
+                            );
+                            return Ok(());
+                        } else {
+                            eprintln!(
+                                "Task gate self-test FAIL.\n  expected: {:?}\n  actual:   {:?}\n  missing:  {:?} (rules the gate silently dropped)\n  extra:    {:?} (rules the gate silently added)",
+                                report.expected_kinds,
+                                report.actual_kinds,
+                                report.missing,
+                                report.extra
+                            );
+                            std::process::exit(1);
+                        }
+                    }
+
+                    // Both policies print the escape hatch (section 5.1).
+                    if std::env::var("NEUROSTRATA_SKIP_GATE")
+                        .map(|v| !v.is_empty())
+                        .unwrap_or(false)
+                    {
+                        eprintln!(
+                            "[neurostrata:gate] NEUROSTRATA_SKIP_GATE is set; skipping the gate for '{}'.",
+                            namespace
+                        );
+                        return Ok(());
+                    }
+
+                    let outcome: Result<serde_json::Value, String> = if probe
+                        == DaemonProbe::Responsive
+                    {
+                        match reqwest::Client::new()
+                            .post("http://127.0.0.1:34343/tasks/gate")
+                            .json(&serde_json::json!({
+                                "namespace": namespace,
+                                "strict": strict,
+                            }))
+                            .timeout(std::time::Duration::from_secs(10))
+                            .send()
+                            .await
+                        {
+                            Ok(resp) if resp.status().is_success() => match resp.text().await {
+                                Ok(body) => serde_json::from_str::<serde_json::Value>(&body)
+                                    .map_err(|e| {
+                                        format!("the daemon's gate reply could not be read: {}", e)
+                                    }),
+                                Err(e) => {
+                                    Err(format!("the daemon's gate reply could not be read: {}", e))
+                                }
+                            },
+                            Ok(resp) => Err(format!(
+                                "the daemon answered {} on /tasks/gate",
+                                resp.status()
+                            )),
+                            Err(e) => Err(format!("the request to the daemon failed: {}", e)),
+                        }
+                    } else {
+                        match Config::from_default_path() {
+                            Err(e) => Err(format!("the config could not be read: {}", e)),
+                            Ok(config) => {
+                                if daemon_busy(probe, daemon_holds_lock(&config.db_path)) {
+                                    Err(DAEMON_BUSY_MESSAGE.to_string())
+                                } else if probe == DaemonProbe::Silent {
+                                    Err("nothing answered on 127.0.0.1:34343 within 500ms, so a daemon may be busy in the database; not opening it".to_string())
+                                } else {
+                                    direct_report(&config, &namespace)
+                                        .await
+                                        .map(|report| report.gate_json())
+                                }
+                            }
+                        }
+                    };
+
+                    match outcome {
+                        Ok(body) => {
+                            let violations = body
+                                .get("violations")
+                                .and_then(|v| v.as_array())
+                                .cloned()
+                                .unwrap_or_default();
+                            for violation in &violations {
+                                println!(
+                                    "- [{}] {}: {}",
+                                    violation
+                                        .get("kind")
+                                        .and_then(|k| k.as_str())
+                                        .unwrap_or("?"),
+                                    violation.get("id").and_then(|i| i.as_str()).unwrap_or("?"),
+                                    violation
+                                        .get("detail")
+                                        .and_then(|d| d.as_str())
+                                        .unwrap_or("")
+                                );
+                            }
+                            if !violations.is_empty() {
+                                println!();
+                            }
+                            let ok = violations.is_empty();
+                            if ok {
+                                println!("Task gate: clean in '{}'.", namespace);
+                            } else {
+                                println!(
+                                    "Task gate: {} violation(s) in '{}'. Fix them (or claim and finish them), then push again.",
+                                    violations.len(),
+                                    namespace
+                                );
+                            }
+                            std::process::exit(gate_exit_code(Some(ok), strict));
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "[neurostrata:gate] the task gate could not run for '{}': {}",
+                                namespace, e
+                            );
+                            eprintln!(
+                                "[neurostrata:gate] {}",
+                                if strict {
+                                    "--strict: an unavailable database blocks the push. Skip explicitly with NEUROSTRATA_SKIP_GATE=1 git push."
+                                } else {
+                                    "continuing anyway: an unavailable database is an ops problem, not agent misconduct. Set NEUROSTRATA_SKIP_GATE=1 to silence this, or pass --strict to block."
+                                }
+                            );
+                            std::process::exit(gate_exit_code(None, strict));
+                        }
+                    }
+                }
+
+                // Advisory twin of the gate (section 4): always exits 0.
+                TaskCommands::Validate { namespace } => {
+                    let fetched = if probe == DaemonProbe::Responsive {
+                        match reqwest::Client::new()
+                            .post("http://127.0.0.1:34343/mcp")
+                            .json(&serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": 1,
+                                "method": "tools/call",
+                                "params": {
+                                    "name": "neurostrata_task_validate",
+                                    "arguments": { "namespace": namespace },
+                                },
+                            }))
+                            .timeout(std::time::Duration::from_secs(10))
+                            .send()
+                            .await
+                        {
+                            Ok(resp) if resp.status().is_success() => {
+                                resp.text().await.ok().and_then(|body| {
+                                    serde_json::from_str::<serde_json::Value>(&body)
+                                        .ok()
+                                        .and_then(|v| {
+                                            v.pointer("/result/content/0/text")
+                                                .and_then(|t| t.as_str())
+                                                .map(String::from)
+                                        })
+                                })
+                            }
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
+
+                    match fetched {
+                        Some(report) => println!("{}", report),
+                        None => match Config::from_default_path() {
+                            Err(e) => {
+                                eprintln!("[neurostrata:gate] the report for '{}' could not be fetched: {}", namespace, e);
+                            }
+                            Ok(config)
+                                if daemon_busy(probe, daemon_holds_lock(&config.db_path))
+                                    || probe == DaemonProbe::Silent =>
+                            {
+                                eprintln!(
+                                    "[neurostrata:gate] the report for '{}' could not be fetched: {}",
+                                    namespace, DAEMON_BUSY_MESSAGE
+                                );
+                            }
+                            Ok(config) => match direct_report(&config, &namespace).await {
+                                Ok(report) => {
+                                    println!(
+                                        "{}",
+                                        serde_json::to_string_pretty(&report.validate_json())
+                                            .unwrap_or_else(|_| "{}".to_string())
+                                    );
+                                }
+                                Err(e) => {
+                                    eprintln!(
+                                        "[neurostrata:gate] the report for '{}' could not be fetched: {}",
+                                        namespace, e
+                                    );
+                                }
+                            },
+                        },
+                    }
+                    // Always exit 0: the report informs, it never blocks.
+                    return Ok(());
+                }
+
+                // A store write the daemon can do on our behalf (guinea-pig
+                // BUG-5): tearing down the shared daemon for a migration is
+                // what pushed an agent toward forcing its own instances. The
+                // direct path stays for when no daemon runs at all.
+                TaskCommands::Import {
+                    namespace,
+                    from_beads,
+                } => {
+                    let summary_json: serde_json::Value = if daemon_running {
+                        let res = reqwest::Client::new()
+                            .post("http://127.0.0.1:34343/tasks/import")
+                            .json(&serde_json::json!({ "namespace": namespace, "from_beads": from_beads }))
+                            .send()
+                            .await?;
+                        let status = res.status();
+                        let body = res.text().await.unwrap_or_default();
+                        if !status.is_success() {
+                            eprintln!("Import failed: {}", body);
+                            std::process::exit(1);
+                        }
+                        serde_json::from_str(&body).unwrap_or_default()
+                    } else {
+                        let config = Config::from_default_path()?;
+                        if daemon_busy(probe, daemon_holds_lock(&config.db_path)) {
+                            eprintln!("{}", DAEMON_BUSY_MESSAGE);
+                            std::process::exit(1);
+                        }
+                        let embedder = build_embedder()?;
+                        let vector_store: Arc<dyn VectorStore> = Arc::new(LadybugStore::new(
+                            config.db_path.to_string_lossy().to_string(),
+                            embedder.dimensions(),
+                        )?);
+                        match crate::task::import_beads(
+                            vector_store,
+                            embedder.clone(),
+                            &namespace,
+                            &from_beads,
+                        )
+                        .await
+                        {
+                            Ok(summary) => serde_json::to_value(&summary).unwrap_or_default(),
+                            Err(e) => {
+                                eprintln!("{}", e);
+                                std::process::exit(1);
+                            }
+                        }
+                    };
+                    let get = |k: &str| summary_json.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
+                    println!(
+                        "Imported {} new task(s) into '{}'; skipped {} already imported; {} non-issue line(s), {} malformed line(s).",
+                        get("created"),
+                        namespace,
+                        get("skipped_existing"),
+                        get("non_issue_lines"),
+                        get("malformed_lines")
+                    );
+                    if get("created") > 0 {
+                        println!(
+                            "Check the migration with: neurostrata-mcp task validate '{}'",
+                            namespace
+                        );
+                    }
+                    return Ok(());
+                }
+            },
+            Commands::Setup { repo_path } => {
+                let repo = match repo_path {
+                    Some(p) => p,
+                    None => {
+                        std::env::current_dir().with_context(|| "cannot determine current_dir")?
+                    }
+                };
+                match setup::run_setup(&repo) {
+                    Ok(report) => {
+                        if report.verified {
+                            println!("Setup complete. Daemon healthy.");
+                        } else if report.daemon_installed {
+                            println!("Setup complete. Daemon installed but did not become healthy — see notes above.");
+                        } else {
+                            println!("Setup complete (manual steps required for this platform).");
+                        }
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        eprintln!("setup failed: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+            }
+            Commands::Hooks { action } => match action {
+                HooksCommands::Install { force } => {
+                    let root = git_toplevel()
+                        .or_else(|| std::env::current_dir().ok())
+                        .unwrap();
+                    if !root.join(".git").exists() {
+                        eprintln!(
+                            "ERROR: {:?} is not a git repository; there is nowhere to install the pre-push hook.",
+                            root
+                        );
+                        std::process::exit(1);
+                    }
+                    let hooks_dir = root.join(".git/hooks");
+                    if !hooks_dir.is_dir() {
+                        std::fs::create_dir_all(&hooks_dir)?;
+                    }
+                    let target = hooks_dir.join("pre-push");
+                    // Overwriting our own hook needs no flag: --force is for
+                    // a pre-push somebody else wrote.
+                    let ours = std::fs::read_to_string(&target)
+                        .map(|content| content.contains("NeuroStrata task gate"))
+                        .unwrap_or(false);
+                    if target.exists() && !ours && !force {
+                        eprintln!(
+                            "{} already exists and was not written by NeuroStrata.",
+                            target.display()
+                        );
+                        eprintln!(
+                            "Re-run with --force to replace it with the NeuroStrata task gate:"
+                        );
+                        eprintln!("  neurostrata-mcp hooks install --force");
+                        std::process::exit(1);
+                    }
+                    std::fs::write(&target, PRE_PUSH_HOOK)?;
+                    set_hook_executable(&target)?;
+                    println!(
+                        "Installed the NeuroStrata task gate at {}.",
+                        target.display()
+                    );
+                    return Ok(());
+                }
+            },
+            other => {
+                let graph_target = if let Commands::ExportGraph {
+                    out_path,
+                    source_id,
+                    ..
+                } = &other
+                {
+                    let source_config = source_id
+                        .as_ref()
+                        .map(|_| Config::from_default_path())
+                        .transpose()?;
+                    let empty_contexts = std::collections::HashMap::new();
+                    let contexts = source_config
+                        .as_ref()
+                        .map(|config| &config.project_contexts)
+                        .unwrap_or(&empty_contexts);
+                    let project_root =
+                        std::env::var_os("NEUROSTRATA_PROJECT_ROOT").map(std::path::PathBuf::from);
+                    let invocation_dir = std::env::current_dir()?;
+                    Some(crate::source_context::resolve_graph_output_path(
+                        out_path.as_deref().map(std::path::Path::new),
+                        source_id.as_deref(),
+                        contexts,
+                        project_root.as_deref(),
+                        &invocation_dir,
+                    )?)
+                } else {
+                    None
+                };
+
+                if daemon_running {
+                    // Read-only graph export is not a store mutation: it rides
+                    // the daemon like backup does, instead of demanding a
+                    // shutdown (the same trap as guinea-pig BUG-5).
+                    if let Commands::ExportGraph {
+                        exclude_superseded,
+                        include_archived,
+                        ..
+                    } = &other
+                    {
+                        let target_path = graph_target
+                            .as_ref()
+                            .expect("export graph target resolved before daemon dispatch");
+                        let anchor_root = std::env::var_os("NEUROSTRATA_ANCHOR_ROOT")
+                            .map(std::path::PathBuf::from);
+                        let source_id = std::env::var("NEUROSTRATA_SOURCE_ID").ok();
+                        let anchor_override = crate::source_context::scoped_anchor_override(
+                            anchor_root.as_deref(),
+                            source_id.as_deref(),
+                        );
+                        let mut url = reqwest::Url::parse("http://127.0.0.1:34343/graph")?;
+                        {
+                            let mut query = url.query_pairs_mut();
+                            query
+                                .append_pair(
+                                    "include_superseded",
+                                    &(!exclude_superseded).to_string(),
+                                )
+                                .append_pair("include_archived", &include_archived.to_string())
+                                .append_pair("all", "true");
+                            if let Some(anchor) = anchor_override.as_ref() {
+                                query
+                                    .append_pair(
+                                        "anchor_root",
+                                        &anchor.project_root.to_string_lossy(),
+                                    )
+                                    .append_pair("source_id", &anchor.source_id);
+                            }
+                        }
+                        let res = reqwest::Client::new().get(url).send().await?;
+                        let status = res.status();
+                        let body = res.text().await.unwrap_or_default();
+                        if !status.is_success() {
+                            eprintln!("Graph export failed: {}", body);
+                            std::process::exit(1);
+                        }
+                        println!("Exporting Memory Graph to {}", target_path.display());
+                        if let Some(parent) = target_path
+                            .parent()
+                            .filter(|parent| !parent.as_os_str().is_empty())
+                        {
+                            std::fs::create_dir_all(parent)?;
+                        }
+                        std::fs::write(target_path, body)?;
+                        println!("Graph exported successfully.");
+                        return Ok(());
+                    }
+                    // Read-only tools run against the daemon's store without
+                    // opening an engine here (guinea-pig BUG-8): doctor --help
+                    // says "changing nothing", and the recovery moment is
+                    // exactly when the daemon is up and least safe to stop.
+                    let read = ReadSource::Daemon;
+                    match &other {
+                        Commands::Doctor { namespace } => {
+                            run_doctor(&read, namespace.as_deref()).await?;
+                            return Ok(());
+                        }
+                        Commands::Namespaces => {
+                            run_namespaces(&read).await?;
+                            return Ok(());
+                        }
+                        Commands::List { namespace } => {
+                            run_list(&read, namespace).await?;
+                            return Ok(());
+                        }
+                        _ => {}
+                    }
+                    eprintln!("CRITICAL ERROR: The NeuroStrata daemon is currently running (likely via OpenCode) and holds the database lock.");
+                    eprintln!("You cannot run database-modifying CLI commands while the daemon is active.");
+                    eprintln!("Run `neurostrata-mcp shutdown` to stop it safely -- killing the process discards any writes made since the last checkpoint.");
+                    std::process::exit(1);
+                }
+
+                let config = Config::from_default_path()?;
+                if daemon_busy(probe, daemon_holds_lock(&config.db_path)) {
+                    eprintln!("{}", DAEMON_BUSY_MESSAGE);
+                    std::process::exit(1);
+                }
+                let embedder = build_embedder()?;
+                let vector_store: Arc<dyn VectorStore> = Arc::new(LadybugStore::new(
+                    config.db_path.to_string_lossy().to_string(),
+                    embedder.dimensions(),
+                )?);
+                let read = ReadSource::Direct(vector_store.clone());
+
+                match other {
+                    Commands::Doctor { namespace } => {
+                        run_doctor(&read, namespace.as_deref()).await?;
+                    }
+                    Commands::Namespaces => {
+                        run_namespaces(&read).await?;
+                    }
+                    Commands::List { namespace } => {
+                        run_list(&read, &namespace).await?;
+                    }
+                    // Reached only through the fallback; the dedicated Status
+                    // arm exits before the store opens. Reported faithfully
+                    // anyway: the daemon is provably not running in this arm.
+                    Commands::Status => {
+                        println!("store: {:?}", config.db_path);
+                        println!("daemon: not running");
+                        println!(
+                            "lock: {}",
+                            if daemon_holds_lock(&config.db_path) {
+                                "held"
+                            } else {
+                                "free"
+                            }
+                        );
+                        println!(
+                            "status: down -- safe to start exactly one: neurostrata-mcp daemon"
+                        );
+                        std::process::exit(1);
+                    }
+                    Commands::Ingest {
+                        dir,
+                        namespace,
+                        schema_path,
+                    } => {
+                        let dir = cli_ingest_root(&dir);
+                        let dir_path = std::path::Path::new(&dir);
+                        let schema_str = if let Some(path) = schema_path {
+                            std::fs::read_to_string(&path).unwrap_or_else(|e| {
+                                eprintln!("Failed to read schema from {}: {}", path, e);
+                                std::process::exit(1);
+                            })
+                        } else {
+                            include_str!("schema.json").to_string()
+                        };
+
+                        if let Ok(schema) = crate::parser::schema::ParserSchema::load(&schema_str) {
+                            println!(
+                                "Ingesting AST from {:?} into namespace '{}'",
+                                dir_path, namespace
+                            );
+                            crate::parser::ingest::ingest_directory(
+                                dir_path,
+                                &schema,
+                                embedder,
+                                vector_store,
+                                &namespace,
+                                // The CLI has nowhere to report progress to: it
+                                // is already printing each file as it goes.
+                                None,
+                            )
+                            .await?;
+                            println!("Ingestion complete.");
+                        }
+                    }
+                    Commands::ExportGraph {
+                        exclude_superseded,
+                        include_archived,
+                        ..
+                    } => {
+                        let target_path = graph_target
+                            .as_ref()
+                            .expect("export graph target resolved before direct dispatch");
+                        println!("Exporting Memory Graph to {}", target_path.display());
+                        if let Some(parent) = target_path
+                            .parent()
+                            .filter(|parent| !parent.as_os_str().is_empty())
+                        {
+                            std::fs::create_dir_all(parent)?;
+                        }
+                        vector_store.init("global").await?;
+                        // A4 wire: refuse to export a stale graph. The
+                        // `export_freshness_dirty` subscriber writes one
+                        // sentinel row per namespace it sees mutate; this
+                        // reads them and exits 1 if any is still dirty. An
+                        // operator who has confirmed the export is current
+                        // can flip the flag's `dirty` field to false; the
+                        // gate trusts the flag, not its own clock.
+                        if let Err(why) =
+                            crate::events::check_export_freshness(&*vector_store).await
+                        {
+                            eprintln!("{why}");
+                            std::process::exit(1);
+                        }
+                        // Superseded rows are exported marked (`superseded`,
+                        // `superseded_by`) unless --exclude-superseded drops them.
+                        // Tombstoned rows are excluded unless --include-archived
+                        // asks for them; the same default-with-escape-hatch shape
+                        // the search and snapshot read surfaces use.
+                        let anchor_root = std::env::var_os("NEUROSTRATA_ANCHOR_ROOT")
+                            .map(std::path::PathBuf::from);
+                        let source_id = std::env::var("NEUROSTRATA_SOURCE_ID").ok();
+                        let anchor_override = crate::source_context::scoped_anchor_override(
+                            anchor_root.as_deref(),
+                            source_id.as_deref(),
+                        );
+                        let graph_data = vector_store
+                            .export_graph(
+                                !exclude_superseded,
+                                include_archived,
+                                &config.project_contexts,
+                                anchor_override.as_ref(),
+                            )
+                            .await?;
+                        std::fs::write(target_path, serde_json::to_string_pretty(&graph_data)?)?;
+                        println!("Graph exported successfully.");
+                    }
+                    Commands::Delete { namespace, id } => {
+                        vector_store.delete(&namespace, &id).await?;
+                        println!("Memory deleted successfully.");
+                    }
+                    Commands::Archive { namespace, id } => {
+                        // The same handler `neurostrata_archive_memory` calls,
+                        // so the CLI and the tool cannot disagree about what
+                        // "archived" means. It needs a bus to announce the
+                        // tombstone on, and a CLI archive only runs with no
+                        // daemon (a running one holds the database, above) --
+                        // so this bus has no subscribers and the pulse is
+                        // counted by nobody. The write is what was asked for.
+                        let bus = Arc::new(crate::events::ThalamicBus::new(daemon::BUS_CAPACITY));
+                        let arguments = serde_json::json!({ "namespace": namespace, "id": id });
+                        let outcome = crate::handlers::archive_memory::archive_memory(
+                            arguments,
+                            vector_store.clone(),
+                            bus,
+                        )
+                        .await;
+                        // The exit code comes from the variant, not from
+                        // reading the handler's sentence for a prefix: a
+                        // refusal printed on stderr must not report success to
+                        // a script.
+                        if outcome.is_archived() {
+                            println!("{}", outcome);
+                        } else {
+                            eprintln!("{}", outcome);
+                            std::process::exit(1);
+                        }
+                    }
+                    Commands::Move {
+                        source_namespace,
+                        id,
+                        target_namespace,
+                    } => {
+                        // One statement that changes the namespace. Copying to the
+                        // target and deleting from the source removed the only copy,
+                        // because upsert never rewrites a row's namespace.
+                        match vector_store
+                            .relocate(&id, &source_namespace, &target_namespace)
+                            .await?
+                        {
+                            crate::traits::RelocateOutcome::Moved => {
+                                println!(
+                                    "Moved {} from '{}' to '{}'.",
+                                    id, source_namespace, target_namespace
+                                );
+                            }
+                            crate::traits::RelocateOutcome::SameNamespace => {
+                                println!("{} is already in '{}'.", id, source_namespace);
+                            }
+                            crate::traits::RelocateOutcome::NotFound => {
+                                eprintln!(
+                                    "No memory with id {} in namespace {}.",
+                                    id, source_namespace
+                                );
+                                std::process::exit(1);
+                            }
+                            crate::traits::RelocateOutcome::Ingested => {
+                                eprintln!(
+                                    "{} was written by directory ingestion for '{}' and cannot be moved; ingest the directory into '{}' instead.",
+                                    id, source_namespace, target_namespace
+                                );
+                                std::process::exit(1);
+                            }
+                        }
+                    }
+                    Commands::Add {
+                        namespace,
+                        memory_type,
+                        content,
+                        location,
+                    } => {
+                        let vector = embedder.embed(&content).await?;
+                        let payload = crate::traits::MemoryPayload {
+                            content: content.clone(),
+                            memory_type: memory_type.clone(),
+                            location: location.unwrap_or_default(),
+                            user_id: "system".to_string(),
+                            agent_name: Some("NeuroStrata".to_string()),
+                            location_lines: "".to_string(),
+                            metadata: serde_json::json!({}),
+                        };
+                        let id = uuid::Uuid::new_v4().to_string();
+                        vector_store
+                            .upsert(&namespace, &id, vector, payload)
+                            .await?;
+                        println!("Memory added successfully with ID: {}", id);
+                    }
+                    Commands::Edit {
+                        namespace,
+                        id,
+                        new_namespace,
+                        content,
+                        location,
+                    } => {
+                        match crate::server::edit_memory(
+                            &*vector_store,
+                            &*embedder,
+                            &namespace,
+                            &id,
+                            &new_namespace,
+                            &content,
+                            &location,
+                        )
+                        .await?
+                        {
+                            crate::server::EditOutcome::Edited => {
+                                println!("Successfully edited memory {}", id)
+                            }
+                            crate::server::EditOutcome::NotFound => {
+                                eprintln!("No memory with id {} in namespace {}.", id, namespace);
+                                std::process::exit(1);
+                            }
+                            crate::server::EditOutcome::Ingested => {
+                                eprintln!(
+                                    "{} was written by directory ingestion, so the next ingest would overwrite an edit. Change the file and ingest again instead.",
+                                    id
+                                );
+                                std::process::exit(1);
+                            }
+                        }
+                    }
+                    Commands::SetMetadata {
+                        namespace,
+                        id,
+                        metadata,
+                    } => {
+                        let new_metadata: serde_json::Value = serde_json::from_str(&metadata)
+                            .map_err(|e| anyhow::anyhow!("Invalid JSON metadata: {}", e))?;
+                        match crate::server::set_metadata(
+                            &*vector_store,
+                            &namespace,
+                            &id,
+                            new_metadata,
+                        )
+                        .await?
+                        {
+                            crate::server::MetadataOutcome::Updated => {
+                                println!("Successfully updated metadata for memory {}", id)
+                            }
+                            crate::server::MetadataOutcome::NotFound => {
+                                eprintln!("No memory with id {} in namespace {}.", id, namespace);
+                                std::process::exit(1);
+                            }
+                            crate::server::MetadataOutcome::Ingested => {
+                                eprintln!(
+                                    "{} was written by directory ingestion and cannot be updated.",
+                                    id
+                                );
+                                std::process::exit(1);
+                            }
+                        }
+                    }
+                    // Handled above, before the database is ever opened.
+                    Commands::Daemon
+                    | Commands::Shutdown
+                    | Commands::Run { .. }
+                    | Commands::SynapticMesh { .. }
+                    | Commands::Backup { .. }
+                    | Commands::Restore { .. }
+                    | Commands::Task { .. }
+                    | Commands::Setup { .. }
+                    | Commands::ProjectContext { .. }
+                    | Commands::BusMetrics
+                    | Commands::Hooks { .. } => unreachable!(),
+                }
+            }
+        }
+    }
+
+    Ok(())
+}

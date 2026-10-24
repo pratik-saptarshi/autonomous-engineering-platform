@@ -1,0 +1,42 @@
+{
+  "$schema": "https://schema.tauri.app/2.0.0/tauri.schema.json",
+  "productName": "SynapticGraph Visualizer",
+  "version": "0.1.1",
+  "identifier": "com.cognilogical.neurostrata",
+  "build": {
+    "beforeDevCommand": "cd ../web-ui && npm run dev",
+    "beforeBuildCommand": "cd ../web-ui && npm run build",
+    "devUrl": "http://localhost:5173",
+    "frontendDist": "../web-ui/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "SynapticGraph Visualizer",
+        "width": 1200,
+        "height": 800,
+        "fullscreen": false,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "plugins": {
+    "shell": {
+      "open": true
+    }
+  },
+  "bundle": {
+    "active": true,
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "targets": "all"
+  }
+}
