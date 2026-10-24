@@ -84,10 +84,10 @@ class ReceiptTests(unittest.TestCase):
             proc = verify(root, "1", receipts)
             self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
             lines = receipts.read_text(encoding="utf-8").splitlines()
-            # One command receipt plus the run-completion record.
-            self.assertEqual(len(lines), 2)
-            self.assertNotIn("MARKER-OUTPUT", lines[0])
-            receipt = json.loads(lines[0])
+            # Run-start record, one command receipt, run-completion record.
+            self.assertEqual(len(lines), 3)
+            self.assertNotIn("MARKER-OUTPUT", lines[1])
+            receipt = json.loads(lines[1])
             self.assertEqual(receipt["command_id"], "make-test")
             command = next(
                 c
@@ -108,10 +108,10 @@ class ReceiptTests(unittest.TestCase):
             proc = verify(root, "1", receipts)
             self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
             parsed = read_receipts(receipts)
-            # Two command receipts plus the run-completion record.
-            self.assertEqual(len(parsed), 3)
+            # Run-start record, two command receipts, run-completion record.
+            self.assertEqual(len(parsed), 4)
             self.assertEqual(
-                [r["command_id"] for r in parsed[:2]],
+                [r["command_id"] for r in parsed[1:3]],
                 ["npm-test", "make-test"],
             )
             prev = GENESIS
@@ -166,15 +166,15 @@ class ReceiptTests(unittest.TestCase):
             proc = verify(root, "1", receipts)
             self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
             lines = receipts.read_text(encoding="utf-8").splitlines()
-            first = json.loads(lines[0])
+            first = json.loads(lines[1])
             original = first["stdout_sha256"]
             flipped = ("a" if original[0] != "a" else "b") + original[1:]
             first["stdout_sha256"] = flipped
-            lines[0] = json.dumps(first)
+            lines[1] = json.dumps(first)
             receipts.write_text("\n".join(lines) + "\n", encoding="utf-8")
             proc = check(receipts, "1")
             self.assertEqual(proc.returncode, 1)
-            self.assertIn("RECEIPTS: chain broken at line 1", proc.stdout)
+            self.assertIn("RECEIPTS: chain broken at line 2", proc.stdout)
 
     def test_check_receipts_detects_deleted_line(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -185,8 +185,9 @@ class ReceiptTests(unittest.TestCase):
                 proc = verify(root, task, receipts)
                 self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
             lines = receipts.read_text(encoding="utf-8").splitlines()
-            # Three runs, each one command receipt + completion record.
-            self.assertEqual(len(lines), 6)
+            # Three runs, each a run-start record, one command receipt,
+            # and one completion record.
+            self.assertEqual(len(lines), 9)
             del lines[1]
             receipts.write_text("\n".join(lines) + "\n", encoding="utf-8")
             proc = check(receipts, "1")
@@ -219,9 +220,11 @@ class ReceiptTests(unittest.TestCase):
             proc = verify(root, "1", receipts)
             self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
             parsed = read_receipts(receipts)
-            self.assertEqual(len(parsed), 3)
+            self.assertEqual(len(parsed), 4)
+            self.assertEqual(parsed[0]["kind"], "run-start")
             completion = parsed[-1]
             self.assertEqual(completion["kind"], "run-complete")
+            self.assertEqual(completion["run_id"], parsed[0]["run_id"])
             self.assertEqual(completion["task"], "1")
             self.assertEqual(completion["command_count"], 2)
             expected_digest = hashlib.sha256(
@@ -268,6 +271,90 @@ class ReceiptTests(unittest.TestCase):
                 rc = check_receipts(receipts, "1")
             self.assertEqual(rc, 1)
             self.assertIn("no completion record", stdout.getvalue())
+
+    def test_check_receipts_retry_after_interrupted_run_passes(self):
+        # Codex round-2 finding: an interrupted run (receipts, no
+        # completion) followed by a successful retry for the same
+        # task/file must PASS — the latest run segment validates
+        # independently, earlier segments stay audit history.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            two_command_fixture(root)
+            receipts = root / "r.jsonl"
+            interrupted = "interrupted-run"
+            mechanical_verify.append_run_start(receipts, "1", interrupted)
+            result = VerificationResult(
+                command=VerificationCommand(
+                    "npm-test", "Node tests", ("npm", "test")
+                ),
+                exit_code=0,
+                timed_out=False,
+                duration_ms=5,
+                stdout="",
+                stderr="",
+                output_truncated=False,
+            )
+            mechanical_verify.append_receipt(
+                receipts, "1", result, run_id=interrupted
+            )
+            self.assertEqual(len(read_receipts(receipts)), 2)
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            proc = check(receipts, "1")
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn(
+                "RECEIPTS: PASS task 1: 2 receipts, chain valid", proc.stdout
+            )
+
+    def test_check_receipts_interrupted_run_alone_fails(self):
+        # A run-start plus one passing receipt, no completion record,
+        # must FAIL — the interrupted run is not evidence.
+        with tempfile.TemporaryDirectory() as tmp:
+            receipts = Path(tmp) / "r.jsonl"
+            mechanical_verify.append_run_start(receipts, "1", "run-a")
+            result = VerificationResult(
+                command=VerificationCommand(
+                    "npm-test", "Node tests", ("npm", "test")
+                ),
+                exit_code=0,
+                timed_out=False,
+                duration_ms=5,
+                stdout="",
+                stderr="",
+                output_truncated=False,
+            )
+            mechanical_verify.append_receipt(
+                receipts, "1", result, run_id="run-a"
+            )
+            proc = check(receipts, "1")
+            self.assertEqual(proc.returncode, 1)
+            self.assertIn("no completion record", proc.stdout)
+
+    def test_check_receipts_retry_interrupted_again_fails(self):
+        # Two interrupted runs in a row: the latest run has no
+        # completion record, so the check must FAIL even though the
+        # earlier run's receipts are all passing.
+        with tempfile.TemporaryDirectory() as tmp:
+            receipts = Path(tmp) / "r.jsonl"
+            for run_id in ("run-a", "run-b"):
+                mechanical_verify.append_run_start(receipts, "1", run_id)
+                result = VerificationResult(
+                    command=VerificationCommand(
+                        "npm-test", "Node tests", ("npm", "test")
+                    ),
+                    exit_code=0,
+                    timed_out=False,
+                    duration_ms=5,
+                    stdout="",
+                    stderr="",
+                    output_truncated=False,
+                )
+                mechanical_verify.append_receipt(
+                    receipts, "1", result, run_id=run_id
+                )
+            proc = check(receipts, "1")
+            self.assertEqual(proc.returncode, 1)
+            self.assertIn("no completion record", proc.stdout)
 
     def test_check_receipts_scoped_per_task(self):
         with tempfile.TemporaryDirectory() as tmp:

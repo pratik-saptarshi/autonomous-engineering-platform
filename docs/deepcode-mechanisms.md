@@ -45,17 +45,18 @@ Discovery is deduplicated by command id and capped at the first match per rule. 
 
 | Code | Meaning |
 | --- | --- |
-| 0 | The whole file's chain validates, every receipt for the task records `exit_code` 0 with no timeout, and the task's latest run ends in a run-completion record matching its command receipts (`RECEIPTS: PASS`). |
-| 1 | The file is corrupt at a named line, the chain is broken at a named line, the task has no receipts, one of the task's receipts records a failure, or the task's latest run has no matching run-completion record — the partial receipt set of a run that stopped early is rejected (`RECEIPTS: FAIL` / `RECEIPTS: corrupt` / `RECEIPTS: chain broken`). |
+| 0 | The whole file's chain validates, every receipt in the task's latest run records `exit_code` 0 with no timeout, and that run ends in a run-completion record matching its command receipts (`RECEIPTS: PASS`). |
+| 1 | The file is corrupt at a named line, the chain is broken at a named line, the task has no receipts, one of the latest run's receipts records a failure, or the task's latest run has no matching run-completion record — the partial receipt set of a run that stopped early is rejected (`RECEIPTS: FAIL` / `RECEIPTS: corrupt` / `RECEIPTS: chain broken`). |
 
 ### Receipts format and chain
 
-With `--receipts <file>`, `verify` appends one JSON line per executed command. A receipt contains hashes, never output text. When — and only when — every discovered command has executed and passed, `verify` appends a final run-completion record (`kind: run-complete`) carrying the run's command count and a SHA-256 digest of the ordered command ids; a run that stops early writes no such record. The command-receipt fields:
+With `--receipts <file>`, `verify` first appends a run-start record (`kind: run-start`) carrying a unique `run_id` for the run; it then appends one JSON line per executed command, and each receipt carries the same `run_id`. A receipt contains hashes, never output text. When — and only when — every discovered command has executed and passed, `verify` appends a final run-completion record (`kind: run-complete`, same `run_id`) carrying the run's command count and a SHA-256 digest of the ordered command ids; a run that stops early writes no such record. `check-receipts` validates only the task's latest run segment (from its run-start record to its completion record); earlier segments in the same file remain audit history, so an interrupted run cannot poison a later successful retry. The command-receipt fields:
 
 | Field | Content |
 | --- | --- |
 | `ts` | UTC timestamp of the execution |
 | `task` | the `--task` value the run was scoped to |
+| `run_id` | the run's unique id, shared by its run-start record, receipts, and completion record |
 | `command_id` | the discovery rule id (e.g. `make-test`) |
 | `argv` | the exact argument vector executed |
 | `exit_code` | the process return code (the killed code, on timeout) |
