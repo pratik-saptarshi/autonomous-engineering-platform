@@ -10,6 +10,8 @@ first failure. Stdlib only.
 from __future__ import annotations
 
 import argparse
+import fcntl
+import hashlib
 import json
 import os
 import re
@@ -20,6 +22,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 OUTPUT_CAP_BYTES = 65536
@@ -336,6 +339,134 @@ def run_all(
     return 0 if executed else 1
 
 
+GENESIS_CHAIN = "0" * 64
+
+RECEIPT_FIELDS = (
+    "ts",
+    "task",
+    "command_id",
+    "argv",
+    "exit_code",
+    "timed_out",
+    "duration_ms",
+    "stdout_sha256",
+    "stderr_sha256",
+    "chain_sha256",
+)
+
+
+def _chain_sha256(body: dict, prev_chain: str) -> str:
+    canonical = json.dumps(body, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256((prev_chain + canonical).encode("utf-8")).hexdigest()
+
+
+def _receipt_lines(receipts_path: Path) -> list[str]:
+    try:
+        text = receipts_path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    return text.splitlines()
+
+
+def _last_chain(receipts_path: Path) -> str:
+    """Chain hash of the file's last line; genesis for an empty file.
+
+    Raises ValueError when the last line is malformed (not a JSON object
+    carrying a string chain_sha256) — a torn receipts file is never
+    appended to blindly.
+    """
+    lines = _receipt_lines(receipts_path)
+    if not lines:
+        return GENESIS_CHAIN
+    try:
+        parsed = json.loads(lines[-1])
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"malformed last receipt line {len(lines)} in {receipts_path}"
+        ) from exc
+    if not isinstance(parsed, dict) or not isinstance(
+        parsed.get("chain_sha256"), str
+    ):
+        raise ValueError(
+            f"malformed last receipt line {len(lines)} in {receipts_path}"
+        )
+    return parsed["chain_sha256"]
+
+
+def append_receipt(
+    receipts_path: Path, task: str, result: VerificationResult
+) -> None:
+    """Append one hash-chained receipt for a result the verifier produced.
+
+    Only hashes of the capped output are recorded — never output text.
+    The append holds an exclusive flock and lands as a single os.write.
+    """
+    fd = os.open(receipts_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        prev_chain = _last_chain(receipts_path)
+        body = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "task": task,
+            "command_id": result.command.id,
+            "argv": list(result.command.argv),
+            "exit_code": result.exit_code,
+            "timed_out": result.timed_out,
+            "duration_ms": result.duration_ms,
+            "stdout_sha256": hashlib.sha256(
+                result.stdout.encode("utf-8")
+            ).hexdigest(),
+            "stderr_sha256": hashlib.sha256(
+                result.stderr.encode("utf-8")
+            ).hexdigest(),
+        }
+        receipt = dict(body)
+        receipt["chain_sha256"] = _chain_sha256(body, prev_chain)
+        line = json.dumps(receipt, sort_keys=True, ensure_ascii=False) + "\n"
+        os.write(fd, line.encode("utf-8"))
+    finally:
+        os.close(fd)
+
+
+def check_receipts(receipts_path: Path, task: str) -> int:
+    lines = _receipt_lines(receipts_path)
+    receipts: list[dict] = []
+    for number, line in enumerate(lines, start=1):
+        try:
+            parsed = json.loads(line)
+        except json.JSONDecodeError:
+            print(f"RECEIPTS: corrupt at line {number}")
+            return 1
+        if not isinstance(parsed, dict) or any(
+            field not in parsed for field in RECEIPT_FIELDS
+        ):
+            print(f"RECEIPTS: corrupt at line {number}")
+            return 1
+        receipts.append(parsed)
+
+    prev_chain = GENESIS_CHAIN
+    for number, receipt in enumerate(receipts, start=1):
+        body = {k: v for k, v in receipt.items() if k != "chain_sha256"}
+        if _chain_sha256(body, prev_chain) != receipt["chain_sha256"]:
+            print(f"RECEIPTS: chain broken at line {number}")
+            return 1
+        prev_chain = receipt["chain_sha256"]
+
+    mine = [r for r in receipts if r["task"] == task]
+    if not mine:
+        print(f"RECEIPTS: FAIL task {task}: no receipts")
+        return 1
+    for receipt in mine:
+        if receipt["exit_code"] != 0 or receipt["timed_out"]:
+            print(
+                f"RECEIPTS: FAIL task {task}: "
+                f"receipt failed: {receipt['command_id']}"
+            )
+            return 1
+    print(f"RECEIPTS: PASS task {task}: {len(mine)} receipts, chain valid")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="mechanical_verify.py")
     subparsers = parser.add_subparsers(dest="subcommand", required=True)
@@ -345,7 +476,28 @@ def main(argv: list[str] | None = None) -> int:
     verify.add_argument("--timeout", type=int, default=300)
     verify.add_argument("--budget", type=int, default=600)
     verify.add_argument("--receipts", default=None)
+    check_cmd = subparsers.add_parser("check-receipts")
+    check_cmd.add_argument("--receipts", required=True)
+    check_cmd.add_argument("--task", required=True)
     args = parser.parse_args(argv)
+
+    if args.subcommand == "check-receipts":
+        return check_receipts(Path(args.receipts), args.task)
+
+    receipts_path = Path(args.receipts) if args.receipts is not None else None
+    if receipts_path is not None:
+        # Fail closed before running anything: never append to a receipts
+        # file whose last line is malformed.
+        lines = _receipt_lines(receipts_path)
+        if lines:
+            try:
+                _last_chain(receipts_path)
+            except ValueError:
+                print(
+                    f"RECEIPTS: corrupt at line {len(lines)} "
+                    f"in {args.receipts}"
+                )
+                return 1
 
     root = Path(args.root)
     commands = discover_verification_commands(root)
@@ -368,12 +520,20 @@ def main(argv: list[str] | None = None) -> int:
             "VERIFY: markdownlint SKIPPED tool missing "
             "(markdownlint-cli2 not on PATH)"
         )
+    on_result = None
+    if receipts_path is not None:
+        task = args.task
+
+        def on_result(result: VerificationResult) -> None:
+            append_receipt(receipts_path, task, result)
+
     return run_all(
         root,
         commands,
         timeout_seconds=args.timeout,
         budget_seconds=args.budget,
         mem_available_kb=available_memory_kb,
+        on_result=on_result,
     )
 
 
