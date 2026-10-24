@@ -40,6 +40,19 @@
 #     claim transaction, before worktree setup; the worker child — and
 #     only the child — runs with credential-named environment variables
 #     scrubbed, unless AEP_LANE_FULL_ENV=1 disables the scrub loudly.
+#   * Coordinator state lives OUTSIDE the worktrees tree:
+#     $AEP_LANES_DIR, default ~/.local/state/aep/lanes, created on
+#     demand (mode 700 when this tool creates it). The pre-move
+#     default, ~/workspace/worktrees/.lanes, sat inside the tree every
+#     worker is tasked to operate in, so a worker could rewrite a
+#     manifest — a forged worker_pid field made release --clean
+#     delete another lane's live worktree (panel P1-4). While
+#     manifests remain at the legacy location and AEP_LANES_DIR is
+#     unset, claim/release/reap refuse with migration instructions
+#     and status lists the legacy lanes read-only; a lane is settled
+#     only after migration, under the normal gates. Placement removes
+#     the state from the workers' tasked tree; it is NOT a write
+#     boundary against a determined same-uid process.
 set -euo pipefail
 
 # Platform-standard tool locations (see TOOLS.md): non-interactive runs
@@ -48,8 +61,50 @@ set -euo pipefail
 # stub dir — keeps precedence. The command -v checks below stay strict.
 export PATH="$PATH:$HOME/go/bin:$HOME/sdk/go/bin:$HOME/workspace/bin:$HOME/workspace/neurostrata/bin:$HOME/workspace/toolchains/bin"
 
-LANES_DIR="${AEP_LANES_DIR:-$HOME/workspace/worktrees/.lanes}"
+LANES_DIR="${AEP_LANES_DIR:-$HOME/.local/state/aep/lanes}"
+LEGACY_LANES_DIR="$HOME/workspace/worktrees/.lanes"
 WT_ROOT="${AEP_WORKTREES_ROOT:-$HOME/workspace/worktrees}"
+
+# ensure_lanes_dir — create the state directory on demand. A
+# directory this run creates is mode 700; an existing directory's
+# permissions are the operator's and are left alone.
+ensure_lanes_dir() {
+  if [ -d "$LANES_DIR" ]; then
+    return 0
+  fi
+  mkdir -p "$LANES_DIR"
+  chmod 700 "$LANES_DIR"
+}
+
+# legacy_state_present — true when pre-move coordinator state (any
+# *.json manifest) sits at the legacy location AND the operator has
+# not pointed AEP_LANES_DIR anywhere: with an explicit override the
+# operator has taken responsibility for the location (setting it to
+# the legacy path is remedy 2 of the refusal message). An empty
+# AEP_LANES_DIR counts as unset, matching the :- default above.
+legacy_state_present() {
+  [ -z "${AEP_LANES_DIR:-}" ] || return 1
+  local f
+  for f in "$LEGACY_LANES_DIR"/*.json; do
+    [ -e "$f" ] && return 0
+  done
+  return 1
+}
+
+# refuse_if_legacy_state — mutating commands call this before any
+# state changes. While legacy manifests remain, claim/release/reap
+# refuse with the migration instructions; there is no dual-dir
+# operation — no code path reads or settles legacy state for a
+# mutating command, so a lane is settled only after migration,
+# under the normal gates, from the new location.
+refuse_if_legacy_state() {
+  legacy_state_present || return 0
+  echo "LANE: refuse: legacy coordinator state at $LEGACY_LANES_DIR"
+  echo "LANE: coordinator state moved to $LANES_DIR; claim/release/reap refuse while legacy manifests remain (status lists them read-only)"
+  echo "LANE: remedy: inspect the manifests in $LEGACY_LANES_DIR, then move the directory's contents to $LANES_DIR"
+  echo "LANE: remedy: or set AEP_LANES_DIR=$LEGACY_LANES_DIR to keep operating on the legacy location deliberately"
+  exit 1
+}
 
 now_iso() {
   date -u +%Y-%m-%dT%H:%M:%SZ
@@ -247,8 +302,8 @@ history_append() { # $1 = name, $2 = event, $3 = epoch, $4 = worker
   printf '%s %s epoch=%s worker=%s\n' "$(now_iso)" "$2" "$3" "$4" >>"$LANES_DIR/$1.log"
 }
 
-fence_is_held() { # $1 = name — live probe, never inferred from a pid
-  local fence="$LANES_DIR/$1.fence"
+fence_is_held() { # $1 = name, $2 = lanes dir (default $LANES_DIR) — live probe, never inferred from a pid
+  local fence="${2:-$LANES_DIR}/$1.fence"
   [ -e "$fence" ] || return 1
   if flock -n "$fence" true 2>/dev/null; then
     return 1
@@ -594,6 +649,11 @@ cmd_claim() {
   local capacity
   capacity=$(resolve_capacity "$capacity_flag")
 
+  # Legacy-state gate: while pre-move manifests remain at the legacy
+  # location, refuse before anything is read or created (see
+  # refuse_if_legacy_state).
+  refuse_if_legacy_state
+
   # Launch policy: load and validate first thing, before any state
   # changes — a malformed policy file refuses the claim with nothing
   # created (no lanes dir, no manifest, no worktree).
@@ -605,7 +665,8 @@ cmd_claim() {
   local manifest_file="$LANES_DIR/$name.json"
   CLAIM_WORKER="$worker"
 
-  mkdir -p "$LANES_DIR" "$WT_ROOT"
+  ensure_lanes_dir
+  mkdir -p "$WT_ROOT"
 
   local prev_exists=0 prev_epoch=0 prev_state="" prev_path=""
   local prev_worker="" prev_worker_pid=0 prev_worker_start=0
@@ -866,11 +927,14 @@ cmd_reap() {
     exit 2
   fi
 
+  # Legacy-state gate: refuse before any state is read or created.
+  refuse_if_legacy_state
+
   # Settle bookkeeping only, under the capacity lock (same
   # serialization as release): probe, check, and write can never
   # interleave with a claim transaction. Reap signals nothing, ever —
   # launcher_pid is operator information only and is never consulted.
-  mkdir -p "$LANES_DIR"
+  ensure_lanes_dir
   exec 9>"$LANES_DIR/.capacity.lock"
   if ! flock -w 60 9; then
     echo "LANE: lock timeout after 60s waiting for the capacity lock"
@@ -939,11 +1003,14 @@ cmd_release() {
     exit 2
   fi
 
+  # Legacy-state gate: refuse before any state is read or created.
+  refuse_if_legacy_state
+
   # Serialize against claim transactions: the fence probe, the state
   # check, and the manifest update below all run under the capacity
   # lock, so a claim can never interleave between probe and write and
   # have its fresh "claimed" manifest clobbered to "released".
-  mkdir -p "$LANES_DIR"
+  ensure_lanes_dir
   exec 9>"$LANES_DIR/.capacity.lock"
   if ! flock -w 60 9; then
     echo "LANE: lock timeout after 60s waiting for the capacity lock"
@@ -1120,19 +1187,43 @@ cmd_status() {
     echo "$n state=$state epoch=$epoch worker=$worker fence=$fence_state path=$path"
   }
 
+  print_legacy_status_line() { # $1 = manifest file in $LEGACY_LANES_DIR
+    local f="$1" n state epoch worker path fence_state
+    n=$(manifest_get "$f" name 2>/dev/null || true)
+    state=$(manifest_get "$f" state 2>/dev/null || true)
+    epoch=$(manifest_get "$f" epoch 2>/dev/null || true)
+    worker=$(manifest_get "$f" worker 2>/dev/null || true)
+    path=$(manifest_get "$f" path 2>/dev/null || true)
+    if fence_is_held "$n" "$LEGACY_LANES_DIR"; then fence_state="held"; else fence_state="free"; fi
+    echo "$n state=$state epoch=$epoch worker=$worker fence=$fence_state path=$path legacy"
+  }
+
   if [ -n "$name" ]; then
-    if [ ! -f "$LANES_DIR/$name.json" ]; then
-      echo "LANE: no manifest for $name"
-      exit 1
+    if [ -f "$LANES_DIR/$name.json" ]; then
+      print_status_line "$LANES_DIR/$name.json"
+      return 0
     fi
-    print_status_line "$LANES_DIR/$name.json"
-    return 0
+    # Not in the active state dir: a legacy manifest is still
+    # listed, read-only and marked, so an operator can see what is
+    # waiting on migration.
+    if legacy_state_present && [ -f "$LEGACY_LANES_DIR/$name.json" ]; then
+      print_legacy_status_line "$LEGACY_LANES_DIR/$name.json"
+      return 0
+    fi
+    echo "LANE: no manifest for $name"
+    exit 1
   fi
   local f
   for f in "$LANES_DIR"/*.json; do
     [ -e "$f" ] || continue
     print_status_line "$f"
   done
+  if legacy_state_present; then
+    for f in "$LEGACY_LANES_DIR"/*.json; do
+      [ -e "$f" ] || continue
+      print_legacy_status_line "$f"
+    done
+  fi
   echo "LANE: pool: $(count_claimed) claimed of $capacity"
 }
 
@@ -1800,6 +1891,138 @@ json.dump(data, open(sys.argv[1], "w"))
   [ "$rc22d" -eq 0 ] || case_fails=1
   [ "$(mget omicron-twentytwo epoch)" = "2" ] || case_fails=1
   report_case "takeover-refused-while-worker-lives"
+
+  # --- Cases 23–25: legacy-state migration rule ---
+  # Coordinator state used to live at $HOME/workspace/worktrees/.lanes
+  # — inside the worktrees tree every worker is tasked to operate in.
+  # Plant a lane there the way the old binary leaves one: a real claim
+  # run with AEP_LANES_DIR pointed at the legacy location, launcher
+  # killed, worker stopped, manifest left claimed. Then drive the new
+  # binary with AEP_LANES_DIR unset and HOME at the fixture, so the
+  # legacy location AND the new default (~/.local/state/aep/lanes)
+  # both resolve inside the fixture.
+  local legacy_home="$selftest_root/legacy-home"
+  local legacy_dir="$legacy_home/workspace/worktrees/.lanes"
+  local legacy_wts="$legacy_home/workspace/worktrees"
+  local new_dir="$legacy_home/.local/state/aep/lanes"
+  mkdir -p "$legacy_home"
+
+  jget() { # $1 = manifest file, $2 = field
+    python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' \
+      "$1" "$2" 2>/dev/null || true
+  }
+
+  local out_leg="$selftest_root/out-leg.txt"
+  AEP_LANES_DIR="$legacy_dir" AEP_WORKTREES_ROOT="$legacy_wts" HOME="$legacy_home" \
+    bash "$self_path" claim --repo "$repo" --project sigma --lane twentyfive \
+    --branch br-twentyfive --base HEAD --worker wleg \
+    --exec sh -c "echo \$\$ > $selftest_root/worker-leg.pid; while [ ! -f $selftest_root/worker-leg.stop ]; do sleep 0.2; done" >"$out_leg" 2>&1 &
+  local launcher_leg=$!
+  BG_PIDS+=("$launcher_leg")
+  local wi_leg=0
+  while [ $wi_leg -lt 50 ] && [ ! -f "$legacy_dir/sigma-twentyfive.json" ]; do
+    sleep 0.1
+    wi_leg=$((wi_leg + 1))
+  done
+  [ -f "$legacy_dir/sigma-twentyfive.json" ] || case_fails=1
+  wait_for_file "$selftest_root/worker-leg.pid" || case_fails=1
+  local worker_leg_pid=""
+  worker_leg_pid=$(cat "$selftest_root/worker-leg.pid" 2>/dev/null || true)
+  [ -n "$worker_leg_pid" ] || case_fails=1
+  # Wait until the launcher records the worker, so the planted
+  # manifest is a complete old-style claim; then kill ONLY the
+  # launcher and stop the worker by its own stop file.
+  local wi_rec=0
+  while [ $wi_rec -lt 50 ] && [ "$(jget "$legacy_dir/sigma-twentyfive.json" worker_pid)" != "$worker_leg_pid" ]; do
+    sleep 0.1
+    wi_rec=$((wi_rec + 1))
+  done
+  [ "$(jget "$legacy_dir/sigma-twentyfive.json" worker_pid)" = "$worker_leg_pid" ] || case_fails=1
+  kill "$launcher_leg" 2>/dev/null || true
+  wait "$launcher_leg" 2>/dev/null || true
+  : >"$selftest_root/worker-leg.stop"
+  if [ -n "$worker_leg_pid" ]; then
+    wait_for_pid_dead "$worker_leg_pid" || case_fails=1
+  fi
+  sleep 0.2
+  [ "$(jget "$legacy_dir/sigma-twentyfive.json" state)" = "claimed" ] || case_fails=1
+
+  # --- Case 23: claim-refuses-legacy-state ---
+  local out23="$selftest_root/out23.txt" rc23=0
+  env -u AEP_LANES_DIR HOME="$legacy_home" AEP_WORKTREES_ROOT="$legacy_wts" \
+    bash "$self_path" claim --repo "$repo" --project sigma --lane twentythree \
+    --branch br-twentythree --base HEAD --worker w23 \
+    --exec true >"$out23" 2>&1 || rc23=$?
+  [ "$rc23" -eq 1 ] || case_fails=1
+  grep -qF "legacy coordinator state at $legacy_dir" "$out23" || case_fails=1
+  grep -qF "$new_dir" "$out23" || case_fails=1
+  grep -qF "AEP_LANES_DIR=$legacy_dir" "$out23" || case_fails=1
+  # The refusal created nothing anywhere: no new-default directory,
+  # no manifest for the refused lane, no worktree.
+  [ ! -e "$new_dir" ] || case_fails=1
+  [ ! -e "$legacy_dir/sigma-twentythree.json" ] || case_fails=1
+  [ ! -e "$legacy_wts/sigma-twentythree" ] || case_fails=1
+  report_case "claim-refuses-legacy-state"
+
+  # --- Case 24: release-reap-refuse-legacy-state-status-readonly ---
+  local out24r="$selftest_root/out24r.txt" out24p="$selftest_root/out24p.txt"
+  local out24s="$selftest_root/out24s.txt" out24f="$selftest_root/out24f.txt"
+  local rc24r=0 rc24p=0 rc24s=0 rc24f=0
+  env -u AEP_LANES_DIR HOME="$legacy_home" AEP_WORKTREES_ROOT="$legacy_wts" \
+    bash "$self_path" release --name sigma-twentyfive >"$out24r" 2>&1 || rc24r=$?
+  [ "$rc24r" -eq 1 ] || case_fails=1
+  grep -qF "legacy coordinator state at $legacy_dir" "$out24r" || case_fails=1
+  env -u AEP_LANES_DIR HOME="$legacy_home" AEP_WORKTREES_ROOT="$legacy_wts" \
+    bash "$self_path" reap --name sigma-twentyfive >"$out24p" 2>&1 || rc24p=$?
+  [ "$rc24p" -eq 1 ] || case_fails=1
+  grep -qF "legacy coordinator state at $legacy_dir" "$out24p" || case_fails=1
+  # Neither refusal touched the legacy manifest.
+  [ "$(jget "$legacy_dir/sigma-twentyfive.json" state)" = "claimed" ] || case_fails=1
+  # Status still lists the lane, read-only, marked legacy — both the
+  # --name form and the full pool listing.
+  env -u AEP_LANES_DIR HOME="$legacy_home" AEP_WORKTREES_ROOT="$legacy_wts" \
+    bash "$self_path" status --name sigma-twentyfive >"$out24s" 2>&1 || rc24s=$?
+  [ "$rc24s" -eq 0 ] || case_fails=1
+  grep -q "sigma-twentyfive state=claimed" "$out24s" || case_fails=1
+  grep -q " legacy$" "$out24s" || case_fails=1
+  env -u AEP_LANES_DIR HOME="$legacy_home" AEP_WORKTREES_ROOT="$legacy_wts" \
+    bash "$self_path" status >"$out24f" 2>&1 || rc24f=$?
+  [ "$rc24f" -eq 0 ] || case_fails=1
+  grep -q "sigma-twentyfive state=claimed .* legacy" "$out24f" || case_fails=1
+  report_case "release-reap-refuse-legacy-state"
+
+  # --- Case 25: migrated-lane-settles-normally ---
+  # Perform the documented remedy: the manifests were inspected
+  # above; now move the legacy directory's contents to the new
+  # default (the directory itself becomes the new state dir).
+  mkdir -p "$legacy_home/.local/state/aep"
+  mv "$legacy_dir" "$new_dir" || case_fails=1
+  local out25="$selftest_root/out25.txt" rc25=0
+  env -u AEP_LANES_DIR HOME="$legacy_home" AEP_WORKTREES_ROOT="$legacy_wts" \
+    bash "$self_path" release --name sigma-twentyfive >"$out25" 2>&1 || rc25=$?
+  [ "$rc25" -eq 0 ] || case_fails=1
+  grep -q "LANE: released sigma-twentyfive" "$out25" || case_fails=1
+  [ "$(jget "$new_dir/sigma-twentyfive.json" state)" = "released" ] || case_fails=1
+  # The migrated lane is no longer reported as legacy.
+  local out25s="$selftest_root/out25s.txt" rc25s=0
+  env -u AEP_LANES_DIR HOME="$legacy_home" AEP_WORKTREES_ROOT="$legacy_wts" \
+    bash "$self_path" status --name sigma-twentyfive >"$out25s" 2>&1 || rc25s=$?
+  [ "$rc25s" -eq 0 ] || case_fails=1
+  grep -q "sigma-twentyfive state=released" "$out25s" || case_fails=1
+  if grep -q " legacy$" "$out25s"; then case_fails=1; fi
+  # A fresh HOME with no legacy state: the script creates the new
+  # default on demand, mode 700, and the claim runs normally.
+  local fresh_home="$selftest_root/fresh-home"
+  mkdir -p "$fresh_home"
+  local out25f="$selftest_root/out25f.txt" rc25f=0
+  env -u AEP_LANES_DIR HOME="$fresh_home" AEP_WORKTREES_ROOT="$fresh_home/workspace/worktrees" \
+    bash "$self_path" claim --repo "$repo" --project tau --lane twentysix \
+    --branch br-twentysix --base HEAD --worker w26 \
+    --exec true >"$out25f" 2>&1 || rc25f=$?
+  [ "$rc25f" -eq 0 ] || case_fails=1
+  [ -f "$fresh_home/.local/state/aep/lanes/tau-twentysix.json" ] || case_fails=1
+  [ "$(stat -c %a "$fresh_home/.local/state/aep/lanes" 2>/dev/null || true)" = "700" ] || case_fails=1
+  report_case "migrated-lane-settles-normally"
 
   return "$fails"
 }

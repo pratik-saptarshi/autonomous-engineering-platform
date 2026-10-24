@@ -126,7 +126,25 @@ Scope statement: this check runs whenever an operator or a cron invokes `boot-ga
 
 ## Mechanism 3: the coordinator as launcher
 
-`lane-coord.sh` is a launcher, not a bookkeeping tool: a claim is held by the `lane-coord.sh claim ... --exec <command...>` process for the lane's whole lifetime, and the worker runs as its child inside the claimed worktree. State lives in `$AEP_LANES_DIR` (default `~/workspace/worktrees/.lanes`); worktrees are created at the deterministic path `$AEP_WORKTREES_ROOT/<name>` (default root `~/workspace/worktrees`).
+`lane-coord.sh` is a launcher, not a bookkeeping tool: a claim is held by the `lane-coord.sh claim ... --exec <command...>` process for the lane's whole lifetime, and the worker runs as its child inside the claimed worktree. State lives in `$AEP_LANES_DIR` (default `~/.local/state/aep/lanes` — outside the worktrees tree; see *State location, migration, and the residual risk*); worktrees are created at the deterministic path `$AEP_WORKTREES_ROOT/<name>` (default root `~/workspace/worktrees`).
+
+### State location, migration, and the residual risk
+
+The state directory used to default to `~/workspace/worktrees/.lanes` — inside the worktrees tree, which is the one tree every lane worker is tasked to operate in. That placement is what made the overseer panel's P1-4 repro possible: a worker could rewrite a manifest in the state directory, and one forged field (`worker_pid`, with `worker_start`) made `release --clean` delete another lane's live worktree. The default is now `~/.local/state/aep/lanes`, created on demand (mode 700 when the tool creates it). `AEP_LANES_DIR` overrides the location exactly as before.
+
+**Scope honesty.** Placement removes the state from every tree a worker is tasked to operate in, and it closes the panel's repro. It is **not** a write boundary against a determined same-uid process: lane workers run unsandboxed as the operator's own uid, and that uid can write the new location too if a worker deliberately aims at it (the mode 700 binds other uids only). The residual risk is accepted and recorded here rather than claimed away: the coordinator's guarantees hold against workers that stay inside their tasked tree, including accidental and content-driven writes; a worker actively attacking the coordinator's state is outside this mechanism's threat model.
+
+**Migration rule.** While any `*.json` manifest remains at the legacy location (`~/workspace/worktrees/.lanes`) and `AEP_LANES_DIR` is unset, `claim`, `release`, and `reap` refuse (exit 1) with one shared message naming the legacy path, the new default, and the two remedies:
+
+1. Inspect the manifests at the legacy location, then move the directory's contents to the new default — after which the lanes settle normally, through the existing gates.
+2. Or set `AEP_LANES_DIR` to the legacy path to keep operating there deliberately.
+
+`status` is the exception: it still lists legacy lanes read-only, each line marked `legacy`, so an operator can see what is waiting on migration. No code path reads or settles legacy state for a mutating command — there is no dual-directory operation.
+
+**Operator notes.**
+
+- Retire stale worktree copies of `lane-coord.sh` before first post-merge use. An old copy still defaults to the legacy location: one claim from it plants a legacy manifest, and the new copy will then refuse all claims until the migration above is performed.
+- Lane state now lives under `~/.local/state`, outside the old backup path lists (which covered `~/workspace/worktrees`). Add `~/.local/state/aep` to any backup set that is expected to preserve lane history across a machine replacement.
 
 ### Subcommands
 
@@ -136,7 +154,7 @@ Scope statement: this check runs whenever an operator or a cron invokes `boot-ga
 | `release --name <name> [--clean [--force-dirty]]` | The normal teardown path (see below). Without `--clean`, settles the claim and leaves the worktree in place. |
 | `reap --name <name>` | Settle a claim whose launcher is provably dead, without touching the worktree. Refuses while the fence is held. |
 | `status [--name <name>] [--capacity <n>]` | Show each lane's state, epoch, worker, fence state, and path, plus the pool line (`LANE: pool: <n> claimed of <capacity>`). |
-| `--self-test` | The built-in 21-case suite (also run in CI by the `script-tests` job). |
+| `--self-test` | The built-in 25-case suite (also run in CI by the `script-tests` job). |
 
 ### Exit codes
 
