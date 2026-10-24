@@ -97,7 +97,7 @@ wait_healthy() {
 
 start_and_wait() {
   start_daemon
-  if wait_healthy; then
+  if wait_healthy "$HEALTH_TIMEOUT"; then
     log "daemon restarted, healthy"
   else
     log "ERROR: daemon still down after restart attempt — next watchdog run will retry"
