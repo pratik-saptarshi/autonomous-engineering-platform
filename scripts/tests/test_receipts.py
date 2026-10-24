@@ -1,4 +1,6 @@
+import contextlib
 import hashlib
+import io
 import json
 import subprocess
 import sys
@@ -9,7 +11,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import mechanical_verify
-from mechanical_verify import run_verification
+from mechanical_verify import (
+    VerificationCommand,
+    VerificationResult,
+    append_receipt,
+    check_receipts,
+    run_verification,
+)
 
 SCRIPT = Path(__file__).resolve().parent.parent / "mechanical_verify.py"
 GENESIS = "0" * 64
@@ -76,7 +84,8 @@ class ReceiptTests(unittest.TestCase):
             proc = verify(root, "1", receipts)
             self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
             lines = receipts.read_text(encoding="utf-8").splitlines()
-            self.assertEqual(len(lines), 1)
+            # One command receipt plus the run-completion record.
+            self.assertEqual(len(lines), 2)
             self.assertNotIn("MARKER-OUTPUT", lines[0])
             receipt = json.loads(lines[0])
             self.assertEqual(receipt["command_id"], "make-test")
@@ -99,9 +108,11 @@ class ReceiptTests(unittest.TestCase):
             proc = verify(root, "1", receipts)
             self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
             parsed = read_receipts(receipts)
-            self.assertEqual(len(parsed), 2)
+            # Two command receipts plus the run-completion record.
+            self.assertEqual(len(parsed), 3)
             self.assertEqual(
-                [r["command_id"] for r in parsed], ["npm-test", "make-test"]
+                [r["command_id"] for r in parsed[:2]],
+                ["npm-test", "make-test"],
             )
             prev = GENESIS
             for receipt in parsed:
@@ -174,7 +185,8 @@ class ReceiptTests(unittest.TestCase):
                 proc = verify(root, task, receipts)
                 self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
             lines = receipts.read_text(encoding="utf-8").splitlines()
-            self.assertEqual(len(lines), 3)
+            # Three runs, each one command receipt + completion record.
+            self.assertEqual(len(lines), 6)
             del lines[1]
             receipts.write_text("\n".join(lines) + "\n", encoding="utf-8")
             proc = check(receipts, "1")
@@ -198,6 +210,64 @@ class ReceiptTests(unittest.TestCase):
             self.assertIn(
                 f"RECEIPTS: corrupt at line {line_count}", proc.stdout
             )
+
+    def test_verify_appends_run_completion_record(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            two_command_fixture(root)
+            receipts = root / "r.jsonl"
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            parsed = read_receipts(receipts)
+            self.assertEqual(len(parsed), 3)
+            completion = parsed[-1]
+            self.assertEqual(completion["kind"], "run-complete")
+            self.assertEqual(completion["task"], "1")
+            self.assertEqual(completion["command_count"], 2)
+            expected_digest = hashlib.sha256(
+                json.dumps(["npm-test", "make-test"]).encode("utf-8")
+            ).hexdigest()
+            self.assertEqual(completion["commands_sha256"], expected_digest)
+            proc = check(receipts, "1")
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
+    def test_check_receipts_truncated_run_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            two_command_fixture(root)
+            receipts = root / "r.jsonl"
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            lines = receipts.read_text(encoding="utf-8").splitlines()
+            # Truncate the way a partial artifact would lose its tail:
+            # the last command receipt and the completion record are gone.
+            receipts.write_text(lines[0] + "\n", encoding="utf-8")
+            proc = check(receipts, "1")
+            self.assertEqual(proc.returncode, 1)
+            self.assertIn("no completion record", proc.stdout)
+
+    def test_check_receipts_partial_run_fails(self):
+        # The receipts state a budget-exhausted run leaves behind: the
+        # first command's passing receipt, and nothing after it.
+        with tempfile.TemporaryDirectory() as tmp:
+            receipts = Path(tmp) / "r.jsonl"
+            result = VerificationResult(
+                command=VerificationCommand(
+                    "npm-test", "Node tests", ("npm", "test")
+                ),
+                exit_code=0,
+                timed_out=False,
+                duration_ms=5,
+                stdout="",
+                stderr="",
+                output_truncated=False,
+            )
+            append_receipt(receipts, "1", result)
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                rc = check_receipts(receipts, "1")
+            self.assertEqual(rc, 1)
+            self.assertIn("no completion record", stdout.getvalue())
 
     def test_check_receipts_scoped_per_task(self):
         with tempfile.TemporaryDirectory() as tmp:

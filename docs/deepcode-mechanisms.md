@@ -45,12 +45,12 @@ Discovery is deduplicated by command id and capped at the first match per rule. 
 
 | Code | Meaning |
 | --- | --- |
-| 0 | The whole file's chain validates, and every receipt for the task records `exit_code` 0 with no timeout (`RECEIPTS: PASS`). |
-| 1 | The file is corrupt at a named line, the chain is broken at a named line, the task has no receipts, or one of the task's receipts records a failure (`RECEIPTS: FAIL` / `RECEIPTS: corrupt` / `RECEIPTS: chain broken`). |
+| 0 | The whole file's chain validates, every receipt for the task records `exit_code` 0 with no timeout, and the task's latest run ends in a run-completion record matching its command receipts (`RECEIPTS: PASS`). |
+| 1 | The file is corrupt at a named line, the chain is broken at a named line, the task has no receipts, one of the task's receipts records a failure, or the task's latest run has no matching run-completion record — the partial receipt set of a run that stopped early is rejected (`RECEIPTS: FAIL` / `RECEIPTS: corrupt` / `RECEIPTS: chain broken`). |
 
 ### Receipts format and chain
 
-With `--receipts <file>`, `verify` appends one JSON line per executed command. A receipt contains hashes, never output text:
+With `--receipts <file>`, `verify` appends one JSON line per executed command. A receipt contains hashes, never output text. When — and only when — every discovered command has executed and passed, `verify` appends a final run-completion record (`kind: run-complete`) carrying the run's command count and a SHA-256 digest of the ordered command ids; a run that stops early writes no such record. The command-receipt fields:
 
 | Field | Content |
 | --- | --- |

@@ -354,6 +354,22 @@ RECEIPT_FIELDS = (
     "chain_sha256",
 )
 
+COMPLETION_KIND = "run-complete"
+
+COMPLETION_FIELDS = (
+    "ts",
+    "task",
+    "kind",
+    "command_count",
+    "commands_sha256",
+    "chain_sha256",
+)
+
+
+def _commands_digest(command_ids) -> str:
+    canonical = json.dumps(list(command_ids), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
 
 def _chain_sha256(body: dict, prev_chain: str) -> str:
     canonical = json.dumps(body, sort_keys=True, ensure_ascii=False)
@@ -393,66 +409,94 @@ def _last_chain(receipts_path: Path) -> str:
     return parsed["chain_sha256"]
 
 
+def _append_record(receipts_path: Path, body: dict) -> None:
+    """Append one hash-chained record under an exclusive flock.
+
+    The append lands as a single os.write, so concurrent runs cannot
+    interleave a line.
+    """
+    fd = os.open(receipts_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        record = dict(body)
+        record["chain_sha256"] = _chain_sha256(body, _last_chain(receipts_path))
+        line = json.dumps(record, sort_keys=True, ensure_ascii=False) + "\n"
+        os.write(fd, line.encode("utf-8"))
+    finally:
+        os.close(fd)
+
+
 def append_receipt(
     receipts_path: Path, task: str, result: VerificationResult
 ) -> None:
     """Append one hash-chained receipt for a result the verifier produced.
 
     Only hashes of the capped output are recorded — never output text.
-    The append holds an exclusive flock and lands as a single os.write.
     """
-    fd = os.open(receipts_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND)
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        prev_chain = _last_chain(receipts_path)
-        body = {
-            "ts": datetime.now(timezone.utc).isoformat(),
-            "task": task,
-            "command_id": result.command.id,
-            "argv": list(result.command.argv),
-            "exit_code": result.exit_code,
-            "timed_out": result.timed_out,
-            "duration_ms": result.duration_ms,
-            "stdout_sha256": hashlib.sha256(
-                result.stdout.encode("utf-8")
-            ).hexdigest(),
-            "stderr_sha256": hashlib.sha256(
-                result.stderr.encode("utf-8")
-            ).hexdigest(),
-        }
-        receipt = dict(body)
-        receipt["chain_sha256"] = _chain_sha256(body, prev_chain)
-        line = json.dumps(receipt, sort_keys=True, ensure_ascii=False) + "\n"
-        os.write(fd, line.encode("utf-8"))
-    finally:
-        os.close(fd)
+    body = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "task": task,
+        "command_id": result.command.id,
+        "argv": list(result.command.argv),
+        "exit_code": result.exit_code,
+        "timed_out": result.timed_out,
+        "duration_ms": result.duration_ms,
+        "stdout_sha256": hashlib.sha256(result.stdout.encode("utf-8")).hexdigest(),
+        "stderr_sha256": hashlib.sha256(result.stderr.encode("utf-8")).hexdigest(),
+    }
+    _append_record(receipts_path, body)
+
+
+def append_completion(receipts_path: Path, task: str, commands) -> None:
+    """Append the run-completion record for a fully successful run.
+
+    Written only when every discovered command executed and passed; it
+    carries the expected command count and a digest of the ordered
+    command set, so check_receipts can reject the partial receipt set
+    of a run that stopped early.
+    """
+    body = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "task": task,
+        "kind": COMPLETION_KIND,
+        "command_count": len(commands),
+        "commands_sha256": _commands_digest([c.id for c in commands]),
+    }
+    _append_record(receipts_path, body)
 
 
 def check_receipts(receipts_path: Path, task: str) -> int:
     lines = _receipt_lines(receipts_path)
-    receipts: list[dict] = []
+    records: list[dict] = []
     for number, line in enumerate(lines, start=1):
         try:
             parsed = json.loads(line)
         except json.JSONDecodeError:
             print(f"RECEIPTS: corrupt at line {number}")
             return 1
-        if not isinstance(parsed, dict) or any(
-            field not in parsed for field in RECEIPT_FIELDS
-        ):
+        if not isinstance(parsed, dict):
             print(f"RECEIPTS: corrupt at line {number}")
             return 1
-        receipts.append(parsed)
+        required = (
+            COMPLETION_FIELDS
+            if parsed.get("kind") == COMPLETION_KIND
+            else RECEIPT_FIELDS
+        )
+        if any(field not in parsed for field in required):
+            print(f"RECEIPTS: corrupt at line {number}")
+            return 1
+        records.append(parsed)
 
     prev_chain = GENESIS_CHAIN
-    for number, receipt in enumerate(receipts, start=1):
+    for number, receipt in enumerate(records, start=1):
         body = {k: v for k, v in receipt.items() if k != "chain_sha256"}
         if _chain_sha256(body, prev_chain) != receipt["chain_sha256"]:
             print(f"RECEIPTS: chain broken at line {number}")
             return 1
         prev_chain = receipt["chain_sha256"]
 
-    mine = [r for r in receipts if r["task"] == task]
+    task_records = [r for r in records if r["task"] == task]
+    mine = [r for r in task_records if r.get("kind") != COMPLETION_KIND]
     if not mine:
         print(f"RECEIPTS: FAIL task {task}: no receipts")
         return 1
@@ -463,6 +507,32 @@ def check_receipts(receipts_path: Path, task: str) -> int:
                 f"receipt failed: {receipt['command_id']}"
             )
             return 1
+
+    # The task's latest run must be proven complete: its records must end
+    # with a run-completion record whose count and command-set digest
+    # match the command receipts of that final run segment. Without one,
+    # the receipts may be all that a stopped-early run managed to write.
+    if task_records[-1].get("kind") != COMPLETION_KIND:
+        print(
+            f"RECEIPTS: FAIL task {task}: "
+            "incomplete run: no completion record"
+        )
+        return 1
+    completion = task_records[-1]
+    segment: list[dict] = []
+    for record in reversed(task_records[:-1]):
+        if record.get("kind") == COMPLETION_KIND:
+            break
+        segment.append(record)
+    segment.reverse()
+    if len(segment) != completion["command_count"] or _commands_digest(
+        [r["command_id"] for r in segment]
+    ) != completion["commands_sha256"]:
+        print(
+            f"RECEIPTS: FAIL task {task}: "
+            "completion record does not match run receipts"
+        )
+        return 1
     print(f"RECEIPTS: PASS task {task}: {len(mine)} receipts, chain valid")
     return 0
 
@@ -527,7 +597,7 @@ def main(argv: list[str] | None = None) -> int:
         def on_result(result: VerificationResult) -> None:
             append_receipt(receipts_path, task, result)
 
-    return run_all(
+    rc = run_all(
         root,
         commands,
         timeout_seconds=args.timeout,
@@ -535,6 +605,11 @@ def main(argv: list[str] | None = None) -> int:
         mem_available_kb=available_memory_kb,
         on_result=on_result,
     )
+    if rc == 0 and receipts_path is not None:
+        # run_all returns 0 only when every command executed and passed;
+        # seal the run so check_receipts can reject a partial receipt set.
+        append_completion(receipts_path, task, commands)
+    return rc
 
 
 if __name__ == "__main__":
