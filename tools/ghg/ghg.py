@@ -1022,6 +1022,23 @@ def _fmt_num(value):
     return "%g" % value
 
 
+def canonical_repo(repo):
+    """Canonical form of a --repo value for watch-key construction.
+
+    gh accepts [HOST/]OWNER/REPO, so the same run can be watched
+    under several spellings; the shared watch key must agree across
+    all of them or coalescing is silently defeated. A 3-segment
+    value drops its host segment and the result is lowercased
+    (GitHub owner/repo identity is case-insensitive). Other shapes
+    pass through lowercased — gh itself validates the value when it
+    is used in argv; only the key needs agreement here.
+    """
+    parts = repo.strip().split("/")
+    if len(parts) == 3:
+        parts = parts[1:]
+    return "/".join(parts).lower()
+
+
 def cmd_watch(args):
     floor = interval_floor()
     requested = args.interval if args.interval is not None else floor
@@ -1033,7 +1050,7 @@ def cmd_watch(args):
               file=sys.stderr, flush=True)
         effective = floor
     run_id = args.run
-    run_key = "%s#%s" % (args.repo, run_id)
+    run_key = "%s#%s" % (canonical_repo(args.repo), run_id)
     self_id = "%d-%s" % (os.getpid(), uuid.uuid4().hex[:12])
     actor = resolve_actor()
     deadline = time.monotonic() + args.timeout

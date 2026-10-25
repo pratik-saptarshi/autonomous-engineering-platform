@@ -173,7 +173,7 @@ class WatchTestCase(unittest.TestCase):
         return self.stub_calls() >= n
 
     def spawn_watcher(self, interval="1", timeout_s="30", min_interval="1",
-                      run_id="42"):
+                      run_id="42", repo="owner/repo"):
         env = dict(os.environ)
         env["GHG_STATE_DIR"] = str(self.state_dir)
         env["GHG_REAL_GH"] = str(self.stub)
@@ -186,7 +186,7 @@ class WatchTestCase(unittest.TestCase):
             env["GHG_MIN_INTERVAL"] = min_interval
         proc = subprocess.Popen(
             [sys.executable, str(GHG_PY), "watch",
-             "--repo", "owner/repo", "--run", run_id,
+             "--repo", repo, "--run", run_id,
              "--interval", interval, "--timeout", timeout_s],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, env=env)
@@ -620,6 +620,81 @@ class TestPollDeadline(WatchTestCase):
                         "snapshot + poll read were not jointly"
                         " bounded by the watch deadline: %.3fs"
                         % elapsed)
+
+
+class TestRepoKeyCanonicalization(WatchTestCase):
+    """FR4-2: watch keys are built from the canonical repo identity.
+
+    gh accepts --repo [HOST/]OWNER/REPO, so the same run watched as
+    owner/repo and as github.com/owner/repo must coalesce onto ONE
+    row — pre-fix the raw spelling made two keys, two owner rows, and
+    two independent pollers for the same run.
+    """
+
+    def all_rows(self):
+        db = sqlite3.connect(self.state_dir / "ghg.db")
+        try:
+            return db.execute(
+                "SELECT run_key, status, conclusion FROM watches"
+                " ORDER BY run_key").fetchall()
+        finally:
+            db.close()
+
+    def test_canonical_repo_segment_rules(self):
+        ghg = load_ghg_module()
+        self.assertEqual(ghg.canonical_repo("owner/repo"), "owner/repo")
+        self.assertEqual(ghg.canonical_repo("github.com/owner/repo"),
+                         "owner/repo")
+        self.assertEqual(ghg.canonical_repo("Owner/Repo"), "owner/repo")
+        self.assertEqual(ghg.canonical_repo("GitHub.com/Owner/Repo"),
+                         "owner/repo")
+        self.assertEqual(ghg.canonical_repo("  owner/repo  "),
+                         "owner/repo")
+        # Shapes other than exactly 3 segments pass through
+        # (lowercased): no validation gh itself does not do.
+        self.assertEqual(ghg.canonical_repo("Repo"), "repo")
+        self.assertEqual(ghg.canonical_repo("a/b/c/d"), "a/b/c/d")
+
+    def test_host_spelling_coalesces(self):
+        self.set_plan([{"status": "completed", "conclusion": "success"}])
+        plain = self.spawn_watcher()
+        hosted = self.spawn_watcher(repo="github.com/owner/repo")
+        for proc in (plain, hosted):
+            code, out, _ = self.finish(proc)
+            self.assertEqual(code, 0)
+            self.assertIn("conclusion=success", out)
+        # One poller for both spellings: exactly one status read, and
+        # the second caller issued none of its own.
+        self.assertEqual(self.stub_calls(), 1)
+        rows = self.all_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][0], "owner/repo#42")
+
+    def test_case_spelling_coalesces(self):
+        self.set_plan([{"status": "completed", "conclusion": "success"}])
+        upper = self.spawn_watcher(repo="Owner/Repo")
+        lower = self.spawn_watcher()
+        for proc in (upper, lower):
+            code, out, _ = self.finish(proc)
+            self.assertEqual(code, 0)
+            self.assertIn("conclusion=success", out)
+        self.assertEqual(self.stub_calls(), 1)
+        rows = self.all_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][0], "owner/repo#42")
+
+    def test_different_repo_gets_its_own_row(self):
+        self.set_plan([{"status": "completed", "conclusion": "success"}])
+        mine = self.spawn_watcher()
+        other = self.spawn_watcher(repo="other/repo")
+        for proc in (mine, other):
+            code, out, _ = self.finish(proc)
+            self.assertEqual(code, 0)
+            self.assertIn("conclusion=success", out)
+        self.assertEqual(self.stub_calls(), 2)
+        rows = self.all_rows()
+        self.assertEqual([r[0] for r in rows],
+                         ["other/repo#42", "owner/repo#42"])
 
 
 class TestBrokenDb(WatchTestCase):
