@@ -67,6 +67,49 @@ class ActiveLaneNamesTests(unittest.TestCase):
         )
         self.assertEqual(self.active(), set())
 
+    def test_direct_cleanup_closes_open_claim_interval(self):
+        # Regression (Codex P2): an interrupted lane cleaned directly
+        # — claimed, then cleaned with no intervening release (a
+        # lane-coord-supported path). The cleanup closes the claim
+        # interval, which intersects the window.
+        self.write_lane(
+            "lane-x",
+            state="cleaned",
+            claimed_at="2026-01-01T00:00:00Z",
+            updated_at="2026-01-01T02:30:00Z",
+            history=[
+                ("2026-01-01T00:00:00Z", "claimed"),
+                ("2026-01-01T02:30:00Z", "cleaned"),
+            ],
+        )
+        self.assertEqual(self.active(), {"lane-x"})
+
+    def test_claimed_and_cleaned_inside_window_is_evidence(self):
+        self.write_lane(
+            "lane-x",
+            state="cleaned",
+            claimed_at="2026-01-01T02:10:00Z",
+            updated_at="2026-01-01T02:30:00Z",
+            history=[
+                ("2026-01-01T02:10:00Z", "claimed"),
+                ("2026-01-01T02:30:00Z", "cleaned"),
+            ],
+        )
+        self.assertEqual(self.active(), {"lane-x"})
+
+    def test_claimed_and_cleaned_before_window_is_not_evidence(self):
+        self.write_lane(
+            "lane-x",
+            state="cleaned",
+            claimed_at="2026-01-01T00:00:00Z",
+            updated_at="2026-01-01T01:00:00Z",
+            history=[
+                ("2026-01-01T00:00:00Z", "claimed"),
+                ("2026-01-01T01:00:00Z", "cleaned"),
+            ],
+        )
+        self.assertEqual(self.active(), set())
+
     def test_settled_manifest_without_history_is_not_evidence(self):
         # A settled manifest whose settlement time cannot be
         # established (no history) earns no pickup credit, however
@@ -217,6 +260,46 @@ class ActiveLaneNamesTests(unittest.TestCase):
         self.assertEqual(
             observation["exits"],
             [{"identifier": "42", "pickup_explained": True}],
+        )
+
+    def test_exit_after_direct_cleanup_is_pickup_explained(self):
+        # End to end (Codex P2): claimed and cleaned between the two
+        # observations, no release — the exit is a pickup and the lag
+        # is credited.
+        lane = lane_name_for("X-1")
+        self.write_lane(
+            lane,
+            state="cleaned",
+            claimed_at="2026-01-01T02:10:00Z",
+            updated_at="2026-01-01T02:30:00Z",
+            history=[
+                ("2026-01-01T02:10:00Z", "claimed"),
+                ("2026-01-01T02:30:00Z", "cleaned"),
+            ],
+        )
+        previous = {
+            "ts": "2026-01-01T02:00:00+00:00",
+            "ready": ["X-1"],
+        }
+        observation = build_observation(
+            now=ts("2026-01-01T03:00:00"),
+            tracker="beads",
+            dispatch=[],
+            rejections={"X-1": "STATE_NOT_ACTIVE"},
+            previous=previous,
+            active_lanes=self.active(),
+            points_spent=None,
+            fetch_count=1,
+            type_excluded_count=0,
+            truncated=False,
+        )
+        self.assertEqual(
+            observation["exits"],
+            [{"identifier": "X-1", "pickup_explained": True}],
+        )
+        summary = summarize([previous | {"ready_wait_s": {}}, observation])
+        self.assertIn(
+            "pickup lag: median 3600s over 1 pickup-explained exit", summary
         )
 
 

@@ -174,13 +174,18 @@ def build_observation(
 # History events that close a claim interval: the lane leaves the
 # active-claim state. ``setup-failed`` / ``claim-refused`` settle a
 # just-written manifest as released; ``settled-interrupted`` precedes
-# or accompanies a reap. Post-settlement housekeeping (``cleaned``)
-# is deliberately absent: it follows a settlement and says nothing
-# about when the lane was active.
+# or accompanies a reap. ``cleaned`` closes an interval too — for
+# the direct-cleanup path, where lane-coord cleans an interrupted
+# lane from ``claimed`` with no intervening release and writes only
+# the ``cleaned`` state/event. The interval machinery only honors a
+# closing event while an interval is open, so when an earlier
+# settlement already closed the claim, a later ``cleaned`` is
+# ignored: post-settlement housekeeping earns no fresh credit.
 _SETTLEMENT_EVENTS = frozenset(
     {
         "released",
         "reaped",
+        "cleaned",
         "settled-interrupted",
         "setup-failed",
         "claim-refused",
