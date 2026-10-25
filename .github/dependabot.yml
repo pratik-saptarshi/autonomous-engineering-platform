@@ -1,0 +1,15 @@
+# Dependabot version updates — deliberately scoped to the repo's only live
+# dependency manifest, skills/archify (npm). Everything under reference/ is a
+# byte-pinned snapshot (see .github/vendor-*.sha256) and is intentionally
+# absent: omission, not an ignore entry, is the posture for trees that must
+# never be edited in place — snapshot changes land only by re-vendoring.
+#
+# This file governs VERSION updates only. It does not govern security
+# updates, which are controlled by the repo Settings toggle (Code security),
+# not by this file.
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/skills/archify"
+    schedule:
+      interval: "weekly"
