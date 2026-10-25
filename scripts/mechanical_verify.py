@@ -1855,6 +1855,18 @@ def main(argv: list[str] | None = None) -> int:
 
     receipts_path = Path(args.receipts) if args.receipts is not None else None
     if receipts_path is not None:
+        # The verifier creates the receipts FILE on first append but
+        # never its parent directories: a --receipts path into a
+        # nonexistent directory is a caller error, refused here —
+        # fail closed before running anything — rather than dying
+        # with a FileNotFoundError traceback at the first append.
+        if not receipts_path.parent.is_dir():
+            print(
+                f"VERIFY: FAIL receipts directory "
+                f"{receipts_path.parent} does not exist "
+                "— create it or point --receipts elsewhere"
+            )
+            return 1
         # Fail closed before running anything: never append to a receipts
         # file whose last line is malformed.
         lines = _receipt_lines(receipts_path)

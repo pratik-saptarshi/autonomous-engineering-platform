@@ -1725,6 +1725,43 @@ class CliTests(unittest.TestCase):
             self.assertNotIn("VERIFY: make-test", proc.stdout)
             self.assertEqual(proc.returncode, 1)
 
+    def test_verify_receipts_parent_missing_is_clean_refusal(self):
+        # Post-change validation probe: --receipts pointing into a
+        # nonexistent directory died with an unhandled
+        # FileNotFoundError traceback from the first append — the
+        # verifier creates the receipts FILE on append but never its
+        # parent directories. A caller error like this is a named,
+        # fail-closed refusal (exit 1, like the verifier's other
+        # precondition failures), and the directory must NOT be
+        # silently created.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "Makefile", "test:\n\ttrue\n")
+            missing_dir = root / "no-such-dir"
+            receipts = missing_dir / "receipts.jsonl"
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "verify",
+                    "--root",
+                    str(root),
+                    "--task",
+                    "t",
+                    "--receipts",
+                    str(receipts),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("VERIFY: FAIL receipts directory", proc.stdout)
+            self.assertIn(str(missing_dir), proc.stdout)
+            self.assertNotIn("Traceback", proc.stderr)
+            self.assertNotIn("VERIFY: make-test", proc.stdout)
+            self.assertFalse(missing_dir.exists())
+
     def test_verify_no_commands_exit_2(self):
         with tempfile.TemporaryDirectory() as tmp:
             proc = self.run_cli(Path(tmp))
