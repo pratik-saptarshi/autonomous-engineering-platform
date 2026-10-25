@@ -696,6 +696,49 @@ class TestRepoKeyCanonicalization(WatchTestCase):
         self.assertEqual([r[0] for r in rows],
                          ["other/repo#42", "owner/repo#42"])
 
+    def test_canonical_repo_host_branches(self):
+        # FR5-2: the three canonicalization branches — no host, the
+        # default host (github.com, dropped), and a non-default host
+        # (preserved: a distinct repository, not a spelling variant).
+        ghg = load_ghg_module()
+        self.assertEqual(ghg.canonical_repo("owner/repo"), "owner/repo")
+        self.assertEqual(ghg.canonical_repo("github.com/owner/repo"),
+                         "owner/repo")
+        self.assertEqual(ghg.canonical_repo("GitHub.COM/Owner/Repo"),
+                         "owner/repo")
+        self.assertEqual(ghg.canonical_repo("ghe.example.com/owner/repo"),
+                         "ghe.example.com/owner/repo")
+        self.assertEqual(ghg.canonical_repo("GHE.Example.COM/Owner/Repo"),
+                         "ghe.example.com/owner/repo")
+
+    def test_distinct_hosts_get_distinct_rows_and_polls(self):
+        # FR5-2: the same owner/repo spelling + run id on github.com
+        # and on an enterprise host are two different runs. Pre-fix
+        # canonical_repo dropped any host, so the enterprise watcher
+        # coalesced onto the public row and returned its conclusion
+        # without ever polling its own host. The stub plan hands the
+        # first caller "success" and the second "failure", so each
+        # watcher must return a different conclusion — its own row's.
+        self.set_plan([
+            {"status": "completed", "conclusion": "success"},
+            {"status": "completed", "conclusion": "failure"},
+        ])
+        public = self.spawn_watcher(repo="github.com/owner/repo")
+        enterprise = self.spawn_watcher(repo="ghe.example.com/owner/repo")
+        results = [self.finish(proc) for proc in (public, enterprise)]
+        outcomes = sorted((code, out) for code, out, _ in results)
+        self.assertEqual(len(outcomes), 2)
+        self.assertEqual(outcomes[0][0], 0)
+        self.assertIn("conclusion=success", outcomes[0][1])
+        self.assertEqual(outcomes[1][0], 1)
+        self.assertIn("conclusion=failure", outcomes[1][1])
+        # Two independent pollers: each performed its own status read.
+        self.assertEqual(self.stub_calls(), 2)
+        rows = self.all_rows()
+        self.assertEqual([r[0] for r in rows],
+                         ["ghe.example.com/owner/repo#42",
+                          "owner/repo#42"])
+
 
 class TestBrokenDb(WatchTestCase):
     def test_watch_broken_db_exits_70_without_traceback(self):

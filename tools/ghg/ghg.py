@@ -1042,14 +1042,19 @@ def canonical_repo(repo):
 
     gh accepts [HOST/]OWNER/REPO, so the same run can be watched
     under several spellings; the shared watch key must agree across
-    all of them or coalescing is silently defeated. A 3-segment
-    value drops its host segment and the result is lowercased
-    (GitHub owner/repo identity is case-insensitive). Other shapes
-    pass through lowercased — gh itself validates the value when it
-    is used in argv; only the key needs agreement here.
+    all of them or coalescing is silently defeated. The host segment
+    is dropped only when it is the default host, github.com (gh's
+    default when no host is given): github.com/owner/repo and
+    owner/repo are the same repository. Any other host names a
+    different GitHub instance, so it stays in the key — dropping it
+    would coalesce watchers of two distinct repositories. The
+    result is lowercased (GitHub host and owner/repo identity are
+    case-insensitive). Other shapes pass through lowercased — gh
+    itself validates the value when it is used in argv; only the
+    key needs agreement here.
     """
     parts = repo.strip().split("/")
-    if len(parts) == 3:
+    if len(parts) == 3 and parts[0].lower() == "github.com":
         parts = parts[1:]
     return "/".join(parts).lower()
 
