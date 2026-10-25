@@ -1,0 +1,188 @@
+import json
+import sys
+import tempfile
+import unittest
+from datetime import datetime, timezone
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from orch.claims import lane_name_for
+from orch.observe import active_lane_names, build_observation, summarize
+
+
+def ts(text):
+    return datetime.fromisoformat(text).replace(tzinfo=timezone.utc)
+
+
+class ActiveLaneNamesTests(unittest.TestCase):
+    """Pickup evidence is a claim/settlement interval, not updated_at.
+
+    lane-coord refreshes a manifest's ``updated_at`` on every state
+    rewrite — including post-settlement cleanup — while preserving
+    ``claimed_at``, so ``updated_at`` cannot establish the lane was
+    active during the observation interval.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def write_lane(self, name, *, state, claimed_at, updated_at, history=()):
+        manifest = {
+            "state": state,
+            "claimed_at": claimed_at,
+            "updated_at": updated_at,
+        }
+        (self.dir / f"{name}.json").write_text(
+            json.dumps(manifest), encoding="utf-8"
+        )
+        if history:
+            lines = "".join(
+                f"{stamp} {event} epoch=1 worker=w\n"
+                for stamp, event in history
+            )
+            (self.dir / f"{name}.log").write_text(lines, encoding="utf-8")
+
+    def active(self, start="2026-01-01T02:00:00", end="2026-01-01T03:00:00"):
+        return active_lane_names(self.dir, ts(start), ts(end))
+
+    def test_cleaned_inside_window_after_release_before_it_is_not_evidence(self):
+        # Regression: lane claimed 00:00, released 01:00 (before the
+        # window), cleaned 02:30 (inside it). The cleanup refreshed
+        # updated_at, but the lane was never active in the window.
+        self.write_lane(
+            "lane-x",
+            state="cleaned",
+            claimed_at="2026-01-01T00:00:00Z",
+            updated_at="2026-01-01T02:30:00Z",
+            history=[
+                ("2026-01-01T00:00:00Z", "claimed"),
+                ("2026-01-01T01:00:00Z", "released"),
+                ("2026-01-01T02:30:00Z", "cleaned"),
+            ],
+        )
+        self.assertEqual(self.active(), set())
+
+    def test_settled_manifest_without_history_is_not_evidence(self):
+        # A settled manifest whose settlement time cannot be
+        # established (no history) earns no pickup credit, however
+        # recent its updated_at.
+        self.write_lane(
+            "lane-y",
+            state="released",
+            claimed_at="2026-01-01T00:00:00Z",
+            updated_at="2026-01-01T02:30:00Z",
+        )
+        self.assertEqual(self.active(), set())
+
+    def test_released_inside_window_is_evidence(self):
+        self.write_lane(
+            "lane-x",
+            state="released",
+            claimed_at="2026-01-01T00:00:00Z",
+            updated_at="2026-01-01T02:15:00Z",
+            history=[
+                ("2026-01-01T00:00:00Z", "claimed"),
+                ("2026-01-01T02:15:00Z", "released"),
+            ],
+        )
+        self.assertEqual(self.active(), {"lane-x"})
+
+    def test_claimed_and_settled_inside_window_is_evidence(self):
+        self.write_lane(
+            "lane-x",
+            state="reaped",
+            claimed_at="2026-01-01T02:10:00Z",
+            updated_at="2026-01-01T02:20:00Z",
+            history=[
+                ("2026-01-01T02:10:00Z", "claimed"),
+                ("2026-01-01T02:20:00Z", "settled-interrupted"),
+                ("2026-01-01T02:20:00Z", "reaped"),
+            ],
+        )
+        self.assertEqual(self.active(), {"lane-x"})
+
+    def test_settled_entirely_before_window_is_not_evidence(self):
+        self.write_lane(
+            "lane-x",
+            state="released",
+            claimed_at="2026-01-01T00:00:00Z",
+            updated_at="2026-01-01T01:00:00Z",
+            history=[
+                ("2026-01-01T00:00:00Z", "claimed"),
+                ("2026-01-01T01:00:00Z", "released"),
+            ],
+        )
+        self.assertEqual(self.active(), set())
+
+    def test_still_claimed_manifest_without_history_is_evidence(self):
+        self.write_lane(
+            "lane-x",
+            state="claimed",
+            claimed_at="2026-01-01T01:00:00Z",
+            updated_at="2026-01-01T01:00:00Z",
+        )
+        self.assertEqual(self.active(), {"lane-x"})
+
+    def test_reclaimed_episode_inside_window_is_evidence(self):
+        # First claim settled before the window; a second claim opened
+        # inside it and is still active.
+        self.write_lane(
+            "lane-x",
+            state="claimed",
+            claimed_at="2026-01-01T02:05:00Z",
+            updated_at="2026-01-01T02:05:00Z",
+            history=[
+                ("2026-01-01T00:00:00Z", "claimed"),
+                ("2026-01-01T01:00:00Z", "released"),
+                ("2026-01-01T02:05:00Z", "claimed"),
+            ],
+        )
+        self.assertEqual(self.active(), {"lane-x"})
+
+    def test_exit_after_cleanup_is_not_pickup_explained(self):
+        # End to end: the issue leaves ready in the interval where the
+        # lane was only cleaned; the exit stays unexplained and no
+        # pickup lag is credited.
+        lane = lane_name_for("X-1")
+        self.write_lane(
+            lane,
+            state="cleaned",
+            claimed_at="2026-01-01T00:00:00Z",
+            updated_at="2026-01-01T02:30:00Z",
+            history=[
+                ("2026-01-01T00:00:00Z", "claimed"),
+                ("2026-01-01T01:00:00Z", "released"),
+                ("2026-01-01T02:30:00Z", "cleaned"),
+            ],
+        )
+        previous = {
+            "ts": "2026-01-01T02:00:00+00:00",
+            "ready": ["X-1"],
+        }
+        observation = build_observation(
+            now=ts("2026-01-01T03:00:00"),
+            tracker="beads",
+            dispatch=[],
+            rejections={"X-1": "STATE_NOT_ACTIVE"},
+            previous=previous,
+            active_lanes=self.active(),
+            points_spent=None,
+            fetch_count=1,
+            type_excluded_count=0,
+            truncated=False,
+        )
+        self.assertEqual(
+            observation["exits"],
+            [{"identifier": "X-1", "pickup_explained": False}],
+        )
+        summary = summarize([previous | {"ready_wait_s": {}}, observation])
+        self.assertIn("pickup lag: n/a", summary)
+
+
+if __name__ == "__main__":
+    unittest.main()

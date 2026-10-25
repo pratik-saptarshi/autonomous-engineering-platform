@@ -21,11 +21,12 @@ these fields):
   including :func:`summarize` output.
 - ``exits``: ``[{identifier, pickup_explained}]`` — identifiers ready
   in the previous observation and absent now. ``pickup_explained`` is
-  true iff a lane manifest bearing the identifier's lane name (the
-  eligibility engine's encoding) was active in the interval between
-  the two observations — evidence the current regime demonstrably
-  picked the work up, as opposed to it leaving ready by closure,
-  blocking, or operator action.
+  true iff a lane bearing the identifier's lane name (the eligibility
+  engine's encoding) was under claim during the interval between the
+  two observations, per its claim/settlement intervals (see
+  :func:`active_lane_names`) — evidence the current regime
+  demonstrably picked the work up, as opposed to it leaving ready by
+  closure, blocking, or operator action.
 - ``age_s``: ``{identifier: seconds}`` since each ready issue's
   ``created_at``.
 - ``points_spent``: gateway points the poll cost, for live runs of the
@@ -164,16 +165,85 @@ def build_observation(
     }
 
 
-def active_lane_names(lanes_dir, start: datetime, end: datetime) -> set[str]:
-    """Lane names whose manifests were active in ``[start, end]``.
+# History events that close a claim interval: the lane leaves the
+# active-claim state. ``setup-failed`` / ``claim-refused`` settle a
+# just-written manifest as released; ``settled-interrupted`` precedes
+# or accompanies a reap. Post-settlement housekeeping (``cleaned``)
+# is deliberately absent: it follows a settlement and says nothing
+# about when the lane was active.
+_SETTLEMENT_EVENTS = frozenset(
+    {
+        "released",
+        "reaped",
+        "settled-interrupted",
+        "setup-failed",
+        "claim-refused",
+    }
+)
 
-    A manifest (lane-coord's per-lane JSON: ``state``, ``claimed_at``,
-    ``updated_at``) counts when it was claimed at or before ``end`` and
-    either is still in the active-claim state or was last updated at or
-    after ``start`` (claimed during the interval and settled within
-    it). Manifests that fail to parse, or whose claim time cannot be
-    established, do not count: pickup credit is claimed only on
-    evidence.
+
+def _claim_intervals(
+    directory: Path, stem: str, manifest: dict
+) -> list[tuple[datetime, datetime | None]]:
+    """Claim/settlement intervals for one lane, from its history log.
+
+    The sibling ``<stem>.log`` (lane-coord's per-lane history:
+    ``<ts> <event> epoch=<n> worker=<w>`` per line) is the evidence:
+    each ``claimed`` event opens an interval and the next settlement
+    event closes it. A trailing open interval is kept only while the
+    manifest still shows the claim active. When the history yields no
+    interval for a still-claimed manifest (log absent or rotated),
+    the manifest alone is one open interval from ``claimed_at``. A
+    settled lane whose settlement time the history cannot establish
+    yields no interval: pickup credit is claimed only on evidence.
+    """
+    intervals: list[tuple[datetime, datetime | None]] = []
+    try:
+        lines = (directory / f"{stem}.log").read_text(
+            encoding="utf-8"
+        ).splitlines()
+    except (OSError, UnicodeDecodeError):
+        lines = []
+    open_since: datetime | None = None
+    for line in lines:
+        fields = line.split()
+        if len(fields) < 2:
+            continue
+        stamp = parse_ts(fields[0])
+        if stamp is None:
+            continue
+        event = fields[1]
+        if event == "claimed":
+            if open_since is not None:
+                intervals.append((open_since, stamp))
+            open_since = stamp
+        elif event in _SETTLEMENT_EVENTS and open_since is not None:
+            intervals.append((open_since, stamp))
+            open_since = None
+    if open_since is not None and manifest.get("state") == ACTIVE_CLAIM_STATE:
+        intervals.append((open_since, None))
+    if manifest.get("state") == ACTIVE_CLAIM_STATE and all(
+        settled is not None for _, settled in intervals
+    ):
+        claimed_at = parse_ts(manifest.get("claimed_at"))
+        if claimed_at is not None:
+            intervals.append((claimed_at, None))
+    return intervals
+
+
+def active_lane_names(lanes_dir, start: datetime, end: datetime) -> set[str]:
+    """Lane names under claim at any point in ``[start, end]``.
+
+    A lane counts when one of its claim/settlement intervals (see
+    :func:`_claim_intervals`) intersects the window: claimed at or
+    before ``end`` and settled at or after ``start``, or still
+    claimed. The manifest's ``updated_at`` is never evidence — every
+    state rewrite refreshes it while preserving ``claimed_at``,
+    including the post-settlement cleanup rewrite, so a recent
+    ``updated_at`` does not establish the lane was active in the
+    interval. Manifests that fail to parse, or whose claim time
+    cannot be established, do not count: pickup credit is claimed
+    only on evidence.
     """
     names: set[str] = set()
     directory = Path(lanes_dir)
@@ -186,15 +256,16 @@ def active_lane_names(lanes_dir, start: datetime, end: datetime) -> set[str]:
             continue
         if not isinstance(data, dict):
             continue
-        claimed_at = parse_ts(data.get("claimed_at"))
-        if claimed_at is None or claimed_at > end:
+        if parse_ts(data.get("claimed_at")) is None:
             continue
-        if data.get("state") == ACTIVE_CLAIM_STATE:
-            names.add(path.stem)
-            continue
-        updated_at = parse_ts(data.get("updated_at"))
-        if updated_at is not None and updated_at >= start:
-            names.add(path.stem)
+        for claimed_at, settled_at in _claim_intervals(
+            directory, path.stem, data
+        ):
+            if claimed_at <= end and (
+                settled_at is None or settled_at >= start
+            ):
+                names.add(path.stem)
+                break
     return names
 
 
