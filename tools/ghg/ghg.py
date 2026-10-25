@@ -413,6 +413,14 @@ _MUTATING_SUBCOMMANDS = {"create", "comment", "merge", "edit", "close",
                          "reopen", "review", "label", "upload", "delete"}
 _MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 _API_PARAM_FLAGS = {"-f", "--field", "-F", "--raw-field", "--input"}
+# gh api's value-taking flags beyond the inherited _VALUE_FLAGS set.
+# When the api endpoint is identified (classify), their separate
+# values must be skipped too: in `api -X POST graphql` the value
+# POST is not the endpoint. `=`/combined spellings are skipped
+# whole by _first_positionals already.
+_API_VALUE_FLAGS = ("-X", "--method", "-f", "--raw-field", "-F",
+                    "--field", "-H", "--header", "-q", "--jq", "-t",
+                    "--template", "--input")
 
 
 def _is_mutating(argv):
@@ -462,6 +470,12 @@ def classify(argv):
         return []
     positionals = _first_positionals(argv, 2)
     command = positionals[0] if positionals else None
+    if command == "api":
+        # The endpoint is the second positional, but gh api's own
+        # value-taking flags may precede it (`api -X POST graphql`);
+        # re-derive skipping their values so the endpoint is not
+        # mistaken for a flag value.
+        positionals = _first_positionals(argv, 2, _API_VALUE_FLAGS)
     subcommand = positionals[1] if len(positionals) >= 2 else None
     if command == "search":
         bucket, cost = ("code_search", 1) if (
@@ -1173,13 +1187,19 @@ def cmd_watch(args):
 _VALUE_FLAGS = ("-R", "--repo")
 
 
-def _first_positionals(gh_args, count=2):
-    """The first `count` positional (non-flag) tokens of a gh argv."""
+def _first_positionals(gh_args, count=2, extra_value_flags=()):
+    """The first `count` positional (non-flag) tokens of a gh argv.
+
+    `extra_value_flags` names additional flags whose separate value
+    token is also skipped (used for gh api's own flag set when the
+    api endpoint is identified; other commands use the base set).
+    """
+    value_flags = _VALUE_FLAGS + tuple(extra_value_flags)
     positionals = []
     i = 0
     while i < len(gh_args) and len(positionals) < count:
         tok = gh_args[i]
-        if tok in _VALUE_FLAGS:
+        if tok in value_flags:
             i += 2
             continue
         if tok.startswith("-"):

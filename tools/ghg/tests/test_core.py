@@ -394,6 +394,29 @@ class TestClassify(CoreTestCase):
             with self.subTest(argv=argv):
                 self.assertEqual(ghg.classify(argv), expected)
 
+    def test_classify_api_flags_before_endpoint(self):
+        cases = [
+            # Value-taking api flags before the endpoint: their
+            # values are not the endpoint.
+            (["api", "-X", "POST", "graphql", "-f", "query=..."],
+             [("graphql", 2), ("content", 1)]),
+            (["api", "--method", "POST", "graphql"],
+             [("graphql", 2), ("content", 1)]),
+            (["api", "-f", "q=1", "-H", "A: b", "graphql"],
+             [("graphql", 2), ("content", 1)]),
+            (["api", "-H", "A: b", "graphql"], [("graphql", 2)]),
+            # Combined spelling: already skipped whole.
+            (["api", "--method=POST", "graphql", "-f", "query=..."],
+             [("graphql", 2), ("content", 1)]),
+            # A REST endpoint behind the same flags stays core.
+            (["api", "-X", "POST", "repos/o/r/issues"],
+             [("core", 1), ("content", 1)]),
+            (["api", "-q", ".x", "repos/o/r"], [("core", 1)]),
+        ]
+        for argv, expected in cases:
+            with self.subTest(argv=argv):
+                self.assertEqual(ghg.classify(argv), expected)
+
 
 class TestIsMutating(CoreTestCase):
     def test_is_mutating_with_inherited_flags(self):
