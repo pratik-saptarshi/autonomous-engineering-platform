@@ -86,7 +86,9 @@ def _dotted_name(node: ast.expr) -> str | None:
     return None
 
 
-def _classify_test_module(text: str) -> tuple[bool, bool]:
+def _classify_test_module(
+    text: str, truncated: bool = False
+) -> tuple[bool, bool]:
     """(has_unittest_leg, triggers_pytest) for one test module.
 
     Classification follows the runners' collection semantics, by AST:
@@ -105,65 +107,160 @@ def _classify_test_module(text: str) -> tuple[bool, bool]:
       command (RC2 — pure-unittest trees keep byte-identical argv);
       when the bare pytest command exists for other reasons it
       collects those modules too.
-    - An AST parse failure falls back to the pre-Task-4 substring
-      classification for that module (discovery never crashes).
+    - Definitions are collected at module namespace at ANY compound
+      depth (`if True:` / `try:` blocks execute at module level, and
+      both runners collect what they define); definitions nested in a
+      class or function are not module-level collectables.
+    - UNCERTAINTY ROUTES TO MORE EXECUTION, NEVER LESS (panel
+      CLASS-P1): a truncated scan (content past the cap may hide
+      either runner's shapes), an unparseable module, or a class
+      whose base cannot be resolved inside the module — e.g. a
+      TestCase subclass imported from a shared base module — routes
+      the module to the unittest leg by explicit name (the loader
+      decides collectability at runtime) and, where pytest-collectable
+      shapes may also hide (a `Test*` class with an unresolved base,
+      truncation, unparseable), triggers the pytest leg too.
     """
+    if truncated:
+        return True, True
     try:
         tree = ast.parse(text)
     except SyntaxError:
-        if "import unittest" in text or "from unittest" in text:
-            return True, False
-        return False, True
+        return True, True
 
-    # Names that denote unittest.TestCase within this module: direct
-    # imports, import aliases, assignment aliases, and module-local
-    # subclasses (added as the ordered pass reaches them).
+    # Module-namespace pass: TestCase-denoting names (direct imports,
+    # import aliases, assignment aliases), every imported name, every
+    # module-level class, and module-level test_* functions.
     testcase_names: set[str] = set()
-    has_unittest = False
+    imported_names: set[str] = set()
+    classes: list[ast.ClassDef] = []
     triggers_pytest = False
-    for stmt in tree.body:
-        if isinstance(stmt, ast.ImportFrom):
-            if stmt.module == "unittest" or (
-                stmt.module is not None
-                and stmt.module.startswith("unittest.")
+
+    def visit(node: ast.AST, in_class: bool, in_func: bool) -> None:
+        nonlocal triggers_pytest
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.ClassDef):
+                if not in_class and not in_func:
+                    classes.append(child)
+                visit(child, True, in_func)
+            elif isinstance(
+                child, (ast.FunctionDef, ast.AsyncFunctionDef)
             ):
-                for alias in stmt.names:
-                    if alias.name == "TestCase":
-                        testcase_names.add(alias.asname or alias.name)
-        elif isinstance(stmt, ast.Assign):
-            value_name = _dotted_name(stmt.value)
-            value_is_testcase = value_name is not None and (
-                value_name.rsplit(".", 1)[-1] == "TestCase"
-                or value_name in testcase_names
-            )
-            if value_is_testcase:
-                for target in stmt.targets:
-                    if isinstance(target, ast.Name):
-                        testcase_names.add(target.id)
-        elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            if stmt.name.startswith("test_"):
-                triggers_pytest = True
-        elif isinstance(stmt, ast.ClassDef):
+                if (
+                    not in_class
+                    and not in_func
+                    and child.name.startswith("test_")
+                ):
+                    triggers_pytest = True
+                visit(child, in_class, True)
+            else:
+                if not in_class and not in_func:
+                    if isinstance(child, ast.ImportFrom):
+                        if child.module == "unittest" or (
+                            child.module is not None
+                            and child.module.startswith("unittest.")
+                        ):
+                            for alias in child.names:
+                                if alias.name == "TestCase":
+                                    testcase_names.add(
+                                        alias.asname or alias.name
+                                    )
+                        for alias in child.names:
+                            imported_names.add(alias.asname or alias.name)
+                    elif isinstance(child, ast.Import):
+                        for alias in child.names:
+                            imported_names.add(
+                                alias.asname
+                                or alias.name.split(".")[0]
+                            )
+                    elif isinstance(child, ast.Assign):
+                        value_name = _dotted_name(child.value)
+                        value_is_testcase = (
+                            value_name is not None
+                            and (
+                                value_name.rsplit(".", 1)[-1]
+                                == "TestCase"
+                                or value_name in testcase_names
+                            )
+                        )
+                        if value_is_testcase:
+                            for target in child.targets:
+                                if isinstance(target, ast.Name):
+                                    testcase_names.add(target.id)
+                visit(child, in_class, in_func)
+
+    visit(tree, False, False)
+
+    # Resolve each module-level class against its bases, to a
+    # fixpoint (module-local subclasses resolve transitively).
+    local_names = {cls.name for cls in classes}
+    resolved: dict[str, bool] = {}
+    uncertain: set[str] = set()
+    pending = list(classes)
+    while pending:
+        deferred: list[ast.ClassDef] = []
+        progressed = False
+        for cls in pending:
             is_testcase = False
-            for base in stmt.bases:
+            is_uncertain = False
+            waiting = False
+            for base in cls.bases:
                 dotted = _dotted_name(base)
                 if dotted is None:
+                    is_uncertain = True
                     continue
                 if (
                     dotted.rsplit(".", 1)[-1] == "TestCase"
                     or dotted in testcase_names
                 ):
                     is_testcase = True
-                    break
+                    continue
+                root = dotted.split(".")[0]
+                if dotted in resolved:
+                    if resolved[dotted]:
+                        is_testcase = True
+                elif root in local_names and "." not in dotted:
+                    waiting = True
+                elif root in imported_names or root not in local_names:
+                    # A base defined outside this module (or nowhere
+                    # visible): it may be a TestCase subclass defined
+                    # in a shared base module — the loader decides.
+                    is_uncertain = True
+            if waiting and not is_testcase:
+                deferred.append(cls)
+                continue
+            resolved[cls.name] = is_testcase
+            if is_uncertain and not is_testcase:
+                uncertain.add(cls.name)
             if is_testcase:
-                has_unittest = True
-                testcase_names.add(stmt.name)
-            elif stmt.name.startswith("Test") and any(
-                isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
-                and item.name.startswith("test_")
-                for item in stmt.body
-            ):
+                testcase_names.add(cls.name)
+            progressed = True
+        if not progressed:
+            # Circular local bases: the loader will error at import;
+            # route to the unittest leg and let it decide.
+            for cls in deferred:
+                resolved[cls.name] = False
+                uncertain.add(cls.name)
+            break
+        pending = deferred
+
+    has_unittest = False
+    for cls in classes:
+        if resolved.get(cls.name):
+            has_unittest = True
+        elif cls.name in uncertain:
+            # Unresolved base: the class may be a TestCase subclass
+            # (unittest leg by name — the loader decides); a Test*
+            # name may instead be a plain pytest class.
+            has_unittest = True
+            if cls.name.startswith("Test"):
                 triggers_pytest = True
+        elif cls.name.startswith("Test") and any(
+            isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and item.name.startswith("test_")
+            for item in cls.body
+        ):
+            triggers_pytest = True
     if not has_unittest and not triggers_pytest:
         triggers_pytest = True  # no leg at all: the pytest default
     return has_unittest, triggers_pytest
@@ -244,10 +341,13 @@ def discover_verification_commands(root: Path) -> tuple[VerificationCommand, ...
         for path in test_files:
             try:
                 with path.open("r", encoding="utf-8", errors="ignore") as fh:
-                    text = fh.read(SCAN_CHARS)
+                    text = fh.read(SCAN_CHARS + 1)
             except OSError:
                 text = ""
-            has_unittest, triggers_pytest = _classify_test_module(text)
+            truncated = len(text) > SCAN_CHARS
+            has_unittest, triggers_pytest = _classify_test_module(
+                text[:SCAN_CHARS], truncated=truncated
+            )
             if has_unittest:
                 unittest_modules.append(path.stem)
             if triggers_pytest:
@@ -500,8 +600,10 @@ def _count_collected(
 
     unittest: parse `Ran (\\d+) tests?` from stdout+stderr combined
     (unittest writes it to stderr). pytest: the collected count is
-    the sum of all outcome groups in the summary line
-    (passed+failed+skipped+deselected+errors+xfailed+xpassed);
+    the sum of the outcome groups in the summary line
+    (passed+failed+skipped+errors+xfailed+xpassed) EXCLUDING
+    `deselected` — deselected tests were filtered OUT by the runner
+    and never collected for execution (panel correctness P2-B);
     `no tests ran` is 0. An unparseable count is 0 — a Python command
     that cannot prove it collected anything fails the count gate in
     VerificationResult.passed. Skips count as collected (deliberate
@@ -522,7 +624,11 @@ def _count_collected(
                 continue
             groups = _PYTEST_COUNT_RE.findall(line)
             if groups:
-                total = sum(int(count) for count, _ in groups)
+                total = sum(
+                    int(count)
+                    for count, label in groups
+                    if label != "deselected"
+                )
         return total if total is not None else 0
     return None
 

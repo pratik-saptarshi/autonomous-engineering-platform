@@ -850,6 +850,142 @@ class CollectedCountTests(unittest.TestCase):
             self.assertFalse(result.passed)
 
 
+class ClassifierUncertaintyTests(unittest.TestCase):
+    """Bucket A2 (panel CLASS-P1): classification uncertainty routes
+    to MORE execution, never less. The panel's three variant families
+    — a TestCase subclass whose base is imported from another module,
+    collectable definitions inside compound statements, and content
+    past the scan cap — must all execute their tests."""
+
+    def run_fixture(self, root: Path):
+        commands = discover_verification_commands(root)
+        results = []
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            rc = run_all(
+                root,
+                commands,
+                mem_available_kb=lambda: 10**9,
+                on_result=results.append,
+            )
+        return commands, results, rc, stdout.getvalue()
+
+    def test_cross_module_testcase_base_routes_to_unittest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "shared_base.py",
+                "import unittest\n\n\n"
+                "class Base(unittest.TestCase):\n"
+                "    pass\n",
+            )
+            write(
+                root,
+                "test_cross.py",
+                "from shared_base import Base\n\n\n"
+                "class CrossTests(Base):\n"
+                "    def test_fails(self):\n"
+                "        assert False, 'cross-module TestCase must run'\n",
+            )
+            commands, _, rc, _ = self.run_fixture(root)
+            unittest_cmds = [c for c in commands if c.id == "unittest"]
+            self.assertEqual(len(unittest_cmds), 1)
+            self.assertIn("test_cross", unittest_cmds[0].argv)
+            self.assertEqual(rc, 1)
+
+    def test_cross_module_testcase_base_passing_variant_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "shared_base.py",
+                "import unittest\n\n\n"
+                "class Base(unittest.TestCase):\n"
+                "    pass\n",
+            )
+            write(
+                root,
+                "test_cross.py",
+                "from shared_base import Base\n\n\n"
+                "class CrossTests(Base):\n"
+                "    def test_ok(self):\n"
+                "        pass\n",
+            )
+            commands, _, rc, _ = self.run_fixture(root)
+            self.assertEqual([c.id for c in commands], ["unittest"])
+            self.assertEqual(rc, 0)
+
+    def test_compound_statement_function_routes_to_pytest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "test_compound.py",
+                "if True:\n"
+                "    def test_fails():\n"
+                "        assert False, 'function inside a compound "
+                "statement must run'\n",
+            )
+            commands = discover_verification_commands(root)
+            self.assertIn("pytest", [c.id for c in commands])
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_compound_statement_function_executes_and_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "test_compound.py",
+                "if True:\n"
+                "    def test_fails():\n"
+                "        assert False, 'function inside a compound "
+                "statement must run'\n",
+            )
+            _, _, rc, _ = self.run_fixture(root)
+            self.assertEqual(rc, 1)
+
+    def test_module_past_scan_cap_routes_to_both_runners(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            padding = "# padding\n" * 8000  # > SCAN_CHARS (65536)
+            write(
+                root,
+                "test_late.py",
+                padding
+                + "def test_late():\n"
+                + "    assert False, 'test past the scan cap must run'\n",
+            )
+            commands = discover_verification_commands(root)
+            ids = [c.id for c in commands]
+            self.assertIn("unittest", ids)
+            self.assertIn("pytest", ids)
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_module_past_scan_cap_executes_and_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            padding = "# padding\n" * 8000  # > SCAN_CHARS (65536)
+            write(
+                root,
+                "test_late.py",
+                padding
+                + "def test_late():\n"
+                + "    assert False, 'test past the scan cap must run'\n",
+            )
+            _, _, rc, _ = self.run_fixture(root)
+            self.assertEqual(rc, 1)
+
+    def test_deselected_is_not_counted_as_collected(self):
+        # Judge rider (correctness P2-B): deselected tests were
+        # FILTERED OUT by the runner; counting them inflates the
+        # collected total the gate relies on.
+        count = mechanical_verify._count_collected(
+            "pytest", "1 passed, 2 deselected in 0.10s", ""
+        )
+        self.assertEqual(count, 1)
+
+
 POLICY_DATA = Path(__file__).resolve().parent.parent / "policy.data"
 
 
