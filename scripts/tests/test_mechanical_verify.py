@@ -1854,6 +1854,136 @@ class ClassifierUncertaintyTests(unittest.TestCase):
             self.assertEqual([c.id for c in commands], ["unittest"])
             self.assertIn("test_plain", commands[0].argv)
 
+    def _write_dotted_import_fixture(self, root: Path):
+        write(
+            root,
+            "shared.py",
+            "import unittest\n"
+            "\n"
+            "\n"
+            "class SharedCase(unittest.TestCase):\n"
+            "    pass\n"
+            "\n"
+            "\n"
+            "class TestImported:\n"
+            "    def test_failure(self):\n"
+            "        pass\n",
+        )
+        write(
+            root,
+            "test_dotted_import.py",
+            "import shared.TestImported as TestImported\n"
+            "from shared import SharedCase\n"
+            "\n"
+            "\n"
+            "class Unit(SharedCase):\n"
+            "    def test_unit(self):\n"
+            "        pass\n",
+        )
+
+    def test_dotted_import_aliased_test_class_keeps_pytest_leg(self):
+        # Follow-on to gap-fix round 8: round 8 made an
+        # ImportFrom binding a Test* name trigger the pytest leg,
+        # but the same binding written as a dotted import with an
+        # alias — `import shared.TestImported as TestImported`
+        # (ast.Import with asname) — was recorded without the
+        # trigger, so a sibling TestCase class again selected
+        # unittest alone and the imported class silently never
+        # ran. Unlike a star import, the bound name is explicit
+        # in the source, so the name-based rule applies the same
+        # way.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_dotted_import_fixture(root)
+            commands = discover_verification_commands(root)
+            self.assertEqual(
+                [c.id for c in commands], ["unittest", "pytest"]
+            )
+            self.assertIn("test_dotted_import", commands[0].argv)
+
+    def test_import_asname_test_name_triggers_pytest_leg(self):
+        # Ruling: an ast.Import alias binding a Test* name is
+        # name-based evidence for pytest, exactly as round 8
+        # ruled for ImportFrom. Statically, the import statement
+        # alone cannot distinguish `import
+        # shared.TestImported as TestImported` (intending the
+        # class the dotted path names) from `import shared as
+        # TestShared` (a module object under a Test* alias) —
+        # what the alias denotes is unresolved from this module,
+        # and unresolved Test* bindings keep the pytest leg
+        # (uncertainty routes to more execution).
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "shared.py",
+                "import unittest\n"
+                "\n"
+                "\n"
+                "class SharedCase(unittest.TestCase):\n"
+                "    pass\n",
+            )
+            write(
+                root,
+                "test_asname_module.py",
+                "import shared as TestShared\n"
+                "from shared import SharedCase\n"
+                "\n"
+                "\n"
+                "class Unit(SharedCase):\n"
+                "    def test_unit(self):\n"
+                "        pass\n",
+            )
+            commands = discover_verification_commands(root)
+            self.assertEqual(
+                [c.id for c in commands], ["unittest", "pytest"]
+            )
+            self.assertIn("test_asname_module", commands[0].argv)
+
+    def test_dotted_import_without_asname_gains_no_pytest_leg(self):
+        # Guard: `import shared.TestImported` with NO alias
+        # binds only the top-level name `shared` in the module
+        # namespace — no Test* name is bound — so it is not
+        # pytest evidence, even though the dotted path names a
+        # collectable class.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_dotted_import_fixture(root)
+            write(
+                root,
+                "test_dotted_import.py",
+                "import shared.TestImported\n"
+                "import unittest\n"
+                "\n"
+                "\n"
+                "class Unit(unittest.TestCase):\n"
+                "    def test_unit(self):\n"
+                "        pass\n",
+            )
+            commands = discover_verification_commands(root)
+            self.assertEqual([c.id for c in commands], ["unittest"])
+            self.assertIn("test_dotted_import", commands[0].argv)
+
+    def test_import_aliased_testcase_gains_no_pytest_leg(self):
+        # Guard: `import unittest.TestCase as TestCase` binds
+        # unittest's own class under its own name — the same
+        # exclusion round 8 applies to ImportFrom — so a module
+        # resolving through it stays unittest-only (RC2).
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "test_direct.py",
+                "import unittest.TestCase as TestCase\n"
+                "\n"
+                "\n"
+                "class Unit(TestCase):\n"
+                "    def test_unit(self):\n"
+                "        pass\n",
+            )
+            commands = discover_verification_commands(root)
+            self.assertEqual([c.id for c in commands], ["unittest"])
+
     def _write_assignment_fixture(
         self, root: Path, fn_body: str, assignment: str
     ):

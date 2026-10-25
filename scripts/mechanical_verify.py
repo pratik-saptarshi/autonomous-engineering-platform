@@ -153,7 +153,9 @@ def _classify_test_module(
       in this module (an imported class's definition lives
       elsewhere, so it cannot be resolved as a TestCase subclass
       here; pytest collects Test* classes from the namespace,
-      imported ones included), OR an
+      imported ones included — a dotted import's alias,
+      `import shared.TestImported as TestImported`, binds its
+      name the same explicit way), OR an
       assignment binds a `test_*` name to a value that is not
       provably non-callable data (a literal display — `test_failure
       = failure` binds a collectable function; `test_cases = [...]`
@@ -275,6 +277,33 @@ def _classify_test_module(
                                 alias.asname
                                 or alias.name.split(".")[0]
                             )
+                            if (
+                                alias.asname is not None
+                                and alias.asname.startswith("Test")
+                                and alias.asname != "TestCase"
+                                and alias.asname not in testcase_names
+                            ):
+                                # A dotted import with an alias —
+                                # `import shared.TestImported as
+                                # TestImported` — binds its Test*
+                                # name in the module namespace
+                                # explicitly, exactly as the
+                                # ImportFrom form round 8 covers;
+                                # recording it without the trigger
+                                # left the same silent omission
+                                # behind a sibling TestCase class.
+                                # What the alias denotes (class or
+                                # module) is unresolved from this
+                                # module, and unresolved Test*
+                                # bindings keep the pytest leg.
+                                # Without an alias, only the
+                                # top-level package name is bound —
+                                # no Test* name enters the namespace
+                                # — so there is nothing to trigger
+                                # on. TestCase-denoting aliases are
+                                # excluded as in the ImportFrom
+                                # branch.
+                                triggers_pytest = True
                     elif isinstance(child, ast.Assign):
                         value_name = _dotted_name(child.value)
                         value_is_testcase = (
