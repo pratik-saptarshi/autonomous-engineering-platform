@@ -186,6 +186,11 @@ and paths are deliberately left ungated today:
   — same account, same core bucket, uncounted; low-volume today.
   If drift shows it mattering, folding it into the ledger is the
   first follow-up.
+- **AEP's boot-gate script** (`scripts/boot-gate.sh` in the AEP
+  repo) — a real script, not prose: it runs `gh auth status` and
+  gates on its exit code. But it is an operator/session-invoked
+  auth probe, never an unattended caller, and a single auth check
+  is not a budgeted call pattern; deliberately ungated.
 - **Pratik's interactive use** — same bucket; the ≥1,500
   unspendable reserve is the mitigation, and drift output names
   interactive use as a confounder rather than pretending the
@@ -197,14 +202,19 @@ and paths are deliberately left ungated today:
   published) — unmodelled, like the other secondary shapes beyond
   the content throttle.
 - **Prose mentions in skills** — `feature-pr-pipeline`,
-  `re0-upgrade`, and `receiving-code-review` mention `gh`
-  commands as instructions to future agents. They are prose, not
-  unattended callers; the fleet-wide convention (AGENTS.md +
-  `BRIEF-SNIPPET.md`) governs the agents who read them.
+  `re0-upgrade`, `receiving-code-review`, and `wizard` mention
+  `gh` commands as instructions to future agents. They are
+  prose, not unattended callers; the fleet-wide convention
+  (AGENTS.md + `BRIEF-SNIPPET.md`) governs the agents who read
+  them.
 - **Prose mentions in side-chat charters** — e.g. the esf
   master-sync note (`gh repo sync … --branch master`) in a
   side-chat MEMORY.md: standing instruction text for supervised
   sessions, run rarely, not an unattended caller.
+- **An expired one-shot reminder** — the DAP goal's runonce
+  PAT-expiry reminder (fired 2026-10-19) instructed a human-run
+  `gh auth status` check. It has expired and was never an
+  unattended caller; named here for completeness.
 
 The two standing unattended callers found by the adoption census
 — the DAP build crons `dap-build-check-3h` and `dap-nightly-build`

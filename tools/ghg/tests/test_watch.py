@@ -254,5 +254,20 @@ class TestIntervalFloor(WatchTestCase):
         self.assertEqual(ghg.DEFAULT_INTERVAL_FLOOR, 45)
 
 
+class TestBrokenDb(WatchTestCase):
+    def test_watch_broken_db_exits_70_without_traceback(self):
+        # Regression (whole-branch review N1): the DB path itself is a
+        # directory, so no ledger can open. Every other verb degrades
+        # deliberately (run fail-opens; check/status/prune exit 70);
+        # watch must print a ghg: message and exit 70, not traceback
+        # with exit 1. (finish() also asserts no Traceback in stderr.)
+        (self.state_dir / "ghg.db").mkdir()
+        proc = self.spawn_watcher()
+        code, _, err = self.finish(proc)
+        self.assertEqual(code, 70)
+        self.assertIn("ghg:", err)
+        self.assertEqual(self.stub_calls(), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

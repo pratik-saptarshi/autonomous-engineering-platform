@@ -960,7 +960,14 @@ def cmd_watch(args):
     run_key = "%s#%s" % (args.repo, run_id)
     self_id = "%d-%s" % (os.getpid(), uuid.uuid4().hex[:12])
     actor = resolve_actor()
-    conn = open_db(db_path())
+    try:
+        conn = open_db(db_path())
+    except (sqlite3.Error, GateBroken) as exc:
+        # Degrade deliberately like the other verbs (exit 70, the
+        # shim's code for broken gateway state) — never a traceback.
+        print("ghg: gateway state unavailable: %s" % exc,
+              file=sys.stderr, flush=True)
+        return 70
     try:  # housekeeping: reap stale reservations (Task 2 core)
         Ledger(conn).reap_abandoned()
     except Exception:
