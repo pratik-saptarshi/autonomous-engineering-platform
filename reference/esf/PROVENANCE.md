@@ -7,6 +7,10 @@
 - **Excluded from the vendor:** `.git` (history) and `bin/` (local build output).
 - **Purpose:** reference implementation for the AEP factory lane — studied and built from, not executed from here.
 
+## Updating this snapshot
+
+This tree changes only by re-vendoring: replace it wholesale with a new pinned upstream snapshot and regenerate `.github/vendor-esf.sha256` in the same change. Code or dependency edits made in place — including dependency-update PRs against this tree — are closed, not merged: a merged bump would leave the tree matching no upstream commit and falsify the provenance pinned above.
+
 Note: `bin/` build output is NOT vendored. The factory binaries were built locally from the previous pin (d41535d) during the install phase (plan Task 2) and live outside the repo at `~/workspace/repos/esf/bin/` — rebuild from the new pin before executing.
 
 ## Update history
