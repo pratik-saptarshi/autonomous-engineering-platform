@@ -116,6 +116,7 @@ def build_observation(
     fetch_count: int,
     type_excluded_count: int,
     truncated: bool,
+    project_slug: str | None = None,
 ) -> dict:
     """Build one observation object in the pinned schema.
 
@@ -146,7 +147,9 @@ def build_observation(
                 exits.append(
                     {
                         "identifier": identifier,
-                        "pickup_explained": lane_name_for(identifier)
+                        "pickup_explained": lane_name_for(
+                            identifier, project_slug
+                        )
                         in active_lanes,
                     }
                 )

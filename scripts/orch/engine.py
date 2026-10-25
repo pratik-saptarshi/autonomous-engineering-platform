@@ -50,13 +50,14 @@ def _rejection_key(issue: Issue) -> str:
 def _filter_reason(
     issue: Issue,
     *,
+    project_slug: str,
     active_states: set[str],
     terminal_states: set[str],
     claimed_lanes: set[str],
     colliding_lanes: set[str],
     completed: set[str],
 ) -> tuple[Reason, str] | None:
-    lane = lane_name_for(issue.identifier)
+    lane = lane_name_for(issue.identifier, project_slug)
 
     missing = [
         field
@@ -140,7 +141,9 @@ def select(
         state = _normalize_state(issue.state)
         if state in terminal_states or state not in active_states:
             continue
-        lane_groups.setdefault(lane_name_for(issue.identifier), []).append(issue)
+        lane_groups.setdefault(
+            lane_name_for(issue.identifier, workflow.project_slug), []
+        ).append(issue)
     colliding_lanes = {
         lane for lane, group in lane_groups.items() if len(group) > 1
     }
@@ -150,6 +153,7 @@ def select(
     for issue in candidates:
         reason = _filter_reason(
             issue,
+            project_slug=workflow.project_slug,
             active_states=active_states,
             terminal_states=terminal_states,
             claimed_lanes=claimed_lanes,

@@ -183,6 +183,42 @@ class ActiveLaneNamesTests(unittest.TestCase):
         summary = summarize([previous | {"ready_wait_s": {}}, observation])
         self.assertIn("pickup lag: n/a", summary)
 
+    def test_exit_pickup_recognized_under_project_prefixed_lane(self):
+        # Regression (Codex P2): the coordinator's manifest for
+        # GitHub issue 42 under project proj is proj-42.json; the
+        # bare-number lookup never matched it, so the pickup went
+        # unrecognized.
+        lane = lane_name_for("42", "proj")
+        self.assertEqual(lane, "proj-42")
+        self.write_lane(
+            lane,
+            state="claimed",
+            claimed_at="2026-01-01T02:05:00Z",
+            updated_at="2026-01-01T02:05:00Z",
+            history=[("2026-01-01T02:05:00Z", "claimed")],
+        )
+        previous = {
+            "ts": "2026-01-01T02:00:00+00:00",
+            "ready": ["42"],
+        }
+        observation = build_observation(
+            now=ts("2026-01-01T03:00:00"),
+            tracker="github",
+            dispatch=[],
+            rejections={"42": "STATE_NOT_ACTIVE"},
+            previous=previous,
+            active_lanes=self.active(),
+            points_spent=None,
+            fetch_count=1,
+            type_excluded_count=0,
+            truncated=False,
+            project_slug="proj",
+        )
+        self.assertEqual(
+            observation["exits"],
+            [{"identifier": "42", "pickup_explained": True}],
+        )
+
 
 def make_obs(stamp, ready=(), exits=()):
     return {

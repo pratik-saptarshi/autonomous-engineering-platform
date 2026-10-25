@@ -336,7 +336,9 @@ class ObservationLogTests(CliTestCase):
         now_iso = datetime.now(timezone.utc).isoformat()
         manifest["claimed_at"] = now_iso
         manifest["updated_at"] = now_iso
-        (self.lanes_dir / f"{lane_name_for('X-1')}.json").write_text(
+        # The coordinator's manifest name for X-1 under the spec's
+        # project_slug (proj): <project>-<lane>.
+        (self.lanes_dir / f"{lane_name_for('X-1', 'proj')}.json").write_text(
             json.dumps(manifest), encoding="utf-8"
         )
         adapter.remove("beads:X-1")

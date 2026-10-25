@@ -4,6 +4,17 @@ The lane name is the join key between tracker identifiers, the eligibility
 engine, and lane-coord's manifests. The encoding follows lane-coord's slug
 grammar (``^[a-z0-9][a-z0-9-]*$``) by construction.
 
+lane-coord names a lane ``<project>-<lane>``: the claim's ``--project``
+and ``--lane`` arguments are each validated against the slug grammar
+(never rewritten), and the manifest is ``<project>-<lane>.json``.
+:func:`lane_name_for` mirrors that composition — the lane part is the
+slug encoding of the identifier, the project part is the workflow's
+``project_slug`` — except when the identifier's encoding already begins
+with the project namespace: beads identifiers embed their project
+prefix (``dap-…``, and the spec's ``project_slug`` is that same
+prefix), so prefixing again would double it and match no manifest the
+coordinator writes.
+
 ``ManifestClaimView`` reads lane-coord's manifest files. Ground truth,
 pinned against ``scripts/lane-coord.sh``: manifests live at
 ``<lanes-dir>/<lane-name>.json`` (one JSON object per lane, written by
@@ -47,15 +58,28 @@ class LanesDirMissing(Exception):
     """
 
 
-def lane_name_for(identifier: str) -> str:
-    """Encode an issue identifier as a lane-coord-valid lane name."""
+def lane_name_for(identifier: str, project_slug: str | None = None) -> str:
+    """Encode an issue identifier as the coordinator's lane name.
+
+    The lane part is the slug encoding of the identifier (capped at
+    48 characters, hash-suffixed when truncated). With
+    ``project_slug``, the result is the manifest name lane-coord
+    writes, ``<project>-<lane>`` — unless the lane part already
+    begins with the project namespace (beads identifiers embed it),
+    in which case it stands as is. Without ``project_slug``, the
+    bare lane part is returned.
+    """
 
     digest = hashlib.sha256(identifier.encode("utf-8")).hexdigest()
     mapped = _NON_SLUG_CHARS.sub("-", identifier.lower()).strip("-")
     if not mapped:
-        return f"x-{digest[:_HASH_PREFIX]}"
-    if len(mapped) > _MAX_LANE_NAME:
+        mapped = f"x-{digest[:_HASH_PREFIX]}"
+    elif len(mapped) > _MAX_LANE_NAME:
         mapped = mapped[:_TRUNCATED_BODY] + "-" + digest[:_HASH_PREFIX]
+    if project_slug:
+        namespace = project_slug.lower()
+        if not mapped.startswith(namespace + "-"):
+            mapped = f"{namespace}-{mapped}"
     return mapped
 
 

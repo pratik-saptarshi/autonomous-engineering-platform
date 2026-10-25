@@ -288,6 +288,7 @@ def _cmd_dry_run(args, out, err, adapter_factory, now) -> int:
             fetch_count=fetch_count,
             type_excluded_count=type_excluded,
             truncated=truncated,
+            project_slug=workflow.project_slug,
         )
         append_observation(args.log, observation)
         print(f"observation appended: {args.log}", file=out)

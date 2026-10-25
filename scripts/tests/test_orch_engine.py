@@ -97,6 +97,22 @@ class LaneNameForTests(unittest.TestCase):
         digest = hashlib.sha256("".encode("utf-8")).hexdigest()
         self.assertEqual(lane_name_for(""), f"x-{digest[:6]}")
 
+    def test_project_namespace_prefixes_bare_identifier(self):
+        # lane-coord names the manifest <project>-<lane>: a GitHub
+        # issue's bare number is only the lane part.
+        name = lane_name_for("42", "proj")
+        self.assertEqual(name, "proj-42")
+        self.assertRegex(name, LANE_GRAMMAR)
+
+    def test_identifier_embedding_namespace_is_not_doubled(self):
+        # Beads identifiers embed their project prefix (dap-…) and the
+        # spec's project_slug is that same prefix: no doubling.
+        self.assertEqual(lane_name_for("dap-jo9.1.1", "dap"), "dap-jo9-1-1")
+
+    def test_no_project_slug_keeps_bare_encoding(self):
+        self.assertEqual(lane_name_for("dap-jo9.1.1"), "dap-jo9-1-1")
+        self.assertEqual(lane_name_for("42"), "42")
+
 
 class ManifestClaimViewTests(unittest.TestCase):
     def setUp(self):
@@ -360,7 +376,9 @@ class SelectWithManifestViewTests(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.lanes_dir = Path(self._tmp.name) / ".lanes"
         self.lanes_dir.mkdir()
-        self.workflow = make_workflow()
+        # Production-shaped: the spec's project_slug is the prefix
+        # the beads identifiers embed (dap-…).
+        self.workflow = make_workflow(project_slug="dap")
 
     def write_manifest(self, lane, state):
         (self.lanes_dir / f"{lane}.json").write_text(
@@ -382,6 +400,31 @@ class SelectWithManifestViewTests(unittest.TestCase):
         result = select([issue], self.workflow, view, set())
         self.assertEqual(result.dispatch, [issue])
         self.assertEqual(result.rejections, {})
+
+    def test_github_issue_claimed_under_project_prefixed_name(self):
+        # Regression (Codex P2): the coordinator's manifest for
+        # GitHub issue 42 under project_slug proj is proj-42.json;
+        # the bare-number lookup never matched it, so a running
+        # issue stayed in the would-dispatch set.
+        workflow = make_workflow(tracker="github", project_slug="proj")
+        issue = make_issue("42", key="github:42")
+        self.write_manifest("proj-42", "claimed")
+        view = ManifestClaimView(str(self.lanes_dir))
+        result = select([issue], workflow, view, set())
+        self.assertEqual(result.dispatch, [])
+        self.assertEqual(result.rejections["42"][0], Reason.ALREADY_CLAIMED)
+        self.assertEqual(result.rejections["42"][1], "proj-42")
+
+    def test_beads_issue_claimed_under_embedded_namespace(self):
+        # Beads identifiers embed the namespace the spec also carries
+        # as project_slug: the manifest name is the encoding itself.
+        workflow = make_workflow(project_slug="dap")
+        issue = make_issue("dap-1")
+        self.write_manifest("dap-1", "claimed")
+        view = ManifestClaimView(str(self.lanes_dir))
+        result = select([issue], workflow, view, set())
+        self.assertEqual(result.dispatch, [])
+        self.assertEqual(result.rejections["dap-1"][0], Reason.ALREADY_CLAIMED)
 
     def test_colliding_identifiers_both_rejected(self):
         dotted = make_issue("dap-1.2")
