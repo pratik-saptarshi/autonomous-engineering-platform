@@ -87,9 +87,9 @@ class VerificationResult:
 
 
 # Assignment values that are provably NOT callables: literal data
-# displays. An assignment binding a `test_*` name to anything else
-# (a name, a lambda, a call result, ...) may have put a
-# pytest-collectable function in the module namespace.
+# displays. An assignment binding a pytest-collectable name to
+# anything else (a name, a lambda, a call result, ...) may have put
+# a pytest-collectable function or class in the module namespace.
 _NON_CALLABLE_VALUE_TYPES = (
     ast.Constant,
     ast.List,
@@ -114,6 +114,20 @@ def _assignment_target_names(target: ast.expr) -> list[str]:
             names.extend(_assignment_target_names(element))
         return names
     return []
+
+
+def _binds_pytest_collectable(
+    name: str, value_is_testcase: bool
+) -> bool:
+    """Whether binding `name` to a possibly-callable value is pytest
+    evidence: pytest collects `test_*` functions and `Test*` classes
+    from the module namespace, however they were bound. A `Test*`
+    name bound to a value that provably denotes TestCase denotes
+    unittest's own class instead — the binding is a TestCase alias,
+    not a pytest-only class."""
+    if name.startswith("test_"):
+        return True
+    return name.startswith("Test") and not value_is_testcase
 
 
 def _dotted_name(node: ast.expr) -> str | None:
@@ -156,10 +170,14 @@ def _classify_test_module(
       imported ones included — a dotted import's alias,
       `import shared.TestImported as TestImported`, binds its
       name the same explicit way), OR an
-      assignment binds a `test_*` name to a value that is not
-      provably non-callable data (a literal display — `test_failure
-      = failure` binds a collectable function; `test_cases = [...]`
-      binds a table and does not), OR a `Test*`
+      assignment binds a pytest-collectable name (`test_*` or
+      `Test*`) to a value that is not provably non-callable data (a
+      literal display — `test_failure = failure` binds a collectable
+      function and `TestGenerated = Helper` a collectable class;
+      `test_cases = [...]` and `TestData = {...}` bind tables and do
+      not; a `Test*` name bound to TestCase itself denotes
+      unittest's class, recorded as an alias, not a pytest class),
+      OR a `Test*`
       class that is NOT resolved as a TestCase subclass (its test
       methods may be inherited from a local helper or written
       pytest-style, so its own body is not the evidence), OR the
@@ -334,37 +352,60 @@ def _classify_test_module(
                                 for name in _assignment_target_names(
                                     target
                                 ):
-                                    if name.startswith("test_"):
+                                    if _binds_pytest_collectable(
+                                        name, value_is_testcase
+                                    ):
                                         # pytest collects test_*
-                                        # functions from the module
+                                        # functions and Test*
+                                        # classes from the module
                                         # namespace, however they were
                                         # bound — `test_failure =
-                                        # failure` included. Checking
+                                        # failure` and
+                                        # `TestGenerated = Helper`
+                                        # included. Checking
                                         # assignment targets only for
                                         # TestCase aliases and
                                         # load_tests let a sibling
                                         # TestCase class suppress the
                                         # leg and silently omit the
-                                        # assigned test (Codex P2).
-                                        # Only provably-data values
+                                        # assigned tests (Codex P2,
+                                        # rounds 7 and 9). Only
+                                        # provably-data values
                                         # (literal displays) are not
-                                        # evidence.
+                                        # evidence, and a Test* name
+                                        # bound to TestCase itself
+                                        # denotes unittest's class
+                                        # (recorded above as an
+                                        # alias), not a pytest class.
                                         triggers_pytest = True
                     elif isinstance(child, ast.AnnAssign):
-                        # `test_failure: Callable = failure` binds
-                        # the same module attribute as the plain
-                        # assignment above; an annotation without a
+                        # `test_failure: Callable = failure` and
+                        # `TestGenerated: type = Helper` bind the
+                        # same module attributes as the plain
+                        # assignments above; an annotation without a
                         # value binds nothing.
                         if (
                             child.value is not None
                             and isinstance(child.target, ast.Name)
-                            and child.target.id.startswith("test_")
                             and not isinstance(
                                 child.value,
                                 _NON_CALLABLE_VALUE_TYPES,
                             )
                         ):
-                            triggers_pytest = True
+                            ann_value_name = _dotted_name(child.value)
+                            ann_value_is_testcase = (
+                                ann_value_name is not None
+                                and (
+                                    ann_value_name.rsplit(".", 1)[-1]
+                                    == "TestCase"
+                                    or ann_value_name in testcase_names
+                                )
+                            )
+                            if _binds_pytest_collectable(
+                                child.target.id,
+                                ann_value_is_testcase,
+                            ):
+                                triggers_pytest = True
                 visit(child, in_class, in_func)
 
     visit(tree, False, False)

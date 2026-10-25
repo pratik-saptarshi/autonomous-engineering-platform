@@ -2113,6 +2113,173 @@ class ClassifierUncertaintyTests(unittest.TestCase):
             commands = discover_verification_commands(root)
             self.assertEqual([c.id for c in commands], ["unittest"])
 
+    def _write_assigned_class_fixture(
+        self, root: Path, method_body: str, assignment: str
+    ):
+        write(
+            root,
+            "shared.py",
+            "import unittest\n"
+            "\n"
+            "\n"
+            "class SharedCase(unittest.TestCase):\n"
+            "    pass\n",
+        )
+        write(
+            root,
+            "test_assigned_class.py",
+            "from shared import SharedCase\n"
+            "\n"
+            "\n"
+            "class Helper:\n"
+            "    def test_bad(self):\n"
+            f"        {method_body}\n"
+            "\n"
+            "\n"
+            f"{assignment}\n"
+            "\n"
+            "\n"
+            "class Unit(SharedCase):\n"
+            "    def test_unit(self):\n"
+            "        pass\n",
+        )
+
+    def test_assignment_bound_test_class_keeps_pytest_leg(self):
+        # Codex P2 (gap-fix round 9): an assignment binding a
+        # Test* name (`TestGenerated = Helper`) puts a
+        # pytest-collectable class in the module namespace, but
+        # round 7's assignment rule recognized only test_*
+        # function names — beside a sibling class with an imported
+        # base the module went unittest-only and the assigned
+        # class's tests silently never ran.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_assigned_class_fixture(
+                root,
+                "assert False, 'assigned class test must run'",
+                "TestGenerated = Helper",
+            )
+            commands = discover_verification_commands(root)
+            self.assertEqual(
+                [c.id for c in commands], ["unittest", "pytest"]
+            )
+            self.assertIn("test_assigned_class", commands[0].argv)
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_assignment_bound_failing_class_executes_and_fails(self):
+        # Codex's exact reproduction: verification returned PASS
+        # while a direct pytest run failed on the assigned class.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_assigned_class_fixture(
+                root,
+                "assert False, 'assigned class test must run'",
+                "TestGenerated = Helper",
+            )
+            commands, results, rc, _ = self.run_fixture(root)
+            self.assertEqual(
+                [c.id for c in commands], ["unittest", "pytest"]
+            )
+            pytest_results = [
+                r for r in results if r.command.id == "pytest"
+            ]
+            self.assertEqual(len(pytest_results), 1)
+            self.assertFalse(pytest_results[0].passed)
+            self.assertGreaterEqual(
+                pytest_results[0].tests_collected, 1
+            )
+            self.assertEqual(rc, 1)
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_assignment_bound_passing_class_passes_with_pytest_leg(
+        self,
+    ):
+        # The passing shape: both legs execute, the assigned class
+        # is collected by pytest, and the run PASSes.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_assigned_class_fixture(
+                root, "pass", "TestGenerated = Helper"
+            )
+            commands, results, rc, _ = self.run_fixture(root)
+            self.assertEqual(
+                [c.id for c in commands], ["unittest", "pytest"]
+            )
+            pytest_results = [
+                r for r in results if r.command.id == "pytest"
+            ]
+            self.assertEqual(len(pytest_results), 1)
+            self.assertTrue(pytest_results[0].passed)
+            self.assertGreaterEqual(
+                pytest_results[0].tests_collected, 1
+            )
+            self.assertEqual(rc, 0)
+
+    def test_annotated_assignment_bound_test_class_keeps_pytest_leg(
+        self,
+    ):
+        # The AnnAssign form binds the same module attribute:
+        # `TestGenerated: type = Helper`.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_assigned_class_fixture(
+                root, "pass", "TestGenerated: type = Helper"
+            )
+            commands = discover_verification_commands(root)
+            self.assertEqual(
+                [c.id for c in commands], ["unittest", "pytest"]
+            )
+
+    def test_non_test_class_assignment_does_not_trigger_pytest(self):
+        # No overcorrection: binding the same class under a
+        # non-Test* name is not pytest evidence — pytest collects
+        # the bound name, and `Helper2` is not collectable.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_assigned_class_fixture(
+                root, "pass", "Helper2 = Helper"
+            )
+            commands = discover_verification_commands(root)
+            self.assertEqual([c.id for c in commands], ["unittest"])
+            self.assertIn("test_assigned_class", commands[0].argv)
+
+    def test_data_class_assignment_does_not_trigger_pytest(self):
+        # A Test* name bound to literal data is provably not a
+        # test class — the round-7 literal exclusion applies to
+        # class names uniformly — so the module stays
+        # unittest-only.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_assigned_class_fixture(
+                root, "pass", "TestData = {'a': 1}"
+            )
+            commands = discover_verification_commands(root)
+            self.assertEqual([c.id for c in commands], ["unittest"])
+
+    def test_testcase_valued_assignment_does_not_trigger_pytest(self):
+        # A Test* name bound to TestCase itself denotes unittest's
+        # class (the assignment is recorded as a TestCase alias and
+        # subclasses resolve through it) — pure-unittest modules
+        # keep byte-identical argv (RC2).
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "test_case_alias.py",
+                "import unittest\n"
+                "\n"
+                "\n"
+                "TestBase = unittest.TestCase\n"
+                "\n"
+                "\n"
+                "class Unit(TestBase):\n"
+                "    def test_unit(self):\n"
+                "        pass\n",
+            )
+            commands = discover_verification_commands(root)
+            self.assertEqual([c.id for c in commands], ["unittest"])
+            self.assertIn("test_case_alias", commands[0].argv)
+
     def test_deselected_is_not_counted_as_collected(self):
         # Judge rider (correctness P2-B): deselected tests were
         # FILTERED OUT by the runner; counting them inflates the
