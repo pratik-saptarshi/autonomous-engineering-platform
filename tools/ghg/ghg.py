@@ -971,6 +971,16 @@ def cmd_watch(args):
     run_key = "%s#%s" % (args.repo, run_id)
     self_id = "%d-%s" % (os.getpid(), uuid.uuid4().hex[:12])
     actor = resolve_actor()
+    deadline = time.monotonic() + args.timeout
+
+    def remaining():
+        return deadline - time.monotonic()
+
+    def timeout_result():
+        print("ghg watch: run %s timeout after %ss"
+              % (run_id, _fmt_num(args.timeout)), flush=True)
+        return 1
+
     try:
         conn = open_db(db_path())
     except (sqlite3.Error, GateBroken) as exc:
@@ -991,7 +1001,10 @@ def cmd_watch(args):
         # Exactly one gated read decides what happens next.
         code, out = gated_gh(
             ["run", "view", str(run_id), "--repo", args.repo,
-             "--json", "status,conclusion,attempt"], actor)
+             "--json", "status,conclusion,attempt"], actor,
+            timeout=max(remaining(), 1))
+        if code == 124:  # the bounded read timed out
+            return timeout_result()
         if code == 75:  # gate denial, surfaced like poll_once's
             line = out.strip() or "ghg: DENIED"
             print(line, file=sys.stderr, flush=True)
@@ -1004,6 +1017,8 @@ def cmd_watch(args):
                 fresh_conclusion = payload.get("conclusion")
             except (ValueError, KeyError, AttributeError):
                 fresh_status = None
+        if fresh_status is not None and remaining() <= 0:
+            return timeout_result()
         if fresh_status is None:
             # An inconclusive read never falls back to the cache.
             print("ghg: could not revalidate completed run %s;"
@@ -1030,18 +1045,12 @@ def cmd_watch(args):
             "UPDATE watches SET status='watching', conclusion=NULL,"
             " poller='', heartbeat=0 WHERE run_key = ?"
             " AND status='completed'", (run_key,))
-    deadline = time.monotonic() + args.timeout
     is_poller = False
     epoch = None
 
-    def remaining():
-        return deadline - time.monotonic()
-
     while True:
         if remaining() <= 0:
-            print("ghg watch: run %s timeout after %ss"
-                  % (run_id, _fmt_num(args.timeout)), flush=True)
-            return 1
+            return timeout_result()
         row = get_row(conn, run_key)
         if row is not None and row["status"] == "completed":
             print("ghg watch: run %s completed conclusion=%s"

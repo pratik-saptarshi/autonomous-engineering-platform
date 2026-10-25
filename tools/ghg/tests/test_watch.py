@@ -297,6 +297,32 @@ class TestCompletedRowRevalidation(WatchTestCase):
         self.assertEqual(row[4], "completed")
         self.assertEqual(row[5], "success")
 
+    def test_slow_revalidation_honors_watch_timeout(self):
+        self.set_plan([
+            {"status": "in_progress", "conclusion": None, "attempt": 1},
+            {"status": "completed", "conclusion": "success", "attempt": 1},
+            {"status": "completed", "conclusion": "success", "attempt": 1,
+             "sleep": 2},
+        ])
+        first = self.spawn_watcher()
+        code, out, _ = self.finish(first)
+        self.assertEqual(code, 0)
+        self.assertIn("ghg watch: run 42 completed conclusion=success",
+                      out)
+        self.assertEqual(self.stub_calls(), 2)
+
+        started = time.monotonic()
+        second = self.spawn_watcher(timeout_s="0.1")
+        code, out, _ = self.finish(second)
+        elapsed = time.monotonic() - started
+        self.assertEqual(code, 1)
+        self.assertIn("ghg watch: run 42 timeout after 0.1s", out)
+        self.assertNotIn("conclusion=success", out)
+        self.assertEqual(self.stub_calls(), 3)
+        self.assertLess(elapsed, 1.8,
+                        "revalidation read was not bounded promptly: %.3fs"
+                        % elapsed)
+
     def test_no_rerun_second_watch_one_read_zero_polls(self):
         self.set_plan([
             {"status": "in_progress", "conclusion": None, "attempt": 1},
