@@ -1322,7 +1322,8 @@ def tree_binding(
 def tree_clean(root: Path, receipts_path: Path | None = None) -> bool:
     """Git-mode cleanliness predicate for the binding gate.
 
-    `git status --porcelain` must be empty after dropping (i) the
+    `git status --porcelain --untracked-files=all` must be empty
+    after dropping (i) the
     receipts file itself and UNTRACKED entries under `.superpowers/`
     (the workflow's own bookkeeping — a TRACKED `.superpowers/` entry
     that is modified or staged counts as dirty like any other
@@ -1346,7 +1347,16 @@ def tree_clean(root: Path, receipts_path: Path | None = None) -> bool:
             )
         except ValueError:
             receipts_rel = None
-    proc = _git(resolved, "status", "--porcelain", "-z")
+    # --untracked-files=all: enumerate untracked files individually.
+    # Git's default collapses a wholly untracked directory into one
+    # `?? dir/` entry, which never equals the receipts file's exact
+    # path — a receipts file in a fresh directory (e.g. evidence/)
+    # would defeat exclusion (i) and fail the gate spuriously
+    # (Codex P2). Per-file entries keep the exclusion exact: the
+    # receipts file is dropped, its untracked siblings are not.
+    proc = _git(
+        resolved, "status", "--porcelain", "-z", "--untracked-files=all"
+    )
     if proc.returncode != 0:
         return False
     fields = proc.stdout.split(b"\0")

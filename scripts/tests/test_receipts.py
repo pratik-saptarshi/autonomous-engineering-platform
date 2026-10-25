@@ -802,6 +802,44 @@ class BindingTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
             self.assertIn("tree not clean at HEAD", proc.stdout)
 
+    def test_receipts_in_fresh_untracked_directory_seals(self):
+        # Codex P2 (gap-fix round 2, N2): --receipts into an
+        # otherwise-untracked directory outside .superpowers/ was
+        # collapsed by git status into a single `?? evidence/`
+        # entry, so the exact-file exclusion for the receipts file
+        # never matched and verify failed "tree not clean" without
+        # running any command.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_git_repo(root)
+            # The directory exists but is empty (invisible to git)
+            # until the run-start append lands the receipts file
+            # in it.
+            (root / "evidence").mkdir()
+            receipts = root / "evidence" / "receipts.jsonl"
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            parsed = read_receipts(receipts)
+            self.assertEqual(parsed[-1].get("kind"), "run-complete")
+            proc = check_bound(receipts, "1", root)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("RECEIPTS: PASS", proc.stdout)
+
+    def test_sibling_file_in_receipts_directory_is_dirty(self):
+        # The per-file enumeration must not overreach: another
+        # untracked file in the receipts file's directory is a real
+        # tree change, not bookkeeping — the exclusion covers the
+        # receipts file exactly, never its whole directory.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_git_repo(root)
+            receipts = root / "evidence" / "receipts.jsonl"
+            write(root, "evidence/stray.txt", "not bookkeeping\n")
+            self.assertFalse(mechanical_verify.tree_clean(root, receipts))
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("tree not clean at HEAD", proc.stdout)
+
     def test_legacy_segment_without_binding_is_unbound(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
