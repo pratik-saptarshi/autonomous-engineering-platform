@@ -393,6 +393,13 @@ class TestCompletedRowRevalidation(WatchTestCase):
     so the row is reset and the normal claim/poll flow takes over.
     """
 
+    def api_calls(self):
+        try:
+            return int((self.root / "stub-api-count").read_text()
+                       .strip() or "0")
+        except (OSError, ValueError):
+            return 0
+
     def test_rerun_second_watch_revalidates_resets_and_repolls(self):
         self.set_plan([
             {"status": "in_progress", "conclusion": None, "attempt": 1},
@@ -476,6 +483,58 @@ class TestCompletedRowRevalidation(WatchTestCase):
         row = self.watch_row()
         self.assertEqual(row[4], "completed")
         self.assertEqual(row[5], "success")
+
+    def test_slow_snapshot_and_revalidation_share_one_deadline(self):
+        # Composed regression (FR3-2 clamp follow-through): FR2-2
+        # bounded the revalidation read by the remaining budget but
+        # passed no budget_s, so the gate's opportunistic snapshot
+        # refresh ran ahead of the read on its own unbounded clock.
+        # Composed under one revalidation: a 2s refresh (stale cache)
+        # followed by a 2s read under --timeout 2.5 must share the
+        # shrinking deadline — finish at ~2.5s (+ the sub-second
+        # floor), not at the ~4s the two stacked bounds allow. Exit
+        # code and output are the same either way; only the elapsed
+        # time discriminates.
+        self.stub.write_text(COMBINED_STUB_GH)
+        self.set_plan([
+            {"status": "in_progress", "conclusion": None, "attempt": 1},
+            {"status": "completed", "conclusion": "success", "attempt": 1},
+            {"status": "completed", "conclusion": "success", "attempt": 1,
+             "sleep": 2},
+        ])
+        first = self.spawn_watcher()
+        code, out, _ = self.finish(first)
+        self.assertEqual(code, 0)
+        self.assertIn("ghg watch: run 42 completed conclusion=success",
+                      out)
+        self.assertEqual(self.stub_calls(), 2)
+        self.assertEqual(self.api_calls(), 1)
+        # Backdate the cached snapshot past its 60s TTL so the second
+        # watch's revalidation refresh really fetches (and sleeps).
+        db = sqlite3.connect(self.state_dir / "ghg.db")
+        try:
+            db.execute("UPDATE meta SET value = ?"
+                       " WHERE key = 'rate_limit_fetched_at'",
+                       (str(int(time.time()) - 3600),))
+            db.commit()
+        finally:
+            db.close()
+        os.environ["GHG_STUB_API_SLEEP"] = "2"
+        self.addCleanup(os.environ.pop, "GHG_STUB_API_SLEEP", None)
+        started = time.monotonic()
+        second = self.spawn_watcher(timeout_s="2.5")
+        code, out, _ = self.finish(second)
+        elapsed = time.monotonic() - started
+        self.assertEqual(code, 1)
+        self.assertIn("ghg watch: run 42 timeout after 2.5s", out)
+        self.assertNotIn("conclusion=", out)
+        # Both slow steps really ran inside the one revalidation call:
+        # exactly one more rate_limit fetch and one more run view call.
+        self.assertEqual(self.api_calls(), 2)
+        self.assertEqual(self.stub_calls(), 3)
+        self.assertLess(elapsed, 3.5,
+                        "snapshot + revalidation read were not jointly"
+                        " bounded by the watch deadline: %.3fs" % elapsed)
 
 
 class TestPollDeadline(WatchTestCase):

@@ -1067,7 +1067,7 @@ def cmd_watch(args):
         code, out = gated_gh(
             ["run", "view", str(run_id), "--repo", args.repo,
              "--json", "status,conclusion,attempt"], actor,
-            timeout=max(remaining(), 1))
+            timeout=max(remaining(), 1), budget_s=remaining())
         if code == 124:  # the bounded read timed out
             return timeout_result()
         if code == 75:  # gate denial, surfaced like poll_once's
