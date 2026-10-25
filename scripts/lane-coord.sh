@@ -2461,7 +2461,8 @@ STUBEOF
   mkdir -p "$forge_legacy" "$forge_wts"
   git -C "$repo" worktree add -b br-thirtyone "$forge_wts/phi-thirtyone" HEAD >/dev/null 2>&1 || case_fails=1
   local dead31 head_sha
-  true & dead31=$!
+  true &
+  dead31=$!
   wait "$dead31" 2>/dev/null || true
   head_sha=$(git -C "$repo" rev-parse HEAD)
   python3 - "$forge_legacy/phi-thirtyone.json" "$repo" "$forge_wts/phi-thirtyone" "$head_sha" "$dead31" <<'PYEOF' || case_fails=1
