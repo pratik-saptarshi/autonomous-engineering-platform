@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import builtins
 import ctypes
 import fcntl
 import hashlib
@@ -119,7 +120,9 @@ def _classify_test_module(
       the module to the unittest leg by explicit name (the loader
       decides collectability at runtime) and, where pytest-collectable
       shapes may also hide (a `Test*` class with an unresolved base,
-      truncation, unparseable), triggers the pytest leg too.
+      truncation, unparseable), triggers the pytest leg too. A bare
+      builtin base (`object`, `Exception`, ...) is NOT uncertainty:
+      no builtin is a TestCase, so it resolves determinately.
     """
     if truncated:
         return True, True
@@ -216,6 +219,20 @@ def _classify_test_module(
                     is_testcase = True
                     continue
                 root = dotted.split(".")[0]
+                if (
+                    "." not in dotted
+                    and root not in imported_names
+                    and root not in local_names
+                    and isinstance(getattr(builtins, root, None), type)
+                ):
+                    # A bare builtin base (object, Exception, ...):
+                    # builtins are concrete classes the interpreter
+                    # itself resolves, and none of them is a
+                    # TestCase — the base is KNOWN non-TestCase, not
+                    # an uncertainty. Routing it to a speculative
+                    # unittest leg made that leg collect zero and
+                    # veto passing pytest suites (Codex P2).
+                    continue
                 if dotted in resolved:
                     if resolved[dotted]:
                         is_testcase = True
@@ -904,6 +921,12 @@ def available_memory_kb() -> int | None:
     return int(match.group(1))
 
 
+# The Python test legs whose collected counts the count gate
+# judges (see _count_collected). At most one of each is ever
+# scheduled (discovery dedupes by command id).
+_PYTHON_LEG_IDS = frozenset({"unittest", "pytest"})
+
+
 def run_all(
     root,
     commands,
@@ -941,7 +964,43 @@ def run_all(
         executed += 1
         if on_result is not None:
             on_result(result)
-        if result.passed and between_commands is not None:
+        # Count-gate deferral (Codex P2 on the A2 fix): a Python leg
+        # whose ONLY failure is a zero collected count, while
+        # another Python leg remains to run, does not fail the run.
+        # Classification uncertainty schedules speculative legs (A2:
+        # uncertainty routes to more execution), and the runner the
+        # module actually belongs to may not have run yet — its leg
+        # collecting zero is expected, not a vacuity signal. The
+        # gate instead judges the union of the legs that ran: every
+        # leg executes first, and a leg with no Python leg after it
+        # fails on a zero count exactly as before, so a tree where
+        # NO leg collects anything still fails.
+        defer_zero = (
+            not result.passed
+            and command.id in _PYTHON_LEG_IDS
+            and result.tests_collected == 0
+            and result.exit_code == 0
+            and not result.timed_out
+            and not result.survivors_remaining
+            and any(
+                c.id in _PYTHON_LEG_IDS for c in commands[idx + 1 :]
+            )
+        )
+        if not result.passed and not defer_zero:
+            exit_repr = (
+                "spawn-error" if result.exit_code is None else str(result.exit_code)
+            )
+            print(
+                f"VERIFY: {command.id} FAIL exit={exit_repr} "
+                f"duration_ms={result.duration_ms}"
+            )
+            if result.survivors_remaining:
+                print("VERIFY: survivors remain after reap bound")
+            if result.tests_collected == 0:
+                print("VERIFY: zero tests collected")
+            print(f"VERIFY: stopped at first failure ({command.id})")
+            return 1
+        if between_commands is not None:
             # In-run binding revalidation (panel SEC-P0-1): the hook
             # returns a description when the tree moved during this
             # command. Abort BEFORE the next command runs — a later
@@ -958,19 +1017,10 @@ def run_all(
         if result.passed:
             print(f"VERIFY: {command.id} PASS")
         else:
-            exit_repr = (
-                "spawn-error" if result.exit_code is None else str(result.exit_code)
-            )
             print(
-                f"VERIFY: {command.id} FAIL exit={exit_repr} "
-                f"duration_ms={result.duration_ms}"
+                f"VERIFY: {command.id} collected zero tests — "
+                f"count gate deferred to the remaining Python leg(s)"
             )
-            if result.survivors_remaining:
-                print("VERIFY: survivors remain after reap bound")
-            if result.tests_collected == 0:
-                print("VERIFY: zero tests collected")
-            print(f"VERIFY: stopped at first failure ({command.id})")
-            return 1
     return 0 if executed else 1
 
 

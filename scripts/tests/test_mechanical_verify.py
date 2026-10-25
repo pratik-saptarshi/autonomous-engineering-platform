@@ -822,6 +822,80 @@ class CollectedCountTests(unittest.TestCase):
             self.assertIn("zero tests collected", output)
             self.assertEqual(results[0].tests_collected, 0)
 
+    def test_zero_collect_leg_defers_to_remaining_python_leg(self):
+        # Count-gate union rule (Codex P2 on the A2 fix): a Python
+        # leg whose ONLY failure is a zero collected count does not
+        # veto the run while another Python leg remains — the gate
+        # judges the union of the legs that ran, and every leg
+        # executes before it judges.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            commands = [
+                VerificationCommand(
+                    "unittest",
+                    "Python unittest",
+                    (
+                        sys.executable,
+                        "-c",
+                        "import sys; print('Ran 0 tests in 0.000s', "
+                        "file=sys.stderr)",
+                    ),
+                ),
+                VerificationCommand(
+                    "pytest",
+                    "Python tests",
+                    (sys.executable, "-c", "print('1 passed in 0.01s')"),
+                ),
+            ]
+            results = []
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                rc = run_all(
+                    root,
+                    commands,
+                    mem_available_kb=lambda: 10**9,
+                    on_result=results.append,
+                )
+            self.assertEqual(rc, 0)
+            self.assertEqual(len(results), 2)
+            self.assertEqual(results[0].tests_collected, 0)
+            self.assertEqual(results[1].tests_collected, 1)
+
+    def test_all_python_legs_zero_collected_still_fails(self):
+        # The union rule is not a vacuity hole: when every Python
+        # leg collects zero, the run still fails the count gate.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            commands = [
+                VerificationCommand(
+                    "unittest",
+                    "Python unittest",
+                    (
+                        sys.executable,
+                        "-c",
+                        "import sys; print('Ran 0 tests in 0.000s', "
+                        "file=sys.stderr)",
+                    ),
+                ),
+                VerificationCommand(
+                    "pytest",
+                    "Python tests",
+                    (sys.executable, "-c", "print('no tests ran')"),
+                ),
+            ]
+            results = []
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                rc = run_all(
+                    root,
+                    commands,
+                    mem_available_kb=lambda: 10**9,
+                    on_result=results.append,
+                )
+            self.assertEqual(rc, 1)
+            self.assertEqual(len(results), 2)
+            self.assertIn("zero tests collected", stdout.getvalue())
+
     def test_zero_or_unparseable_count_fails_despite_zero_exit(self):
         # The count verdict rides on VerificationResult, consulted by
         # run_all exactly like survivors_killed: exit 0 with no
@@ -975,6 +1049,73 @@ class ClassifierUncertaintyTests(unittest.TestCase):
             )
             _, _, rc, _ = self.run_fixture(root)
             self.assertEqual(rc, 1)
+
+    def test_object_base_routes_to_pytest_only(self):
+        # Codex P2 (on the A2 fix): `object` is a KNOWN non-TestCase
+        # base — a bare builtin is resolved by the interpreter
+        # itself and cannot be a cross-module TestCase. It must not
+        # trigger speculative unittest routing.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "test_sample.py",
+                "class TestSample(object):\n"
+                "    def test_ok(self):\n"
+                "        pass\n",
+            )
+            commands = discover_verification_commands(root)
+            self.assertEqual([c.id for c in commands], ["pytest"])
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_object_base_pytest_module_executes_and_passes(self):
+        # Codex's exact reproduction: a passing pytest-only module
+        # (TestSample(object) with a passing test_ok) must PASS
+        # verification, its test executed by pytest — before the
+        # fix, speculative unittest collected zero and the count
+        # gate failed the run before pytest executed.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "test_sample.py",
+                "class TestSample(object):\n"
+                "    def test_ok(self):\n"
+                "        pass\n",
+            )
+            commands, results, rc, _ = self.run_fixture(root)
+            self.assertEqual([c.id for c in commands], ["pytest"])
+            self.assertEqual(rc, 0)
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0].tests_collected, 1)
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_imported_mixin_speculative_leg_does_not_veto_pytest(self):
+        # An imported mixin is GENUINE uncertainty (it may be a
+        # TestCase in its home module), so both legs still run —
+        # the A2 invariant holds. But the speculative unittest leg
+        # collecting zero must not veto the run: pytest still
+        # executes the module's test and the union of collected
+        # counts satisfies the gate.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "shared_mixin.py", "class Mixin:\n    pass\n")
+            write(
+                root,
+                "test_mixed.py",
+                "from shared_mixin import Mixin\n\n\n"
+                "class TestMixed(Mixin):\n"
+                "    def test_ok(self):\n"
+                "        pass\n",
+            )
+            commands, results, rc, _ = self.run_fixture(root)
+            self.assertEqual(
+                [c.id for c in commands], ["unittest", "pytest"]
+            )
+            self.assertEqual(rc, 0)
+            self.assertEqual(len(results), 2)
+            self.assertEqual(results[0].tests_collected, 0)
+            self.assertEqual(results[1].tests_collected, 1)
 
     def test_deselected_is_not_counted_as_collected(self):
         # Judge rider (correctness P2-B): deselected tests were
