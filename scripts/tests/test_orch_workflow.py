@@ -342,6 +342,46 @@ class TestValidation(WorkflowLoadCase):
         msg = self.load_error(spec)
         self.assertIn("tracker", msg)
 
+    def test_env_sourced_invalid_tracker_value_is_not_printed(self):
+        # Regression: a resolved $ENV value must never appear in loader
+        # diagnostics, even when the resolved value fails validation.
+        secret = "resolved-tracker-secret-7f3a"
+        spec = MINIMAL_SPEC.replace("tracker: beads", "tracker: $ORCH_TEST_TRACKER")
+        err = io.StringIO()
+        with mock.patch.dict(os.environ, {"ORCH_TEST_TRACKER": secret}):
+            with redirect_stderr(err):
+                msg = self.load_error(spec)
+        self.assertIn("tracker", msg)
+        self.assertNotIn(secret, msg)
+        self.assertNotIn(secret, err.getvalue())
+
+    def test_env_sourced_invalid_repo_value_is_not_printed(self):
+        secret = "resolved-repo-secret-9c1b"
+        spec = MINIMAL_SPEC.replace(
+            "tracker: beads", "tracker: github\nrepo: $ORCH_TEST_REPO"
+        )
+        with mock.patch.dict(os.environ, {"ORCH_TEST_REPO": secret}):
+            msg = self.load_error(
+                spec, remote_of=fake_remote(url="https://github.com/octo/other.git")
+            )
+        self.assertIn("repo", msg)
+        self.assertNotIn(secret, msg)
+
+    def test_env_sourced_mismatched_repo_value_is_not_printed(self):
+        # The R-14 mismatch message may name the normalized remote
+        # owner/repo, but never the spec's own (possibly env-resolved)
+        # repo value.
+        spec = MINIMAL_SPEC.replace(
+            "tracker: beads", "tracker: github\nrepo: $ORCH_TEST_REPO"
+        )
+        with mock.patch.dict(os.environ, {"ORCH_TEST_REPO": "secret-owner/secret-repo"}):
+            msg = self.load_error(
+                spec, remote_of=fake_remote(url="https://github.com/octo/other.git")
+            )
+        self.assertIn("does not match", msg)
+        self.assertIn("octo/other", msg)
+        self.assertNotIn("secret-owner/secret-repo", msg)
+
     def test_wrong_scalar_type_fails(self):
         spec = MINIMAL_SPEC.replace(
             "terminal_states: [closed]",

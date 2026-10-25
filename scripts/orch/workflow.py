@@ -614,12 +614,11 @@ def load_workflow(path: str, remote_of=None) -> Workflow:
 
     if values["tracker"] not in ("beads", "github"):
         raise WorkflowError(
-            f"field 'tracker' must be \"beads\" or \"github\", got {values['tracker']!r}"
+            "field 'tracker' must be \"beads\" or \"github\""
         )
     if values["workspace_on_terminal"] not in ("keep", "release-clean"):
         raise WorkflowError(
-            "field 'workspace_on_terminal' must be \"keep\" or \"release-clean\", "
-            f"got {values['workspace_on_terminal']!r}"
+            "field 'workspace_on_terminal' must be \"keep\" or \"release-clean\""
         )
     if values["transition_on_success"] and values["done_state"] is None:
         raise WorkflowError(
@@ -636,16 +635,16 @@ def load_workflow(path: str, remote_of=None) -> Workflow:
         if repo is None:
             raise WorkflowError("field 'repo' is required for tracker \"github\"")
         if not re.fullmatch(r"[^/\s]+/[^/\s]+", repo):
-            raise WorkflowError(f"field 'repo' must be in owner/repo form, got {repo!r}")
+            raise WorkflowError("field 'repo' must be in owner/repo form")
         if remote_url is None:
             raise WorkflowError(
                 f"could not resolve the origin remote of the project at "
-                f"{values['project_root']} to cross-check repo {repo!r}"
+                f"{values['project_root']} to cross-check the spec's 'repo' field"
             )
         remote_repo = _normalize_remote(remote_url)
         if remote_repo.lower() != repo.lower() and not values["allow_repo_remote_mismatch"]:
             raise WorkflowError(
-                f"repo {repo!r} does not match the project origin remote "
+                f"the spec's 'repo' field does not match the project origin remote "
                 f"{remote_repo!r} (set allow_repo_remote_mismatch: true to load anyway)"
             )
 
@@ -654,8 +653,8 @@ def load_workflow(path: str, remote_of=None) -> Workflow:
             values["base_ref"] = default_branch
         else:
             raise WorkflowError(
-                "could not resolve a default branch for repo "
-                f"{values['repo'] or values['project_slug']!r}; set base_ref in the spec"
+                "could not resolve a default branch for the project; "
+                "set base_ref in the spec"
             )
 
     return Workflow(**values)
