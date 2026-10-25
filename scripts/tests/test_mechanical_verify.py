@@ -2280,6 +2280,112 @@ class ClassifierUncertaintyTests(unittest.TestCase):
             self.assertEqual([c.id for c in commands], ["unittest"])
             self.assertIn("test_case_alias", commands[0].argv)
 
+    def _write_unpack_fixture(self, root: Path, assignment: str):
+        write(
+            root,
+            "shared.py",
+            "import unittest\n"
+            "\n"
+            "\n"
+            "class SharedCase(unittest.TestCase):\n"
+            "    pass\n",
+        )
+        write(
+            root,
+            "test_unpacked.py",
+            "from shared import SharedCase\n"
+            "\n"
+            "\n"
+            "class Helper:\n"
+            "    def test_bad(self):\n"
+            "        pass\n"
+            "\n"
+            "\n"
+            "class Other:\n"
+            "    def test_other(self):\n"
+            "        pass\n"
+            "\n"
+            "\n"
+            f"{assignment}\n"
+            "\n"
+            "\n"
+            "class Unit(SharedCase):\n"
+            "    def test_unit(self):\n"
+            "        pass\n",
+        )
+
+    def test_unpacked_assignment_bound_test_classes_keep_pytest_leg(
+        self,
+    ):
+        # Follow-on to round 9 (boundary recorded in its report):
+        # an unpacking assignment — `TestA, TestB = Helper,
+        # Other` — binds each Test* name to its own value
+        # element, and pytest collects both classes; but the
+        # whole-value rule saw a single Tuple value, which sits
+        # in the provably-non-callable set as a literal display,
+        # so neither name triggered the pytest leg and the module
+        # went unittest-only beside its sibling TestCase class.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_unpack_fixture(
+                root, "TestA, TestB = Helper, Other"
+            )
+            commands = discover_verification_commands(root)
+            self.assertEqual(
+                [c.id for c in commands], ["unittest", "pytest"]
+            )
+            self.assertIn("test_unpacked", commands[0].argv)
+
+    def test_unpacked_assignment_judges_each_element(self):
+        # Per-element judgment: a collectable name paired with a
+        # class triggers for its own name; a collectable name
+        # paired with literal data does not trigger for its own
+        # name — the pairing, not the tuple as a whole, decides.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_unpack_fixture(
+                root, "TestA, test_data = Helper, 42"
+            )
+            commands = discover_verification_commands(root)
+            self.assertEqual(
+                [c.id for c in commands], ["unittest", "pytest"]
+            )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_unpack_fixture(
+                root, "test_data, TestTable = 42, {'a': 1}"
+            )
+            commands = discover_verification_commands(root)
+            self.assertEqual([c.id for c in commands], ["unittest"])
+
+    def test_unpacked_literal_assignment_does_not_trigger_pytest(
+        self,
+    ):
+        # Guard: unpacking literal data binds no callables —
+        # `test_a, test_b = 1, 2` stays unittest-only (each
+        # element is provably non-callable for its own name).
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_unpack_fixture(
+                root, "test_a, test_b = 1, 2"
+            )
+            commands = discover_verification_commands(root)
+            self.assertEqual([c.id for c in commands], ["unittest"])
+
+    def test_unpacked_arity_mismatch_uses_whole_value_rule(self):
+        # Ruling: where an unpacking level has no one-to-one
+        # correspondence — arity mismatch here, a starred
+        # element likewise — that level's names fall back to
+        # the whole-value rule against that level's value; a
+        # tuple display is literal data, so nothing triggers.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_unpack_fixture(
+                root, "TestA, TestB = (Helper,)"
+            )
+            commands = discover_verification_commands(root)
+            self.assertEqual([c.id for c in commands], ["unittest"])
+
     def test_deselected_is_not_counted_as_collected(self):
         # Judge rider (correctness P2-B): deselected tests were
         # FILTERED OUT by the runner; counting them inflates the

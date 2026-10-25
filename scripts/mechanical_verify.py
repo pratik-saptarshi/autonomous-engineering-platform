@@ -130,6 +130,76 @@ def _binds_pytest_collectable(
     return name.startswith("Test") and not value_is_testcase
 
 
+def _value_denotes_testcase(
+    value: ast.expr, testcase_names: set[str]
+) -> bool:
+    """Whether an assignment value provably denotes unittest's
+    TestCase: its dotted name ends in `TestCase`, or it is a name
+    already recorded as a TestCase alias."""
+    value_name = _dotted_name(value)
+    return value_name is not None and (
+        value_name.rsplit(".", 1)[-1] == "TestCase"
+        or value_name in testcase_names
+    )
+
+
+def _assignment_target_triggers(
+    target: ast.expr, value: ast.expr, testcase_names: set[str]
+) -> bool:
+    """Whether binding `target` to `value` puts a pytest-collectable
+    name in the module namespace.
+
+    A plain name target is judged against the whole value (the
+    round 7/9 rule: the name triggers unless the value is provably
+    non-callable literal data). An unpacking target — a tuple or
+    list of names — whose value is a tuple or list of MATCHING
+    arity is judged PER ELEMENT: `TestA, TestB = Helper, Other`
+    binds TestA to Helper and TestB to Other, so each name is
+    judged against its own element, recursing into nested
+    unpackings. Where a level has no one-to-one correspondence —
+    arity mismatch, a starred element on either side, or a
+    non-sequence value — that level's names fall back to the
+    whole-value rule against that level's value.
+    """
+    if isinstance(target, ast.Name):
+        return not isinstance(
+            value, _NON_CALLABLE_VALUE_TYPES
+        ) and _binds_pytest_collectable(
+            target.id, _value_denotes_testcase(value, testcase_names)
+        )
+    if isinstance(target, (ast.Tuple, ast.List)):
+        if (
+            isinstance(value, (ast.Tuple, ast.List))
+            and len(target.elts) == len(value.elts)
+            and not any(
+                isinstance(element, ast.Starred)
+                for element in target.elts
+            )
+            and not any(
+                isinstance(element, ast.Starred)
+                for element in value.elts
+            )
+        ):
+            return any(
+                _assignment_target_triggers(
+                    element, element_value, testcase_names
+                )
+                for element, element_value in zip(
+                    target.elts, value.elts
+                )
+            )
+        if isinstance(value, _NON_CALLABLE_VALUE_TYPES):
+            return False
+        value_is_testcase = _value_denotes_testcase(
+            value, testcase_names
+        )
+        return any(
+            _binds_pytest_collectable(name, value_is_testcase)
+            for name in _assignment_target_names(target)
+        )
+    return False
+
+
 def _dotted_name(node: ast.expr) -> str | None:
     """Dotted name for a Name/Attribute chain (`unittest.TestCase`),
     else None (calls, subscripts, and other expressions have none)."""
@@ -176,7 +246,12 @@ def _classify_test_module(
       function and `TestGenerated = Helper` a collectable class;
       `test_cases = [...]` and `TestData = {...}` bind tables and do
       not; a `Test*` name bound to TestCase itself denotes
-      unittest's class, recorded as an alias, not a pytest class),
+      unittest's class, recorded as an alias, not a pytest class;
+      an unpacking assignment whose target and value correspond
+      one-to-one is judged per element — `TestA, TestB = Helper,
+      Other` binds two collectable classes, `test_a, test_b = 1, 2`
+      binds none — while a level with no correspondence falls back
+      to the whole-value rule for its names),
       OR a `Test*`
       class that is NOT resolved as a TestCase subclass (its test
       methods may be inherited from a local helper or written
@@ -323,14 +398,8 @@ def _classify_test_module(
                                 # branch.
                                 triggers_pytest = True
                     elif isinstance(child, ast.Assign):
-                        value_name = _dotted_name(child.value)
-                        value_is_testcase = (
-                            value_name is not None
-                            and (
-                                value_name.rsplit(".", 1)[-1]
-                                == "TestCase"
-                                or value_name in testcase_names
-                            )
+                        value_is_testcase = _value_denotes_testcase(
+                            child.value, testcase_names
                         )
                         if value_is_testcase:
                             for target in child.targets:
@@ -345,39 +414,34 @@ def _classify_test_module(
                                 # same module attribute the unittest
                                 # loader invokes.
                                 has_load_tests = True
-                        if not isinstance(
-                            child.value, _NON_CALLABLE_VALUE_TYPES
-                        ):
-                            for target in child.targets:
-                                for name in _assignment_target_names(
-                                    target
-                                ):
-                                    if _binds_pytest_collectable(
-                                        name, value_is_testcase
-                                    ):
-                                        # pytest collects test_*
-                                        # functions and Test*
-                                        # classes from the module
-                                        # namespace, however they were
-                                        # bound — `test_failure =
-                                        # failure` and
-                                        # `TestGenerated = Helper`
-                                        # included. Checking
-                                        # assignment targets only for
-                                        # TestCase aliases and
-                                        # load_tests let a sibling
-                                        # TestCase class suppress the
-                                        # leg and silently omit the
-                                        # assigned tests (Codex P2,
-                                        # rounds 7 and 9). Only
-                                        # provably-data values
-                                        # (literal displays) are not
-                                        # evidence, and a Test* name
-                                        # bound to TestCase itself
-                                        # denotes unittest's class
-                                        # (recorded above as an
-                                        # alias), not a pytest class.
-                                        triggers_pytest = True
+                        for target in child.targets:
+                            if _assignment_target_triggers(
+                                target, child.value, testcase_names
+                            ):
+                                # pytest collects test_* functions
+                                # and Test* classes from the module
+                                # namespace, however they were bound
+                                # — `test_failure = failure`,
+                                # `TestGenerated = Helper`, and the
+                                # unpacking form `TestA, TestB =
+                                # Helper, Other` included (the
+                                # last judged per element: the
+                                # whole-value rule saw one Tuple
+                                # value — a literal display in the
+                                # non-callable set — and triggered
+                                # for neither name). Checking
+                                # assignment targets only for
+                                # TestCase aliases and load_tests let
+                                # a sibling TestCase class suppress
+                                # the leg and silently omit the
+                                # assigned tests (Codex P2, rounds
+                                # 7 and 9). Only provably-data
+                                # values (literal displays) are not
+                                # evidence, and a Test* name bound
+                                # to TestCase itself denotes
+                                # unittest's class (recorded above
+                                # as an alias), not a pytest class.
+                                triggers_pytest = True
                     elif isinstance(child, ast.AnnAssign):
                         # `test_failure: Callable = failure` and
                         # `TestGenerated: type = Helper` bind the
@@ -392,13 +456,9 @@ def _classify_test_module(
                                 _NON_CALLABLE_VALUE_TYPES,
                             )
                         ):
-                            ann_value_name = _dotted_name(child.value)
                             ann_value_is_testcase = (
-                                ann_value_name is not None
-                                and (
-                                    ann_value_name.rsplit(".", 1)[-1]
-                                    == "TestCase"
-                                    or ann_value_name in testcase_names
+                                _value_denotes_testcase(
+                                    child.value, testcase_names
                                 )
                             )
                             if _binds_pytest_collectable(
