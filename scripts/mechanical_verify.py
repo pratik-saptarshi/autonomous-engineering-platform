@@ -20,6 +20,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -1348,18 +1349,38 @@ def _git_tree_digest(root: Path, head: str) -> str | None:
     return digest.hexdigest()
 
 
+def _fs_entry_mode(path: Path) -> str:
+    """Git-style mode string for one filesystem entry: the file TYPE
+    plus, for regular files, the executable bit — `100755` vs
+    `100644`; symlinks are `120000` whatever they point at; other
+    types keep their raw type bits. Mirrors what the git-mode digest
+    already captures from ls-tree, so an execution-relevant
+    permission change moves the fs digest exactly as it moves the
+    git one. Non-executable permission bits (read/write) are not
+    execution evidence and stay out, matching git.
+    """
+    st = os.lstat(path)
+    if stat.S_ISLNK(st.st_mode):
+        return "120000"
+    if stat.S_ISREG(st.st_mode):
+        return "100755" if st.st_mode & 0o111 else "100644"
+    return format(stat.S_IFMT(st.st_mode), "06o")
+
+
 def _fs_tree_digest(root: Path, receipts_path: Path | None = None) -> str:
     """Digest of a non-git tree: sha256 over sorted relative paths of
-    `relpath + "\\0" + content + "\\0"`, where content is the file's
-    sha256 hex (symlinks: the target string, never followed). Paths
-    with a component in FS_EXCLUDED_DIRS and the receipts file itself
-    are excluded.
+    `relpath + "\\0" + mode + "\\0" + content + "\\0"`, where mode is
+    the entry's git-style mode string (file type + executable bit —
+    see `_fs_entry_mode`) and content is the file's sha256 hex
+    (symlinks: the target string, never followed). Paths with a
+    component in FS_EXCLUDED_DIRS and the receipts file itself are
+    excluded.
     """
     resolved = root.resolve()
     receipts_resolved = (
         receipts_path.resolve() if receipts_path is not None else None
     )
-    entries: list[tuple[str, str]] = []
+    entries: list[tuple[str, str, str]] = []
     for dirpath, dirnames, filenames in os.walk(resolved, followlinks=False):
         current = Path(dirpath)
         descend: list[str] = []
@@ -1369,7 +1390,11 @@ def _fs_tree_digest(root: Path, receipts_path: Path | None = None) -> str:
             path = current / name
             if path.is_symlink():
                 entries.append(
-                    (path.relative_to(resolved).as_posix(), os.readlink(path))
+                    (
+                        path.relative_to(resolved).as_posix(),
+                        _fs_entry_mode(path),
+                        os.readlink(path),
+                    )
                 )
             else:
                 descend.append(name)
@@ -1383,18 +1408,23 @@ def _fs_tree_digest(root: Path, receipts_path: Path | None = None) -> str:
                 continue
             rel = path.relative_to(resolved).as_posix()
             if path.is_symlink():
-                entries.append((rel, os.readlink(path)))
+                entries.append(
+                    (rel, _fs_entry_mode(path), os.readlink(path))
+                )
             else:
                 entries.append(
                     (
                         rel,
+                        _fs_entry_mode(path),
                         hashlib.sha256(path.read_bytes()).hexdigest(),
                     )
                 )
     entries.sort()
     digest = hashlib.sha256()
-    for rel, content in entries:
+    for rel, mode, content in entries:
         digest.update(rel.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(mode.encode("utf-8"))
         digest.update(b"\0")
         digest.update(content.encode("utf-8"))
         digest.update(b"\0")

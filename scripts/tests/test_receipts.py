@@ -655,6 +655,53 @@ class BindingTests(unittest.TestCase):
                 binding["tree_digest"],
             )
 
+    def test_tree_binding_fs_mode_records_type_and_exec_bit(self):
+        # Codex P2 (gap-fix round 7): the fs digest hashed only file
+        # contents, so an execution-relevant permission change left
+        # the digest — and a sealed PASS — untouched. Git-mode
+        # bindings already capture the executable bit via ls-tree
+        # modes; the fs digest must record file type and the
+        # executable bit for every entry.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            script = write(root, "check.sh", "#!/bin/sh\ntrue\n")
+            script.chmod(0o755)
+            binding = mechanical_verify.tree_binding(root)
+            # Removing the executable bit moves the digest.
+            script.chmod(0o644)
+            self.assertNotEqual(
+                mechanical_verify.tree_binding(root)["tree_digest"],
+                binding["tree_digest"],
+            )
+            # Restoring it restores the digest exactly: the digest
+            # is deterministic, so seal-time and check-time agree
+            # byte-for-byte on an unchanged tree.
+            script.chmod(0o755)
+            self.assertEqual(
+                mechanical_verify.tree_binding(root)["tree_digest"],
+                binding["tree_digest"],
+            )
+            # A permission change that does not touch the
+            # executable bit (read bits) is not execution evidence
+            # and does not move the digest.
+            data = write(root, "data.txt", "payload\n")
+            data.chmod(0o644)
+            with_data = mechanical_verify.tree_binding(root)[
+                "tree_digest"
+            ]
+            data.chmod(0o600)
+            self.assertEqual(
+                mechanical_verify.tree_binding(root)["tree_digest"],
+                with_data,
+            )
+            # A type change at the same path moves the digest.
+            data.unlink()
+            data.symlink_to("check.sh")
+            self.assertNotEqual(
+                mechanical_verify.tree_binding(root)["tree_digest"],
+                with_data,
+            )
+
     def test_bound_check_passes_on_clean_tree(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -877,6 +924,38 @@ class BindingTests(unittest.TestCase):
             proc = check_bound(receipts, "1", root)
             self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
             write(root, "Makefile", "test:\n\tfalse\n")
+            proc = check_bound(receipts, "1", root)
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("RECEIPTS: STALE", proc.stdout)
+
+    def test_fs_mode_exec_bit_removal_is_stale(self):
+        # Codex's exact reproduction: verify an fs root whose
+        # Makefile invokes ./check.sh, seal, then remove the
+        # script's executable bit. No content changed, but the
+        # sealed PASS must stop validating — verifying the current
+        # tree would fail with permission denied.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "Makefile", "test:\n\t./check.sh\n")
+            script = write(root, "check.sh", "#!/bin/sh\ntrue\n")
+            script.chmod(0o755)
+            receipts = Path(tmp) / "outside" / "r.jsonl"
+            receipts.parent.mkdir()
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            proc = check_bound(receipts, "1", root)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("RECEIPTS: PASS", proc.stdout)
+            script.chmod(0o644)
+            proc = check_bound(receipts, "1", root)
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("RECEIPTS: STALE", proc.stdout)
+            # Restoring the bit makes the honest tree validate
+            # again, and a content-only change still invalidates.
+            script.chmod(0o755)
+            proc = check_bound(receipts, "1", root)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            write(root, "check.sh", "#!/bin/sh\ntrue\n# edited\n")
             proc = check_bound(receipts, "1", root)
             self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
             self.assertIn("RECEIPTS: STALE", proc.stdout)
