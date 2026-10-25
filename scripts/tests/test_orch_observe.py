@@ -184,5 +184,72 @@ class ActiveLaneNamesTests(unittest.TestCase):
         self.assertIn("pickup lag: n/a", summary)
 
 
+def make_obs(stamp, ready=(), exits=()):
+    return {
+        "ts": stamp,
+        "tracker": "beads",
+        "ready": list(ready),
+        "rejected": {},
+        "ready_wait_s": {},
+        "ready_wait_basis": "updated_at_lb",
+        "exits": [
+            {"identifier": identifier, "pickup_explained": explained}
+            for identifier, explained in exits
+        ],
+        "age_s": {},
+        "points_spent": None,
+        "fetch_count": 0,
+        "type_excluded_count": 0,
+        "truncated": False,
+    }
+
+
+class PickupLagBaselineTests(unittest.TestCase):
+    """Pickup lag is measured over the current ready episode only.
+
+    The baseline must clear on every exit from ready — explained or
+    not — or time spent blocked/closed between episodes is counted
+    as dispatch delay.
+    """
+
+    def test_unexplained_exit_resets_the_baseline(self):
+        # Regression: ready 00:00, blocked (unexplained exit) 01:00,
+        # ready again 10:00, picked up 11:00 — the lag is the current
+        # episode's 1 hour, not 11 hours from the first-ever sighting.
+        observations = [
+            make_obs("2026-01-01T00:00:00+00:00", ready=["x"]),
+            make_obs("2026-01-01T01:00:00+00:00", exits=[("x", False)]),
+            make_obs("2026-01-01T10:00:00+00:00", ready=["x"]),
+            make_obs("2026-01-01T11:00:00+00:00", exits=[("x", True)]),
+        ]
+        self.assertIn(
+            "pickup lag: median 3600s over 1 pickup-explained exit",
+            summarize(observations),
+        )
+
+    def test_explained_exit_also_resets_the_baseline(self):
+        observations = [
+            make_obs("2026-01-01T00:00:00+00:00", ready=["x"]),
+            make_obs("2026-01-01T01:00:00+00:00", exits=[("x", True)]),
+            make_obs("2026-01-01T05:00:00+00:00", ready=["x"]),
+            make_obs("2026-01-01T06:00:00+00:00", exits=[("x", True)]),
+        ]
+        self.assertIn(
+            "pickup lag: median 3600s over 2 pickup-explained exits",
+            summarize(observations),
+        )
+
+    def test_uninterrupted_episode_keeps_its_baseline(self):
+        observations = [
+            make_obs("2026-01-01T00:00:00+00:00", ready=["x"]),
+            make_obs("2026-01-01T01:00:00+00:00", ready=["x"]),
+            make_obs("2026-01-01T03:00:00+00:00", exits=[("x", True)]),
+        ]
+        self.assertIn(
+            "pickup lag: median 10800s over 1 pickup-explained exit",
+            summarize(observations),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

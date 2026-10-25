@@ -41,8 +41,11 @@ symmetric-difference size between consecutive ready sets — ``n/a``
 with fewer than two observations); ready-wait median and p95 across
 all ready observations, with the basis printed beside them (p95 is
 nearest-rank: the ``ceil(0.95 * n)``-th smallest value); pickup-lag
-median over pickup-explained exits (first-ready observation to exit
-observation); and the fraction of ticks with a non-empty ready set.
+median over pickup-explained exits (first-ready observation of the
+issue's current ready episode to the exit observation — the baseline
+clears on every exit from ready, so time spent not-ready between
+episodes is never counted as dispatch delay); and the fraction of
+ticks with a non-empty ready set.
 """
 
 from __future__ import annotations
@@ -374,8 +377,6 @@ def summarize(observations: list[dict]) -> str:
     lags: list[float] = []
     first_ready: dict[str, int] = {}
     for index, obs in enumerate(observations):
-        for identifier in obs.get("ready", []):
-            first_ready.setdefault(identifier, index)
         for exit_ in obs.get("exits", []):
             if not exit_.get("pickup_explained"):
                 continue
@@ -386,6 +387,16 @@ def summarize(observations: list[dict]) -> str:
             end = stamps[index]
             if start is not None and end is not None:
                 lags.append((end - start).total_seconds())
+        # The lag baseline is per ready episode: once an issue is
+        # absent from the ready set it has exited — explained or not —
+        # and its baseline clears, so a later re-entry starts a fresh
+        # episode instead of inheriting the first-ever sighting.
+        current = set(obs.get("ready", []))
+        for identifier in list(first_ready):
+            if identifier not in current:
+                del first_ready[identifier]
+        for identifier in obs.get("ready", []):
+            first_ready.setdefault(identifier, index)
     if lags:
         lines.append(
             "pickup lag: median {}s over {} pickup-explained exit{}".format(
