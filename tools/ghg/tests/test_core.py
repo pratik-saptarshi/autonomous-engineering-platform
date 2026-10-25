@@ -244,6 +244,28 @@ class TestFinalizeAndReaper(CoreTestCase):
         self.assertIsNotNone(ledger.reserve_all(
             [("search", 5)], "tester", "search q", now=now))
 
+    def test_reaper_path_under_lock_raises_gatebroken(self):
+        # Review probe (Task 2 fix round 1): with the DB exclusively
+        # locked and busy_timeout shortened, the reaper path at the
+        # head of reserve_all must surface GateBroken — the sole
+        # DB/lock failure signal — never a raw sqlite3 error, and it
+        # must not produce a `denied` row.
+        ledger = self.make_ledger({"search": [[60, 5]]})
+        ledger.conn.execute("PRAGMA busy_timeout=50")
+        blocker = sqlite3.connect(str(self.db_file),
+                                  isolation_level=None, timeout=5)
+        blocker.execute("BEGIN EXCLUSIVE")
+        try:
+            with self.assertRaises(ghg.GateBroken):
+                ledger.reap_abandoned(now=int(time.time()))
+            with self.assertRaises(ghg.GateBroken):
+                ledger.reserve_all([("search", 1)], "tester",
+                                   "search q")
+        finally:
+            blocker.execute("ROLLBACK")
+            blocker.close()
+        self.assertEqual(self.call_rows("denied"), [])
+
     def test_reserve_all_reaps_before_checking(self):
         ledger = self.make_ledger({"search": [[3600, 5]]})
         now = int(time.time())

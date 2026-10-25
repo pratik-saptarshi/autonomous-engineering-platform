@@ -414,12 +414,21 @@ class Ledger:
     # -- reserve / finalize ----------------------------------------------
 
     def reap_abandoned(self, now=None):
-        """Reservations older than 10 min become `abandoned`."""
+        """Reservations older than 10 min become `abandoned`.
+
+        DB/lock failures surface as GateBroken (the sole failure
+        signal Task 3 keys its fail-open on), never as a raw sqlite3
+        error — including on the reserve_all entry path, which calls
+        this before its own BUSY-retry handling.
+        """
         now = int(time.time()) if now is None else int(now)
-        cur = self.conn.execute(
-            "UPDATE calls SET outcome = 'abandoned'"
-            " WHERE outcome = 'reserved' AND ts < ?",
-            (now - RESERVATION_TTL_S,))
+        try:
+            cur = self.conn.execute(
+                "UPDATE calls SET outcome = 'abandoned'"
+                " WHERE outcome = 'reserved' AND ts < ?",
+                (now - RESERVATION_TTL_S,))
+        except sqlite3.OperationalError as exc:
+            raise GateBroken(str(exc)) from exc
         return cur.rowcount
 
     def reserve_all(self, charges, actor, argv, now=None):
