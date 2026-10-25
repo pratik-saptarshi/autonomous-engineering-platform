@@ -643,31 +643,74 @@ def _policy_path() -> Path:
     return Path(__file__).resolve().parent / "policy.data"
 
 
-def policy_env_scrub(policy_path) -> tuple[str, ...]:
-    """Read the [env-scrub] fragments from a policy.data file.
+class PolicyError(ValueError):
+    """An existing policy file cannot be honored. Raised by the
+    policy reader under the same fail-closed grammar lane-coord.sh's
+    load_policy enforces; a MISSING file is not an error (it yields
+    no fragments, and the record says so)."""
 
-    A new Python reader for the section grammar lane-coord.sh's
-    load_policy validates (lane-coord's parser exists only as an
-    embedded python3 heredoc, so it is not importable from here; this
-    reader ports its extraction semantics). A missing or unreadable
-    file yields no fragments.
+
+def _load_policy_fragments(policy_path) -> tuple[str, ...] | None:
+    """The [env-scrub] fragments of a policy file, strictly parsed.
+
+    Returns None when the file does not exist. Raises PolicyError for
+    an existing file lane-coord's grammar refuses: unreadable, an
+    unknown or misspelled section header, content before any section
+    header, an entry containing whitespace, or either section
+    ([sensitive-paths] / [env-scrub]) missing or empty — an emptied
+    [env-scrub] section is exactly the fragmentless-policy hole the
+    panel reproduced (full environment, record claiming 'scrubbed').
     """
+    path = Path(policy_path)
     try:
-        lines = Path(policy_path).read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return ()
-    section = None
-    fragments: list[str] = []
-    for raw in lines:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeDecodeError) as exc:
+        raise PolicyError(f"cannot read {path}: {exc}") from exc
+    sections: dict[str, list[str]] = {
+        "sensitive-paths": [],
+        "env-scrub": [],
+    }
+    section: str | None = None
+    for num, raw in enumerate(lines, 1):
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
         if line.startswith("["):
-            section = line[1:-1] if line.endswith("]") else line[1:]
-            continue
-        if section == "env-scrub":
-            fragments.append(line)
-    return tuple(fragments)
+            if line in ("[sensitive-paths]", "[env-scrub]"):
+                section = line[1:-1]
+                continue
+            raise PolicyError(
+                f"line {num}: unknown section header {line!r} in {path}"
+            )
+        if section is None:
+            raise PolicyError(
+                f"line {num}: content before any section header "
+                f"in {path}"
+            )
+        if any(ch.isspace() for ch in line):
+            raise PolicyError(
+                f"line {num}: entry contains whitespace in {path}"
+            )
+        sections[section].append(line)
+    for name, entries in sections.items():
+        if not entries:
+            raise PolicyError(f"section [{name}] is empty in {path}")
+    return tuple(sections["env-scrub"])
+
+
+def policy_env_scrub(policy_path) -> tuple[str, ...]:
+    """Read the [env-scrub] fragments from a policy.data file.
+
+    A missing file yields no fragments. An existing file is parsed
+    under lane-coord.sh's fail-closed grammar (see
+    _load_policy_fragments) and raises PolicyError when it cannot be
+    honored — the reader never silently returns an empty list for a
+    file that is present but broken.
+    """
+    fragments = _load_policy_fragments(policy_path)
+    return fragments if fragments is not None else ()
 
 
 def _auth_occurrence_is_sensitive(upper: str) -> bool:
@@ -716,7 +759,9 @@ def build_run_env(policy_path) -> dict:
 
     AEP_VERIFY_FULL_ENV=1 opts out (mirroring lane-coord's
     AEP_LANE_FULL_ENV) and the full environment passes through. With
-    no fragments — e.g. a missing policy file — nothing is scrubbed.
+    no fragments — a missing policy file — nothing is scrubbed. An
+    existing-but-invalid policy file raises PolicyError (fail
+    closed): it is never silently treated as "no fragments".
     """
     env = dict(os.environ)
     if os.environ.get("AEP_VERIFY_FULL_ENV") == "1":
@@ -732,14 +777,21 @@ def build_run_env(policy_path) -> dict:
 
 
 def run_env_mode(policy_path) -> str:
-    """The env mode stated on the run-start record. The record never
-    claims a scrub that did not happen: a missing policy file is
-    'unscrubbed (no policy)'; the explicit opt-out is
-    'full (AEP_VERIFY_FULL_ENV)'; otherwise 'scrubbed'."""
+    """The env mode stated on the run-start record, derived from the
+    fragments actually applied — never from the file's mere
+    existence. A missing policy file is 'unscrubbed (no policy)';
+    the explicit opt-out is 'full (AEP_VERIFY_FULL_ENV)'; 'scrubbed'
+    is stated only when a non-empty fragment list was extracted (and
+    is what build_run_env applies). An existing-but-invalid file
+    raises PolicyError: no honest mode string exists for it, and the
+    run refuses before any command executes."""
     if os.environ.get("AEP_VERIFY_FULL_ENV") == "1":
         return "full (AEP_VERIFY_FULL_ENV)"
-    if not Path(policy_path).is_file():
+    if not Path(policy_path).exists():
         return "unscrubbed (no policy)"
+    fragments = policy_env_scrub(policy_path)
+    if not fragments:
+        return "unscrubbed (no fragments)"
     return "scrubbed"
 
 
@@ -1693,6 +1745,19 @@ def main(argv: list[str] | None = None) -> int:
             "the full environment (credential scrub disabled)",
             file=sys.stderr,
         )
+
+    if os.environ.get("AEP_VERIFY_FULL_ENV") != "1":
+        # Fail closed on an existing-but-invalid policy BEFORE any
+        # command executes (panel ENV-P1): a policy that cannot be
+        # honored must never degrade to an unscrubbed run wearing a
+        # 'scrubbed' record. A missing policy is valid (unscrubbed,
+        # and the record says so); the FULL_ENV opt-out skips the
+        # check because the policy is not applied at all.
+        try:
+            policy_env_scrub(_policy_path())
+        except PolicyError as exc:
+            print(f"VERIFY: FAIL policy data invalid: {exc}")
+            return 1
 
     receipts_path = Path(args.receipts) if args.receipts is not None else None
     if receipts_path is not None:

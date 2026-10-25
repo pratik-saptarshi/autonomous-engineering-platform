@@ -1113,6 +1113,85 @@ class EnvScrubTests(unittest.TestCase):
                     "full (AEP_VERIFY_FULL_ENV)",
                 )
 
+    def test_policy_existing_but_invalid_raises(self):
+        # Bucket A3 (panel ENV-P1): an existing policy file that
+        # cannot be honored — empty [env-scrub], a misspelled section
+        # header, content before any section, an unreadable path —
+        # is a hard error under the same grammar lane-coord enforces,
+        # never a silent empty fragment list.
+        variants = {
+            "empty-env-scrub": (
+                "[sensitive-paths]\n*/.ssh\n[env-scrub]\n"
+            ),
+            "misspelled-section": (
+                "[sensitive-paths]\n*/.ssh\n[env-scrubb]\nKEY\n"
+            ),
+            "pre-section-content": (
+                "KEY\n[sensitive-paths]\n*/.ssh\n[env-scrub]\nKEY\n"
+            ),
+            "empty-file": "",
+        }
+        for name, content in variants.items():
+            with self.subTest(variant=name):
+                with tempfile.TemporaryDirectory() as tmp:
+                    policy = write(Path(tmp), "policy.data", content)
+                    with self.assertRaises(
+                        mechanical_verify.PolicyError
+                    ):
+                        mechanical_verify.policy_env_scrub(policy)
+                    with self.assertRaises(
+                        mechanical_verify.PolicyError
+                    ):
+                        mechanical_verify.build_run_env(policy)
+                    with self.assertRaises(
+                        mechanical_verify.PolicyError
+                    ):
+                        mechanical_verify.run_env_mode(policy)
+        with tempfile.TemporaryDirectory() as tmp:
+            # A directory as the policy path is unreadable as a file.
+            with self.assertRaises(mechanical_verify.PolicyError):
+                mechanical_verify.policy_env_scrub(Path(tmp))
+
+    def test_cli_invalid_policy_refuses_before_any_command(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            write(root, "Makefile", "test:\n\ttouch ran.marker\n\ttrue\n")
+            policy = write(
+                base,
+                "policy.data",
+                "[sensitive-paths]\n*/.ssh\n[env-scrub]\n",
+            )
+            receipts = base / "receipts.jsonl"
+            env = dict(os.environ)
+            env.pop("AEP_VERIFY_FULL_ENV", None)
+            env["AEP_POLICY_DATA"] = str(policy)
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "verify",
+                    "--root",
+                    str(root),
+                    "--task",
+                    "badpolicy",
+                    "--receipts",
+                    str(receipts),
+                ],
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=60,
+            )
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("policy data invalid", proc.stdout)
+            # Fail closed BEFORE any command executes: the Makefile's
+            # marker side effect never happened, and no run-start
+            # record claimed a scrub.
+            self.assertFalse((root / "ran.marker").exists())
+            self.assertFalse(receipts.exists())
+
     def test_run_verification_scrubs_sentinel_end_to_end(self):
         fragment = _env_scrub_fragments()[0]
         name = f"AEP_TEST_{fragment.upper()}_SENTINEL"
