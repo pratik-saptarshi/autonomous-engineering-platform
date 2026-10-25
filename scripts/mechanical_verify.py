@@ -43,6 +43,17 @@ MARKDOWNLINT_ARGV = (
     "!skills/archify/**/*.md",
 )
 
+# pytest verbosity is an additive counter across the project's
+# addopts and the command line, and the count parser reads the
+# terminal summary — so the discovered invocation must guarantee
+# that summary is emitted. The old -q spent one quiet level here,
+# and a project with `addopts = -q` stacked to -qq, which
+# suppresses the summary entirely: a passing run printed only
+# `. [100%]`, parsed to zero collected, and was rejected (Codex
+# P2, round 5). -v nets +1, so project addopts down to -qq still
+# leave the summary alive.
+PYTEST_ARGV = ("python3", "-m", "pytest", "-v")
+
 
 @dataclass(frozen=True)
 class VerificationCommand:
@@ -356,9 +367,7 @@ def discover_verification_commands(root: Path) -> tuple[VerificationCommand, ...
         or (root / "tests").exists()
     ):
         add(
-            VerificationCommand(
-                "pytest", "Python tests", ("python3", "-m", "pytest", "-q")
-            )
+            VerificationCommand("pytest", "Python tests", PYTEST_ARGV)
         )
 
     # 5. Root-level python test files, partitioned by runner
@@ -405,9 +414,7 @@ def discover_verification_commands(root: Path) -> tuple[VerificationCommand, ...
             )
         if pytest_triggered:
             add(
-                VerificationCommand(
-                    "pytest", "Python tests", ("python3", "-m", "pytest", "-q")
-                )
+                VerificationCommand("pytest", "Python tests", PYTEST_ARGV)
             )
 
     # 6. Make (AEP addition).
@@ -655,6 +662,12 @@ def _count_collected(
     summary line itself (`no tests ran in …s`): the same phrase in
     test output (exposed by e.g. `addopts = -s`) is a diagnostic,
     not the summary, and must not override it (Codex P2, round 4).
+    The summary itself is guaranteed by the invocation: PYTEST_ARGV
+    nets positive verbosity, so project addopts cannot stack quiet
+    levels into suppressing it (Codex P2, round 5). A transcript
+    with no summary line at all (dots only) still parses to 0 —
+    verbosity-independent evidence was deliberately NOT taken from
+    e.g. the progress dots, which are not a count.
     An unparseable count is 0 — a Python command
     that cannot prove it collected anything fails the count gate in
     VerificationResult.passed. Skips count as collected (deliberate

@@ -27,7 +27,7 @@ Verification commands do not inherit the caller's environment untouched. Each co
 | 1 | `go-test` | `go.mod` | `go test ./...` | AEP addition |
 | 2 | `cargo-test` | `Cargo.toml` | `cargo test` | DeepCode |
 | 3 | `npm-test` | `package.json` with a real `scripts.test` string (non-empty, not npm's "no test specified" placeholder) | `npm test` | DeepCode |
-| 4 | `pytest` | `pytest.ini`, `pyproject.toml`, `setup.cfg`, or a `tests` entry | `python3 -m pytest -q` | DeepCode |
+| 4 | `pytest` | `pytest.ini`, `pyproject.toml`, `setup.cfg`, or a `tests` entry | `python3 -m pytest -v` | DeepCode |
 | 5 | `unittest` and/or `pytest` | root-level `test_*.py` or `*_test.py` files | partitioned by AST classification: `python3 -m unittest -v` naming the modules that define a `TestCase` subclass (their file stems), plus the rule-4 pytest command when any module triggers it — module-level `test_*` functions, `Test*` classes with `test_*` methods that are not `TestCase` subclasses, or a module with no leg at all. A module whose only collectable content is `TestCase` subclasses does not by itself trigger the pytest command; imports alone never create the unittest leg; a module that fails to parse falls back to substring classification — a mixed suite runs both runners, a single-style suite runs only its own | DeepCode, adapted |
 | 6 | `make-test` | `Makefile` with a `test:` target | `make test` | AEP addition |
 | 7 | `markdownlint` | `.markdownlint.yaml` present **and** `markdownlint-cli2` on PATH | `markdownlint-cli2 "**/*.md" "!reference/esf/**/*.md" "!reference/neurostrata/**/*.md" "!skills/archify/**/*.md"` | AEP addition |

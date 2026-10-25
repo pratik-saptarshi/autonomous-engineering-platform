@@ -207,7 +207,7 @@ class DiscoveryTests(unittest.TestCase):
                 ("python3", "-m", "unittest", "-v", "test_ok"),
             )
             self.assertEqual(
-                commands[1].argv, ("python3", "-m", "pytest", "-q")
+                commands[1].argv, ("python3", "-m", "pytest", "-v")
             )
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1043,6 +1043,58 @@ class CollectedCountTests(unittest.TestCase):
         )
         count = mechanical_verify._count_collected(
             "pytest", stdout, ""
+        )
+        self.assertEqual(count, 0)
+
+    def test_pytest_argv_keeps_summary_alive_under_quiet_addopts(self):
+        # Codex P2 (round 5): pytest verbosity is an additive
+        # counter across addopts and the command line. The old
+        # discovered argv carried -q, so a project with
+        # `addopts = -q` stacked to -qq and pytest suppressed the
+        # terminal summary the count parser reads — a passing suite
+        # recorded zero collected and was rejected. The discovered
+        # argv must net positive verbosity so the summary survives
+        # project addopts down to -qq.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "pytest.ini", "[pytest]\naddopts = -q\n")
+            commands = discover_verification_commands(root)
+            self.assertEqual([c.id for c in commands], ["pytest"])
+            self.assertEqual(
+                commands[0].argv, ("python3", "-m", "pytest", "-v")
+            )
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_quiet_addopts_project_passing_suite_passes_count_gate(self):
+        # Codex's exact reproduction, at execution level: pytest.ini
+        # with `addopts = -q` and one passing test. Under the old
+        # -q argv the run printed only `. [100%]`, collected parsed
+        # to zero, and verification was rejected; the counteracted
+        # argv restores the summary, so the leg collects 1 and the
+        # run passes.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "pytest.ini", "[pytest]\naddopts = -q\n")
+            write(
+                root,
+                "test_ok.py",
+                "def test_ok():\n    assert True\n",
+            )
+            commands, results, rc, _ = self.run_fixture(root)
+            self.assertEqual([c.id for c in commands], ["pytest"])
+            self.assertEqual(rc, 0)
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0].tests_collected, 1)
+            self.assertTrue(results[0].passed)
+
+    def test_suppressed_summary_output_still_records_zero(self):
+        # Guard against overcorrection: the fix lives in the
+        # invocation, not the parser. A dots-only transcript — what
+        # a verbosity-suppressed run hands the parser — is not
+        # collection evidence and still records zero, so the count
+        # gate fails closed if suppression ever reaches it.
+        count = mechanical_verify._count_collected(
+            "pytest", ". [100%]\n", ""
         )
         self.assertEqual(count, 0)
 
