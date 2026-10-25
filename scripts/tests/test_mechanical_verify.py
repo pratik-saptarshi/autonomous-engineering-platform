@@ -1302,6 +1302,98 @@ class ClassifierUncertaintyTests(unittest.TestCase):
             self.assertEqual(len(results), 1)
             self.assertEqual(results[0].tests_collected, 1)
 
+    def _write_inherited_fixture(self, root: Path, inherited_body: str):
+        write(
+            root,
+            "shared_case.py",
+            "import unittest\n\n\n"
+            "class SharedCase(unittest.TestCase):\n"
+            "    pass\n",
+        )
+        write(
+            root,
+            "test_inherited.py",
+            "from shared_case import SharedCase\n"
+            "\n"
+            "\n"
+            "class Helper:\n"
+            "    def test_inherited(self):\n"
+            f"        {inherited_body}\n"
+            "\n"
+            "\n"
+            "class TestInherited(Helper):\n"
+            "    pass\n"
+            "\n"
+            "\n"
+            "class Unit(SharedCase):\n"
+            "    def test_unit(self):\n"
+            "        pass\n",
+        )
+
+    def test_inherited_test_methods_keep_pytest_leg(self):
+        # Codex P2 (gap-fix round 3): a plain Test* class inheriting
+        # its test methods from a local helper declares no literal
+        # test methods in its own body. When a sibling class with an
+        # imported base (Unit(SharedCase)) selects the unittest leg,
+        # the old classifier suppressed pytest entirely — pytest is
+        # the only runner that collects the inherited methods, so
+        # they silently never ran. A Test* class that is not
+        # resolved as a TestCase subclass keeps the pytest leg.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_inherited_fixture(
+                root, "assert False, 'inherited test must run'"
+            )
+            commands = discover_verification_commands(root)
+            self.assertEqual(
+                [c.id for c in commands], ["unittest", "pytest"]
+            )
+            self.assertIn("test_inherited", commands[0].argv)
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_inherited_failing_method_executes_and_fails(self):
+        # Codex's exact reproduction: verification returned PASS
+        # while a direct pytest run failed the inherited test.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_inherited_fixture(
+                root, "assert False, 'inherited test must run'"
+            )
+            commands, results, rc, _ = self.run_fixture(root)
+            self.assertEqual(
+                [c.id for c in commands], ["unittest", "pytest"]
+            )
+            pytest_results = [
+                r for r in results if r.command.id == "pytest"
+            ]
+            self.assertEqual(len(pytest_results), 1)
+            self.assertFalse(pytest_results[0].passed)
+            self.assertGreaterEqual(
+                pytest_results[0].tests_collected, 1
+            )
+            self.assertEqual(rc, 1)
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_inherited_passing_method_passes_with_pytest_leg(self):
+        # The passing shape: both legs execute, the inherited
+        # method is collected by pytest, and the run PASSes.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_inherited_fixture(root, "pass")
+            commands, results, rc, _ = self.run_fixture(root)
+            self.assertEqual(
+                [c.id for c in commands], ["unittest", "pytest"]
+            )
+            pytest_results = [
+                r for r in results if r.command.id == "pytest"
+            ]
+            self.assertEqual(len(pytest_results), 1)
+            self.assertTrue(pytest_results[0].passed)
+            self.assertGreaterEqual(
+                pytest_results[0].tests_collected, 1
+            )
+            self.assertEqual(rc, 0)
+
     def test_deselected_is_not_counted_as_collected(self):
         # Judge rider (correctness P2-B): deselected tests were
         # FILTERED OUT by the runner; counting them inflates the

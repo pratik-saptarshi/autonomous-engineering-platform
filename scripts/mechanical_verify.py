@@ -104,9 +104,10 @@ def _classify_test_module(
       module's suite under unittest's loading protocol, and pytest
       never executes it.
     - pytest trigger iff the module defines module-level (or async)
-      `test_*` functions, OR `Test*` classes containing `test_*`
-      methods that are NOT TestCase subclasses, OR the module has no
-      leg at all (default). A module whose only collectable content
+      `test_*` functions, OR a `Test*` class that is NOT resolved as
+      a TestCase subclass (its test methods may be inherited from a
+      local helper or written pytest-style, so its own body is not
+      the evidence), OR the module has no leg at all (default). A module whose only collectable content
       is TestCase subclasses does NOT by itself trigger the pytest
       command (RC2 — pure-unittest trees keep byte-identical argv);
       when the bare pytest command exists for other reasons it
@@ -291,11 +292,17 @@ def _classify_test_module(
             has_unittest = True
             if cls.name.startswith("Test"):
                 triggers_pytest = True
-        elif cls.name.startswith("Test") and any(
-            isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and item.name.startswith("test_")
-            for item in cls.body
-        ):
+        elif cls.name.startswith("Test"):
+            # Resolved as NOT a TestCase subclass — but pytest
+            # collects Test* classes, and their test methods may be
+            # inherited from a local helper class, invisible in this
+            # class's own body. Suppressing the leg for want of
+            # literal test_* methods silently omitted inherited
+            # tests whenever a sibling class selected the unittest
+            # leg (Codex P2). The leg may be suppressed only on
+            # positive evidence there is nothing for pytest to
+            # collect; a Test* name on a non-TestCase class is the
+            # opposite of that evidence, so it keeps the leg.
             triggers_pytest = True
     if not has_unittest and not triggers_pytest:
         triggers_pytest = True  # no leg at all: the pytest default
