@@ -1,0 +1,65 @@
+#!/bin/sh
+# ghg shim: fail-open guard in front of ghg.py.
+#
+# Verifies ghg.py compiles (py_compile, cache under $GHG_STATE_DIR)
+# before exec'ing it. If compilation fails, falls back per verb with
+# argv translation and appends a line to $GHG_STATE_DIR/fallback.log:
+#   run          -> exec the real gh with the args past `--`
+#   watch        -> one single `gh run view` status read (no loop),
+#                   with a loud stderr warning
+#   check|status -> exit 70 with a message (nothing to execute)
+#   anything else -> exit 70 with a message
+set -u
+
+SHIM_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+GHG_PY="$SHIM_DIR/../ghg.py"
+STATE_DIR=${GHG_STATE_DIR:-"$HOME/workspace/ghg-state"}
+REAL_GH=${GHG_REAL_GH:-/usr/bin/gh}
+mkdir -p "$STATE_DIR" 2>/dev/null || true
+
+if python3 -c 'import py_compile, sys; py_compile.compile(sys.argv[1], cfile=sys.argv[2], doraise=True)' "$GHG_PY" "$STATE_DIR/ghg.pyc" 2>/dev/null; then
+    exec python3 "$GHG_PY" "$@"
+fi
+
+# ghg.py is broken: record the fallback and degrade per verb.
+printf '%s ghg.py failed py_compile; fallback verb=%s argv=%s\n' \
+    "$(date +%s)" "${1:-}" "$*" >> "$STATE_DIR/fallback.log" 2>/dev/null || true
+
+verb=${1:-}
+case "$verb" in
+    run)
+        shift
+        while [ $# -gt 0 ]; do
+            if [ "$1" = "--" ]; then
+                shift
+                break
+            fi
+            shift
+        done
+        exec "$REAL_GH" "$@"
+        ;;
+    watch)
+        shift
+        repo=""
+        run_id=""
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --repo) repo=$2; shift 2 ;;
+                --repo=*) repo=${1#--repo=}; shift ;;
+                --run) run_id=$2; shift 2 ;;
+                --run=*) run_id=${1#--run=}; shift ;;
+                *) shift ;;
+            esac
+        done
+        echo "ghg: WARNING ghg.py is broken; watch is DEGRADED to a single status read (no polling)" >&2
+        exec "$REAL_GH" run view "$run_id" --repo "$repo"
+        ;;
+    check|status)
+        echo "ghg: ghg.py is broken; '$verb' cannot run (nothing executed)" >&2
+        exit 70
+        ;;
+    *)
+        echo "ghg: ghg.py is broken; cannot dispatch verb '${verb}'" >&2
+        exit 70
+        ;;
+esac
