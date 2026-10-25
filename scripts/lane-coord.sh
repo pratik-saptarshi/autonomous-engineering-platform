@@ -62,10 +62,11 @@
 #     is untrusted provenance, so release --clean and reap refuse
 #     for it until `trust --name <name>` records the operator's
 #     per-lane confirmation (in the lane's history log, outside the
-#     manifest set) or a fresh claim re-stamps the manifest
-#     natively. Placement removes the state from the workers' tasked
-#     tree; it is NOT a write boundary against a determined same-uid
-#     process.
+#     manifest set) or a fresh claim that creates the worktree
+#     itself re-stamps the manifest natively (an adopting claim
+#     does not — Codex P1). Placement removes the state from the
+#     workers' tasked tree; it is NOT a write boundary against a
+#     determined same-uid process.
 set -euo pipefail
 
 # Platform-standard tool locations (see TOOLS.md): non-interactive runs
@@ -129,8 +130,11 @@ refuse_if_legacy_state() {
 # reap refuse for the lane; read paths and plain release work
 # normally. The marker is cleared only by `trust` (the operator's
 # per-lane confirmation, recorded in the lane's history log —
-# outside the manifest) or by a fresh claim, which re-stamps the
-# manifest natively.
+# outside the manifest) or by a fresh claim that CREATES the
+# worktree itself, re-stamping the manifest natively. A claim that
+# ADOPTS an existing worktree named by the migrated manifest does
+# not clear it (Codex P1): the claim's gates passed on that very
+# manifest's say-so, so adoption is not provenance.
 QUARANTINE_DIR() { printf '%s/.quarantine' "$LANES_DIR"; }
 
 lane_quarantined() { # $1 = name
@@ -907,6 +911,18 @@ cmd_claim() {
     exit 1
   fi
 
+  # Adoption vs creation, recorded for the quarantine decision at
+  # the manifest write below: when the worktree already exists and
+  # the previous manifest names this exact path, the claim ADOPTS a
+  # pre-existing worktree on the previous manifest's say-so;
+  # otherwise the claim creates the worktree itself and ownership
+  # is established by this claim.
+  local adopted_existing=0
+  if [ -e "$wt_path" ] && [ "$prev_exists" -eq 1 ] &&
+    [ "$prev_path" = "$wt_path" ]; then
+    adopted_existing=1
+  fi
+
   # Ownership gate (before the manifest write): an existing registered
   # worktree at the lane path may be adopted only when the previous
   # coordinator manifest proves this lane owned that exact path — the
@@ -932,8 +948,21 @@ cmd_claim() {
     "$POLICY_INTEGRITY" "$POLICY_FILE_RESOLVED" "$POLICY_SHA256"
   history_append "$name" "claimed" "$epoch" "$worker"
   # A fresh claim re-stamps the manifest natively: any migration
-  # quarantine on this name is discharged by the claim itself.
-  clear_quarantine "$name"
+  # quarantine on this name is discharged by the claim itself —
+  # EXCEPT when the claim ADOPTED an existing worktree named by the
+  # previous manifest (Codex P1): adoption is not provenance. The
+  # gates above passed on the migrated manifest's own prev_path and
+  # worker identity, so nothing independent established ownership
+  # of that worktree; discharge here would launder the planted
+  # manifest into release --clean's ownership proof with no
+  # operator trust. Quarantine survives an adopting claim and
+  # clears only via `trust`, or via a claim that creates the
+  # worktree itself.
+  if [ "$adopted_existing" -eq 1 ] && lane_quarantined "$name"; then
+    history_append "$name" "quarantine-kept" "$epoch" "$worker"
+  else
+    clear_quarantine "$name"
+  fi
 
   # Release the capacity lock — the transaction is over.
   flock -u 9 || true
@@ -1165,7 +1194,8 @@ cmd_release() {
     # Quarantine gate (panel P1-3): the four signals below are sound
     # against STALE manifests but cannot distinguish a PLANTED one —
     # a migrated manifest is not ownership proof until the operator
-    # confirms it (trust) or a fresh claim re-stamps it.
+    # confirms it (trust) or a claim that creates the worktree
+    # itself re-stamps it; an adopting claim does not (Codex P1).
     refuse_if_quarantined "$name" "clean"
     if fence_is_held "$name"; then
       echo "LANE: refuse clean $name: fence held (launcher alive)"
@@ -2396,6 +2426,116 @@ STUBEOF
   grep -q "LANE: cleaned sigma-twentyfive" "$out30c" || case_fails=1
   [ ! -e "$legacy_wts/sigma-twentyfive" ] || case_fails=1
   report_case "migrated-manifest-quarantined-from-clean"
+
+  # --- Case 31: quarantine-survives-adopting-claim ---
+  # Codex P1 on the A5 fix: discharge-on-any-claim laundered the
+  # quarantine. A migrated manifest naming an existing FOREIGN
+  # worktree passes an adopting claim's ownership and
+  # worker-lifetime gates on the untrusted manifest's own prev_path
+  # and worker identity — no operator trust anywhere — and
+  # release --clean then deleted the foreign worktree. The plant
+  # below is exactly that shape: a hand-written legacy manifest
+  # naming a hand-created worktree, every --clean signal green.
+  # Adoption must NOT discharge quarantine; trust may (part A),
+  # and a claim that creates the worktree itself still may (part B).
+  local forge_home="$selftest_root/forge-home"
+  local forge_legacy="$forge_home/workspace/worktrees/.lanes"
+  local forge_wts="$forge_home/workspace/worktrees"
+  local forge_new="$forge_home/.local/state/aep/lanes"
+  mkdir -p "$forge_legacy" "$forge_wts"
+  git -C "$repo" worktree add -b br-thirtyone "$forge_wts/phi-thirtyone" HEAD >/dev/null 2>&1 || case_fails=1
+  local dead31 head_sha
+  true & dead31=$!
+  wait "$dead31" 2>/dev/null || true
+  head_sha=$(git -C "$repo" rev-parse HEAD)
+  python3 - "$forge_legacy/phi-thirtyone.json" "$repo" "$forge_wts/phi-thirtyone" "$head_sha" "$dead31" <<'PYEOF' || case_fails=1
+import json, sys
+data = {
+    "version": 1, "name": "phi-thirtyone", "repo": sys.argv[2],
+    "path": sys.argv[3], "branch": "br-thirtyone", "base": sys.argv[4],
+    "worker": "wforge", "launcher_pid": int(sys.argv[5]), "epoch": 1,
+    "state": "claimed", "claimed_at": "2026-01-01T00:00:00Z",
+    "updated_at": "2026-01-01T00:00:00Z",
+    "worker_pid": int(sys.argv[5]), "worker_start": 1,
+}
+with open(sys.argv[1], "w") as fh:
+    fh.write(json.dumps(data) + "\n")
+PYEOF
+  local out31m="$selftest_root/out31m.txt" rc31m=0
+  env -u AEP_LANES_DIR HOME="$forge_home" AEP_WORKTREES_ROOT="$forge_wts" \
+    bash "$self_path" migrate >"$out31m" 2>&1 || rc31m=$?
+  [ "$rc31m" -eq 0 ] || case_fails=1
+  [ -f "$forge_new/.quarantine/phi-thirtyone" ] || case_fails=1
+  # Sanity: quarantined --clean refuses before any claim.
+  local out31a="$selftest_root/out31a.txt" rc31a=0
+  env -u AEP_LANES_DIR HOME="$forge_home" AEP_WORKTREES_ROOT="$forge_wts" \
+    bash "$self_path" release --name phi-thirtyone --clean >"$out31a" 2>&1 || rc31a=$?
+  [ "$rc31a" -eq 1 ] || case_fails=1
+  grep -q "quarantined" "$out31a" || case_fails=1
+  # The attack: an adopting claim (the worktree exists and the
+  # migrated manifest names it), worker `true`, no trust anywhere.
+  local out31c="$selftest_root/out31c.txt" rc31c=0
+  env -u AEP_LANES_DIR HOME="$forge_home" AEP_WORKTREES_ROOT="$forge_wts" \
+    bash "$self_path" claim --repo "$repo" --project phi --lane thirtyone \
+    --branch br-thirtyone --base HEAD --worker w31 \
+    --exec true >"$out31c" 2>&1 || rc31c=$?
+  [ "$rc31c" -eq 0 ] || case_fails=1
+  # The fix: quarantine SURVIVES the adopting claim, --clean still
+  # refuses, and the foreign worktree is untouched.
+  [ -f "$forge_new/.quarantine/phi-thirtyone" ] || case_fails=1
+  local out31r="$selftest_root/out31r.txt" rc31r=0
+  env -u AEP_LANES_DIR HOME="$forge_home" AEP_WORKTREES_ROOT="$forge_wts" \
+    bash "$self_path" release --name phi-thirtyone --clean >"$out31r" 2>&1 || rc31r=$?
+  [ "$rc31r" -eq 1 ] || case_fails=1
+  grep -q "quarantined" "$out31r" || case_fails=1
+  [ -d "$forge_wts/phi-thirtyone" ] || case_fails=1
+  # After the operator's trust, the normal signals proceed.
+  local out31t="$selftest_root/out31t.txt" rc31t=0
+  env -u AEP_LANES_DIR HOME="$forge_home" AEP_WORKTREES_ROOT="$forge_wts" \
+    bash "$self_path" trust --name phi-thirtyone >"$out31t" 2>&1 || rc31t=$?
+  [ "$rc31t" -eq 0 ] || case_fails=1
+  local out31d="$selftest_root/out31d.txt" rc31d=0
+  env -u AEP_LANES_DIR HOME="$forge_home" AEP_WORKTREES_ROOT="$forge_wts" \
+    bash "$self_path" release --name phi-thirtyone --clean >"$out31d" 2>&1 || rc31d=$?
+  [ "$rc31d" -eq 0 ] || case_fails=1
+  grep -q "LANE: cleaned phi-thirtyone" "$out31d" || case_fails=1
+  [ ! -e "$forge_wts/phi-thirtyone" ] || case_fails=1
+  # Part B: a claim that creates the worktree ITSELF still
+  # discharges quarantine — the claim's own natively-stamped
+  # manifest is the ownership evidence. Plant a second forged
+  # manifest naming a path that does not exist, migrate, claim.
+  python3 - "$forge_legacy/phi-thirtytwo.json" "$repo" "$forge_wts/phi-thirtytwo" "$head_sha" "$dead31" <<'PYEOF' || case_fails=1
+import json, sys
+data = {
+    "version": 1, "name": "phi-thirtytwo", "repo": sys.argv[2],
+    "path": sys.argv[3], "branch": "br-thirtytwo", "base": sys.argv[4],
+    "worker": "wforge", "launcher_pid": int(sys.argv[5]), "epoch": 1,
+    "state": "claimed", "claimed_at": "2026-01-01T00:00:00Z",
+    "updated_at": "2026-01-01T00:00:00Z",
+    "worker_pid": int(sys.argv[5]), "worker_start": 1,
+}
+with open(sys.argv[1], "w") as fh:
+    fh.write(json.dumps(data) + "\n")
+PYEOF
+  local out31m2="$selftest_root/out31m2.txt" rc31m2=0
+  env -u AEP_LANES_DIR HOME="$forge_home" AEP_WORKTREES_ROOT="$forge_wts" \
+    bash "$self_path" migrate >"$out31m2" 2>&1 || rc31m2=$?
+  [ "$rc31m2" -eq 0 ] || case_fails=1
+  [ -f "$forge_new/.quarantine/phi-thirtytwo" ] || case_fails=1
+  local out31c2="$selftest_root/out31c2.txt" rc31c2=0
+  env -u AEP_LANES_DIR HOME="$forge_home" AEP_WORKTREES_ROOT="$forge_wts" \
+    bash "$self_path" claim --repo "$repo" --project phi --lane thirtytwo \
+    --branch br-thirtytwo --base HEAD --worker w31 \
+    --exec true >"$out31c2" 2>&1 || rc31c2=$?
+  [ "$rc31c2" -eq 0 ] || case_fails=1
+  [ -d "$forge_wts/phi-thirtytwo" ] || case_fails=1
+  [ ! -e "$forge_new/.quarantine/phi-thirtytwo" ] || case_fails=1
+  local out31d2="$selftest_root/out31d2.txt" rc31d2=0
+  env -u AEP_LANES_DIR HOME="$forge_home" AEP_WORKTREES_ROOT="$forge_wts" \
+    bash "$self_path" release --name phi-thirtytwo --clean >"$out31d2" 2>&1 || rc31d2=$?
+  [ "$rc31d2" -eq 0 ] || case_fails=1
+  [ ! -e "$forge_wts/phi-thirtytwo" ] || case_fails=1
+  report_case "quarantine-survives-adopting-claim"
 
   return "$fails"
 }

@@ -162,7 +162,7 @@ The state directory used to default to `~/workspace/worktrees/.lanes` — inside
 **Migrated lanes are quarantined.** Migration imports a manifest from a worker-writable tree, so its provenance is untrusted: moving it into the trusted state directory must not launder a planted manifest into ownership proof (the migration path itself was the follow-up panel's P1-3 repro — the four `release --clean` ownership signals are sound against *stale* manifests but cannot distinguish *planted* ones). `migrate` therefore stamps each imported lane with a marker under `$AEP_LANES_DIR/.quarantine/` (outside the manifest set). While the marker exists, `release --clean` and `reap` refuse for that lane; `status` marks the line `quarantined`; read paths and plain `release` work normally. The quarantine clears only per lane, by one of:
 
 - `lane-coord.sh trust --name <name>` — the operator's confirmation after inspecting that lane's manifest, recorded as an `operator-trusted` entry in the lane's history log (outside the manifest itself); or
-- a fresh `claim` of the same name, which re-stamps the manifest natively and discharges the marker.
+- a fresh `claim` of the same name that creates the worktree itself, re-stamping the manifest natively. A claim that instead *adopts* an existing worktree named by the migrated manifest does **not** discharge the marker: the claim's ownership gates passed on that manifest's own say-so, so adoption is not provenance (Codex P1 on the original fix).
 
 **Operator notes.**
 
