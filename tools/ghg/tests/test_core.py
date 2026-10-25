@@ -378,6 +378,29 @@ class TestClassify(CoreTestCase):
         charges = ghg.classify(["issue", "view", "3"])
         self.assertEqual(charges, [("graphql", 2)])
 
+    def test_classify_with_inherited_flags(self):
+        cases = [
+            (["-R", "o/r", "pr", "create"],
+             [("core", 1), ("content", 1)]),
+            (["-R", "o/r", "pr", "list"], [("graphql", 2)]),
+            (["--repo=o/r", "pr", "view", "1"], [("graphql", 2)]),
+            (["pr", "--repo", "o/r", "list"], [("graphql", 2)]),
+            (["-R", "o/r", "search", "code", "x"],
+             [("code_search", 1)]),
+            (["-R", "o/r", "api", "graphql", "-f", "query=..."],
+             [("graphql", 2), ("content", 1)]),
+        ]
+        for argv, expected in cases:
+            with self.subTest(argv=argv):
+                self.assertEqual(ghg.classify(argv), expected)
+
+
+class TestIsMutating(CoreTestCase):
+    def test_is_mutating_with_inherited_flags(self):
+        self.assertTrue(ghg._is_mutating(["-R", "o/r", "pr", "merge"]))
+        self.assertTrue(
+            ghg._is_mutating(["-R", "o/r", "workflow", "run", "x"]))
+
 
 class TestRedaction(CoreTestCase):
     def test_redact_both_spellings(self):

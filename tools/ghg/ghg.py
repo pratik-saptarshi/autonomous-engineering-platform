@@ -373,11 +373,14 @@ _API_PARAM_FLAGS = {"-f", "--field", "-F", "--raw-field", "--input"}
 
 
 def _is_mutating(argv):
-    if len(argv) >= 2 and argv[1] in _MUTATING_SUBCOMMANDS:
+    positionals = _first_positionals(argv, 2)
+    command = positionals[0] if positionals else None
+    subcommand = positionals[1] if len(positionals) >= 2 else None
+    if subcommand in _MUTATING_SUBCOMMANDS:
         return True
-    if argv[0] == "workflow" and len(argv) >= 2 and argv[1] == "run":
+    if command == "workflow" and subcommand == "run":
         return True
-    if argv[0] == "api":
+    if command == "api":
         for i, tok in enumerate(argv):
             if tok in ("-X", "--method"):
                 if (i + 1 < len(argv)
@@ -414,14 +417,17 @@ def classify(argv):
         argv = argv[1:]
     if not argv:
         return []
-    if argv[0] == "search":
+    positionals = _first_positionals(argv, 2)
+    command = positionals[0] if positionals else None
+    subcommand = positionals[1] if len(positionals) >= 2 else None
+    if command == "search":
         bucket, cost = ("code_search", 1) if (
-            len(argv) >= 2 and argv[1] == "code") else ("search", 1)
-    elif argv[0] in ("pr", "issue") and len(argv) >= 2 \
-            and argv[1] in ("view", "list"):
+            subcommand == "code") else ("search", 1)
+    elif command in ("pr", "issue") \
+            and subcommand in ("view", "list"):
         bucket, cost = "graphql", 2
-    elif argv[0] == "api" and len(argv) >= 2 \
-            and argv[1].strip("/") == "graphql":
+    elif command == "api" and subcommand is not None \
+            and subcommand.strip("/") == "graphql":
         bucket, cost = "graphql", 2
     else:
         bucket, cost = "core", 1
