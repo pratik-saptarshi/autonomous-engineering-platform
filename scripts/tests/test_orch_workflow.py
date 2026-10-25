@@ -376,15 +376,15 @@ class TestValidation(WorkflowLoadCase):
             self.assertEqual(wf.author_association, value)
 
     def test_env_sourced_invalid_author_association_is_not_printed(self):
-        secret = "resolved-association-secret-4d2e"
+        sentinel = "env-sourced-association-sentinel-4d2e"
         spec = MINIMAL_SPEC.replace(
             "terminal_states: [closed]",
             "terminal_states: [closed]\nauthor_association: $ORCH_TEST_ASSOC",
         )
-        with mock.patch.dict(os.environ, {"ORCH_TEST_ASSOC": secret}):
+        with mock.patch.dict(os.environ, {"ORCH_TEST_ASSOC": sentinel}):
             msg = self.load_error(spec)
         self.assertIn("author_association", msg)
-        self.assertNotIn(secret, msg)
+        self.assertNotIn(sentinel, msg)
 
     def test_env_sourced_invalid_tracker_value_is_not_printed(self):
         # Regression: a resolved $ENV value must never appear in loader
