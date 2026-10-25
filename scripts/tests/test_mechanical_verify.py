@@ -196,6 +196,26 @@ class DiscoveryTests(unittest.TestCase):
             write(root, "scripts/tests/fixtures.txt", "data\n")
             self.assertEqual(discover_verification_commands(root), ())
 
+    def test_scripts_tests_symlink_discovers_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            external = base / "external"
+            write(external, "test_real.py", "import unittest\n")
+            (root / "scripts").mkdir(parents=True)
+            os.symlink(external, root / "scripts" / "tests")
+            self.assertEqual(discover_verification_commands(root), ())
+
+    def test_scripts_tests_symlinked_test_file_discovers_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            foreign = write(base / "elsewhere", "test_real.py", "import unittest\n")
+            tests_dir = root / "scripts" / "tests"
+            tests_dir.mkdir(parents=True)
+            os.symlink(foreign, tests_dir / "test_sample.py")
+            self.assertEqual(discover_verification_commands(root), ())
+
     def test_no_scripts_directory_discovers_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

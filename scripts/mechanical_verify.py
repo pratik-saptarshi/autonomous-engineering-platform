@@ -177,13 +177,20 @@ def discover_verification_commands(root: Path) -> tuple[VerificationCommand, ...
         )
 
     # 8. Scripts test suite (AEP addition) — suites living in
-    # scripts/tests, run exactly as CI's script-tests job runs them.
-    # Require at least one file matching unittest discover's default
-    # pattern (test*.py): an empty or test-less directory must not
-    # manufacture a vacuous command.
+    # scripts/tests, run exactly as CI's script-tests job's
+    # unittest-discover step runs them. Require at least one real
+    # (non-symlink) file matching unittest discover's default pattern
+    # (test*.py) in a real (non-symlink) directory: an empty or
+    # test-less directory must not manufacture a vacuous command, and
+    # a symlinked suite must not attest a foreign tree's tests.
     scripts_tests = root / "scripts" / "tests"
-    if scripts_tests.is_dir() and any(
-        entry.is_file() for entry in scripts_tests.glob("test*.py")
+    if (
+        scripts_tests.is_dir()
+        and not scripts_tests.is_symlink()
+        and any(
+            entry.is_file() and not entry.is_symlink()
+            for entry in scripts_tests.glob("test*.py")
+        )
     ):
         add(
             VerificationCommand(
