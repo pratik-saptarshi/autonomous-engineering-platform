@@ -567,9 +567,15 @@ class Ledger:
             seed = self._active_seed(now)
             if seed is not None:
                 seed_core, seeded_at, _ = seed
+                # _sum is strict (`ts > since`) and timestamps have
+                # one-second resolution, so the seed bound must be
+                # seeded_at - 1: spend recorded in the same second as
+                # the seed IS post-seed spend (a fresh DB has no
+                # pre-seed rows). Using seeded_at itself made the
+                # seeding second's spend invisible to the cap.
                 return seed_core + self._sum(
                     bucket, "('ok', 'error', 'bypass')",
-                    max(since, seeded_at))
+                    max(since, seeded_at - 1))
         return self._sum(bucket, "('ok', 'error', 'bypass')", since)
 
     def in_flight(self, bucket, window_s, now=None):
