@@ -71,6 +71,59 @@ print(json.dumps({"status": entry["status"],
                   "attempt": entry.get("attempt", 1)}))
 """
 
+COMBINED_STUB_GH = r"""#!/usr/bin/env python3
+import json
+import os
+import sys
+import time
+
+if sys.argv[1:3] == ["api", "rate_limit"]:
+    plan_path = os.environ["GHG_STUB_PLAN"]
+    api_count = os.path.join(os.path.dirname(plan_path),
+                             "stub-api-count")
+    try:
+        with open(api_count) as f:
+            n = int(f.read().strip() or "0")
+    except (OSError, ValueError):
+        n = 0
+    with open(api_count, "w") as f:
+        f.write(str(n + 1))
+    delay = float(os.environ.get("GHG_STUB_API_SLEEP", "0"))
+    if delay:
+        time.sleep(delay)
+    print(json.dumps({"resources": {"core": {
+        "limit": 5000, "used": 1, "remaining": 4999,
+        "reset": 9999999999}}}))
+    sys.exit(0)
+
+if sys.argv[1:3] != ["run", "view"]:
+    print("stub gh: unexpected argv %r" % (sys.argv,), file=sys.stderr)
+    sys.exit(9)
+
+count_path = os.environ["GHG_STUB_COUNT"]
+times_path = os.environ["GHG_STUB_TIMES"]
+plan_path = os.environ["GHG_STUB_PLAN"]
+
+try:
+    with open(count_path) as f:
+        n = int(f.read().strip() or "0")
+except (OSError, ValueError):
+    n = 0
+with open(count_path, "w") as f:
+    f.write(str(n + 1))
+with open(times_path, "a") as f:
+    f.write("%.6f\n" % time.time())
+
+with open(plan_path) as f:
+    plan = json.load(f)
+entry = plan[min(n, len(plan) - 1)]
+if entry.get("sleep"):
+    time.sleep(entry["sleep"])
+print(json.dumps({"status": entry["status"],
+                  "conclusion": entry.get("conclusion"),
+                  "attempt": entry.get("attempt", 1)}))
+"""
+
 
 def load_ghg_module():
     spec = importlib.util.spec_from_file_location("ghg", GHG_PY)
@@ -348,6 +401,61 @@ class TestCompletedRowRevalidation(WatchTestCase):
         row = self.watch_row()
         self.assertEqual(row[4], "completed")
         self.assertEqual(row[5], "success")
+
+
+class TestPollDeadline(WatchTestCase):
+    """FR3-2: ordinary polling is bounded by the remaining watch
+    deadline. FR2-2 bounded the completed-row revalidation read; the
+    poll path's gated read — and the opportunistic snapshot refresh
+    inside the gate — get the same bound here. The regression shape is
+    Codex's repro: a 2s status stub under `--timeout 0.1` returned
+    only after ~2s because the read's timeout came from the interval
+    (~40s at the default), not from the caller's remaining budget."""
+
+    def api_calls(self):
+        try:
+            return int((self.root / "stub-api-count").read_text()
+                       .strip() or "0")
+        except (OSError, ValueError):
+            return 0
+
+    def test_slow_poll_honors_watch_timeout(self):
+        self.set_plan([
+            {"status": "in_progress", "conclusion": None, "sleep": 2},
+        ])
+        started = time.monotonic()
+        proc = self.spawn_watcher(interval="45", timeout_s="0.1")
+        code, out, _ = self.finish(proc)
+        elapsed = time.monotonic() - started
+        self.assertEqual(code, 1)
+        self.assertIn("ghg watch: run 42 timeout after 0.1s", out)
+        self.assertNotIn("conclusion=", out)
+        self.assertEqual(self.stub_calls(), 1)
+        self.assertLess(elapsed, 1.8,
+                        "poll read was not bounded by the remaining"
+                        " deadline: %.3fs" % elapsed)
+
+    def test_slow_snapshot_refresh_honors_watch_timeout(self):
+        self.stub.write_text(COMBINED_STUB_GH)
+        os.environ["GHG_STUB_API_SLEEP"] = "5"
+        self.addCleanup(os.environ.pop, "GHG_STUB_API_SLEEP", None)
+        self.set_plan([
+            {"status": "in_progress", "conclusion": None},
+        ])
+        started = time.monotonic()
+        proc = self.spawn_watcher(interval="45", timeout_s="2.5")
+        code, out, _ = self.finish(proc)
+        elapsed = time.monotonic() - started
+        self.assertEqual(code, 1)
+        self.assertIn("ghg watch: run 42 timeout after 2.5s", out)
+        self.assertNotIn("conclusion=", out)
+        # The snapshot refresh really was attempted — and bounded:
+        # exactly one rate_limit fetch, cut off at the remaining
+        # budget instead of running its stub's full 5s sleep.
+        self.assertEqual(self.api_calls(), 1)
+        self.assertLess(elapsed, 4.0,
+                        "snapshot refresh was not bounded by the"
+                        " remaining deadline: %.3fs" % elapsed)
 
 
 class TestBrokenDb(WatchTestCase):

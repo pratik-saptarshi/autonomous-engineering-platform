@@ -189,7 +189,8 @@ def _fail_open(argv, actor, capture, timeout, reason):
     return code, out
 
 
-def _gated(argv, actor, timeout=None, capture=True, wait=0.0):
+def _gated(argv, actor, timeout=None, capture=True, wait=0.0,
+           budget_s=None):
     """The engine behind `gated_gh` (captured) and `cmd_run` (stdio).
 
     Returns (exit code, stdout). On a budget denial the exit code is
@@ -226,7 +227,16 @@ def _gated(argv, actor, timeout=None, capture=True, wait=0.0):
                           "ledger open failed: %s" % exc)
     try:
         try:
-            ledger.snapshot()  # opportunistic refresh + first-use seed
+            if budget_s is None:
+                ledger.snapshot()  # opportunistic refresh + seed
+            elif budget_s > 1:
+                # Bound the refresh by the caller's remaining budget
+                # (the watcher's deadline); the fetch's own 15s cap
+                # still applies when the budget is larger.
+                ledger.snapshot(timeout=min(15, budget_s))
+            # else: budget at/below the 1s floor idiom — skip the
+            # refresh for this call. It is opportunistic by design;
+            # gating still enforces from recorded ledger state.
         except Exception:
             pass  # snapshot is failure-tolerant by design
         charges = classify(argv)
@@ -256,15 +266,18 @@ def _gated(argv, actor, timeout=None, capture=True, wait=0.0):
         ledger.close()
 
 
-def gated_gh(argv, actor, timeout=None):
+def gated_gh(argv, actor, timeout=None, budget_s=None):
     """Run the real `gh` through the budget gate; (exit code, stdout).
 
     Task 3: the real gate (Task 1's pass-through stub replaced behind
     this same signature, `timeout` included — the watcher passes its
     per-poll timeout through it). Exit 75 means a budget denial, with
-    the denial line as the returned output.
+    the denial line as the returned output. `budget_s` (watch only)
+    bounds the gate's opportunistic snapshot refresh by the caller's
+    remaining deadline budget; None keeps the unbounded default.
     """
-    return _gated(argv, actor, timeout=timeout, capture=True)
+    return _gated(argv, actor, timeout=timeout, capture=True,
+                  budget_s=budget_s)
 
 
 # ------------------------------------------------------------------ db
@@ -768,11 +781,11 @@ class Ledger:
 
     # -- snapshot ---------------------------------------------------------
 
-    def _fetch_rate_limit(self):
+    def _fetch_rate_limit(self, timeout=15):
         try:
             proc = subprocess.run(
                 [real_gh(), "api", "rate_limit"],
-                capture_output=True, text=True, timeout=15)
+                capture_output=True, text=True, timeout=timeout)
         except (OSError, subprocess.TimeoutExpired):
             return None
         if proc.returncode != 0:
@@ -811,11 +824,14 @@ class Ledger:
         self.meta_set("seeded_at", now)
         self.meta_set("seed_reset", reset)
 
-    def snapshot(self, force=False):
+    def snapshot(self, force=False, timeout=None):
         """Cached `rate_limit` JSON (TTL 60 s), or None.
 
         Ungated, unledgered, failure-tolerant: a failed fetch keeps
-        the stale cache and writes no `calls` row.
+        the stale cache and writes no `calls` row. `timeout` bounds
+        the refresh fetch (default: the fetch's own 15s); a caller
+        with a deadline of its own (the watcher) passes its
+        remaining budget so the refresh cannot outlive it.
         """
         now = int(time.time())
         cached_raw = self.meta_get("rate_limit")
@@ -826,7 +842,8 @@ class Ledger:
                     return json.loads(cached_raw)
             except (ValueError, TypeError):
                 pass
-        payload = self._fetch_rate_limit()
+        payload = self._fetch_rate_limit(
+            15 if timeout is None else timeout)
         if payload is None:
             if cached_raw:
                 try:
@@ -920,11 +937,15 @@ def write_status(conn, run_key, self_id, epoch, status, conclusion):
 
 
 def poll_once(conn, run_key, repo, run_id, self_id, epoch, interval,
-              actor):
+              actor, budget_s=None):
     """One poller cycle: duties (i)-(iv) from the plan, in order.
 
     Returns 'completed', 'polled' (no terminal state yet, including an
-    inconclusive poll), 'fenced', or 'denied'.
+    inconclusive poll), 'fenced', or 'denied'. `budget_s` is the
+    watcher's remaining deadline budget: the gated read's timeout is
+    the interval-derived value capped by it (the 1s floor idiom
+    applies), and the gate's snapshot refresh is bounded by it too —
+    a single poll can no longer outlive the caller's `--timeout`.
     """
     row = get_row(conn, run_key)  # (i) fencing re-check
     if row is None or row["poller"] != self_id or row["epoch"] != epoch:
@@ -933,10 +954,13 @@ def poll_once(conn, run_key, repo, run_id, self_id, epoch, interval,
         return "completed"
     if not refresh_heartbeat(conn, run_key, self_id, epoch):  # (ii)
         return "fenced"
+    read_timeout = max(interval - 5, 1)
+    if budget_s is not None:
+        read_timeout = max(min(interval - 5, budget_s), 1)
     code, out = gated_gh(  # (iii)
         ["run", "view", str(run_id), "--repo", repo,
          "--json", "status,conclusion"],
-        actor, timeout=max(interval - 5, 1))
+        actor, timeout=read_timeout, budget_s=budget_s)
     if code == 75:  # ruling R1: a gate denial ends the watch
         line = out.strip() or "ghg: DENIED"
         print(line, file=sys.stderr, flush=True)
@@ -1072,7 +1096,8 @@ def cmd_watch(args):
                 time.sleep(min(0.2, max(0.0, remaining())))
                 continue
         outcome = poll_once(conn, run_key, args.repo, run_id, self_id,
-                            epoch, effective, actor)
+                            epoch, effective, actor,
+                            budget_s=remaining())
         if outcome == "denied":
             return 75
         if outcome == "fenced":
