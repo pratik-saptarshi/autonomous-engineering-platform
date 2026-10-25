@@ -1501,6 +1501,170 @@ class ClassifierUncertaintyTests(unittest.TestCase):
             )
             self.assertEqual(rc, 0)
 
+    def _write_imported_fixture(self, root: Path, imported_body: str):
+        write(
+            root,
+            "shared.py",
+            "import unittest\n"
+            "\n"
+            "\n"
+            "class SharedCase(unittest.TestCase):\n"
+            "    pass\n"
+            "\n"
+            "\n"
+            "def test_failure():\n"
+            f"    {imported_body}\n"
+            "\n"
+            "\n"
+            "def helper():\n"
+            "    pass\n",
+        )
+        write(
+            root,
+            "test_imported.py",
+            "from shared import SharedCase, test_failure\n"
+            "\n"
+            "\n"
+            "class Unit(SharedCase):\n"
+            "    def test_unit(self):\n"
+            "        pass\n",
+        )
+
+    def test_imported_test_function_keeps_pytest_leg(self):
+        # Codex P2 (gap-fix round 6): pytest collects test_*
+        # functions from a module's namespace, imported ones
+        # included. The classifier recorded the imported name but
+        # never let it trigger the pytest leg, so when a sibling
+        # class with an imported base (Unit(SharedCase)) selected
+        # the unittest leg, discovery ran unittest alone and the
+        # imported test silently never ran.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_imported_fixture(
+                root, "assert False, 'imported test must run'"
+            )
+            commands = discover_verification_commands(root)
+            self.assertEqual(
+                [c.id for c in commands], ["unittest", "pytest"]
+            )
+            self.assertIn("test_imported", commands[0].argv)
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_imported_failing_function_executes_and_fails(self):
+        # Codex's exact reproduction: verification returned PASS
+        # while a direct pytest run failed on the imported
+        # test_failure.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_imported_fixture(
+                root, "assert False, 'imported test must run'"
+            )
+            commands, results, rc, _ = self.run_fixture(root)
+            self.assertEqual(
+                [c.id for c in commands], ["unittest", "pytest"]
+            )
+            pytest_results = [
+                r for r in results if r.command.id == "pytest"
+            ]
+            self.assertEqual(len(pytest_results), 1)
+            self.assertFalse(pytest_results[0].passed)
+            self.assertGreaterEqual(
+                pytest_results[0].tests_collected, 1
+            )
+            self.assertEqual(rc, 1)
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_imported_passing_function_passes_with_pytest_leg(self):
+        # The passing shape: both legs execute, the imported
+        # function is collected by pytest, and the run PASSes.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_imported_fixture(root, "pass")
+            commands, results, rc, _ = self.run_fixture(root)
+            self.assertEqual(
+                [c.id for c in commands], ["unittest", "pytest"]
+            )
+            pytest_results = [
+                r for r in results if r.command.id == "pytest"
+            ]
+            self.assertEqual(len(pytest_results), 1)
+            self.assertTrue(pytest_results[0].passed)
+            self.assertGreaterEqual(
+                pytest_results[0].tests_collected, 1
+            )
+            self.assertEqual(rc, 0)
+
+    def test_imported_function_aliased_to_test_name_keeps_pytest_leg(
+        self,
+    ):
+        # Collection follows the BOUND name — pytest inspects the
+        # module namespace, so `helper as test_helper` binds a
+        # pytest-collectable name even though the function's own
+        # name is not test_*.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "shared.py",
+                "import unittest\n"
+                "\n"
+                "\n"
+                "class SharedCase(unittest.TestCase):\n"
+                "    pass\n"
+                "\n"
+                "\n"
+                "def helper():\n"
+                "    pass\n",
+            )
+            write(
+                root,
+                "test_imported.py",
+                "from shared import SharedCase\n"
+                "from shared import helper as test_helper\n"
+                "\n"
+                "\n"
+                "class Unit(SharedCase):\n"
+                "    def test_unit(self):\n"
+                "        pass\n",
+            )
+            commands = discover_verification_commands(root)
+            self.assertEqual(
+                [c.id for c in commands], ["unittest", "pytest"]
+            )
+
+    def test_imported_non_test_names_do_not_trigger_pytest(self):
+        # No overcorrection: an import binding only non-test names
+        # (a TestCase base and a plain helper) is not pytest
+        # evidence — the module stays unittest-only.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "shared.py",
+                "import unittest\n"
+                "\n"
+                "\n"
+                "class SharedCase(unittest.TestCase):\n"
+                "    pass\n"
+                "\n"
+                "\n"
+                "def helper():\n"
+                "    pass\n",
+            )
+            write(
+                root,
+                "test_imported.py",
+                "from shared import SharedCase, helper\n"
+                "\n"
+                "\n"
+                "class Unit(SharedCase):\n"
+                "    def test_unit(self):\n"
+                "        pass\n",
+            )
+            commands = discover_verification_commands(root)
+            self.assertEqual([c.id for c in commands], ["unittest"])
+            self.assertIn("test_imported", commands[0].argv)
+
     def test_deselected_is_not_counted_as_collected(self):
         # Judge rider (correctness P2-B): deselected tests were
         # FILTERED OUT by the runner; counting them inflates the

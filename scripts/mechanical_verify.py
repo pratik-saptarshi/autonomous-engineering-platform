@@ -115,11 +115,15 @@ def _classify_test_module(
       module's suite under unittest's loading protocol, and pytest
       never executes it.
     - pytest trigger iff the module defines module-level (or async)
-      `test_*` functions, OR a `Test*` class that is NOT resolved as
-      a TestCase subclass (its test methods may be inherited from a
-      local helper or written pytest-style, so its own body is not
-      the evidence), OR the module has no leg at all (default). A module whose only collectable content
-      is TestCase subclasses does NOT by itself trigger the pytest
+      `test_*` functions, OR an import binds a `test_*` name (pytest
+      collects test functions from the module namespace, imported
+      ones included — the bound name is the evidence), OR a `Test*`
+      class that is NOT resolved as a TestCase subclass (its test
+      methods may be inherited from a local helper or written
+      pytest-style, so its own body is not the evidence), OR the
+      module has no leg at all (default). A module whose only
+      collectable content is TestCase subclasses does NOT by itself
+      trigger the pytest
       command (RC2 — pure-unittest trees keep byte-identical argv);
       when the bare pytest command exists for other reasons it
       collects those modules too.
@@ -191,7 +195,18 @@ def _classify_test_module(
                                         alias.asname or alias.name
                                     )
                         for alias in child.names:
-                            imported_names.add(alias.asname or alias.name)
+                            bound = alias.asname or alias.name
+                            imported_names.add(bound)
+                            if bound.startswith("test_"):
+                                # pytest collects test_* functions
+                                # from the module namespace, imported
+                                # ones included — an import binding a
+                                # test_* name IS pytest evidence.
+                                # Recording the name without the
+                                # trigger let a sibling TestCase class
+                                # suppress the leg and silently omit
+                                # the imported tests (Codex P2).
+                                triggers_pytest = True
                     elif isinstance(child, ast.Import):
                         for alias in child.names:
                             imported_names.add(
