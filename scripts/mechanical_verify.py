@@ -85,6 +85,36 @@ class VerificationResult:
         )
 
 
+# Assignment values that are provably NOT callables: literal data
+# displays. An assignment binding a `test_*` name to anything else
+# (a name, a lambda, a call result, ...) may have put a
+# pytest-collectable function in the module namespace.
+_NON_CALLABLE_VALUE_TYPES = (
+    ast.Constant,
+    ast.List,
+    ast.Tuple,
+    ast.Set,
+    ast.Dict,
+    ast.ListComp,
+    ast.SetComp,
+    ast.DictComp,
+    ast.GeneratorExp,
+    ast.JoinedStr,
+)
+
+
+def _assignment_target_names(target: ast.expr) -> list[str]:
+    """Names bound by one assignment target (plain or unpacked)."""
+    if isinstance(target, ast.Name):
+        return [target.id]
+    if isinstance(target, (ast.Tuple, ast.List)):
+        names: list[str] = []
+        for element in target.elts:
+            names.extend(_assignment_target_names(element))
+        return names
+    return []
+
+
 def _dotted_name(node: ast.expr) -> str | None:
     """Dotted name for a Name/Attribute chain (`unittest.TestCase`),
     else None (calls, subscripts, and other expressions have none)."""
@@ -117,7 +147,11 @@ def _classify_test_module(
     - pytest trigger iff the module defines module-level (or async)
       `test_*` functions, OR an import binds a `test_*` name (pytest
       collects test functions from the module namespace, imported
-      ones included — the bound name is the evidence), OR a `Test*`
+      ones included — the bound name is the evidence), OR an
+      assignment binds a `test_*` name to a value that is not
+      provably non-callable data (a literal display — `test_failure
+      = failure` binds a collectable function; `test_cases = [...]`
+      binds a table and does not), OR a `Test*`
       class that is NOT resolved as a TestCase subclass (its test
       methods may be inherited from a local helper or written
       pytest-style, so its own body is not the evidence), OR the
@@ -236,6 +270,44 @@ def _classify_test_module(
                                 # same module attribute the unittest
                                 # loader invokes.
                                 has_load_tests = True
+                        if not isinstance(
+                            child.value, _NON_CALLABLE_VALUE_TYPES
+                        ):
+                            for target in child.targets:
+                                for name in _assignment_target_names(
+                                    target
+                                ):
+                                    if name.startswith("test_"):
+                                        # pytest collects test_*
+                                        # functions from the module
+                                        # namespace, however they were
+                                        # bound — `test_failure =
+                                        # failure` included. Checking
+                                        # assignment targets only for
+                                        # TestCase aliases and
+                                        # load_tests let a sibling
+                                        # TestCase class suppress the
+                                        # leg and silently omit the
+                                        # assigned test (Codex P2).
+                                        # Only provably-data values
+                                        # (literal displays) are not
+                                        # evidence.
+                                        triggers_pytest = True
+                    elif isinstance(child, ast.AnnAssign):
+                        # `test_failure: Callable = failure` binds
+                        # the same module attribute as the plain
+                        # assignment above; an annotation without a
+                        # value binds nothing.
+                        if (
+                            child.value is not None
+                            and isinstance(child.target, ast.Name)
+                            and child.target.id.startswith("test_")
+                            and not isinstance(
+                                child.value,
+                                _NON_CALLABLE_VALUE_TYPES,
+                            )
+                        ):
+                            triggers_pytest = True
                 visit(child, in_class, in_func)
 
     visit(tree, False, False)

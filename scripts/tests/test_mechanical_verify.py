@@ -1665,6 +1665,135 @@ class ClassifierUncertaintyTests(unittest.TestCase):
             self.assertEqual([c.id for c in commands], ["unittest"])
             self.assertIn("test_imported", commands[0].argv)
 
+    def _write_assignment_fixture(
+        self, root: Path, fn_body: str, assignment: str
+    ):
+        write(
+            root,
+            "shared.py",
+            "import unittest\n"
+            "\n"
+            "\n"
+            "class SharedCase(unittest.TestCase):\n"
+            "    pass\n",
+        )
+        write(
+            root,
+            "test_assigned.py",
+            "from shared import SharedCase\n"
+            "\n"
+            "\n"
+            "def failure():\n"
+            f"    {fn_body}\n"
+            "\n"
+            "\n"
+            f"{assignment}\n"
+            "\n"
+            "\n"
+            "class Unit(SharedCase):\n"
+            "    def test_unit(self):\n"
+            "        pass\n",
+        )
+
+    def test_assignment_bound_test_function_keeps_pytest_leg(self):
+        # Codex P2 (gap-fix round 7): an assignment binding a
+        # test_* name (`test_failure = failure`) puts a
+        # pytest-collectable function in the module namespace, but
+        # assignment targets were checked only for TestCase aliases
+        # and load_tests — the binding never triggered the pytest
+        # leg, so beside a sibling class with an imported base the
+        # module went unittest-only and the assigned test silently
+        # never ran.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_assignment_fixture(
+                root,
+                "assert False, 'assigned test must run'",
+                "test_failure = failure",
+            )
+            commands = discover_verification_commands(root)
+            self.assertEqual(
+                [c.id for c in commands], ["unittest", "pytest"]
+            )
+            self.assertIn("test_assigned", commands[0].argv)
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_assignment_bound_failing_function_executes_and_fails(
+        self,
+    ):
+        # Codex's exact reproduction: verification returned PASS
+        # while a direct pytest run failed on test_failure.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_assignment_fixture(
+                root,
+                "assert False, 'assigned test must run'",
+                "test_failure = failure",
+            )
+            commands, results, rc, _ = self.run_fixture(root)
+            self.assertEqual(
+                [c.id for c in commands], ["unittest", "pytest"]
+            )
+            pytest_results = [
+                r for r in results if r.command.id == "pytest"
+            ]
+            self.assertEqual(len(pytest_results), 1)
+            self.assertFalse(pytest_results[0].passed)
+            self.assertGreaterEqual(
+                pytest_results[0].tests_collected, 1
+            )
+            self.assertEqual(rc, 1)
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_assignment_bound_passing_function_passes_with_pytest_leg(
+        self,
+    ):
+        # The passing shape: both legs execute, the assigned
+        # function is collected by pytest, and the run PASSes.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_assignment_fixture(
+                root, "pass", "test_failure = failure"
+            )
+            commands, results, rc, _ = self.run_fixture(root)
+            self.assertEqual(
+                [c.id for c in commands], ["unittest", "pytest"]
+            )
+            pytest_results = [
+                r for r in results if r.command.id == "pytest"
+            ]
+            self.assertEqual(len(pytest_results), 1)
+            self.assertTrue(pytest_results[0].passed)
+            self.assertGreaterEqual(
+                pytest_results[0].tests_collected, 1
+            )
+            self.assertEqual(rc, 0)
+
+    def test_non_test_assignment_does_not_trigger_pytest(self):
+        # No overcorrection: binding the same function under a
+        # non-test name is not pytest evidence — pytest collects
+        # the bound name, and `helper` is not collectable.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_assignment_fixture(
+                root, "pass", "helper = failure"
+            )
+            commands = discover_verification_commands(root)
+            self.assertEqual([c.id for c in commands], ["unittest"])
+            self.assertIn("test_assigned", commands[0].argv)
+
+    def test_data_assignment_does_not_trigger_pytest(self):
+        # A test_* name bound to literal data (a case table) is
+        # provably not a test function — pytest collects callables,
+        # not containers — so the module stays unittest-only.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_assignment_fixture(
+                root, "pass", "test_cases = [('a', 1), ('b', 2)]"
+            )
+            commands = discover_verification_commands(root)
+            self.assertEqual([c.id for c in commands], ["unittest"])
+
     def test_deselected_is_not_counted_as_collected(self):
         # Judge rider (correctness P2-B): deselected tests were
         # FILTERED OUT by the runner; counting them inflates the
