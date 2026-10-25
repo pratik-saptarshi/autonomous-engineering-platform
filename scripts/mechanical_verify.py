@@ -10,6 +10,9 @@ first failure. Stdlib only.
 from __future__ import annotations
 
 import argparse
+import ast
+import builtins
+import ctypes
 import fcntl
 import hashlib
 import json
@@ -17,6 +20,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -30,13 +34,26 @@ OUTPUT_CAP_BYTES = 65536
 SCAN_CHARS = 65536
 MIN_MEMORY_KB = 524288  # 512 MiB
 TERM_GRACE_SECONDS = 0.75
+SWEEP_BOUND_SECONDS = 2.0
 
 MARKDOWNLINT_ARGV = (
     "markdownlint-cli2",
     "**/*.md",
     "!reference/esf/**/*.md",
+    "!reference/neurostrata/**/*.md",
     "!skills/archify/**/*.md",
 )
+
+# pytest verbosity is an additive counter across the project's
+# addopts and the command line, and the count parser reads the
+# terminal summary — so the discovered invocation must guarantee
+# that summary is emitted. The old -q spent one quiet level here,
+# and a project with `addopts = -q` stacked to -qq, which
+# suppresses the summary entirely: a passing run printed only
+# `. [100%]`, parsed to zero collected, and was rejected (Codex
+# P2, round 5). -v nets +1, so project addopts down to -qq still
+# leave the summary alive.
+PYTEST_ARGV = ("python3", "-m", "pytest", "-v")
 
 
 @dataclass(frozen=True)
@@ -55,10 +72,497 @@ class VerificationResult:
     stdout: str
     stderr: str
     output_truncated: bool
+    survivors_killed: tuple[int, ...] = ()
+    survivors_remaining: bool = False
+    tests_collected: int | None = None
 
     @property
     def passed(self) -> bool:
-        return self.exit_code == 0 and not self.timed_out
+        return (
+            self.exit_code == 0
+            and not self.timed_out
+            and not self.survivors_remaining
+            and self.tests_collected != 0
+        )
+
+
+# Assignment values that are provably NOT callables: literal data
+# displays. An assignment binding a pytest-collectable name to
+# anything else (a name, a lambda, a call result, ...) may have put
+# a pytest-collectable function or class in the module namespace.
+_NON_CALLABLE_VALUE_TYPES = (
+    ast.Constant,
+    ast.List,
+    ast.Tuple,
+    ast.Set,
+    ast.Dict,
+    ast.ListComp,
+    ast.SetComp,
+    ast.DictComp,
+    ast.GeneratorExp,
+    ast.JoinedStr,
+)
+
+
+def _assignment_target_names(target: ast.expr) -> list[str]:
+    """Names bound by one assignment target (plain or unpacked)."""
+    if isinstance(target, ast.Name):
+        return [target.id]
+    if isinstance(target, (ast.Tuple, ast.List)):
+        names: list[str] = []
+        for element in target.elts:
+            names.extend(_assignment_target_names(element))
+        return names
+    return []
+
+
+def _binds_pytest_collectable(
+    name: str, value_is_testcase: bool
+) -> bool:
+    """Whether binding `name` to a possibly-callable value is pytest
+    evidence: pytest collects `test_*` functions and `Test*` classes
+    from the module namespace, however they were bound. A `Test*`
+    name bound to a value that provably denotes TestCase denotes
+    unittest's own class instead — the binding is a TestCase alias,
+    not a pytest-only class."""
+    if name.startswith("test_"):
+        return True
+    return name.startswith("Test") and not value_is_testcase
+
+
+def _value_denotes_testcase(
+    value: ast.expr, testcase_names: set[str]
+) -> bool:
+    """Whether an assignment value provably denotes unittest's
+    TestCase: its dotted name ends in `TestCase`, or it is a name
+    already recorded as a TestCase alias."""
+    value_name = _dotted_name(value)
+    return value_name is not None and (
+        value_name.rsplit(".", 1)[-1] == "TestCase"
+        or value_name in testcase_names
+    )
+
+
+def _assignment_target_triggers(
+    target: ast.expr, value: ast.expr, testcase_names: set[str]
+) -> bool:
+    """Whether binding `target` to `value` puts a pytest-collectable
+    name in the module namespace.
+
+    A plain name target is judged against the whole value (the
+    round 7/9 rule: the name triggers unless the value is provably
+    non-callable literal data). An unpacking target — a tuple or
+    list of names — whose value is a tuple or list of MATCHING
+    arity is judged PER ELEMENT: `TestA, TestB = Helper, Other`
+    binds TestA to Helper and TestB to Other, so each name is
+    judged against its own element, recursing into nested
+    unpackings. Where a level has no one-to-one correspondence —
+    arity mismatch, a starred element on either side, or a
+    non-sequence value — that level's names fall back to the
+    whole-value rule against that level's value.
+    """
+    if isinstance(target, ast.Name):
+        return not isinstance(
+            value, _NON_CALLABLE_VALUE_TYPES
+        ) and _binds_pytest_collectable(
+            target.id, _value_denotes_testcase(value, testcase_names)
+        )
+    if isinstance(target, (ast.Tuple, ast.List)):
+        if (
+            isinstance(value, (ast.Tuple, ast.List))
+            and len(target.elts) == len(value.elts)
+            and not any(
+                isinstance(element, ast.Starred)
+                for element in target.elts
+            )
+            and not any(
+                isinstance(element, ast.Starred)
+                for element in value.elts
+            )
+        ):
+            return any(
+                _assignment_target_triggers(
+                    element, element_value, testcase_names
+                )
+                for element, element_value in zip(
+                    target.elts, value.elts
+                )
+            )
+        if isinstance(value, _NON_CALLABLE_VALUE_TYPES):
+            return False
+        value_is_testcase = _value_denotes_testcase(
+            value, testcase_names
+        )
+        return any(
+            _binds_pytest_collectable(name, value_is_testcase)
+            for name in _assignment_target_names(target)
+        )
+    return False
+
+
+def _dotted_name(node: ast.expr) -> str | None:
+    """Dotted name for a Name/Attribute chain (`unittest.TestCase`),
+    else None (calls, subscripts, and other expressions have none)."""
+    parts: list[str] = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if isinstance(node, ast.Name):
+        parts.append(node.id)
+        return ".".join(reversed(parts))
+    return None
+
+
+def _classify_test_module(
+    text: str, truncated: bool = False
+) -> tuple[bool, bool]:
+    """(has_unittest_leg, triggers_pytest) for one test module.
+
+    Classification follows the runners' collection semantics, by AST:
+
+    - unittest leg iff the module defines a class whose bases include
+      a dotted name ending in `TestCase`, a name imported as an alias
+      of `unittest.TestCase`, or a module-local TestCase subclass
+      (transitively — the unittest loader collects them all). Imports
+      alone never create the leg: `import unittest.mock` defines
+      nothing the unittest loader could collect. A module-level
+      `load_tests` hook also selects the leg: the hook is the
+      module's suite under unittest's loading protocol, and pytest
+      never executes it.
+    - pytest trigger iff the module defines module-level (or async)
+      `test_*` functions, OR an import binds a `test_*` name (pytest
+      collects test functions from the module namespace, imported
+      ones included — the bound name is the evidence), OR an
+      import binds a `Test*` name that does not denote TestCase
+      in this module (an imported class's definition lives
+      elsewhere, so it cannot be resolved as a TestCase subclass
+      here; pytest collects Test* classes from the namespace,
+      imported ones included — a dotted import's alias,
+      `import shared.TestImported as TestImported`, binds its
+      name the same explicit way), OR an
+      assignment binds a pytest-collectable name (`test_*` or
+      `Test*`) to a value that is not provably non-callable data (a
+      literal display — `test_failure = failure` binds a collectable
+      function and `TestGenerated = Helper` a collectable class;
+      `test_cases = [...]` and `TestData = {...}` bind tables and do
+      not; a `Test*` name bound to TestCase itself denotes
+      unittest's class, recorded as an alias, not a pytest class;
+      an unpacking assignment whose target and value correspond
+      one-to-one is judged per element — `TestA, TestB = Helper,
+      Other` binds two collectable classes, `test_a, test_b = 1, 2`
+      binds none — while a level with no correspondence falls back
+      to the whole-value rule for its names),
+      OR a `Test*`
+      class that is NOT resolved as a TestCase subclass (its test
+      methods may be inherited from a local helper or written
+      pytest-style, so its own body is not the evidence), OR the
+      module has no leg at all (default). A module whose only
+      collectable content is TestCase subclasses does NOT by itself
+      trigger the pytest
+      command (RC2 — pure-unittest trees keep byte-identical argv);
+      when the bare pytest command exists for other reasons it
+      collects those modules too.
+    - Definitions are collected at module namespace at ANY compound
+      depth (`if True:` / `try:` blocks execute at module level, and
+      both runners collect what they define); definitions nested in a
+      class or function are not module-level collectables.
+    - UNCERTAINTY ROUTES TO MORE EXECUTION, NEVER LESS (panel
+      CLASS-P1): a truncated scan (content past the cap may hide
+      either runner's shapes), an unparseable module, or a class
+      whose base cannot be resolved inside the module — e.g. a
+      TestCase subclass imported from a shared base module — routes
+      the module to the unittest leg by explicit name (the loader
+      decides collectability at runtime) and, where pytest-collectable
+      shapes may also hide (a `Test*` class with an unresolved base,
+      truncation, unparseable), triggers the pytest leg too. A bare
+      builtin base (`object`, `Exception`, ...) is NOT uncertainty:
+      no builtin is a TestCase, so it resolves determinately.
+    """
+    if truncated:
+        return True, True
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return True, True
+
+    # Module-namespace pass: TestCase-denoting names (direct imports,
+    # import aliases, assignment aliases), every imported name, every
+    # module-level class, and module-level test_* functions.
+    testcase_names: set[str] = set()
+    imported_names: set[str] = set()
+    classes: list[ast.ClassDef] = []
+    triggers_pytest = False
+    has_load_tests = False
+
+    def visit(node: ast.AST, in_class: bool, in_func: bool) -> None:
+        nonlocal triggers_pytest, has_load_tests
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.ClassDef):
+                if not in_class and not in_func:
+                    classes.append(child)
+                visit(child, True, in_func)
+            elif isinstance(
+                child, (ast.FunctionDef, ast.AsyncFunctionDef)
+            ):
+                if not in_class and not in_func:
+                    if child.name.startswith("test_"):
+                        triggers_pytest = True
+                    elif child.name == "load_tests":
+                        # unittest's loading protocol: the hook IS
+                        # the module's suite, and only the unittest
+                        # loader executes it (pytest never calls
+                        # it). Without the leg, a suite the hook
+                        # builds — e.g. FunctionTestCases, with no
+                        # TestCase subclass declared — is silently
+                        # omitted (Codex P2).
+                        has_load_tests = True
+                visit(child, in_class, True)
+            else:
+                if not in_class and not in_func:
+                    if isinstance(child, ast.ImportFrom):
+                        if child.module == "unittest" or (
+                            child.module is not None
+                            and child.module.startswith("unittest.")
+                        ):
+                            for alias in child.names:
+                                if alias.name == "TestCase":
+                                    testcase_names.add(
+                                        alias.asname or alias.name
+                                    )
+                        for alias in child.names:
+                            bound = alias.asname or alias.name
+                            imported_names.add(bound)
+                            if bound.startswith("test_"):
+                                # pytest collects test_* functions
+                                # from the module namespace, imported
+                                # ones included — an import binding a
+                                # test_* name IS pytest evidence.
+                                # Recording the name without the
+                                # trigger let a sibling TestCase class
+                                # suppress the leg and silently omit
+                                # the imported tests (Codex P2).
+                                triggers_pytest = True
+                            elif (
+                                bound.startswith("Test")
+                                and bound != "TestCase"
+                                and bound not in testcase_names
+                            ):
+                                # pytest collects Test* CLASSES from
+                                # the module namespace, imported ones
+                                # included. An imported Test* name
+                                # cannot be resolved as a TestCase
+                                # subclass from this module — its
+                                # definition lives elsewhere — so,
+                                # like a locally unresolved Test*
+                                # class, it is positive evidence for
+                                # pytest; recording the name without
+                                # the trigger let a sibling TestCase
+                                # class suppress the leg and silently
+                                # omit the imported class (Codex P2).
+                                # TestCase-denoting imports are
+                                # excluded: `TestCase` itself, and
+                                # names recorded above as its
+                                # aliases, are unittest's own class.
+                                triggers_pytest = True
+                    elif isinstance(child, ast.Import):
+                        for alias in child.names:
+                            imported_names.add(
+                                alias.asname
+                                or alias.name.split(".")[0]
+                            )
+                            if (
+                                alias.asname is not None
+                                and alias.asname.startswith("Test")
+                                and alias.asname != "TestCase"
+                                and alias.asname not in testcase_names
+                            ):
+                                # A dotted import with an alias —
+                                # `import shared.TestImported as
+                                # TestImported` — binds its Test*
+                                # name in the module namespace
+                                # explicitly, exactly as the
+                                # ImportFrom form round 8 covers;
+                                # recording it without the trigger
+                                # left the same silent omission
+                                # behind a sibling TestCase class.
+                                # What the alias denotes (class or
+                                # module) is unresolved from this
+                                # module, and unresolved Test*
+                                # bindings keep the pytest leg.
+                                # Without an alias, only the
+                                # top-level package name is bound —
+                                # no Test* name enters the namespace
+                                # — so there is nothing to trigger
+                                # on. TestCase-denoting aliases are
+                                # excluded as in the ImportFrom
+                                # branch.
+                                triggers_pytest = True
+                    elif isinstance(child, ast.Assign):
+                        value_is_testcase = _value_denotes_testcase(
+                            child.value, testcase_names
+                        )
+                        if value_is_testcase:
+                            for target in child.targets:
+                                if isinstance(target, ast.Name):
+                                    testcase_names.add(target.id)
+                        for target in child.targets:
+                            if (
+                                isinstance(target, ast.Name)
+                                and target.id == "load_tests"
+                            ):
+                                # `load_tests = <callable>` binds the
+                                # same module attribute the unittest
+                                # loader invokes.
+                                has_load_tests = True
+                        for target in child.targets:
+                            if _assignment_target_triggers(
+                                target, child.value, testcase_names
+                            ):
+                                # pytest collects test_* functions
+                                # and Test* classes from the module
+                                # namespace, however they were bound
+                                # — `test_failure = failure`,
+                                # `TestGenerated = Helper`, and the
+                                # unpacking form `TestA, TestB =
+                                # Helper, Other` included (the
+                                # last judged per element: the
+                                # whole-value rule saw one Tuple
+                                # value — a literal display in the
+                                # non-callable set — and triggered
+                                # for neither name). Checking
+                                # assignment targets only for
+                                # TestCase aliases and load_tests let
+                                # a sibling TestCase class suppress
+                                # the leg and silently omit the
+                                # assigned tests (Codex P2, rounds
+                                # 7 and 9). Only provably-data
+                                # values (literal displays) are not
+                                # evidence, and a Test* name bound
+                                # to TestCase itself denotes
+                                # unittest's class (recorded above
+                                # as an alias), not a pytest class.
+                                triggers_pytest = True
+                    elif isinstance(child, ast.AnnAssign):
+                        # `test_failure: Callable = failure` and
+                        # `TestGenerated: type = Helper` bind the
+                        # same module attributes as the plain
+                        # assignments above; an annotation without a
+                        # value binds nothing.
+                        if (
+                            child.value is not None
+                            and isinstance(child.target, ast.Name)
+                            and not isinstance(
+                                child.value,
+                                _NON_CALLABLE_VALUE_TYPES,
+                            )
+                        ):
+                            ann_value_is_testcase = (
+                                _value_denotes_testcase(
+                                    child.value, testcase_names
+                                )
+                            )
+                            if _binds_pytest_collectable(
+                                child.target.id,
+                                ann_value_is_testcase,
+                            ):
+                                triggers_pytest = True
+                visit(child, in_class, in_func)
+
+    visit(tree, False, False)
+
+    # Resolve each module-level class against its bases, to a
+    # fixpoint (module-local subclasses resolve transitively).
+    local_names = {cls.name for cls in classes}
+    resolved: dict[str, bool] = {}
+    uncertain: set[str] = set()
+    pending = list(classes)
+    while pending:
+        deferred: list[ast.ClassDef] = []
+        progressed = False
+        for cls in pending:
+            is_testcase = False
+            is_uncertain = False
+            waiting = False
+            for base in cls.bases:
+                dotted = _dotted_name(base)
+                if dotted is None:
+                    is_uncertain = True
+                    continue
+                if (
+                    dotted.rsplit(".", 1)[-1] == "TestCase"
+                    or dotted in testcase_names
+                ):
+                    is_testcase = True
+                    continue
+                root = dotted.split(".")[0]
+                if (
+                    "." not in dotted
+                    and root not in imported_names
+                    and root not in local_names
+                    and isinstance(getattr(builtins, root, None), type)
+                ):
+                    # A bare builtin base (object, Exception, ...):
+                    # builtins are concrete classes the interpreter
+                    # itself resolves, and none of them is a
+                    # TestCase — the base is KNOWN non-TestCase, not
+                    # an uncertainty. Routing it to a speculative
+                    # unittest leg made that leg collect zero and
+                    # veto passing pytest suites (Codex P2).
+                    continue
+                if dotted in resolved:
+                    if resolved[dotted]:
+                        is_testcase = True
+                elif root in local_names and "." not in dotted:
+                    waiting = True
+                elif root in imported_names or root not in local_names:
+                    # A base defined outside this module (or nowhere
+                    # visible): it may be a TestCase subclass defined
+                    # in a shared base module — the loader decides.
+                    is_uncertain = True
+            if waiting and not is_testcase:
+                deferred.append(cls)
+                continue
+            resolved[cls.name] = is_testcase
+            if is_uncertain and not is_testcase:
+                uncertain.add(cls.name)
+            if is_testcase:
+                testcase_names.add(cls.name)
+            progressed = True
+        if not progressed:
+            # Circular local bases: the loader will error at import;
+            # route to the unittest leg and let it decide.
+            for cls in deferred:
+                resolved[cls.name] = False
+                uncertain.add(cls.name)
+            break
+        pending = deferred
+
+    has_unittest = has_load_tests
+    for cls in classes:
+        if resolved.get(cls.name):
+            has_unittest = True
+        elif cls.name in uncertain:
+            # Unresolved base: the class may be a TestCase subclass
+            # (unittest leg by name — the loader decides); a Test*
+            # name may instead be a plain pytest class.
+            has_unittest = True
+            if cls.name.startswith("Test"):
+                triggers_pytest = True
+        elif cls.name.startswith("Test"):
+            # Resolved as NOT a TestCase subclass — but pytest
+            # collects Test* classes, and their test methods may be
+            # inherited from a local helper class, invisible in this
+            # class's own body. Suppressing the leg for want of
+            # literal test_* methods silently omitted inherited
+            # tests whenever a sibling class selected the unittest
+            # leg (Codex P2). The leg may be suppressed only on
+            # positive evidence there is nothing for pytest to
+            # collect; a Test* name on a non-TestCase class is the
+            # opposite of that evidence, so it keeps the leg.
+            triggers_pytest = True
+    if not has_unittest and not triggers_pytest:
+        triggers_pytest = True  # no leg at all: the pytest default
+    return has_unittest, triggers_pytest
 
 
 def discover_verification_commands(root: Path) -> tuple[VerificationCommand, ...]:
@@ -108,19 +612,19 @@ def discover_verification_commands(root: Path) -> tuple[VerificationCommand, ...
         or (root / "tests").exists()
     ):
         add(
-            VerificationCommand(
-                "pytest", "Python tests", ("python3", "-m", "pytest", "-q")
-            )
+            VerificationCommand("pytest", "Python tests", PYTEST_ARGV)
         )
 
-    # 5. Root-level python test files, partitioned by style: modules
-    # importing unittest run under the unittest runner (named
-    # explicitly — discover's default pattern (test*.py) would
-    # silently skip the *_test.py files discovery accepts), and the
-    # remaining modules fall to the pytest command, which collects
-    # plain test functions the unittest runner never would. A mixed
-    # suite therefore runs BOTH runners; a single-style suite runs
-    # exactly the one command it ran before.
+    # 5. Root-level python test files, partitioned by runner
+    # collection semantics (Task 4, per-module AST classification —
+    # see _classify_test_module): modules defining TestCase
+    # subclasses run under the unittest runner (named explicitly —
+    # discover's default pattern (test*.py) would silently skip the
+    # *_test.py files discovery accepts), and modules that trigger
+    # the pytest leg fall to the shared bare pytest command, which
+    # collects plain test functions the unittest runner never would.
+    # A mixed suite therefore runs BOTH runners; a single-style
+    # suite runs exactly the one command it ran before.
     test_files: list[Path] = []
     if root.is_dir():
         for entry in sorted(root.iterdir()):
@@ -130,17 +634,21 @@ def discover_verification_commands(root: Path) -> tuple[VerificationCommand, ...
                 test_files.append(entry)
     if test_files:
         unittest_modules: list[str] = []
-        pytest_modules: list[str] = []
+        pytest_triggered = False
         for path in test_files:
             try:
                 with path.open("r", encoding="utf-8", errors="ignore") as fh:
-                    text = fh.read(SCAN_CHARS)
+                    text = fh.read(SCAN_CHARS + 1)
             except OSError:
                 text = ""
-            if "import unittest" in text or "from unittest" in text:
+            truncated = len(text) > SCAN_CHARS
+            has_unittest, triggers_pytest = _classify_test_module(
+                text[:SCAN_CHARS], truncated=truncated
+            )
+            if has_unittest:
                 unittest_modules.append(path.stem)
-            else:
-                pytest_modules.append(path.stem)
+            if triggers_pytest:
+                pytest_triggered = True
         if unittest_modules:
             add(
                 VerificationCommand(
@@ -149,11 +657,9 @@ def discover_verification_commands(root: Path) -> tuple[VerificationCommand, ...
                     ("python3", "-m", "unittest", "-v", *unittest_modules),
                 )
             )
-        if pytest_modules:
+        if pytest_triggered:
             add(
-                VerificationCommand(
-                    "pytest", "Python tests", ("python3", "-m", "pytest", "-q")
-                )
+                VerificationCommand("pytest", "Python tests", PYTEST_ARGV)
             )
 
     # 6. Make (AEP addition).
@@ -249,15 +755,374 @@ def _drain(stream, buffer: _TailBuffer) -> None:
             pass
 
 
+def _read_proc_stat(pid: int) -> tuple[int, int, int, str] | None:
+    """(ppid, pgrp, start_time, state) from /proc/<pid>/stat.
+
+    start_time (field 22) identifies a process incarnation: a pid
+    whose start_time differs from the one recorded earlier is a
+    different process that recycled the pid.
+    """
+    try:
+        text = Path(f"/proc/{pid}/stat").read_text(
+            encoding="utf-8", errors="replace"
+        )
+    except OSError:
+        return None
+    try:
+        rest = text.rsplit(")", 1)[1].split()
+        return int(rest[1]), int(rest[2]), int(rest[19]), rest[0]
+    except (IndexError, ValueError):
+        return None
+
+
+def _children_start_times() -> dict[int, int]:
+    """Map of this process's current child pids to their start times."""
+    me = os.getpid()
+    children: dict[int, int] = {}
+    try:
+        entries = list(Path("/proc").iterdir())
+    except OSError:
+        return children
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        stat = _read_proc_stat(pid)
+        if stat is not None and stat[0] == me:
+            children[pid] = stat[2]
+    return children
+
+
+def _sweep_survivors(
+    leader_pid: int, snapshot: dict[int, int]
+) -> tuple[tuple[int, ...], bool]:
+    """Kill everything a finished command left behind.
+
+    Targets are (a) this process's children that were NOT in the
+    pre-spawn snapshot — adoptees: descendants orphaned when the
+    leader exited, reparented here when the subreaper flag is set —
+    and (b) remaining members of the leader's process group. A
+    `setsid` descendant escapes (b) by construction but lands in (a).
+    Processes in the snapshot (bystanders that predate the command)
+    are never signalled. Each target's (pid, start_time) identity is
+    re-verified immediately before SIGKILL, and killed adoptees are
+    reaped per pid. Iterates until no live target remains or the
+    sweep bound elapses; returns (killed, exhausted) — exhausted
+    means a live survivor outlasted the bound, which the caller must
+    surface as a failure, never pass silently.
+    """
+    me = os.getpid()
+    killed: list[int] = []
+    deadline = time.monotonic() + SWEEP_BOUND_SECONDS
+    while True:
+        targets: dict[int, int] = {}
+        try:
+            entries = list(Path("/proc").iterdir())
+        except OSError:
+            entries = []
+        for entry in entries:
+            if not entry.name.isdigit():
+                continue
+            pid = int(entry.name)
+            if pid == me or pid == leader_pid:
+                continue
+            stat = _read_proc_stat(pid)
+            if stat is None:
+                continue
+            ppid, pgrp, start_time, state = stat
+            if state == "Z":
+                # Dead awaiting reaping — not a live survivor. If it
+                # is ours, collect it so it does not linger as a
+                # zombie for the rest of this process's life.
+                if ppid == me and snapshot.get(pid) != start_time:
+                    try:
+                        os.waitpid(pid, os.WNOHANG)
+                    except OSError:
+                        pass
+                continue
+            if (ppid == me and snapshot.get(pid) != start_time) or (
+                pgrp == leader_pid
+            ):
+                targets[pid] = start_time
+        if not targets:
+            return tuple(killed), False
+        if time.monotonic() >= deadline:
+            return tuple(killed), True
+        for pid, start_time in targets.items():
+            current = _read_proc_stat(pid)
+            if current is None or current[2] != start_time:
+                continue  # gone, or the pid was recycled — not ours
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                continue
+            if pid not in killed:
+                killed.append(pid)
+            try:
+                os.waitpid(pid, os.WNOHANG)
+            except OSError:
+                pass
+        time.sleep(0.05)
+
+
+def _set_child_subreaper() -> bool:
+    """Set PR_SET_CHILD_SUBREAPER on this process (Linux), best-effort.
+
+    With the flag set, descendants orphaned by a verification command
+    reparent here instead of to init, so the post-run sweep can find
+    and reap them. Set once from main() before append_run_start;
+    in-process callers do not set it — the sweep is snapshot-scoped
+    and safe either way. Returns whether the flag was set.
+    """
+    try:
+        return ctypes.CDLL(None).prctl(36, 1, 0, 0, 0) == 0
+    except Exception:
+        return False
+
+
+_UNITTEST_RAN_RE = re.compile(r"^Ran (\d+) tests?\b", re.MULTILINE)
+_PYTEST_COUNT_RE = re.compile(
+    r"(\d+)\s+(passed|failed|skipped|deselected|errors?|xfailed|xpassed)\b"
+)
+_PYTEST_SUMMARY_TAIL_RE = re.compile(r" in \d+(?:\.\d+)?s\b")
+
+
+def _count_collected(
+    command_id: str, stdout: str, stderr: str
+) -> int | None:
+    """Collected-test count for a Python command; None for other
+    commands (the count gate does not apply to them).
+
+    unittest: parse `Ran (\\d+) tests?` from stdout+stderr combined
+    (unittest writes it to stderr). The `scripts-unittest` leg
+    (rule 8's scripts/tests discovery) is a unittest-discover run
+    and is counted by the same rule — without it the leg sealed
+    receipts with no collected count and the gate never judged it.
+    pytest: the collected count is
+    the sum of the outcome groups in the summary line
+    (passed+failed+skipped+errors+xfailed+xpassed) EXCLUDING
+    `deselected` — deselected tests were filtered OUT by the runner
+    and never collected for execution (panel correctness P2-B).
+    Zero collection is recognized only from the runner's final
+    summary line itself (`no tests ran in …s`): the same phrase in
+    test output (exposed by e.g. `addopts = -s`) is a diagnostic,
+    not the summary, and must not override it (Codex P2, round 4).
+    The summary itself is guaranteed by the invocation: PYTEST_ARGV
+    nets positive verbosity, so project addopts cannot stack quiet
+    levels into suppressing it (Codex P2, round 5). A transcript
+    with no summary line at all (dots only) still parses to 0 —
+    verbosity-independent evidence was deliberately NOT taken from
+    e.g. the progress dots, which are not a count.
+    An unparseable count is 0 — a Python command
+    that cannot prove it collected anything fails the count gate in
+    VerificationResult.passed. Skips count as collected (deliberate
+    ruling): the guarantee is "routed to a runner that collects the
+    test"; whether a collected test skips is the test author's
+    signal, not a routing failure.
+    """
+    if command_id in ("unittest", "scripts-unittest"):
+        match = _UNITTEST_RAN_RE.search(stdout + "\n" + stderr)
+        return int(match.group(1)) if match is not None else 0
+    if command_id == "pytest":
+        combined = stdout + "\n" + stderr
+        total: int | None = None
+        for line in combined.splitlines():
+            if not _PYTEST_SUMMARY_TAIL_RE.search(line):
+                continue
+            groups = _PYTEST_COUNT_RE.findall(line)
+            if groups:
+                total = sum(
+                    int(count)
+                    for count, label in groups
+                    if label != "deselected"
+                )
+            elif "no tests ran" in line:
+                # The summary line itself reports zero collection.
+                # The phrase anywhere else (a test's printed
+                # diagnostic) never reaches this branch: it is
+                # either not summary-shaped or superseded by the
+                # real summary, which pytest prints last.
+                total = 0
+        return total if total is not None else 0
+    return None
+
+
+def _policy_path() -> Path:
+    """Resolve the launch-policy file: $AEP_POLICY_DATA when set, else
+    the policy.data beside this script — the same rule lane-coord.sh's
+    load_policy applies."""
+    override = os.environ.get("AEP_POLICY_DATA")
+    if override:
+        return Path(override)
+    return Path(__file__).resolve().parent / "policy.data"
+
+
+class PolicyError(ValueError):
+    """An existing policy file cannot be honored. Raised by the
+    policy reader under the same fail-closed grammar lane-coord.sh's
+    load_policy enforces; a MISSING file is not an error (it yields
+    no fragments, and the record says so)."""
+
+
+def _load_policy_fragments(policy_path) -> tuple[str, ...] | None:
+    """The [env-scrub] fragments of a policy file, strictly parsed.
+
+    Returns None when the file does not exist. Raises PolicyError for
+    an existing file lane-coord's grammar refuses: unreadable, an
+    unknown or misspelled section header, content before any section
+    header, an entry containing whitespace, or either section
+    ([sensitive-paths] / [env-scrub]) missing or empty — an emptied
+    [env-scrub] section is exactly the fragmentless-policy hole the
+    panel reproduced (full environment, record claiming 'scrubbed').
+    """
+    path = Path(policy_path)
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeDecodeError) as exc:
+        raise PolicyError(f"cannot read {path}: {exc}") from exc
+    sections: dict[str, list[str]] = {
+        "sensitive-paths": [],
+        "env-scrub": [],
+    }
+    section: str | None = None
+    for num, raw in enumerate(lines, 1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("["):
+            if line in ("[sensitive-paths]", "[env-scrub]"):
+                section = line[1:-1]
+                continue
+            raise PolicyError(
+                f"line {num}: unknown section header {line!r} in {path}"
+            )
+        if section is None:
+            raise PolicyError(
+                f"line {num}: content before any section header "
+                f"in {path}"
+            )
+        if any(ch.isspace() for ch in line):
+            raise PolicyError(
+                f"line {num}: entry contains whitespace in {path}"
+            )
+        sections[section].append(line)
+    for name, entries in sections.items():
+        if not entries:
+            raise PolicyError(f"section [{name}] is empty in {path}")
+    return tuple(sections["env-scrub"])
+
+
+def policy_env_scrub(policy_path) -> tuple[str, ...]:
+    """Read the [env-scrub] fragments from a policy.data file.
+
+    A missing file yields no fragments. An existing file is parsed
+    under lane-coord.sh's fail-closed grammar (see
+    _load_policy_fragments) and raises PolicyError when it cannot be
+    honored — the reader never silently returns an empty list for a
+    file that is present but broken.
+    """
+    fragments = _load_policy_fragments(policy_path)
+    return fragments if fragments is not None else ()
+
+
+def _auth_occurrence_is_sensitive(upper: str) -> bool:
+    """True if an (already uppercased) name has an AUTH occurrence that
+    is NOT boundary-exempt — a port of lane-coord.sh's
+    auth_occurrence_is_sensitive. An occurrence is exempt when
+    immediately preceded by SSH_ (spares SSH_AUTH_SOCK) or immediately
+    followed by OR + ('_' or end-of-name) (spares GIT_AUTHOR_NAME,
+    ...AUTHOR / ...AUTHOR_ names). AUTHORITY is not exempt: its AUTH
+    is followed by ORI..., not OR_/end.
+    """
+    start = 0
+    while True:
+        i = upper.find("AUTH", start)
+        if i < 0:
+            return False
+        if i >= 4 and upper[i - 4 : i] == "SSH_":
+            start = i + 1
+            continue
+        after = upper[i + 4 :]
+        if after == "OR" or after.startswith("OR_"):
+            start = i + 1
+            continue
+        return True
+
+
+def _name_is_sensitive(name: str, fragments) -> bool:
+    """Port of lane-coord.sh's name_is_sensitive: a name is sensitive
+    when it contains any [env-scrub] fragment as a case-insensitive
+    substring (the AUTH fragment applies its boundary exemptions;
+    other fragments have none)."""
+    upper = name.upper()
+    for fragment in fragments:
+        frag_upper = fragment.upper()
+        if frag_upper == "AUTH":
+            if _auth_occurrence_is_sensitive(upper):
+                return True
+        elif frag_upper and frag_upper in upper:
+            return True
+    return False
+
+
+def build_run_env(policy_path) -> dict:
+    """The environment verification commands run with: os.environ
+    minus every name the policy's [env-scrub] fragments mark sensitive.
+
+    AEP_VERIFY_FULL_ENV=1 opts out (mirroring lane-coord's
+    AEP_LANE_FULL_ENV) and the full environment passes through. With
+    no fragments — a missing policy file — nothing is scrubbed. An
+    existing-but-invalid policy file raises PolicyError (fail
+    closed): it is never silently treated as "no fragments".
+    """
+    env = dict(os.environ)
+    if os.environ.get("AEP_VERIFY_FULL_ENV") == "1":
+        return env
+    fragments = policy_env_scrub(policy_path)
+    if not fragments:
+        return env
+    return {
+        name: value
+        for name, value in env.items()
+        if not _name_is_sensitive(name, fragments)
+    }
+
+
+def run_env_mode(policy_path) -> str:
+    """The env mode stated on the run-start record, derived from the
+    fragments actually applied — never from the file's mere
+    existence. A missing policy file is 'unscrubbed (no policy)';
+    the explicit opt-out is 'full (AEP_VERIFY_FULL_ENV)'; 'scrubbed'
+    is stated only when a non-empty fragment list was extracted (and
+    is what build_run_env applies). An existing-but-invalid file
+    raises PolicyError: no honest mode string exists for it, and the
+    run refuses before any command executes."""
+    if os.environ.get("AEP_VERIFY_FULL_ENV") == "1":
+        return "full (AEP_VERIFY_FULL_ENV)"
+    if not Path(policy_path).exists():
+        return "unscrubbed (no policy)"
+    fragments = policy_env_scrub(policy_path)
+    if not fragments:
+        return "unscrubbed (no fragments)"
+    return "scrubbed"
+
+
 def run_verification(
     root: Path,
     command: VerificationCommand,
     timeout_seconds: float = 300,
 ) -> VerificationResult:
-    env = dict(os.environ)
+    env = build_run_env(_policy_path())
     env["CI"] = "1"
     env["PYTHONUNBUFFERED"] = "1"
     started = time.monotonic()
+    # Snapshot this process's children immediately before the spawn:
+    # the post-run sweep kills only children that appear after this
+    # point (plus the leader's group), so bystanders that predate the
+    # command are never signalled.
+    snapshot = _children_start_times()
     try:
         proc = subprocess.Popen(
             list(command.argv),
@@ -314,17 +1179,31 @@ def run_verification(
                 pass
         if proc.returncode is None:
             proc.wait()
+    # The leader has been waited on every path above — only now may
+    # the sweep run. Reaping concurrently with a live Popen would let
+    # a stray waitpid consume the leader's exit status and corrupt
+    # its reported exit code.
+    survivors_killed, survivors_remaining = _sweep_survivors(
+        proc.pid, snapshot
+    )
     for thread in threads:
         thread.join(timeout=5)
 
+    stdout_text = stdout_buf.text()
+    stderr_text = stderr_buf.text()
     return VerificationResult(
         command=command,
         exit_code=proc.returncode,
         timed_out=timed_out,
         duration_ms=int((time.monotonic() - started) * 1000),
-        stdout=stdout_buf.text(),
-        stderr=stderr_buf.text(),
+        stdout=stdout_text,
+        stderr=stderr_text,
         output_truncated=stdout_buf.truncated or stderr_buf.truncated,
+        survivors_killed=survivors_killed,
+        survivors_remaining=survivors_remaining,
+        tests_collected=_count_collected(
+            command.id, stdout_text, stderr_text
+        ),
     )
 
 
@@ -339,6 +1218,12 @@ def available_memory_kb() -> int | None:
     return int(match.group(1))
 
 
+# The Python test legs whose collected counts the count gate
+# judges (see _count_collected). At most one of each is ever
+# scheduled (discovery dedupes by command id).
+_PYTHON_LEG_IDS = frozenset({"unittest", "pytest"})
+
+
 def run_all(
     root,
     commands,
@@ -347,6 +1232,7 @@ def run_all(
     budget_seconds=600,
     mem_available_kb=available_memory_kb,
     on_result=None,
+    between_commands=None,
 ) -> int:
     mem_kb = mem_available_kb() if mem_available_kb is not None else None
     if mem_kb is not None and mem_kb < MIN_MEMORY_KB:
@@ -375,9 +1261,29 @@ def run_all(
         executed += 1
         if on_result is not None:
             on_result(result)
-        if result.passed:
-            print(f"VERIFY: {command.id} PASS")
-        else:
+        # Count-gate deferral (Codex P2 on the A2 fix): a Python leg
+        # whose ONLY failure is a zero collected count, while
+        # another Python leg remains to run, does not fail the run.
+        # Classification uncertainty schedules speculative legs (A2:
+        # uncertainty routes to more execution), and the runner the
+        # module actually belongs to may not have run yet — its leg
+        # collecting zero is expected, not a vacuity signal. The
+        # gate instead judges the union of the legs that ran: every
+        # leg executes first, and a leg with no Python leg after it
+        # fails on a zero count exactly as before, so a tree where
+        # NO leg collects anything still fails.
+        defer_zero = (
+            not result.passed
+            and command.id in _PYTHON_LEG_IDS
+            and result.tests_collected == 0
+            and result.exit_code == 0
+            and not result.timed_out
+            and not result.survivors_remaining
+            and any(
+                c.id in _PYTHON_LEG_IDS for c in commands[idx + 1 :]
+            )
+        )
+        if not result.passed and not defer_zero:
             exit_repr = (
                 "spawn-error" if result.exit_code is None else str(result.exit_code)
             )
@@ -385,8 +1291,33 @@ def run_all(
                 f"VERIFY: {command.id} FAIL exit={exit_repr} "
                 f"duration_ms={result.duration_ms}"
             )
+            if result.survivors_remaining:
+                print("VERIFY: survivors remain after reap bound")
+            if result.tests_collected == 0:
+                print("VERIFY: zero tests collected")
             print(f"VERIFY: stopped at first failure ({command.id})")
             return 1
+        if between_commands is not None:
+            # In-run binding revalidation (panel SEC-P0-1): the hook
+            # returns a description when the tree moved during this
+            # command. Abort BEFORE the next command runs — a later
+            # command must never execute against a substituted tree,
+            # and no completion record may seal the segment.
+            excursion = between_commands()
+            if excursion is not None:
+                print(
+                    f"VERIFY: FAIL tree binding changed during the "
+                    f"run: {excursion} — aborting without a "
+                    f"completion record"
+                )
+                return 1
+        if result.passed:
+            print(f"VERIFY: {command.id} PASS")
+        else:
+            print(
+                f"VERIFY: {command.id} collected zero tests — "
+                f"count gate deferred to the remaining Python leg(s)"
+            )
     return 0 if executed else 1
 
 
@@ -427,10 +1358,367 @@ RUN_START_FIELDS = (
     "chain_sha256",
 )
 
+# Strict field types for the records of the SELECTED segment (Task 8,
+# R7 — panel EXP5 / P3-1). A JSON bool wearing an int's clothes fails
+# open under `==` checks (False == 0, True == 1), so validation uses
+# `type(v) is ...` semantics, never isinstance (bool subclasses int).
+# The map covers every field the writers can emit across the three
+# record kinds — the base fields above plus the Task 1/2/4/5
+# extensions (binding, subreaper, env, survivors_killed,
+# tests_collected). exit_code alone may also be null: a spawn-error
+# receipt legitimately records it. Fields absent from the map are
+# ignored — the schema must not freeze against follow-ups (issue #38,
+# P2-2). Element types are pinned for the two list fields.
+SEGMENT_FIELD_TYPES: dict[str, tuple[type, ...]] = {
+    "ts": (str,),
+    "task": (str,),
+    "kind": (str,),
+    "run_id": (str,),
+    "command_id": (str,),
+    "argv": (list,),
+    "exit_code": (int, type(None)),
+    "timed_out": (bool,),
+    "duration_ms": (int,),
+    "stdout_sha256": (str,),
+    "stderr_sha256": (str,),
+    "chain_sha256": (str,),
+    "command_count": (int,),
+    "commands_sha256": (str,),
+    "binding": (dict,),
+    "subreaper": (bool,),
+    "env": (str,),
+    "survivors_killed": (list,),
+    "tests_collected": (int,),
+}
+
+SEGMENT_LIST_ELEMENT_TYPES: dict[str, type] = {
+    "argv": str,
+    "survivors_killed": int,
+}
+
+
+def _segment_field_type_error(record: dict) -> str | None:
+    """The first field of `record` whose value violates
+    SEGMENT_FIELD_TYPES, else None. Unknown fields are ignored."""
+    for field, value in record.items():
+        allowed = SEGMENT_FIELD_TYPES.get(field)
+        if allowed is None:
+            continue
+        if type(value) not in allowed:
+            return field
+        element = SEGMENT_LIST_ELEMENT_TYPES.get(field)
+        if element is not None and any(
+            type(item) is not element for item in value
+        ):
+            return field
+    return None
+
+
+def _receipts_file_tracked(root: Path, receipts_path: Path) -> bool:
+    """True when the receipts file is tracked by git in root's repo.
+
+    Path computation (N2): resolve the receipts path absolutely, take
+    its path relative to the git toplevel of the root, and ask
+    `git -C <toplevel> ls-files --error-unmatch` — correct for
+    root-as-repo, root-as-subdirectory, and symlinked receipts paths.
+    A root outside any git worktree tracks nothing: no rule applies.
+    """
+    top = _git(root, "rev-parse", "--show-toplevel")
+    if top.returncode != 0:
+        return False
+    toplevel = Path(
+        top.stdout.decode("utf-8", errors="replace").strip()
+    ).resolve()
+    try:
+        rel = receipts_path.resolve().relative_to(toplevel)
+    except ValueError:
+        return False
+    proc = _git(
+        toplevel, "ls-files", "--error-unmatch", "--", rel.as_posix()
+    )
+    return proc.returncode == 0
+
 
 def _commands_digest(command_ids) -> str:
     canonical = json.dumps(list(command_ids), ensure_ascii=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# Tree binding (overseer remediation R1): a receipts segment records the
+# tree it describes, so a sealed PASS can be re-validated against that
+# tree later — never against whatever the working tree holds then.
+
+FS_EXCLUDED_DIRS = frozenset(
+    {
+        ".git",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        "target",
+        "node_modules",
+        "coverage",
+        "htmlcov",
+        "dist",
+        "build",
+        ".tox",
+        ".venv",
+    }
+)
+
+
+def _git(root: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", "-C", str(root), *args],
+        capture_output=True,
+        timeout=60,
+    )
+
+
+def _git_head(root: Path) -> str | None:
+    proc = _git(root, "rev-parse", "HEAD")
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.decode("utf-8", errors="replace").strip() or None
+
+
+def _git_tree_digest(root: Path, head: str) -> str | None:
+    """Digest of the tree at `head`, computed from git objects only.
+
+    For each entry of `git ls-tree -r -z <head>` (NUL-terminated, raw
+    path bytes), hash `mode + " " + blob_sha + " " + path + "\n"` in
+    ls-tree's own order. Working-tree content is never read, so the
+    digest is reproducible at any later time while the commit exists;
+    None when the commit is unreadable.
+    """
+    proc = _git(root, "ls-tree", "-r", "-z", head)
+    if proc.returncode != 0:
+        return None
+    digest = hashlib.sha256()
+    for entry in proc.stdout.split(b"\0"):
+        if not entry:
+            continue
+        meta, _, path = entry.partition(b"\t")
+        parts = meta.split(b" ")
+        if len(parts) != 3:
+            return None
+        digest.update(parts[0] + b" " + parts[2] + b" " + path + b"\n")
+    return digest.hexdigest()
+
+
+def _fs_entry_mode(path: Path) -> str:
+    """Git-style mode string for one filesystem entry: the file TYPE
+    plus, for regular files, the executable bit — `100755` vs
+    `100644`; symlinks are `120000` whatever they point at; other
+    types keep their raw type bits. Mirrors what the git-mode digest
+    already captures from ls-tree, so an execution-relevant
+    permission change moves the fs digest exactly as it moves the
+    git one. Non-executable permission bits (read/write) are not
+    execution evidence and stay out, matching git.
+    """
+    st = os.lstat(path)
+    if stat.S_ISLNK(st.st_mode):
+        return "120000"
+    if stat.S_ISREG(st.st_mode):
+        return "100755" if st.st_mode & 0o111 else "100644"
+    return format(stat.S_IFMT(st.st_mode), "06o")
+
+
+def _fs_tree_digest(root: Path, receipts_path: Path | None = None) -> str:
+    """Digest of a non-git tree: sha256 over sorted relative paths of
+    `relpath + "\\0" + mode + "\\0" + content + "\\0"`, where mode is
+    the entry's git-style mode string (file type + executable bit —
+    see `_fs_entry_mode`) and content is the file's sha256 hex
+    (symlinks: the target string, never followed). Paths with a
+    component in FS_EXCLUDED_DIRS and the receipts file itself are
+    excluded.
+    """
+    resolved = root.resolve()
+    receipts_resolved = (
+        receipts_path.resolve() if receipts_path is not None else None
+    )
+    entries: list[tuple[str, str, str]] = []
+    for dirpath, dirnames, filenames in os.walk(resolved, followlinks=False):
+        current = Path(dirpath)
+        descend: list[str] = []
+        for name in dirnames:
+            if name in FS_EXCLUDED_DIRS:
+                continue
+            path = current / name
+            if path.is_symlink():
+                entries.append(
+                    (
+                        path.relative_to(resolved).as_posix(),
+                        _fs_entry_mode(path),
+                        os.readlink(path),
+                    )
+                )
+            else:
+                descend.append(name)
+        dirnames[:] = descend
+        for name in filenames:
+            path = current / name
+            if (
+                receipts_resolved is not None
+                and path.resolve() == receipts_resolved
+            ):
+                continue
+            rel = path.relative_to(resolved).as_posix()
+            if path.is_symlink():
+                entries.append(
+                    (rel, _fs_entry_mode(path), os.readlink(path))
+                )
+            else:
+                entries.append(
+                    (
+                        rel,
+                        _fs_entry_mode(path),
+                        hashlib.sha256(path.read_bytes()).hexdigest(),
+                    )
+                )
+    entries.sort()
+    digest = hashlib.sha256()
+    for rel, mode, content in entries:
+        digest.update(rel.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(mode.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(content.encode("utf-8"))
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def tree_binding(
+    root: Path, receipts_path: Path | None = None
+) -> dict:
+    """The binding a run records for the tree it verifies.
+
+    git mode (root inside a git worktree): head + the ls-tree digest
+    at that head. fs mode: head None + the live-tree digest. Root is
+    canonicalized with Path.resolve(). Raises ValueError when a git
+    root has no readable HEAD/tree to bind to.
+    """
+    resolved = root.resolve()
+    if _git(resolved, "rev-parse", "--git-dir").returncode == 0:
+        head = _git_head(resolved)
+        digest = (
+            _git_tree_digest(resolved, head) if head is not None else None
+        )
+        if head is None or digest is None:
+            raise ValueError(
+                f"git root {resolved} has no readable HEAD to bind to"
+            )
+        return {
+            "root": str(resolved),
+            "head": head,
+            "tree_digest": digest,
+            "mode": "git",
+        }
+    return {
+        "root": str(resolved),
+        "head": None,
+        "tree_digest": _fs_tree_digest(resolved, receipts_path),
+        "mode": "fs",
+    }
+
+
+def tree_clean(root: Path, receipts_path: Path | None = None) -> bool:
+    """Git-mode cleanliness predicate for the binding gate.
+
+    `git status --porcelain --untracked-files=all` must be empty
+    after dropping (i) the
+    receipts file itself and UNTRACKED entries under `.superpowers/`
+    (the workflow's own bookkeeping — a TRACKED `.superpowers/` entry
+    that is modified or staged counts as dirty like any other
+    tracked change) and (ii) untracked entries whose path has a
+    component in FS_EXCLUDED_DIRS (tool caches the run itself
+    creates). Modified or staged tracked entries always count as
+    dirty; the exclusions never hide a tracked change.
+    """
+    resolved = root.resolve()
+    top = _git(resolved, "rev-parse", "--show-toplevel")
+    if top.returncode != 0:
+        return False
+    toplevel = Path(
+        top.stdout.decode("utf-8", errors="replace").strip()
+    ).resolve()
+    receipts_rel: str | None = None
+    if receipts_path is not None:
+        try:
+            receipts_rel = (
+                receipts_path.resolve().relative_to(toplevel).as_posix()
+            )
+        except ValueError:
+            receipts_rel = None
+    # --untracked-files=all: enumerate untracked files individually.
+    # Git's default collapses a wholly untracked directory into one
+    # `?? dir/` entry, which never equals the receipts file's exact
+    # path — a receipts file in a fresh directory (e.g. evidence/)
+    # would defeat exclusion (i) and fail the gate spuriously
+    # (Codex P2). Per-file entries keep the exclusion exact: the
+    # receipts file is dropped, its untracked siblings are not.
+    proc = _git(
+        resolved, "status", "--porcelain", "-z", "--untracked-files=all"
+    )
+    if proc.returncode != 0:
+        return False
+    fields = proc.stdout.split(b"\0")
+    idx = 0
+    while idx < len(fields):
+        entry = fields[idx]
+        idx += 1
+        if not entry:
+            continue
+        status = entry[:2]
+        path = entry[3:].decode("utf-8", errors="surrogateescape")
+        if status[:1] in (b"R", b"C"):
+            idx += 1  # rename/copy: the source path field follows
+        if receipts_rel is not None and path == receipts_rel:
+            continue
+        if status == b"??" and (
+            path == ".superpowers" or path.startswith(".superpowers/")
+        ):
+            continue
+        if status == b"??" and any(
+            part in FS_EXCLUDED_DIRS for part in path.split("/")
+        ):
+            continue
+        return False
+    return True
+
+
+def binding_excursion(
+    root: Path, binding: dict, receipts_path: Path | None = None
+) -> str | None:
+    """Describe how the live tree has moved from `binding`, or None
+    when it still matches. Git mode only (fs mode returns None; its
+    seal recomputes the whole-tree digest instead).
+
+    Head and digest are compared independently: a reset to a
+    different commit with identical tree content moves the head
+    while the digest stands still, and the segment's claim is about
+    the recorded commit, not merely its content. The working tree
+    must also still be clean — an uncommitted excursion is movement
+    even when HEAD never changes. This observes the tree BETWEEN
+    commands; a single command that swaps and restores entirely
+    within its own execution is not observable this way (that needs
+    an execution sandbox, outside the same-uid threat model).
+    """
+    if binding.get("mode") != "git":
+        return None
+    try:
+        current = tree_binding(root, receipts_path)
+    except (OSError, ValueError) as exc:
+        return f"tree binding no longer readable ({exc})"
+    if current["head"] != binding["head"]:
+        return (
+            f"HEAD moved {binding['head']} -> {current['head']}"
+        )
+    if current["tree_digest"] != binding["tree_digest"]:
+        return "tree digest changed at the recorded HEAD"
+    if not tree_clean(root, receipts_path):
+        return "working tree no longer clean"
+    return None
 
 
 def _chain_sha256(body: dict, prev_chain: str) -> str:
@@ -513,16 +1801,34 @@ def append_receipt(
     }
     if run_id is not None:
         body["run_id"] = run_id
+    if result.survivors_killed:
+        body["survivors_killed"] = list(result.survivors_killed)
+    if result.tests_collected is not None:
+        body["tests_collected"] = result.tests_collected
     _append_record(receipts_path, body)
 
 
-def append_run_start(receipts_path: Path, task: str, run_id: str) -> None:
+def append_run_start(
+    receipts_path: Path,
+    task: str,
+    run_id: str,
+    binding: dict | None = None,
+    subreaper: bool | None = None,
+    env: str | None = None,
+) -> None:
     """Append the run-boundary record that opens a run segment.
 
     Written before a verify run executes any command; the run's
     receipts and its completion record carry the same run_id, so
     check_receipts can validate the latest run independently of any
-    earlier (possibly interrupted) segments in the same file.
+    earlier (possibly interrupted) segments in the same file. When a
+    tree binding is given it is recorded here (and on the completion
+    record) as an EXTRA field — the required-field tuples deliberately
+    do not include it, so its absence routes to the UNBOUND verdict
+    rather than a corruption verdict (RC3). `subreaper`, when given,
+    records whether main() set PR_SET_CHILD_SUBREAPER for the run —
+    likewise an extra field. `env`, when given, states the run's env
+    mode (see run_env_mode) — an extra field in the same style.
     """
     body = {
         "ts": datetime.now(timezone.utc).isoformat(),
@@ -530,6 +1836,12 @@ def append_run_start(receipts_path: Path, task: str, run_id: str) -> None:
         "kind": RUN_START_KIND,
         "run_id": run_id,
     }
+    if binding is not None:
+        body["binding"] = binding
+    if subreaper is not None:
+        body["subreaper"] = subreaper
+    if env is not None:
+        body["env"] = env
     _append_record(receipts_path, body)
 
 
@@ -538,13 +1850,15 @@ def append_completion(
     task: str,
     commands,
     run_id: str | None = None,
+    binding: dict | None = None,
 ) -> None:
     """Append the run-completion record for a fully successful run.
 
     Written only when every discovered command executed and passed; it
     carries the expected command count and a digest of the ordered
     command set, so check_receipts can reject the partial receipt set
-    of a run that stopped early.
+    of a run that stopped early. `binding`, when given, is the tree
+    binding computed at run start (see append_run_start).
     """
     body = {
         "ts": datetime.now(timezone.utc).isoformat(),
@@ -555,10 +1869,17 @@ def append_completion(
     }
     if run_id is not None:
         body["run_id"] = run_id
+    if binding is not None:
+        body["binding"] = binding
     _append_record(receipts_path, body)
 
 
-def check_receipts(receipts_path: Path, task: str) -> int:
+def check_receipts(
+    receipts_path: Path,
+    task: str,
+    root: Path,
+    historical: bool = False,
+) -> int:
     lines = _receipt_lines(receipts_path)
     records: list[dict] = []
     for number, line in enumerate(lines, start=1):
@@ -608,13 +1929,38 @@ def check_receipts(receipts_path: Path, task: str) -> int:
     if start_idx is None:
         segment = list(task_records)
         segment_run_id = None
+        start_record = None
     else:
-        segment_run_id = task_records[start_idx]["run_id"]
+        start_record = task_records[start_idx]
+        segment_run_id = start_record["run_id"]
         segment = [
             r
             for r in task_records[start_idx + 1 :]
             if r.get("run_id") == segment_run_id
         ]
+
+    # Strict field types (R7), scoped to the SELECTED segment only —
+    # an oddity in a superseded segment is audit history and must not
+    # poison this validation. This runs before any value comparison:
+    # under `==`, a bool exit_code/duration/command_count would
+    # otherwise impersonate 0/1 and fail open (panel EXP5).
+    selected = (
+        segment if start_record is None else [start_record, *segment]
+    )
+    for record in selected:
+        bad_field = _segment_field_type_error(record)
+        if bad_field is not None:
+            expected = " or ".join(
+                "null" if t is type(None) else t.__name__
+                for t in SEGMENT_FIELD_TYPES[bad_field]
+            )
+            print(
+                f"RECEIPTS: corrupt: field '{bad_field}' in the "
+                f"selected segment has type "
+                f"{type(record[bad_field]).__name__}, expected "
+                f"{expected}"
+            )
+            return 1
 
     mine = [r for r in segment if r.get("kind") != COMPLETION_KIND]
     if not mine and segment_run_id is None:
@@ -660,6 +2006,91 @@ def check_receipts(receipts_path: Path, task: str) -> int:
             "completion record does not match run receipts"
         )
         return 1
+
+    # Tree binding (R1): the segment must describe a tree. `binding`
+    # is read directly — it is deliberately absent from the required
+    # field tuples, so a pre-binding (legacy) segment reaches this
+    # branch and is refused as UNBOUND, never misread as corrupt and
+    # never silently validated (RC3).
+    binding = completion.get("binding")
+    start_binding = (
+        start_record.get("binding") if start_record is not None else None
+    )
+    if binding is not None and start_binding is not None:
+        if binding != start_binding:
+            print(
+                f"RECEIPTS: STALE task {task}: "
+                "run-start and completion bindings disagree"
+            )
+            return 1
+    if binding is None:
+        binding = start_binding
+    if (
+        not isinstance(binding, dict)
+        or binding.get("mode") not in ("git", "fs")
+        or not isinstance(binding.get("tree_digest"), str)
+        or not isinstance(binding.get("root"), str)
+    ):
+        print(
+            f"RECEIPTS: UNBOUND task {task}: "
+            "segment carries no tree binding"
+        )
+        return 2
+    resolved_root = root.resolve()
+    if binding["root"] != str(resolved_root):
+        print(
+            f"RECEIPTS: FAIL task {task}: segment is bound to root "
+            f"{binding['root']}, not {resolved_root}"
+        )
+        return 1
+    if binding["mode"] == "git":
+        recorded_head = binding.get("head")
+        digest = (
+            _git_tree_digest(resolved_root, recorded_head)
+            if isinstance(recorded_head, str)
+            else None
+        )
+        if digest is None:
+            print(
+                f"RECEIPTS: UNVERIFIABLE task {task}: recorded commit "
+                f"{recorded_head} is not readable"
+            )
+            return 2
+        if digest != binding["tree_digest"]:
+            print(
+                f"RECEIPTS: STALE task {task}: tree digest does not "
+                "match the recorded head"
+            )
+            return 1
+        if not historical:
+            current_head = _git_head(resolved_root)
+            if current_head != recorded_head:
+                print(
+                    f"RECEIPTS: HEAD-MOVED task {task}: HEAD is "
+                    f"{current_head}, segment bound to {recorded_head}"
+                )
+                return 1
+            if not tree_clean(resolved_root, receipts_path):
+                print(
+                    f"RECEIPTS: DIRTY task {task}: "
+                    "working tree is not clean"
+                )
+                return 1
+    else:
+        try:
+            live_digest = _fs_tree_digest(resolved_root, receipts_path)
+        except OSError:
+            print(
+                f"RECEIPTS: UNVERIFIABLE task {task}: "
+                "live tree cannot be read"
+            )
+            return 2
+        if live_digest != binding["tree_digest"]:
+            print(
+                f"RECEIPTS: STALE task {task}: live tree digest does "
+                "not match the segment"
+            )
+            return 1
     print(f"RECEIPTS: PASS task {task}: {len(mine)} receipts, chain valid")
     return 0
 
@@ -676,13 +2107,62 @@ def main(argv: list[str] | None = None) -> int:
     check_cmd = subparsers.add_parser("check-receipts")
     check_cmd.add_argument("--receipts", required=True)
     check_cmd.add_argument("--task", required=True)
+    check_cmd.add_argument("--root", required=True)
+    check_cmd.add_argument("--historical", action="store_true")
     args = parser.parse_args(argv)
 
     if args.subcommand == "check-receipts":
-        return check_receipts(Path(args.receipts), args.task)
+        return check_receipts(
+            Path(args.receipts),
+            args.task,
+            Path(args.root),
+            historical=args.historical,
+        )
+
+    # Every verify run sets the child-subreaper flag, receipts or
+    # not: orphaned descendants of the run's commands reparent to
+    # this process (PR_SET_CHILD_SUBREAPER) so run_verification's
+    # post-run sweep can find and reap them. (check-receipts runs no
+    # commands and needs no flag.)
+    subreaper = _set_child_subreaper()
+
+    if os.environ.get("AEP_VERIFY_FULL_ENV") == "1":
+        # The env-scrub opt-out is loud, never silent (mirrors
+        # lane-coord's AEP_LANE_FULL_ENV warning): stderr on every
+        # run, and the run-start record states the mode.
+        print(
+            "VERIFY: warning AEP_VERIFY_FULL_ENV=1: commands receive "
+            "the full environment (credential scrub disabled)",
+            file=sys.stderr,
+        )
+
+    if os.environ.get("AEP_VERIFY_FULL_ENV") != "1":
+        # Fail closed on an existing-but-invalid policy BEFORE any
+        # command executes (panel ENV-P1): a policy that cannot be
+        # honored must never degrade to an unscrubbed run wearing a
+        # 'scrubbed' record. A missing policy is valid (unscrubbed,
+        # and the record says so); the FULL_ENV opt-out skips the
+        # check because the policy is not applied at all.
+        try:
+            policy_env_scrub(_policy_path())
+        except PolicyError as exc:
+            print(f"VERIFY: FAIL policy data invalid: {exc}")
+            return 1
 
     receipts_path = Path(args.receipts) if args.receipts is not None else None
     if receipts_path is not None:
+        # The verifier creates the receipts FILE on first append but
+        # never its parent directories: a --receipts path into a
+        # nonexistent directory is a caller error, refused here —
+        # fail closed before running anything — rather than dying
+        # with a FileNotFoundError traceback at the first append.
+        if not receipts_path.parent.is_dir():
+            print(
+                f"VERIFY: FAIL receipts directory "
+                f"{receipts_path.parent} does not exist "
+                "— create it or point --receipts elsewhere"
+            )
+            return 1
         # Fail closed before running anything: never append to a receipts
         # file whose last line is malformed.
         lines = _receipt_lines(receipts_path)
@@ -697,6 +2177,19 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
 
     root = Path(args.root)
+    if receipts_path is not None and _receipts_file_tracked(
+        root, receipts_path
+    ):
+        # Evidence must not be part of the artifact (P2-1 residue):
+        # a receipts file tracked by git inside the root would be
+        # sealed into the very tree it describes. Untracked receipts
+        # inside the root — the SDD layout — are explicitly allowed.
+        print(
+            f"VERIFY: FAIL receipts file {receipts_path} is tracked "
+            f"by git inside {root} — point --receipts at an "
+            "untracked path"
+        )
+        return 2
     commands = discover_verification_commands(root)
     markdownlint_skipped = (root / ".markdownlint.yaml").is_file() and all(
         c.id != "markdownlint" for c in commands
@@ -718,14 +2211,59 @@ def main(argv: list[str] | None = None) -> int:
             "(markdownlint-cli2 not on PATH)"
         )
     run_id: str | None = None
+    binding: dict | None = None
     on_result = None
     if receipts_path is not None:
         task = args.task
         run_id = uuid.uuid4().hex
-        append_run_start(receipts_path, task, run_id)
+        # subreaper was set at the top of the verify path (every run,
+        # not only evidence runs); the run-start record states
+        # whether the flag was actually set.
+        # Tree binding (R1): an evidence run binds to the tree before
+        # its first command. Git mode refuses a dirty tree outright —
+        # a segment sealed over uncommitted state could never be
+        # re-validated against its recorded HEAD.
+        try:
+            binding = tree_binding(root, receipts_path)
+        except (OSError, ValueError) as exc:
+            print(
+                f"VERIFY: cannot bind receipts to the tree "
+                f"at {root}: {exc}"
+            )
+            return 1
+        append_run_start(
+            receipts_path,
+            task,
+            run_id,
+            binding=binding,
+            subreaper=subreaper,
+            env=run_env_mode(_policy_path()),
+        )
+        if binding["mode"] == "git" and not tree_clean(root, receipts_path):
+            print(
+                "VERIFY: FAIL tree not clean at HEAD "
+                "— commit or stash before verifying"
+            )
+            return 1
 
         def on_result(result: VerificationResult) -> None:
             append_receipt(receipts_path, task, result, run_id=run_id)
+
+    between_commands = None
+    if binding is not None and binding["mode"] == "git":
+        # Close the bind -> first-command gap as well: revalidate
+        # once immediately before the first command runs.
+        excursion = binding_excursion(root, binding, receipts_path)
+        if excursion is not None:
+            print(
+                f"VERIFY: FAIL tree binding changed during the "
+                f"run: {excursion} — aborting without a "
+                f"completion record"
+            )
+            return 1
+
+        def between_commands() -> str | None:
+            return binding_excursion(root, binding, receipts_path)
 
     rc = run_all(
         root,
@@ -734,11 +2272,35 @@ def main(argv: list[str] | None = None) -> int:
         budget_seconds=args.budget,
         mem_available_kb=available_memory_kb,
         on_result=on_result,
+        between_commands=between_commands,
     )
     if rc == 0 and receipts_path is not None:
-        # run_all returns 0 only when every command executed and passed;
-        # seal the run so check_receipts can reject a partial receipt set.
-        append_completion(receipts_path, task, commands, run_id=run_id)
+        # run_all returns 0 only when every command executed and
+        # passed; seal the run so check_receipts can reject a partial
+        # receipt set — but only if the tree is still the tree the run
+        # bound to. Dirtied during the run (git) or changed (fs): no
+        # completion record; the incomplete segment is the verdict.
+        if binding is not None and binding["mode"] == "git":
+            seal = tree_clean(root, receipts_path)
+        elif binding is not None:
+            try:
+                seal = (
+                    tree_binding(root, receipts_path)["tree_digest"]
+                    == binding["tree_digest"]
+                )
+            except (OSError, ValueError):
+                seal = False
+        else:
+            seal = True
+        if not seal:
+            print(
+                "VERIFY: FAIL tree changed during the run "
+                "— no completion record written"
+            )
+            return 1
+        append_completion(
+            receipts_path, task, commands, run_id=run_id, binding=binding
+        )
     return rc
 
 

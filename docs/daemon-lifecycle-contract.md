@@ -3,7 +3,7 @@
 > **Status:** descriptive. This document describes what the daemon lifecycle
 > actually does today — including the repo-vs-deployed script fork and the
 > behavioral gaps — not what it should do. It is a reference for plans and
-> jobs, not a policy. Last verified: 2026-10-22.
+> jobs, not a policy. Last verified: 2026-10-24.
 
 ---
 
@@ -14,13 +14,13 @@ There are **two** watchdog scripts, and they disagree.
 | | Repo script (`repo-scripts`) | Deployed script (`deployed-bin`) |
 |---|---|---|
 | Path | `scripts/watchdog-backup.sh` (in this repo) | `~/workspace/neurostrata/bin/watchdog-backup.sh` (on the VM) |
-| Daemon-down behavior | Logs "daemon idle (on-demand model) — nothing to do", exits 0. **No restart path exists** (`watchdog-backup.sh:164-167`) — but a stop path exists: `stop_daemon()` at `:212`, valid on the change path (`:235`), non-executing on the no-change path (`:204`, see §3). | Three-way decision + change-path restart (see §3 Transitions) |
-| `reaped_expected()` | Absent — zero occurrences (`watchdog-backup.sh` grep → 0) | Present (`watchdog-backup.sh:153`) |
-| `start_daemon()` | Defined but never called (`watchdog-backup.sh:51`) — script exits 0 on daemon-down first | Present (`watchdog-backup.sh:112`) |
-| EXIT trap | Absent | Present (`watchdog-backup.sh:182`) |
+| Daemon-down behavior | Three-way decision after change detection (see §3 Transitions): leave-down marker present → leave down; DB unchanged → restart; DB changed → take the backup while down, restart after the copy. The change path stops via `stop_daemon()` (`watchdog-backup.sh:199`, defined before the flow); a daemon that will not stop fails the run (exit 1). | Three-way decision + change-path restart (see §3 Transitions) |
+| `reaped_expected()` | Absent — zero occurrences. The intentional-down signal is the `WATCHDOG_LEAVE_DOWN_MARKER` file check instead (`leave_down_intentional()`, `watchdog-backup.sh:65`) | Present (`watchdog-backup.sh:163`) |
+| `start_daemon()` | Present (`watchdog-backup.sh:69`) and called — on the down/unchanged path and after the change-path copy (via `start_and_wait()`, `watchdog-backup.sh:98`) | Present (`watchdog-backup.sh:112`) |
+| EXIT trap | Present (`watchdog-backup.sh:238`; `on_exit()` at `:227`) — restarts the daemon if the run stopped it, unless the leave-down marker is present | Present (`watchdog-backup.sh:192`) |
 
-Diff magnitude: **468 changed lines**
-(`diff scripts/watchdog-backup.sh ~/workspace/neurostrata/bin/watchdog-backup.sh | wc -l` → 468, verified 2026-10-22).
+Diff magnitude: **553 changed lines**
+(`diff scripts/watchdog-backup.sh ~/workspace/neurostrata/bin/watchdog-backup.sh | wc -l` → 553, verified 2026-10-24).
 
 No sync mechanism exists between the two scripts (verified 2026-10-22: no
 `cp`/`rsync` of the script in repo scripts/, crontab, or OPERATIONS.md; the
@@ -44,7 +44,7 @@ runnable as written; where a predicate is weak, the limit says so.
   `neurostrata-mcp status` output greps for `"status: healthy"`
   (`watchdog-backup.sh:66`).
 - **Predicate (boot-gate):** `check_daemon()` passes — `neurostrata-mcp status`
-  output matches `*"daemon: listening"*"answering"*` (`boot-gate.sh:46`).
+  output matches `*"daemon: listening"*"answering"*` (`boot-gate.sh:60`).
 - **Limit:** the co-occurrence of "status: healthy" and "answering" in a single
   `neurostrata-mcp status` output is **UNVERIFIED** — the daemon was not
   started to compare outputs (547MB model load + port bind is an operational
@@ -57,15 +57,15 @@ runnable as written; where a predicate is weak, the limit says so.
 - **Predicate (deployed-bin):** not healthy **AND** `reaped_expected()` returns
   true — the last "REAPED" line in the reaper log is newer than the last
   start line in `watchdog.log`, compared as epoch timestamps
-  (`watchdog-backup.sh:153-166`, decision at `watchdog-backup.sh:192`).
+  (`watchdog-backup.sh:163-176`, decision at `watchdog-backup.sh:202`).
 - **Limits (do NOT treat as cleanly observable):**
   - *Log-dependence:* if no REAPED line exists, `reaped_expected()` returns
     false and the classifier fails closed to DOWN_UNEXPECTED (restart)
-    (`watchdog-backup.sh:158-160`). Missing logs → always restart, never
+    (`watchdog-backup.sh:167-169`). Missing logs → always restart, never
     leave down.
   - *TZ asymmetry:* see §6.
   - *Out-of-band starts:* `reaped_expected()` only reads `watchdog.log`
-    (`watchdog-backup.sh:155`); boot-gate nohup starts write nothing there.
+    (`watchdog-backup.sh:166`); boot-gate nohup starts write nothing there.
     A reaped → nohup-started → crashed daemon is misclassified REAPED_DOWN
     and left down on the no-change path.
   - *Meaning:* "the reaper shut it down" is the best available inference, not
@@ -74,20 +74,20 @@ runnable as written; where a predicate is weak, the limit says so.
 ### DOWN_UNEXPECTED
 
 - **Predicate (deployed-bin):** not healthy **AND** `reaped_expected()` returns
-  false (`watchdog-backup.sh:192`). This is the **fail-closed bucket**: it
+  false (`watchdog-backup.sh:202`). This is the **fail-closed bucket**: it
   includes genuine crashes, trap-failed restarts, and every case where the
   logs are insufficient to prove a reap.
 - **Limit:** the trap-failed state (EXIT trap logged ERROR at
-  `watchdog-backup.sh:177`) has no distinct predicate — it lands here and is
+  `watchdog-backup.sh:187`) has no distinct predicate — it lands here and is
   retried on the next run with no alerting. See §6.
 
 ### State summary
 
 | State | Predicate source | Meaning |
 |---|---|---|
-| HEALTHY | `deployed-bin` :66 / `boot-gate.sh` :46 | Daemon serving |
-| DOWN_REAPED | `deployed-bin` :153-166, :192 | Probably reaped; limits apply |
-| DOWN_UNEXPECTED | `deployed-bin` :192 (negation) | Fail-closed: crash, trap-fail, or unknown |
+| HEALTHY | `deployed-bin` :66 / `boot-gate.sh` :60 | Daemon serving |
+| DOWN_REAPED | `deployed-bin` :163-176, :202 | Probably reaped; limits apply |
+| DOWN_UNEXPECTED | `deployed-bin` :202 (negation) | Fail-closed: crash, trap-fail, or unknown |
 
 ---
 
@@ -101,43 +101,57 @@ Every transition names which script performs it.
   (clean checkpoint — never SIGKILL) after all 6 preconditions hold
   (`idle-reaper.sh:18`; preconditions at `idle-reaper.sh:34,43,49,56,61,81`).
 - **HEALTHY → down (change path):** watchdog SIGTERM-stops the daemon before
-  backup (`watchdog-backup.sh:236`), then restarts it after
-  (`watchdog-backup.sh:266`).
+  backup (`watchdog-backup.sh:243-255`), then restarts it after
+  (`watchdog-backup.sh:276-277`). A daemon still up after the 30 s stop
+  loop logs ERROR and the run **exits 0**, skipping the backup
+  (`watchdog-backup.sh:251-254`) — the deployed script does not fail on a
+  stop failure; the repo script does (see repo-scripts transitions).
 - **DOWN_UNEXPECTED → HEALTHY (no-change path):** DB unchanged and daemon
   down-unexpected → `start_daemon` + `wait_healthy`
-  (`watchdog-backup.sh:211-214`).
+  (`watchdog-backup.sh:220-228`).
 - **DOWN (any reason) → HEALTHY (change path):** DB changed and daemon not
   running → log "daemon was not running — will start it after the backup",
   `RESTART_NEEDED=true` **unconditionally — no `reaped_expected()` check**
-  (`watchdog-backup.sh:247-249`), then `start_daemon` after the backup copy
-  verifies (`watchdog-backup.sh:266`). **Any formulation implying the watchdog
+  (`watchdog-backup.sh:257-259`), then `start_daemon` after the backup copy
+  verifies (`watchdog-backup.sh:276-277`). **Any formulation implying the watchdog
   "only restarts on unexpected-down" is false.**
-- **EXIT-trap guarantee:** `on_exit` runs on script exit (`watchdog-backup.sh:182`);
+- **EXIT-trap guarantee:** `on_exit` runs on script exit (`watchdog-backup.sh:192`);
   if `RESTART_NEEDED` is still true it attempts `start_daemon` + `wait_healthy`
-  (`watchdog-backup.sh:169-180`).
+  (`watchdog-backup.sh:180-190`).
 - **EXIT-trap failure mode:** on failure it logs "exit trap: ERROR — daemon
-  still down; next watchdog run will retry" (`watchdog-backup.sh:177`) and
+  still down; next watchdog run will retry" (`watchdog-backup.sh:187`) and
   sets no distinguishable marker — the next run classifies via the normal
   `reaped_expected()` path.
 
 ### repo-scripts transitions
 
-- **HEALTHY → down (no-change path): defined but would not execute.** On
-  DB-unchanged, the script calls `stop_daemon` at `watchdog-backup.sh:204`
-  — before the function is defined at `:212`. With `set -euo pipefail`
-  (`:28`) this would be "command not found" → exit 127 (verified
-  empirically). The daemon would NOT be stopped; the
-  `log "done (daemon stopped, idle)"` at `:205` would never run. (The repo
-  script is not executed by any cron today, so this is analyzed behavior,
-  not an observed event. Do not remediate under this plan — see Global
-  Constraints.)
-- **HEALTHY → down (change path):** `stop_daemon || exit 0` at
-  `watchdog-backup.sh:235` — the definition at `:212` has executed by now,
-  so the call would succeed: the daemon would be SIGTERM-stopped (30s
-  timeout loop, `:212-233`) before the backup copy.
-- **DOWN (any reason) → no restart:** on daemon-down the script logs and
-  exits 0 (`watchdog-backup.sh:164-167`). No restart path exists in the
-  repo script.
+- **Daemon-active gate first:** a healthy daemon whose last client use is
+  recent is left entirely alone (exit 0) before any other daemon-state
+  decision (`watchdog-backup.sh:240-261`).
+- **Change detection before any stop/restart decision:** DB hashes are
+  computed first (`watchdog-backup.sh:262-277`); an unchanged DB never
+  stops the daemon — the run runs Drive catch-up and exits 0
+  (`watchdog-backup.sh:299-309`).
+- **HEALTHY → down (change path):** `stop_daemon` at `watchdog-backup.sh:321`
+  — the function is defined at `:199`, before the flow, so the call
+  executes: the daemon is SIGTERM-stopped (all matching PIDs) before the
+  backup copy. A daemon that will not stop **fails the run** (exit 1,
+  `watchdog-backup.sh:321-324`) — where the deployed script skips with
+  exit 0. After the copy verifies (`watchdog-backup.sh:331-341`) the
+  daemon is restarted with a health poll (`watchdog-backup.sh:345`); the
+  EXIT trap (`watchdog-backup.sh:238`) performs the restart if the run
+  dies between the stop and the restart, unless the leave-down marker is
+  present.
+- **DOWN → left down (marker):** daemon down and the file named by
+  `WATCHDOG_LEAVE_DOWN_MARKER` exists → the run logs and exits 0, whatever
+  the DB state (`watchdog-backup.sh:280-284`).
+- **DOWN_UNEXPECTED → HEALTHY (no-change path):** down, no marker, DB
+  unchanged → `start_and_wait` restarts the daemon, then Drive catch-up,
+  exit 0 (`watchdog-backup.sh:285-294`).
+- **DOWN (any non-marker reason) → backup while down (change path):** down,
+  no marker, DB changed → no pre-restart; the change path's stop is a
+  no-op on a down daemon, the copy proceeds, and the daemon is restarted
+  after it (`watchdog-backup.sh:295`, then the change path above).
 
 ### Out-of-band transitions (neither script)
 
@@ -152,14 +166,14 @@ Every transition names which script performs it.
 | Actor | May start | May stop | Circumstances | Must not |
 |---|---|---|---|---|
 | Idle-reaper cron (15m) | No | Yes — `neurostrata-mcp shutdown` only | 45+ idle min and all 6 preconditions (`idle-reaper.sh:34,43,49,56,61,81`) | SIGKILL the daemon; shut down while lock held, connections active, or CLI active |
-| Watchdog cron (2h) | Yes — `start_daemon` | Yes — SIGTERM on change path | No-change+unexpected-down; change+down(any reason) (`watchdog-backup.sh:211-214,246-249,266`) | Restart a reaped daemon on the no-change path (`watchdog-backup.sh:206-209`) |
-| Boot-gate / job preamble | Yes — direct nohup | No | Job needs the daemon and it is not answering (`boot-gate.sh:46`) | Start while the watchdog lock is held (see race note) |
+| Watchdog cron (2h) | Yes — `start_daemon` | Yes — SIGTERM on change path | No-change+unexpected-down; change+down(any reason) (`watchdog-backup.sh:220-228,257-259,276-277`) | Restart a reaped daemon on the no-change path (`watchdog-backup.sh:216-219`) |
+| Boot-gate / job preamble | Yes — direct nohup | No | Job needs the daemon and it is not answering (`boot-gate.sh:60`) | Start while the watchdog lock is held (see race note) |
 | Human operator | Yes — direct nohup | Yes — `neurostrata-mcp shutdown` preferred | Manual intervention, incident response | Edit the deployed script without updating the repo copy (widens the fork, §6) |
 
 **Lockless-nohup race note.** The boot-gate's nohup path takes no lock. A
 start landing between the watchdog's change-path SIGTERM-stop
-(`watchdog-backup.sh:236`) and its backup copy can corrupt the backup. The
-copy-verify logic (`watchdog-backup.sh:255-261`) catches torn copies (partial
+(`watchdog-backup.sh:243-255`) and its backup copy can corrupt the backup. The
+copy-verify logic (`watchdog-backup.sh:265-271`) catches torn copies (partial
 write during `cp` → hash mismatch → deleted, exit 1), but it verifies copy ==
 source-at-hash-time, not source consistency: a write landing after the copy,
 or WAL-only writes not in the copied `$DB` file, would produce a
@@ -188,7 +202,7 @@ Instructions for dependent jobs, citing this contract's own states.
 - **DOWN_UNEXPECTED:** the watchdog will restart it on the next 2h run (or
   sooner on the change path). If your job needs the daemon now, start it via
   direct nohup. If DOWN_UNEXPECTED recurs across runs, investigate — check
-  the EXIT-trap ERROR line (`watchdog-backup.sh:177`) and the WAL warnings.
+  the EXIT-trap ERROR line (`watchdog-backup.sh:187`) and the WAL warnings.
 
 ---
 
@@ -207,7 +221,7 @@ would close it. None of these are blessed; all are open.
   tried and found unreliable — the stdio server hangs without starting the
   daemon" (verified 2026-10-16).
 - **Consequence today:** the watchdog's no-change path leaves reaped daemons
-  down (`watchdog-backup.sh:206-209`); with MCP-spawn unreliable, reaped
+  down (`watchdog-backup.sh:216-219`); with MCP-spawn unreliable, reaped
   daemons revive only on coincidental DB changes, manual nohup, or the
   boot-gate.
 - **Closes when:** MCP auto-spawn is fixed, or an explicit demand-revive path
@@ -227,7 +241,7 @@ would close it. None of these are blessed; all are open.
 ### Gap 3 — Trap-failed misclassification
 
 - **What:** the EXIT trap's failure mode logs an ERROR
-  (`watchdog-backup.sh:177`) but sets no marker distinguishable from a
+  (`watchdog-backup.sh:187`) but sets no marker distinguishable from a
   normal unexpected-down.
 - **Consequence today:** a daemon the trap failed to restart is retried on
   the next run with no alerting; repeated trap failures are invisible except
@@ -237,8 +251,11 @@ would close it. None of these are blessed; all are open.
 
 ### Gap 4 — The fork itself (no sync mechanism)
 
-- **What:** the repo and deployed watchdog scripts differ by 468 lines with
-  no sync mechanism (§1).
+- **What:** the repo and deployed watchdog scripts differ by 553 lines with
+  no sync mechanism (§1). The lifecycle semantics have converged (both
+  implement the decision order of §3); what still differs is mechanism and
+  detail — paths, the intentional-down signal (marker file vs
+  `reaped_expected()`), stop-failure exit (1 vs 0), Drive mechanics.
 - **Consequence today:** plans written against `repo-scripts` describe
   behavior the runtime (`deployed-bin`) does not exhibit, and vice versa;
   every claim about "the watchdog" must name which script.

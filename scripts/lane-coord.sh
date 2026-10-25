@@ -35,11 +35,38 @@
 #   * Launch-point controls: every claim loads and validates the
 #     launch policy data (scripts/policy.data, sibling of this script;
 #     AEP_POLICY_DATA overrides it for tests) before any state changes.
+#     The claim also binds the loaded policy to its source: with no
+#     override, the file must hash to the committed blob at
+#     HEAD:scripts/policy.data of this script's own repo, or the
+#     claim refuses; the outcome (verified / operator-override /
+#     not-applicable), the resolved path, and the digest are recorded
+#     in the lane manifest, so an override is durable evidence.
 #     The declared working set (the worktree path plus every --path
 #     extra) is checked against the sensitive-path patterns after the
 #     claim transaction, before worktree setup; the worker child — and
 #     only the child — runs with credential-named environment variables
 #     scrubbed, unless AEP_LANE_FULL_ENV=1 disables the scrub loudly.
+#   * Coordinator state lives OUTSIDE the worktrees tree:
+#     $AEP_LANES_DIR, default ~/.local/state/aep/lanes, created on
+#     demand (mode 700 when this tool creates it). The pre-move
+#     default, ~/workspace/worktrees/.lanes, sat inside the tree every
+#     worker is tasked to operate in, so a worker could rewrite a
+#     manifest — a forged worker_pid field made release --clean
+#     delete another lane's live worktree (panel P1-4). While
+#     manifests remain at the legacy location and AEP_LANES_DIR is
+#     unset, claim/release/reap refuse with migration instructions
+#     and status lists the legacy lanes read-only; a lane is settled
+#     only after migration, under the normal gates. Migration itself
+#     runs through `migrate`, which QUARANTINES every imported lane
+#     (panel P1-3): a manifest from the worker-writable legacy tree
+#     is untrusted provenance, so release --clean and reap refuse
+#     for it until `trust --name <name>` records the operator's
+#     per-lane confirmation (in the lane's history log, outside the
+#     manifest set) or a fresh claim that creates the worktree
+#     itself re-stamps the manifest natively (an adopting claim
+#     does not — Codex P1). Placement removes the state from the
+#     workers' tasked tree; it is NOT a write boundary against a
+#     determined same-uid process.
 set -euo pipefail
 
 # Platform-standard tool locations (see TOOLS.md): non-interactive runs
@@ -48,8 +75,88 @@ set -euo pipefail
 # stub dir — keeps precedence. The command -v checks below stay strict.
 export PATH="$PATH:$HOME/go/bin:$HOME/sdk/go/bin:$HOME/workspace/bin:$HOME/workspace/neurostrata/bin:$HOME/workspace/toolchains/bin"
 
-LANES_DIR="${AEP_LANES_DIR:-$HOME/workspace/worktrees/.lanes}"
+LANES_DIR="${AEP_LANES_DIR:-$HOME/.local/state/aep/lanes}"
+LEGACY_LANES_DIR="$HOME/workspace/worktrees/.lanes"
 WT_ROOT="${AEP_WORKTREES_ROOT:-$HOME/workspace/worktrees}"
+
+# ensure_lanes_dir — create the state directory on demand. A
+# directory this run creates is mode 700; an existing directory's
+# permissions are the operator's and are left alone.
+ensure_lanes_dir() {
+  if [ -d "$LANES_DIR" ]; then
+    return 0
+  fi
+  mkdir -p "$LANES_DIR"
+  chmod 700 "$LANES_DIR"
+}
+
+# legacy_state_present — true when pre-move coordinator state (any
+# *.json manifest) sits at the legacy location AND the operator has
+# not pointed AEP_LANES_DIR anywhere: with an explicit override the
+# operator has taken responsibility for the location (setting it to
+# the legacy path is remedy 2 of the refusal message). An empty
+# AEP_LANES_DIR counts as unset, matching the :- default above.
+legacy_state_present() {
+  [ -z "${AEP_LANES_DIR:-}" ] || return 1
+  local f
+  for f in "$LEGACY_LANES_DIR"/*.json; do
+    [ -e "$f" ] && return 0
+  done
+  return 1
+}
+
+# refuse_if_legacy_state — mutating commands call this before any
+# state changes. While legacy manifests remain, claim/release/reap
+# refuse with the migration instructions; there is no dual-dir
+# operation — no code path reads or settles legacy state for a
+# mutating command, so a lane is settled only after migration,
+# under the normal gates, from the new location.
+refuse_if_legacy_state() {
+  legacy_state_present || return 0
+  echo "LANE: refuse: legacy coordinator state at $LEGACY_LANES_DIR"
+  echo "LANE: coordinator state moved to $LANES_DIR; claim/release/reap refuse while legacy manifests remain (status lists them read-only)"
+  echo "LANE: remedy: inspect the manifests in $LEGACY_LANES_DIR, then run lane-coord.sh migrate to move them to $LANES_DIR (migrated lanes are quarantined: release --clean and reap refuse until lane-coord.sh trust --name <name> records your confirmation for each inspected lane)"
+  echo "LANE: remedy: or set AEP_LANES_DIR=$LEGACY_LANES_DIR to keep operating on the legacy location deliberately"
+  exit 1
+}
+
+# Migration quarantine (panel P1-3): a manifest that arrives via the
+# legacy path comes from a worker-writable tree, so its provenance
+# is untrusted — placement in the trusted state dir must not launder
+# it into ownership proof for destructive operations. `migrate`
+# stamps each imported lane with a marker under
+# $LANES_DIR/.quarantine/ (a directory of marker files, outside the
+# manifest set itself). While the marker exists, release --clean and
+# reap refuse for the lane; read paths and plain release work
+# normally. The marker is cleared only by `trust` (the operator's
+# per-lane confirmation, recorded in the lane's history log —
+# outside the manifest) or by a fresh claim that CREATES the
+# worktree itself, re-stamping the manifest natively. A claim that
+# ADOPTS an existing worktree named by the migrated manifest does
+# not clear it (Codex P1): the claim's gates passed on that very
+# manifest's say-so, so adoption is not provenance.
+QUARANTINE_DIR() { printf '%s/.quarantine' "$LANES_DIR"; }
+
+lane_quarantined() { # $1 = name
+  [ -f "$(QUARANTINE_DIR)/$1" ]
+}
+
+quarantine_lane() { # $1 = name
+  mkdir -p "$(QUARANTINE_DIR)"
+  printf '%s migrated from %s\n' "$(now_iso)" "$LEGACY_LANES_DIR" \
+    >"$(QUARANTINE_DIR)/$1"
+}
+
+clear_quarantine() { # $1 = name
+  rm -f "$(QUARANTINE_DIR)/$1"
+}
+
+refuse_if_quarantined() { # $1 = name, $2 = operation label
+  lane_quarantined "$1" || return 0
+  echo "LANE: refuse $2 $1: manifest arrived via legacy migration and is quarantined (untrusted provenance); it cannot authorize a destructive operation"
+  echo "LANE: remedy: inspect the manifest, then run lane-coord.sh trust --name $1 to record operator confirmation, or re-claim the lane"
+  exit 1
+}
 
 now_iso() {
   date -u +%Y-%m-%dT%H:%M:%SZ
@@ -60,6 +167,8 @@ usage() {
   echo "usage: lane-coord.sh release --name <name> [--clean [--force-dirty]]" >&2
   echo "usage: lane-coord.sh reap --name <name>" >&2
   echo "usage: lane-coord.sh status [--name <name>]" >&2
+  echo "usage: lane-coord.sh migrate" >&2
+  echo "usage: lane-coord.sh trust --name <name>" >&2
   echo "usage: lane-coord.sh --self-test" >&2
 }
 
@@ -97,16 +206,21 @@ print(data["epoch"], data["state"])
 ' "$1"
 }
 
-# write_manifest <name> <repo> <path> <branch> <base> <worker> <pid> <epoch> <state> <claimed_at> <worker-pid> <worker-start>
+# write_manifest <name> <repo> <path> <branch> <base> <worker> <pid> <epoch> <state> <claimed_at> <worker-pid> <worker-start> <policy-integrity> <policy-path> <policy-sha256>
 # Fields are serialized by python3's JSON encoder — never printf
 # interpolation — so paths containing quotes, backslashes, or control
 # characters round-trip exactly through the JSON readers. worker-pid /
 # worker-start are 0 until the launcher records the spawned worker's
-# identity (update_manifest_worker).
+# identity (update_manifest_worker). The policy triple (integrity
+# outcome, resolved path, digest — verify_policy_integrity) is written
+# only when non-empty, so manifests predating the integrity binding
+# keep their original field set; both update_manifest_* functions
+# read the triple back and pass it through (N4).
 write_manifest() {
   local name="$1" repo="$2" path="$3" branch="$4" base="$5" worker="$6"
   local pid="$7" epoch="$8" state="$9" claimed_at="${10}"
   local wpid="${11}" wstart="${12}"
+  local pintegrity="${13}" ppath="${14}" psha="${15}"
   local tmp="$LANES_DIR/$name.json.tmp.$$"
   python3 -c '
 import json, sys
@@ -127,10 +241,15 @@ data = {
     "worker_pid": int(sys.argv[13]),
     "worker_start": int(sys.argv[14]),
 }
+for key, idx in (("policy_integrity", 15), ("policy_path", 16),
+                 ("policy_sha256", 17)):
+    if sys.argv[idx]:
+        data[key] = sys.argv[idx]
 with open(sys.argv[1], "w") as fh:
     fh.write(json.dumps(data) + "\n")
 ' "$tmp" "$name" "$repo" "$path" "$branch" "$base" "$worker" "$pid" "$epoch" \
-    "$state" "$claimed_at" "$(now_iso)" "$wpid" "$wstart"
+    "$state" "$claimed_at" "$(now_iso)" "$wpid" "$wstart" \
+    "$pintegrity" "$ppath" "$psha"
   mv "$tmp" "$LANES_DIR/$name.json"
 }
 
@@ -139,6 +258,7 @@ with open(sys.argv[1], "w") as fh:
 update_manifest_state() {
   local name="$1" new_state="$2" file="$LANES_DIR/$1.json"
   local repo path branch base worker pid epoch claimed_at wpid wstart
+  local pintegrity ppath psha
   repo=$(manifest_get "$file" repo) || return 1
   path=$(manifest_get "$file" path) || return 1
   branch=$(manifest_get "$file" branch) || return 1
@@ -149,8 +269,12 @@ update_manifest_state() {
   claimed_at=$(manifest_get "$file" claimed_at) || return 1
   wpid=$(manifest_get "$file" worker_pid 2>/dev/null || echo 0)
   wstart=$(manifest_get "$file" worker_start 2>/dev/null || echo 0)
+  pintegrity=$(manifest_get "$file" policy_integrity 2>/dev/null || echo "")
+  ppath=$(manifest_get "$file" policy_path 2>/dev/null || echo "")
+  psha=$(manifest_get "$file" policy_sha256 2>/dev/null || echo "")
   write_manifest "$name" "$repo" "$path" "$branch" "$base" "$worker" \
-    "$pid" "$epoch" "$new_state" "$claimed_at" "$wpid" "$wstart"
+    "$pid" "$epoch" "$new_state" "$claimed_at" "$wpid" "$wstart" \
+    "$pintegrity" "$ppath" "$psha"
 }
 
 # update_manifest_worker <name> <worker-pid> <worker-start> — record the
@@ -161,6 +285,7 @@ update_manifest_state() {
 update_manifest_worker() {
   local name="$1" wpid="$2" wstart="$3" file="$LANES_DIR/$1.json"
   local repo path branch base worker pid epoch state claimed_at
+  local pintegrity ppath psha
   repo=$(manifest_get "$file" repo) || return 1
   path=$(manifest_get "$file" path) || return 1
   branch=$(manifest_get "$file" branch) || return 1
@@ -170,8 +295,12 @@ update_manifest_worker() {
   epoch=$(manifest_get "$file" epoch) || return 1
   state=$(manifest_get "$file" state) || return 1
   claimed_at=$(manifest_get "$file" claimed_at) || return 1
+  pintegrity=$(manifest_get "$file" policy_integrity 2>/dev/null || echo "")
+  ppath=$(manifest_get "$file" policy_path 2>/dev/null || echo "")
+  psha=$(manifest_get "$file" policy_sha256 2>/dev/null || echo "")
   write_manifest "$name" "$repo" "$path" "$branch" "$base" "$worker" \
-    "$pid" "$epoch" "$state" "$claimed_at" "$wpid" "$wstart"
+    "$pid" "$epoch" "$state" "$claimed_at" "$wpid" "$wstart" \
+    "$pintegrity" "$ppath" "$psha"
 }
 
 # proc_start_time <pid> — print the process's start time
@@ -247,8 +376,8 @@ history_append() { # $1 = name, $2 = event, $3 = epoch, $4 = worker
   printf '%s %s epoch=%s worker=%s\n' "$(now_iso)" "$2" "$3" "$4" >>"$LANES_DIR/$1.log"
 }
 
-fence_is_held() { # $1 = name — live probe, never inferred from a pid
-  local fence="$LANES_DIR/$1.fence"
+fence_is_held() { # $1 = name, $2 = lanes dir (default $LANES_DIR) — live probe, never inferred from a pid
+  local fence="${2:-$LANES_DIR}/$1.fence"
   [ -e "$fence" ] || return 1
   if flock -n "$fence" true 2>/dev/null; then
     return 1
@@ -295,9 +424,18 @@ resolve_capacity() { # $1 = flag value (may be empty)
 # validation error and refuses the claim before anything is created.
 POLICY_SENSITIVE_PATTERNS=()
 POLICY_ENV_SCRUB=()
+# Claim-path policy bookkeeping: set by load_policy (the resolved
+# file) and verify_policy_integrity (the outcome + digest), then
+# threaded into every manifest the claim writes — write_manifest's
+# field list carries them and both update_manifest_* reconstructions
+# preserve them, so the record survives the claim's own rewrites.
+POLICY_FILE_RESOLVED=""
+POLICY_INTEGRITY=""
+POLICY_SHA256=""
 
 load_policy() {
-  local policy_file="${AEP_POLICY_DATA:-$(dirname "${BASH_SOURCE[0]}")/policy.data}"
+  local policy_file="${AEP_POLICY_DATA:-$(canonical_path "$(dirname "${BASH_SOURCE[0]}")")/policy.data}"
+  POLICY_FILE_RESOLVED=$(canonical_path "$policy_file")
   local parsed line section=""
   if ! parsed=$(python3 -c '
 import sys
@@ -358,6 +496,50 @@ for name in ("sensitive-paths", "env-scrub"):
       ;;
     esac
   done <<<"$parsed"
+}
+
+# verify_policy_integrity — claim path only, called by cmd_claim
+# right after load_policy (release/reap act on already-claimed state
+# and never re-check). Binds the loaded policy to its source:
+#   AEP_POLICY_DATA set (non-empty — "set" means non-empty
+#     throughout, the ${VAR:-} idiom): no blob check; the outcome is
+#     recorded as "operator-override".
+#   Unset, and HEAD of the script's own repo carries
+#     scripts/policy.data: the loaded file's sha256 must equal the
+#     committed blob's, else the claim refuses. The blob is STREAMED
+#     into sha256sum (git show | sha256sum) — never captured in a
+#     shell variable, which would strip its trailing newline and
+#     mismatch every claim. Outcome "verified".
+#   Unset, and the probe fails (not a repo, or the repo has no such
+#     path — the installed-copy case): no check. Outcome
+#     "not-applicable".
+# Every probe runs git -C <canonical script dir>, so a linked
+# worktree's OWN HEAD is what resolves — never the parent repo's
+# (RC7). The outcome, resolved path, and digest are recorded in the
+# lane manifest by write_manifest: the override is durable evidence,
+# not a console line.
+verify_policy_integrity() {
+  POLICY_SHA256=$(sha256sum "$POLICY_FILE_RESOLVED" | cut -d' ' -f1)
+  if [ -n "${AEP_POLICY_DATA:-}" ]; then
+    POLICY_INTEGRITY="operator-override"
+    return 0
+  fi
+  local script_dir blob_sha
+  script_dir=$(canonical_path "$(dirname "${BASH_SOURCE[0]}")")
+  if git -C "$script_dir" cat-file -e HEAD:scripts/policy.data 2>/dev/null; then
+    if ! blob_sha=$(git -C "$script_dir" show HEAD:scripts/policy.data 2>/dev/null | sha256sum | cut -d' ' -f1); then
+      echo "LANE: refuse policy data integrity unverifiable: cannot read committed scripts/policy.data via git"
+      exit 1
+    fi
+    if [ "$blob_sha" != "$POLICY_SHA256" ]; then
+      echo "LANE: refuse policy data integrity mismatch: $POLICY_FILE_RESOLVED differs from the committed scripts/policy.data (HEAD)"
+      echo "LANE: remedy: commit the policy change, or set AEP_POLICY_DATA to proceed — the claim is then recorded as an operator override"
+      exit 1
+    fi
+    POLICY_INTEGRITY="verified"
+    return 0
+  fi
+  POLICY_INTEGRITY="not-applicable"
 }
 
 canonical_path() { # $1 = path — realpath, symlinks resolved
@@ -594,10 +776,18 @@ cmd_claim() {
   local capacity
   capacity=$(resolve_capacity "$capacity_flag")
 
+  # Legacy-state gate: while pre-move manifests remain at the legacy
+  # location, refuse before anything is read or created (see
+  # refuse_if_legacy_state).
+  refuse_if_legacy_state
+
   # Launch policy: load and validate first thing, before any state
   # changes — a malformed policy file refuses the claim with nothing
-  # created (no lanes dir, no manifest, no worktree).
+  # created (no lanes dir, no manifest, no worktree). The integrity
+  # check binds the loaded file to the committed blob and records
+  # the outcome in the manifest (verify_policy_integrity).
   load_policy
+  verify_policy_integrity
 
   local name="$project-$lane"
   local wt_path="$WT_ROOT/$name"
@@ -605,7 +795,8 @@ cmd_claim() {
   local manifest_file="$LANES_DIR/$name.json"
   CLAIM_WORKER="$worker"
 
-  mkdir -p "$LANES_DIR" "$WT_ROOT"
+  ensure_lanes_dir
+  mkdir -p "$WT_ROOT"
 
   local prev_exists=0 prev_epoch=0 prev_state="" prev_path=""
   local prev_worker="" prev_worker_pid=0 prev_worker_start=0
@@ -720,6 +911,18 @@ cmd_claim() {
     exit 1
   fi
 
+  # Adoption vs creation, recorded for the quarantine decision at
+  # the manifest write below: when the worktree already exists and
+  # the previous manifest names this exact path, the claim ADOPTS a
+  # pre-existing worktree on the previous manifest's say-so;
+  # otherwise the claim creates the worktree itself and ownership
+  # is established by this claim.
+  local adopted_existing=0
+  if [ -e "$wt_path" ] && [ "$prev_exists" -eq 1 ] &&
+    [ "$prev_path" = "$wt_path" ]; then
+    adopted_existing=1
+  fi
+
   # Ownership gate (before the manifest write): an existing registered
   # worktree at the lane path may be adopted only when the previous
   # coordinator manifest proves this lane owned that exact path — the
@@ -741,8 +944,25 @@ cmd_claim() {
 
   # 6. Write the manifest (temp + mv, inside the lock) and history.
   write_manifest "$name" "$repo" "$wt_path" "$branch" "$base_sha" "$worker" \
-    "$$" "$epoch" "claimed" "$(now_iso)" 0 0
+    "$$" "$epoch" "claimed" "$(now_iso)" 0 0 \
+    "$POLICY_INTEGRITY" "$POLICY_FILE_RESOLVED" "$POLICY_SHA256"
   history_append "$name" "claimed" "$epoch" "$worker"
+  # A fresh claim re-stamps the manifest natively: any migration
+  # quarantine on this name is discharged by the claim itself —
+  # EXCEPT when the claim ADOPTED an existing worktree named by the
+  # previous manifest (Codex P1): adoption is not provenance. The
+  # gates above passed on the migrated manifest's own prev_path and
+  # worker identity, so nothing independent established ownership
+  # of that worktree; discharge here would launder the planted
+  # manifest into release --clean's ownership proof with no
+  # operator trust. Quarantine survives an adopting claim and
+  # clears only via `trust`, or via a claim that creates the
+  # worktree itself.
+  if [ "$adopted_existing" -eq 1 ] && lane_quarantined "$name"; then
+    history_append "$name" "quarantine-kept" "$epoch" "$worker"
+  else
+    clear_quarantine "$name"
+  fi
 
   # Release the capacity lock — the transaction is over.
   flock -u 9 || true
@@ -866,11 +1086,18 @@ cmd_reap() {
     exit 2
   fi
 
+  # Legacy-state gate: refuse before any state is read or created.
+  refuse_if_legacy_state
+  # Quarantine gate: reap settles a lane destructively (the claim is
+  # closed as interrupted), so a migrated manifest's word is not
+  # enough — same rule as release --clean.
+  refuse_if_quarantined "$name" "reap"
+
   # Settle bookkeeping only, under the capacity lock (same
   # serialization as release): probe, check, and write can never
   # interleave with a claim transaction. Reap signals nothing, ever —
   # launcher_pid is operator information only and is never consulted.
-  mkdir -p "$LANES_DIR"
+  ensure_lanes_dir
   exec 9>"$LANES_DIR/.capacity.lock"
   if ! flock -w 60 9; then
     echo "LANE: lock timeout after 60s waiting for the capacity lock"
@@ -939,11 +1166,14 @@ cmd_release() {
     exit 2
   fi
 
+  # Legacy-state gate: refuse before any state is read or created.
+  refuse_if_legacy_state
+
   # Serialize against claim transactions: the fence probe, the state
   # check, and the manifest update below all run under the capacity
   # lock, so a claim can never interleave between probe and write and
   # have its fresh "claimed" manifest clobbered to "released".
-  mkdir -p "$LANES_DIR"
+  ensure_lanes_dir
   exec 9>"$LANES_DIR/.capacity.lock"
   if ! flock -w 60 9; then
     echo "LANE: lock timeout after 60s waiting for the capacity lock"
@@ -961,6 +1191,12 @@ cmd_release() {
       echo "LANE: refuse clean $name: no manifest"
       exit 1
     fi
+    # Quarantine gate (panel P1-3): the four signals below are sound
+    # against STALE manifests but cannot distinguish a PLANTED one —
+    # a migrated manifest is not ownership proof until the operator
+    # confirms it (trust) or a claim that creates the worktree
+    # itself re-stamps it; an adopting claim does not (Codex P1).
+    refuse_if_quarantined "$name" "clean"
     if fence_is_held "$name"; then
       echo "LANE: refuse clean $name: fence held (launcher alive)"
       exit 1
@@ -1076,6 +1312,103 @@ cmd_release() {
   echo "LANE: released $name"
 }
 
+cmd_migrate() {
+  [ $# -eq 0 ] || {
+    usage
+    exit 2
+  }
+  if [ -n "${AEP_LANES_DIR:-}" ]; then
+    echo "LANE: refuse migrate: AEP_LANES_DIR is set ($AEP_LANES_DIR); migration into the default location requires it unset"
+    exit 1
+  fi
+  if ! legacy_state_present; then
+    echo "LANE: migrate: no legacy coordinator state at $LEGACY_LANES_DIR"
+    exit 1
+  fi
+  # Quiescence (Codex P2): a live legacy launcher holds its lane's
+  # fence inside the legacy directory for its whole lifetime.
+  # Moving the manifest without the fence disconnects the two: the
+  # destination's fresh fence probes free, so the next claim
+  # auto-settles the migrated lane as interrupted while its worker
+  # still runs — and that worker escapes capacity accounting.
+  # Refuse while any legacy lane fence is held, before anything
+  # moves; migration requires a quiescent legacy pool.
+  local f name
+  for f in "$LEGACY_LANES_DIR"/*.json; do
+    [ -e "$f" ] || continue
+    name="$(basename "$f" .json)"
+    if fence_is_held "$name" "$LEGACY_LANES_DIR"; then
+      echo "LANE: refuse migrate: legacy lane $name has a live launcher (fence held: $LEGACY_LANES_DIR/$name.fence); migration requires a quiescent legacy pool — stop legacy launchers first"
+      exit 1
+    fi
+  done
+  # Refuse before moving anything when a destination already exists:
+  # a half-migrated pool is worse than a refused one.
+  for f in "$LEGACY_LANES_DIR"/*.json; do
+    [ -e "$f" ] || continue
+    name="$(basename "$f" .json)"
+    if [ -e "$LANES_DIR/$name.json" ]; then
+      echo "LANE: refuse migrate: $LANES_DIR/$name.json already exists; resolve the collision first"
+      exit 1
+    fi
+  done
+  ensure_lanes_dir
+  for f in "$LEGACY_LANES_DIR"/*.json; do
+    [ -e "$f" ] || continue
+    name="$(basename "$f" .json)"
+    mv "$f" "$LANES_DIR/$name.json"
+    if [ -f "$LEGACY_LANES_DIR/$name.log" ]; then
+      mv "$LEGACY_LANES_DIR/$name.log" "$LANES_DIR/$name.log"
+    fi
+    quarantine_lane "$name"
+    echo "LANE: migrated $name from $LEGACY_LANES_DIR (quarantined: release --clean and reap refuse until lane-coord.sh trust --name $name)"
+  done
+}
+
+cmd_trust() {
+  local name=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+    --name)
+      [ $# -ge 2 ] || {
+        usage
+        exit 2
+      }
+      name="$2"
+      shift 2
+      ;;
+    *)
+      usage
+      exit 2
+      ;;
+    esac
+  done
+  if [ -z "$name" ]; then
+    usage
+    exit 2
+  fi
+  if ! [[ "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    usage
+    exit 2
+  fi
+  refuse_if_legacy_state
+  local manifest_file="$LANES_DIR/$name.json"
+  if [ ! -f "$manifest_file" ]; then
+    echo "LANE: refuse trust $name: no manifest"
+    exit 1
+  fi
+  if ! lane_quarantined "$name"; then
+    echo "LANE: refuse trust $name: lane is not quarantined"
+    exit 1
+  fi
+  clear_quarantine "$name"
+  local epoch worker
+  epoch=$(manifest_get "$manifest_file" epoch 2>/dev/null || echo 0)
+  worker=$(manifest_get "$manifest_file" worker 2>/dev/null || echo unknown)
+  history_append "$name" "operator-trusted" "$epoch" "$worker"
+  echo "LANE: trusted $name (quarantine cleared by operator confirmation)"
+}
+
 cmd_status() {
   local name="" capacity_flag=""
   while [ $# -gt 0 ]; do
@@ -1117,22 +1450,48 @@ cmd_status() {
     worker=$(manifest_get "$f" worker 2>/dev/null || true)
     path=$(manifest_get "$f" path 2>/dev/null || true)
     if fence_is_held "$n"; then fence_state="held"; else fence_state="free"; fi
-    echo "$n state=$state epoch=$epoch worker=$worker fence=$fence_state path=$path"
+    local quarantine_suffix=""
+    if lane_quarantined "$n"; then quarantine_suffix=" quarantined"; fi
+    echo "$n state=$state epoch=$epoch worker=$worker fence=$fence_state path=$path$quarantine_suffix"
+  }
+
+  print_legacy_status_line() { # $1 = manifest file in $LEGACY_LANES_DIR
+    local f="$1" n state epoch worker path fence_state
+    n=$(manifest_get "$f" name 2>/dev/null || true)
+    state=$(manifest_get "$f" state 2>/dev/null || true)
+    epoch=$(manifest_get "$f" epoch 2>/dev/null || true)
+    worker=$(manifest_get "$f" worker 2>/dev/null || true)
+    path=$(manifest_get "$f" path 2>/dev/null || true)
+    if fence_is_held "$n" "$LEGACY_LANES_DIR"; then fence_state="held"; else fence_state="free"; fi
+    echo "$n state=$state epoch=$epoch worker=$worker fence=$fence_state path=$path legacy"
   }
 
   if [ -n "$name" ]; then
-    if [ ! -f "$LANES_DIR/$name.json" ]; then
-      echo "LANE: no manifest for $name"
-      exit 1
+    if [ -f "$LANES_DIR/$name.json" ]; then
+      print_status_line "$LANES_DIR/$name.json"
+      return 0
     fi
-    print_status_line "$LANES_DIR/$name.json"
-    return 0
+    # Not in the active state dir: a legacy manifest is still
+    # listed, read-only and marked, so an operator can see what is
+    # waiting on migration.
+    if legacy_state_present && [ -f "$LEGACY_LANES_DIR/$name.json" ]; then
+      print_legacy_status_line "$LEGACY_LANES_DIR/$name.json"
+      return 0
+    fi
+    echo "LANE: no manifest for $name"
+    exit 1
   fi
   local f
   for f in "$LANES_DIR"/*.json; do
     [ -e "$f" ] || continue
     print_status_line "$f"
   done
+  if legacy_state_present; then
+    for f in "$LEGACY_LANES_DIR"/*.json; do
+      [ -e "$f" ] || continue
+      print_legacy_status_line "$f"
+    done
+  fi
   echo "LANE: pool: $(count_claimed) claimed of $capacity"
 }
 
@@ -1801,6 +2160,461 @@ json.dump(data, open(sys.argv[1], "w"))
   [ "$(mget omicron-twentytwo epoch)" = "2" ] || case_fails=1
   report_case "takeover-refused-while-worker-lives"
 
+  # --- Cases 23–25: legacy-state migration rule ---
+  # Coordinator state used to live at $HOME/workspace/worktrees/.lanes
+  # — inside the worktrees tree every worker is tasked to operate in.
+  # Plant a lane there the way the old binary leaves one: a real claim
+  # run with AEP_LANES_DIR pointed at the legacy location, launcher
+  # killed, worker stopped, manifest left claimed. Then drive the new
+  # binary with AEP_LANES_DIR unset and HOME at the fixture, so the
+  # legacy location AND the new default (~/.local/state/aep/lanes)
+  # both resolve inside the fixture.
+  local legacy_home="$selftest_root/legacy-home"
+  local legacy_dir="$legacy_home/workspace/worktrees/.lanes"
+  local legacy_wts="$legacy_home/workspace/worktrees"
+  local new_dir="$legacy_home/.local/state/aep/lanes"
+  mkdir -p "$legacy_home"
+
+  jget() { # $1 = manifest file, $2 = field
+    python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' \
+      "$1" "$2" 2>/dev/null || true
+  }
+
+  local out_leg="$selftest_root/out-leg.txt"
+  AEP_LANES_DIR="$legacy_dir" AEP_WORKTREES_ROOT="$legacy_wts" HOME="$legacy_home" \
+    bash "$self_path" claim --repo "$repo" --project sigma --lane twentyfive \
+    --branch br-twentyfive --base HEAD --worker wleg \
+    --exec sh -c "echo \$\$ > $selftest_root/worker-leg.pid; while [ ! -f $selftest_root/worker-leg.stop ]; do sleep 0.2; done" >"$out_leg" 2>&1 &
+  local launcher_leg=$!
+  BG_PIDS+=("$launcher_leg")
+  local wi_leg=0
+  while [ $wi_leg -lt 50 ] && [ ! -f "$legacy_dir/sigma-twentyfive.json" ]; do
+    sleep 0.1
+    wi_leg=$((wi_leg + 1))
+  done
+  [ -f "$legacy_dir/sigma-twentyfive.json" ] || case_fails=1
+  wait_for_file "$selftest_root/worker-leg.pid" || case_fails=1
+  local worker_leg_pid=""
+  worker_leg_pid=$(cat "$selftest_root/worker-leg.pid" 2>/dev/null || true)
+  [ -n "$worker_leg_pid" ] || case_fails=1
+  # Wait until the launcher records the worker, so the planted
+  # manifest is a complete old-style claim; then kill ONLY the
+  # launcher and stop the worker by its own stop file.
+  local wi_rec=0
+  while [ $wi_rec -lt 50 ] && [ "$(jget "$legacy_dir/sigma-twentyfive.json" worker_pid)" != "$worker_leg_pid" ]; do
+    sleep 0.1
+    wi_rec=$((wi_rec + 1))
+  done
+  [ "$(jget "$legacy_dir/sigma-twentyfive.json" worker_pid)" = "$worker_leg_pid" ] || case_fails=1
+  kill "$launcher_leg" 2>/dev/null || true
+  wait "$launcher_leg" 2>/dev/null || true
+  : >"$selftest_root/worker-leg.stop"
+  if [ -n "$worker_leg_pid" ]; then
+    wait_for_pid_dead "$worker_leg_pid" || case_fails=1
+  fi
+  sleep 0.2
+  [ "$(jget "$legacy_dir/sigma-twentyfive.json" state)" = "claimed" ] || case_fails=1
+
+  # --- Case 23: claim-refuses-legacy-state ---
+  local out23="$selftest_root/out23.txt" rc23=0
+  env -u AEP_LANES_DIR HOME="$legacy_home" AEP_WORKTREES_ROOT="$legacy_wts" \
+    bash "$self_path" claim --repo "$repo" --project sigma --lane twentythree \
+    --branch br-twentythree --base HEAD --worker w23 \
+    --exec true >"$out23" 2>&1 || rc23=$?
+  [ "$rc23" -eq 1 ] || case_fails=1
+  grep -qF "legacy coordinator state at $legacy_dir" "$out23" || case_fails=1
+  grep -qF "$new_dir" "$out23" || case_fails=1
+  grep -qF "AEP_LANES_DIR=$legacy_dir" "$out23" || case_fails=1
+  # The refusal created nothing anywhere: no new-default directory,
+  # no manifest for the refused lane, no worktree.
+  [ ! -e "$new_dir" ] || case_fails=1
+  [ ! -e "$legacy_dir/sigma-twentythree.json" ] || case_fails=1
+  [ ! -e "$legacy_wts/sigma-twentythree" ] || case_fails=1
+  report_case "claim-refuses-legacy-state"
+
+  # --- Case 24: release-reap-refuse-legacy-state-status-readonly ---
+  local out24r="$selftest_root/out24r.txt" out24p="$selftest_root/out24p.txt"
+  local out24s="$selftest_root/out24s.txt" out24f="$selftest_root/out24f.txt"
+  local rc24r=0 rc24p=0 rc24s=0 rc24f=0
+  env -u AEP_LANES_DIR HOME="$legacy_home" AEP_WORKTREES_ROOT="$legacy_wts" \
+    bash "$self_path" release --name sigma-twentyfive >"$out24r" 2>&1 || rc24r=$?
+  [ "$rc24r" -eq 1 ] || case_fails=1
+  grep -qF "legacy coordinator state at $legacy_dir" "$out24r" || case_fails=1
+  env -u AEP_LANES_DIR HOME="$legacy_home" AEP_WORKTREES_ROOT="$legacy_wts" \
+    bash "$self_path" reap --name sigma-twentyfive >"$out24p" 2>&1 || rc24p=$?
+  [ "$rc24p" -eq 1 ] || case_fails=1
+  grep -qF "legacy coordinator state at $legacy_dir" "$out24p" || case_fails=1
+  # Neither refusal touched the legacy manifest.
+  [ "$(jget "$legacy_dir/sigma-twentyfive.json" state)" = "claimed" ] || case_fails=1
+  # Status still lists the lane, read-only, marked legacy — both the
+  # --name form and the full pool listing.
+  env -u AEP_LANES_DIR HOME="$legacy_home" AEP_WORKTREES_ROOT="$legacy_wts" \
+    bash "$self_path" status --name sigma-twentyfive >"$out24s" 2>&1 || rc24s=$?
+  [ "$rc24s" -eq 0 ] || case_fails=1
+  grep -q "sigma-twentyfive state=claimed" "$out24s" || case_fails=1
+  grep -q " legacy$" "$out24s" || case_fails=1
+  env -u AEP_LANES_DIR HOME="$legacy_home" AEP_WORKTREES_ROOT="$legacy_wts" \
+    bash "$self_path" status >"$out24f" 2>&1 || rc24f=$?
+  [ "$rc24f" -eq 0 ] || case_fails=1
+  grep -q "sigma-twentyfive state=claimed .* legacy" "$out24f" || case_fails=1
+  report_case "release-reap-refuse-legacy-state"
+
+  # --- Case 25: migrated-lane-settles-normally ---
+  # Perform the documented remedy: the manifests were inspected
+  # above; now run migrate, which moves the legacy directory's
+  # contents to the new default and quarantines each migrated lane
+  # (untrusted provenance — see case 30). Non-destructive settling
+  # (plain release) works for a quarantined lane; the lane is no
+  # longer reported as legacy, but as quarantined.
+  local out25m="$selftest_root/out25m.txt" rc25m=0
+  env -u AEP_LANES_DIR HOME="$legacy_home" AEP_WORKTREES_ROOT="$legacy_wts" \
+    bash "$self_path" migrate >"$out25m" 2>&1 || rc25m=$?
+  [ "$rc25m" -eq 0 ] || case_fails=1
+  grep -q "LANE: migrated sigma-twentyfive" "$out25m" || case_fails=1
+  [ -f "$new_dir/sigma-twentyfive.json" ] || case_fails=1
+  [ ! -e "$legacy_dir/sigma-twentyfive.json" ] || case_fails=1
+  [ -f "$new_dir/.quarantine/sigma-twentyfive" ] || case_fails=1
+  local out25="$selftest_root/out25.txt" rc25=0
+  env -u AEP_LANES_DIR HOME="$legacy_home" AEP_WORKTREES_ROOT="$legacy_wts" \
+    bash "$self_path" release --name sigma-twentyfive >"$out25" 2>&1 || rc25=$?
+  [ "$rc25" -eq 0 ] || case_fails=1
+  grep -q "LANE: released sigma-twentyfive" "$out25" || case_fails=1
+  [ "$(jget "$new_dir/sigma-twentyfive.json" state)" = "released" ] || case_fails=1
+  # The migrated lane is no longer reported as legacy.
+  local out25s="$selftest_root/out25s.txt" rc25s=0
+  env -u AEP_LANES_DIR HOME="$legacy_home" AEP_WORKTREES_ROOT="$legacy_wts" \
+    bash "$self_path" status --name sigma-twentyfive >"$out25s" 2>&1 || rc25s=$?
+  [ "$rc25s" -eq 0 ] || case_fails=1
+  grep -q "sigma-twentyfive state=released" "$out25s" || case_fails=1
+  if grep -q " legacy$" "$out25s"; then case_fails=1; fi
+  grep -q " quarantined$" "$out25s" || case_fails=1
+  # A fresh HOME with no legacy state: the script creates the new
+  # default on demand, mode 700, and the claim runs normally.
+  local fresh_home="$selftest_root/fresh-home"
+  mkdir -p "$fresh_home"
+  local out25f="$selftest_root/out25f.txt" rc25f=0
+  env -u AEP_LANES_DIR HOME="$fresh_home" AEP_WORKTREES_ROOT="$fresh_home/workspace/worktrees" \
+    bash "$self_path" claim --repo "$repo" --project tau --lane twentysix \
+    --branch br-twentysix --base HEAD --worker w26 \
+    --exec true >"$out25f" 2>&1 || rc25f=$?
+  [ "$rc25f" -eq 0 ] || case_fails=1
+  [ -f "$fresh_home/.local/state/aep/lanes/tau-twentysix.json" ] || case_fails=1
+  [ "$(stat -c %a "$fresh_home/.local/state/aep/lanes" 2>/dev/null || true)" = "700" ] || case_fails=1
+  report_case "migrated-lane-settles-normally"
+
+  # --- Cases 26–29: policy integrity at claim (fixture-repo harness) ---
+  # The integrity check anchors to the git repo hosting the SCRIPT
+  # (every probe runs git -C <script dir>), so these cases need a
+  # real fixture repo: copies of both scripts and the policy under
+  # scripts/, a commit whose policy blob DIFFERS from the restored
+  # working-tree policy, and fixture HOME / lanes / worktrees roots.
+  local fix_scripts_src
+  fix_scripts_src="$(dirname "$self_path")"
+  local fixrepo="$selftest_root/fixrepo"
+  mkdir -p "$fixrepo/scripts"
+  cp "$self_path" "$fixrepo/scripts/lane-coord.sh"
+  cp "$fix_scripts_src/boot-gate.sh" "$fixrepo/scripts/boot-gate.sh"
+  cp "$fix_scripts_src/policy.data" "$fixrepo/scripts/policy.data"
+  printf '# fixture committed variant (bytes differ, grammar valid)\n' >>"$fixrepo/scripts/policy.data"
+  git init -q "$fixrepo"
+  git -C "$fixrepo" add scripts/lane-coord.sh scripts/boot-gate.sh scripts/policy.data
+  git -C "$fixrepo" -c user.name=LaneTest -c user.email=lane@test.invalid commit -q -m "fixture: divergent policy blob"
+  cp "$fix_scripts_src/policy.data" "$fixrepo/scripts/policy.data"
+  local fix_home="$selftest_root/fix-home" fix_lanes="$selftest_root/fix-lanes" fix_wts="$selftest_root/fix-worktrees"
+  mkdir -p "$fix_home"
+  local fix_lane="$fixrepo/scripts/lane-coord.sh"
+  local fix_policy="$fixrepo/scripts/policy.data"
+  local fix_policy_canon
+  fix_policy_canon=$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$fix_policy")
+
+  # --- Case 26: claim-refuses-dirty-policy ---
+  local out26="$selftest_root/out26.txt" rc26=0
+  env -u AEP_POLICY_DATA HOME="$fix_home" AEP_LANES_DIR="$fix_lanes" AEP_WORKTREES_ROOT="$fix_wts" \
+    bash "$fix_lane" claim --repo "$repo" --project pol --lane a \
+    --branch br-pol-a --base HEAD --worker w26 \
+    --exec true >"$out26" 2>&1 || rc26=$?
+  [ "$rc26" -eq 1 ] || case_fails=1
+  grep -qF "policy data integrity mismatch" "$out26" || case_fails=1
+  grep -qF "operator override" "$out26" || case_fails=1
+  # The refusal created nothing: no lanes dir, no manifest, no worktree.
+  [ ! -e "$fix_lanes" ] || case_fails=1
+  [ ! -e "$fix_wts" ] || case_fails=1
+  report_case "claim-refuses-dirty-policy"
+
+  # --- Case 27: claim-records-verified-policy ---
+  git -C "$fixrepo" add scripts/policy.data
+  git -C "$fixrepo" -c user.name=LaneTest -c user.email=lane@test.invalid commit -q -m "fixture: commit the working-tree policy"
+  local out27="$selftest_root/out27.txt" rc27=0
+  env -u AEP_POLICY_DATA HOME="$fix_home" AEP_LANES_DIR="$fix_lanes" AEP_WORKTREES_ROOT="$fix_wts" \
+    bash "$fix_lane" claim --repo "$repo" --project pol --lane b \
+    --branch br-pol-b --base HEAD --worker w27 \
+    --exec true >"$out27" 2>&1 || rc27=$?
+  [ "$rc27" -eq 0 ] || case_fails=1
+  # The claim flow rewrote the manifest twice after the initial write
+  # (worker update, then state update): the policy fields must have
+  # survived both reconstructions (N4).
+  [ "$(jget "$fix_lanes/pol-b.json" policy_integrity)" = "verified" ] || case_fails=1
+  [ "$(jget "$fix_lanes/pol-b.json" policy_path)" = "$fix_policy_canon" ] || case_fails=1
+  [ "$(jget "$fix_lanes/pol-b.json" policy_sha256)" = "$(sha256sum "$fix_policy" | cut -d' ' -f1)" ] || case_fails=1
+  report_case "claim-records-verified-policy"
+
+  # --- Case 28: claim-records-operator-override ---
+  local fix_modified="$selftest_root/policy-modified.data"
+  cp "$fix_policy" "$fix_modified"
+  printf '%s\n' 'EXTRA_SCRUB_FRAGMENT' >>"$fix_modified"
+  local out28="$selftest_root/out28.txt" rc28=0
+  HOME="$fix_home" AEP_LANES_DIR="$fix_lanes" AEP_WORKTREES_ROOT="$fix_wts" AEP_POLICY_DATA="$fix_modified" \
+    bash "$fix_lane" claim --repo "$repo" --project pol --lane c \
+    --branch br-pol-c --base HEAD --worker w28 \
+    --exec true >"$out28" 2>&1 || rc28=$?
+  [ "$rc28" -eq 0 ] || case_fails=1
+  [ "$(jget "$fix_lanes/pol-c.json" policy_integrity)" = "operator-override" ] || case_fails=1
+  [ "$(jget "$fix_lanes/pol-c.json" policy_sha256)" = "$(sha256sum "$fix_modified" | cut -d' ' -f1)" ] || case_fails=1
+  [ "$(jget "$fix_lanes/pol-c.json" policy_path)" = "$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$fix_modified")" ] || case_fails=1
+  report_case "claim-records-operator-override"
+
+  # --- Case 29: gate-and-claim-resolve-same-policy ---
+  # Run the fixture boot-gate with stub binaries so the run reaches
+  # the policy check deterministically; its ok line must name the
+  # same file Case 27's manifest recorded, with a matching digest.
+  local fix_stubs="$selftest_root/fix-stubs"
+  mkdir -p "$fix_stubs"
+  cat >"$fix_stubs/neurostrata-mcp" <<'STUBEOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+status) echo "daemon: listening on 127.0.0.1:34343, answering" ;;
+list) printf 'guard_rule a\nguard_rule b\nguard_rule c\nDestructive GitHub actions\n' ;;
+*) exit 1 ;;
+esac
+STUBEOF
+  printf '#!/usr/bin/env bash\nexit 0\n' >"$fix_stubs/gh"
+  printf '#!/usr/bin/env bash\nexit 0\n' >"$fix_stubs/bd"
+  printf '#!/usr/bin/env bash\nexit 0\n' >"$fix_stubs/ocr"
+  chmod +x "$fix_stubs/neurostrata-mcp" "$fix_stubs/gh" "$fix_stubs/bd" "$fix_stubs/ocr"
+  local out29="$selftest_root/out29.txt" rc29=0
+  env -u AEP_POLICY_DATA HOME="$fix_home" PATH="$fix_stubs:$PATH" \
+    bash "$fixrepo/scripts/boot-gate.sh" >"$out29" 2>&1 || rc29=$?
+  [ "$rc29" -eq 0 ] || case_fails=1
+  grep -q "^BOOT-GATE-RESULT: POLICY-OK$" "$out29" || case_fails=1
+  local bg_line bg_rest bg_path bg_short
+  bg_line=$(grep '^BOOT-GATE: policy ok: ' "$out29" || true)
+  [ -n "$bg_line" ] || case_fails=1
+  bg_rest="${bg_line#BOOT-GATE: policy ok: }"
+  bg_path="${bg_rest%% (sha256 *}"
+  bg_short="${bg_rest##* (sha256 }"
+  bg_short="${bg_short%)}"
+  [ "$(canonical_path "$bg_path")" = "$(jget "$fix_lanes/pol-b.json" policy_path)" ] || case_fails=1
+  case "$(jget "$fix_lanes/pol-b.json" policy_sha256)" in
+  "$bg_short"*) ;;
+  *) case_fails=1 ;;
+  esac
+  report_case "gate-and-claim-resolve-same-policy"
+
+  # --- Case 30: migrated-manifest-quarantined-from-clean ---
+  # The panel P1-3 attack: a manifest planted at the legacy
+  # location (worker-writable) naming a real foreign worktree with
+  # all four ownership signals satisfied must not become
+  # release --clean's ownership proof by being migrated into the
+  # trusted state dir. sigma-twentyfive (cases 23–25) is exactly
+  # such a lane: genuinely claimed at the legacy location, migrated
+  # in case 25, now released with its worktree intact and its
+  # worker dead — every --clean signal green. While quarantined,
+  # --clean refuses and removes nothing; after the operator's
+  # per-lane trust (recorded in the lane log, outside the manifest),
+  # --clean proceeds through the normal signals.
+  local out30="$selftest_root/out30.txt" rc30=0
+  env -u AEP_LANES_DIR HOME="$legacy_home" AEP_WORKTREES_ROOT="$legacy_wts" \
+    bash "$self_path" release --name sigma-twentyfive --clean >"$out30" 2>&1 || rc30=$?
+  [ "$rc30" -eq 1 ] || case_fails=1
+  grep -q "quarantined" "$out30" || case_fails=1
+  [ -d "$legacy_wts/sigma-twentyfive" ] || case_fails=1
+  [ "$(jget "$new_dir/sigma-twentyfive.json" state)" = "released" ] || case_fails=1
+  local out30t="$selftest_root/out30t.txt" rc30t=0
+  env -u AEP_LANES_DIR HOME="$legacy_home" AEP_WORKTREES_ROOT="$legacy_wts" \
+    bash "$self_path" trust --name sigma-twentyfive >"$out30t" 2>&1 || rc30t=$?
+  [ "$rc30t" -eq 0 ] || case_fails=1
+  [ ! -e "$new_dir/.quarantine/sigma-twentyfive" ] || case_fails=1
+  grep -q " operator-trusted " "$new_dir/sigma-twentyfive.log" || case_fails=1
+  local out30c="$selftest_root/out30c.txt" rc30c=0
+  env -u AEP_LANES_DIR HOME="$legacy_home" AEP_WORKTREES_ROOT="$legacy_wts" \
+    bash "$self_path" release --name sigma-twentyfive --clean >"$out30c" 2>&1 || rc30c=$?
+  [ "$rc30c" -eq 0 ] || case_fails=1
+  grep -q "LANE: cleaned sigma-twentyfive" "$out30c" || case_fails=1
+  [ ! -e "$legacy_wts/sigma-twentyfive" ] || case_fails=1
+  report_case "migrated-manifest-quarantined-from-clean"
+
+  # --- Case 31: quarantine-survives-adopting-claim ---
+  # Codex P1 on the A5 fix: discharge-on-any-claim laundered the
+  # quarantine. A migrated manifest naming an existing FOREIGN
+  # worktree passes an adopting claim's ownership and
+  # worker-lifetime gates on the untrusted manifest's own prev_path
+  # and worker identity — no operator trust anywhere — and
+  # release --clean then deleted the foreign worktree. The plant
+  # below is exactly that shape: a hand-written legacy manifest
+  # naming a hand-created worktree, every --clean signal green.
+  # Adoption must NOT discharge quarantine; trust may (part A),
+  # and a claim that creates the worktree itself still may (part B).
+  local forge_home="$selftest_root/forge-home"
+  local forge_legacy="$forge_home/workspace/worktrees/.lanes"
+  local forge_wts="$forge_home/workspace/worktrees"
+  local forge_new="$forge_home/.local/state/aep/lanes"
+  mkdir -p "$forge_legacy" "$forge_wts"
+  git -C "$repo" worktree add -b br-thirtyone "$forge_wts/phi-thirtyone" HEAD >/dev/null 2>&1 || case_fails=1
+  local dead31 head_sha
+  true &
+  dead31=$!
+  wait "$dead31" 2>/dev/null || true
+  head_sha=$(git -C "$repo" rev-parse HEAD)
+  python3 - "$forge_legacy/phi-thirtyone.json" "$repo" "$forge_wts/phi-thirtyone" "$head_sha" "$dead31" <<'PYEOF' || case_fails=1
+import json, sys
+data = {
+    "version": 1, "name": "phi-thirtyone", "repo": sys.argv[2],
+    "path": sys.argv[3], "branch": "br-thirtyone", "base": sys.argv[4],
+    "worker": "wforge", "launcher_pid": int(sys.argv[5]), "epoch": 1,
+    "state": "claimed", "claimed_at": "2026-01-01T00:00:00Z",
+    "updated_at": "2026-01-01T00:00:00Z",
+    "worker_pid": int(sys.argv[5]), "worker_start": 1,
+}
+with open(sys.argv[1], "w") as fh:
+    fh.write(json.dumps(data) + "\n")
+PYEOF
+  local out31m="$selftest_root/out31m.txt" rc31m=0
+  env -u AEP_LANES_DIR HOME="$forge_home" AEP_WORKTREES_ROOT="$forge_wts" \
+    bash "$self_path" migrate >"$out31m" 2>&1 || rc31m=$?
+  [ "$rc31m" -eq 0 ] || case_fails=1
+  [ -f "$forge_new/.quarantine/phi-thirtyone" ] || case_fails=1
+  # Sanity: quarantined --clean refuses before any claim.
+  local out31a="$selftest_root/out31a.txt" rc31a=0
+  env -u AEP_LANES_DIR HOME="$forge_home" AEP_WORKTREES_ROOT="$forge_wts" \
+    bash "$self_path" release --name phi-thirtyone --clean >"$out31a" 2>&1 || rc31a=$?
+  [ "$rc31a" -eq 1 ] || case_fails=1
+  grep -q "quarantined" "$out31a" || case_fails=1
+  # The attack: an adopting claim (the worktree exists and the
+  # migrated manifest names it), worker `true`, no trust anywhere.
+  local out31c="$selftest_root/out31c.txt" rc31c=0
+  env -u AEP_LANES_DIR HOME="$forge_home" AEP_WORKTREES_ROOT="$forge_wts" \
+    bash "$self_path" claim --repo "$repo" --project phi --lane thirtyone \
+    --branch br-thirtyone --base HEAD --worker w31 \
+    --exec true >"$out31c" 2>&1 || rc31c=$?
+  [ "$rc31c" -eq 0 ] || case_fails=1
+  # The fix: quarantine SURVIVES the adopting claim, --clean still
+  # refuses, and the foreign worktree is untouched.
+  [ -f "$forge_new/.quarantine/phi-thirtyone" ] || case_fails=1
+  local out31r="$selftest_root/out31r.txt" rc31r=0
+  env -u AEP_LANES_DIR HOME="$forge_home" AEP_WORKTREES_ROOT="$forge_wts" \
+    bash "$self_path" release --name phi-thirtyone --clean >"$out31r" 2>&1 || rc31r=$?
+  [ "$rc31r" -eq 1 ] || case_fails=1
+  grep -q "quarantined" "$out31r" || case_fails=1
+  [ -d "$forge_wts/phi-thirtyone" ] || case_fails=1
+  # After the operator's trust, the normal signals proceed.
+  local out31t="$selftest_root/out31t.txt" rc31t=0
+  env -u AEP_LANES_DIR HOME="$forge_home" AEP_WORKTREES_ROOT="$forge_wts" \
+    bash "$self_path" trust --name phi-thirtyone >"$out31t" 2>&1 || rc31t=$?
+  [ "$rc31t" -eq 0 ] || case_fails=1
+  local out31d="$selftest_root/out31d.txt" rc31d=0
+  env -u AEP_LANES_DIR HOME="$forge_home" AEP_WORKTREES_ROOT="$forge_wts" \
+    bash "$self_path" release --name phi-thirtyone --clean >"$out31d" 2>&1 || rc31d=$?
+  [ "$rc31d" -eq 0 ] || case_fails=1
+  grep -q "LANE: cleaned phi-thirtyone" "$out31d" || case_fails=1
+  [ ! -e "$forge_wts/phi-thirtyone" ] || case_fails=1
+  # Part B: a claim that creates the worktree ITSELF still
+  # discharges quarantine — the claim's own natively-stamped
+  # manifest is the ownership evidence. Plant a second forged
+  # manifest naming a path that does not exist, migrate, claim.
+  python3 - "$forge_legacy/phi-thirtytwo.json" "$repo" "$forge_wts/phi-thirtytwo" "$head_sha" "$dead31" <<'PYEOF' || case_fails=1
+import json, sys
+data = {
+    "version": 1, "name": "phi-thirtytwo", "repo": sys.argv[2],
+    "path": sys.argv[3], "branch": "br-thirtytwo", "base": sys.argv[4],
+    "worker": "wforge", "launcher_pid": int(sys.argv[5]), "epoch": 1,
+    "state": "claimed", "claimed_at": "2026-01-01T00:00:00Z",
+    "updated_at": "2026-01-01T00:00:00Z",
+    "worker_pid": int(sys.argv[5]), "worker_start": 1,
+}
+with open(sys.argv[1], "w") as fh:
+    fh.write(json.dumps(data) + "\n")
+PYEOF
+  local out31m2="$selftest_root/out31m2.txt" rc31m2=0
+  env -u AEP_LANES_DIR HOME="$forge_home" AEP_WORKTREES_ROOT="$forge_wts" \
+    bash "$self_path" migrate >"$out31m2" 2>&1 || rc31m2=$?
+  [ "$rc31m2" -eq 0 ] || case_fails=1
+  [ -f "$forge_new/.quarantine/phi-thirtytwo" ] || case_fails=1
+  local out31c2="$selftest_root/out31c2.txt" rc31c2=0
+  env -u AEP_LANES_DIR HOME="$forge_home" AEP_WORKTREES_ROOT="$forge_wts" \
+    bash "$self_path" claim --repo "$repo" --project phi --lane thirtytwo \
+    --branch br-thirtytwo --base HEAD --worker w31 \
+    --exec true >"$out31c2" 2>&1 || rc31c2=$?
+  [ "$rc31c2" -eq 0 ] || case_fails=1
+  [ -d "$forge_wts/phi-thirtytwo" ] || case_fails=1
+  [ ! -e "$forge_new/.quarantine/phi-thirtytwo" ] || case_fails=1
+  local out31d2="$selftest_root/out31d2.txt" rc31d2=0
+  env -u AEP_LANES_DIR HOME="$forge_home" AEP_WORKTREES_ROOT="$forge_wts" \
+    bash "$self_path" release --name phi-thirtytwo --clean >"$out31d2" 2>&1 || rc31d2=$?
+  [ "$rc31d2" -eq 0 ] || case_fails=1
+  [ ! -e "$forge_wts/phi-thirtytwo" ] || case_fails=1
+  report_case "quarantine-survives-adopting-claim"
+
+  # --- Case 32: migrate-refuses-while-legacy-fence-held ---
+  # Codex P2: migrating under a live legacy launcher disconnects
+  # the manifest from the fence the launcher still holds in the
+  # legacy directory. The destination's fresh fence probes free,
+  # so the next claim auto-settles the migrated lane as
+  # interrupted and its still-running worker escapes capacity
+  # accounting (a second claim succeeded at --capacity 1 in the
+  # repro). Migration requires a quiescent legacy pool: refuse
+  # while any legacy lane fence is held, naming the lane, and
+  # move nothing.
+  local live_home="$selftest_root/live-home"
+  local live_legacy="$live_home/workspace/worktrees/.lanes"
+  local live_wts="$live_home/workspace/worktrees"
+  local live_new="$live_home/.local/state/aep/lanes"
+  mkdir -p "$live_home"
+  local out32leg="$selftest_root/out32leg.txt"
+  AEP_LANES_DIR="$live_legacy" AEP_WORKTREES_ROOT="$live_wts" HOME="$live_home" \
+    bash "$self_path" claim --repo "$repo" --project rho --lane thirtythree \
+    --branch br-thirtythree --base HEAD --worker w33 \
+    --exec sh -c "echo \$\$ > $selftest_root/worker-33.pid; while [ ! -f $selftest_root/worker-33.stop ]; do sleep 0.2; done" >"$out32leg" 2>&1 &
+  local launcher33=$!
+  BG_PIDS+=("$launcher33")
+  local wi33=0
+  while [ $wi33 -lt 50 ] && [ ! -f "$live_legacy/rho-thirtythree.json" ]; do
+    sleep 0.1
+    wi33=$((wi33 + 1))
+  done
+  [ -f "$live_legacy/rho-thirtythree.json" ] || case_fails=1
+  wait_for_file "$selftest_root/worker-33.pid" || case_fails=1
+  local worker33_pid=""
+  worker33_pid=$(cat "$selftest_root/worker-33.pid" 2>/dev/null || true)
+  [ -n "$worker33_pid" ] || case_fails=1
+  local wi33r=0
+  while [ $wi33r -lt 50 ] && [ "$(jget "$live_legacy/rho-thirtythree.json" worker_pid)" != "$worker33_pid" ]; do
+    sleep 0.1
+    wi33r=$((wi33r + 1))
+  done
+  [ "$(jget "$live_legacy/rho-thirtythree.json" worker_pid)" = "$worker33_pid" ] || case_fails=1
+  # The launcher is alive, holding the legacy fence: refuse.
+  local out32m="$selftest_root/out32m.txt" rc32m=0
+  env -u AEP_LANES_DIR HOME="$live_home" AEP_WORKTREES_ROOT="$live_wts" \
+    bash "$self_path" migrate >"$out32m" 2>&1 || rc32m=$?
+  [ "$rc32m" -eq 1 ] || case_fails=1
+  grep -q "rho-thirtythree" "$out32m" || case_fails=1
+  [ -f "$live_legacy/rho-thirtythree.json" ] || case_fails=1
+  [ ! -e "$live_new/rho-thirtythree.json" ] || case_fails=1
+  # Quiesce the pool: stop the worker; the launcher settles the
+  # claim and exits, releasing the fence. Migration now proceeds.
+  : >"$selftest_root/worker-33.stop"
+  wait "$launcher33" 2>/dev/null || true
+  if [ -n "$worker33_pid" ]; then
+    wait_for_pid_dead "$worker33_pid" || case_fails=1
+  fi
+  local out32m2="$selftest_root/out32m2.txt" rc32m2=0
+  env -u AEP_LANES_DIR HOME="$live_home" AEP_WORKTREES_ROOT="$live_wts" \
+    bash "$self_path" migrate >"$out32m2" 2>&1 || rc32m2=$?
+  [ "$rc32m2" -eq 0 ] || case_fails=1
+  [ -f "$live_new/rho-thirtythree.json" ] || case_fails=1
+  [ ! -e "$live_legacy/rho-thirtythree.json" ] || case_fails=1
+  report_case "migrate-refuses-while-legacy-fence-held"
+
   return "$fails"
 }
 
@@ -1829,6 +2643,14 @@ reap)
 status)
   shift
   cmd_status "$@"
+  ;;
+migrate)
+  shift
+  cmd_migrate "$@"
+  ;;
+trust)
+  shift
+  cmd_trust "$@"
   ;;
 *)
   usage
