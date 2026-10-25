@@ -666,8 +666,59 @@ class ScriptsUnittestExecutionTests(unittest.TestCase):
             self.assertFalse(run_receipts[0]["timed_out"])
             check_stdout = io.StringIO()
             with contextlib.redirect_stdout(check_stdout):
-                check_rc = mechanical_verify.check_receipts(receipts, "t")
+                check_rc = mechanical_verify.check_receipts(receipts, "t", root)
             self.assertEqual(check_rc, 0, check_stdout.getvalue())
+
+    def test_scripts_unittest_pass_seals_with_collected_count(self):
+        # Composite-verifier step (PR #42 rebase onto #45): the
+        # sealed PASS must rest on the count gate being satisfied by
+        # the scripts-unittest leg itself — the receipt records the
+        # collected count the gate judged, not None.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            write(
+                root,
+                "scripts/tests/test_sample.py",
+                "import unittest\n\n\n"
+                "class Sample(unittest.TestCase):\n"
+                "    def test_sample(self):\n"
+                "        pass\n",
+            )
+            receipts = base / "receipts.jsonl"
+            stdout = io.StringIO()
+            with mock.patch.object(
+                mechanical_verify, "available_memory_kb", return_value=10**9
+            ):
+                with contextlib.redirect_stdout(stdout):
+                    rc = mechanical_verify.main(
+                        [
+                            "verify",
+                            "--root",
+                            str(root),
+                            "--task",
+                            "t",
+                            "--receipts",
+                            str(receipts),
+                        ]
+                    )
+            self.assertEqual(rc, 0, stdout.getvalue())
+            self.assertIn("VERIFY: scripts-unittest PASS", stdout.getvalue())
+            records = [
+                json.loads(line) for line in receipts.read_text().splitlines()
+            ]
+            run_receipts = [
+                r for r in records if r.get("command_id") == "scripts-unittest"
+            ]
+            self.assertEqual(len(run_receipts), 1)
+            self.assertEqual(run_receipts[0]["tests_collected"], 1)
+            check_stdout = io.StringIO()
+            with contextlib.redirect_stdout(check_stdout):
+                check_rc = mechanical_verify.check_receipts(receipts, "t", root)
+            self.assertEqual(check_rc, 0, check_stdout.getvalue())
+
+
 def _path_pytest_available() -> bool:
     """The verifier's pytest command is literal `python3 -m pytest`:
     what matters is the python3 on PATH, not this test process."""
@@ -917,6 +968,47 @@ class CollectedCountTests(unittest.TestCase):
                 root,
                 VerificationCommand(
                     "unittest", "Python unittest", ("true",)
+                ),
+            )
+            self.assertEqual(result.exit_code, 0)
+            self.assertEqual(result.tests_collected, 0)
+            self.assertFalse(result.passed)
+
+    def test_scripts_unittest_count_uses_the_unittest_rule(self):
+        # Composite-verifier step (PR #42 rebase onto #45): rule 8's
+        # scripts-unittest leg is a unittest-discover run, so the
+        # count gate judges it by the unittest rule — before this,
+        # _count_collected returned None for the id and the leg's
+        # receipts carried no collected count at all.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_verification(
+                root,
+                VerificationCommand(
+                    "scripts-unittest",
+                    "Scripts unittest",
+                    (
+                        sys.executable,
+                        "-c",
+                        "import sys; sys.stderr.write("
+                        "'Ran 2 tests in 0.001s\\n')",
+                    ),
+                ),
+            )
+            self.assertEqual(result.exit_code, 0)
+            self.assertEqual(result.tests_collected, 2)
+            self.assertTrue(result.passed)
+            result = run_verification(
+                root,
+                VerificationCommand(
+                    "scripts-unittest",
+                    "Scripts unittest",
+                    (
+                        sys.executable,
+                        "-c",
+                        "import sys; sys.stderr.write("
+                        "'Ran 0 tests in 0.000s\\n')",
+                    ),
                 ),
             )
             self.assertEqual(result.exit_code, 0)

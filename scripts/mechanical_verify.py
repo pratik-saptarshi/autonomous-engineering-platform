@@ -616,7 +616,11 @@ def _count_collected(
     commands (the count gate does not apply to them).
 
     unittest: parse `Ran (\\d+) tests?` from stdout+stderr combined
-    (unittest writes it to stderr). pytest: the collected count is
+    (unittest writes it to stderr). The `scripts-unittest` leg
+    (rule 8's scripts/tests discovery) is a unittest-discover run
+    and is counted by the same rule — without it the leg sealed
+    receipts with no collected count and the gate never judged it.
+    pytest: the collected count is
     the sum of the outcome groups in the summary line
     (passed+failed+skipped+errors+xfailed+xpassed) EXCLUDING
     `deselected` — deselected tests were filtered OUT by the runner
@@ -628,7 +632,7 @@ def _count_collected(
     test"; whether a collected test skips is the test author's
     signal, not a routing failure.
     """
-    if command_id == "unittest":
+    if command_id in ("unittest", "scripts-unittest"):
         match = _UNITTEST_RAN_RE.search(stdout + "\n" + stderr)
         return int(match.group(1)) if match is not None else 0
     if command_id == "pytest":
