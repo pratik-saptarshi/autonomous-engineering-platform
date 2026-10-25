@@ -1522,6 +1522,13 @@ def main(argv: list[str] | None = None) -> int:
             historical=args.historical,
         )
 
+    # Every verify run sets the child-subreaper flag, receipts or
+    # not: orphaned descendants of the run's commands reparent to
+    # this process (PR_SET_CHILD_SUBREAPER) so run_verification's
+    # post-run sweep can find and reap them. (check-receipts runs no
+    # commands and needs no flag.)
+    subreaper = _set_child_subreaper()
+
     if os.environ.get("AEP_VERIFY_FULL_ENV") == "1":
         # The env-scrub opt-out is loud, never silent (mirrors
         # lane-coord's AEP_LANE_FULL_ENV warning): stderr on every
@@ -1587,11 +1594,9 @@ def main(argv: list[str] | None = None) -> int:
     if receipts_path is not None:
         task = args.task
         run_id = uuid.uuid4().hex
-        # Orphaned descendants of the run's commands reparent to this
-        # process (PR_SET_CHILD_SUBREAPER) so run_verification's
-        # post-run sweep can find and reap them; the run-start record
-        # states whether the flag was actually set.
-        subreaper = _set_child_subreaper()
+        # subreaper was set at the top of the verify path (every run,
+        # not only evidence runs); the run-start record states
+        # whether the flag was actually set.
         # Tree binding (R1): an evidence run binds to the tree before
         # its first command. Git mode refuses a dirty tree outright —
         # a segment sealed over uncommitted state could never be

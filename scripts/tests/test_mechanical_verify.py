@@ -445,30 +445,33 @@ class SurvivorReapTests(unittest.TestCase):
     subreaper flag main() sets never touches this test process.
     """
 
-    def run_driver(self, base: Path, mode: str, timeout: int = 300) -> dict:
+    def run_driver(
+        self, base: Path, mode: str, timeout: int = 300, receipts: bool = True
+    ) -> dict:
+        driver_argv = [
+            sys.executable,
+            str(DRIVER),
+            "--root",
+            str(base / "root"),
+            "--mode",
+            mode,
+            "--timeout",
+            str(timeout),
+            "--marker",
+            str(base / "marker.log"),
+            "--writer-pid-file",
+            str(base / "writer.pid"),
+            "--helper-pid-file",
+            str(base / "helper.pid"),
+            "--helper-status-file",
+            str(base / "helper.status"),
+            "--rc-file",
+            str(base / "verify.rc"),
+        ]
+        if receipts:
+            driver_argv += ["--receipts", str(base / "receipts.jsonl")]
         proc = subprocess.run(
-            [
-                sys.executable,
-                str(DRIVER),
-                "--root",
-                str(base / "root"),
-                "--mode",
-                mode,
-                "--timeout",
-                str(timeout),
-                "--marker",
-                str(base / "marker.log"),
-                "--writer-pid-file",
-                str(base / "writer.pid"),
-                "--receipts",
-                str(base / "receipts.jsonl"),
-                "--helper-pid-file",
-                str(base / "helper.pid"),
-                "--helper-status-file",
-                str(base / "helper.status"),
-                "--rc-file",
-                str(base / "verify.rc"),
-            ],
+            driver_argv,
             capture_output=True,
             text=True,
             timeout=120,
@@ -487,7 +490,9 @@ class SurvivorReapTests(unittest.TestCase):
                 .read_text()
                 .splitlines()
                 if line.strip()
-            ],
+            ]
+            if receipts
+            else [],
         }
         # Never leak a surviving writer into later tests when running
         # against a verifier that does not reap yet.
@@ -522,6 +527,26 @@ class SurvivorReapTests(unittest.TestCase):
             self.assertEqual(len(command_receipts), 1)
             self.assertIn(
                 writer_pid, command_receipts[0].get("survivors_killed", [])
+            )
+
+    def test_success_path_no_receipts_setsid_survivor_is_reaped(self):
+        """A receipts-less verify must reap too: the subreaper flag is
+        set for every verify run, not only runs writing receipts."""
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            result = self.run_driver(base, "success", receipts=False)
+            self.assertEqual(result["rc"], 0)
+            writer_pid = result["writer_pid"]
+            self.assertTrue(
+                _pid_dead(writer_pid),
+                f"setsid writer {writer_pid} survived a receipts-less verify",
+            )
+            size = self.marker_size(base)
+            time.sleep(1)
+            self.assertEqual(
+                self.marker_size(base),
+                size,
+                "writer kept appending to the marker after the run",
             )
 
     def test_timeout_path_setsid_survivor_is_reaped(self):

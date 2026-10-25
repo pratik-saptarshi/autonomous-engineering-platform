@@ -76,7 +76,7 @@ def main() -> int:
     parser.add_argument("--timeout", type=int, default=300)
     parser.add_argument("--marker", required=True)
     parser.add_argument("--writer-pid-file", required=True)
-    parser.add_argument("--receipts", required=True)
+    parser.add_argument("--receipts", default=None)
     parser.add_argument("--helper-pid-file", required=True)
     parser.add_argument("--helper-status-file", required=True)
     parser.add_argument("--rc-file", required=True)
@@ -97,19 +97,18 @@ def main() -> int:
     os.environ["PIDFILE"] = args.writer_pid_file
     os.environ["MODE"] = args.mode
     try:
-        rc = mechanical_verify.main(
-            [
-                "verify",
-                "--root",
-                str(root),
-                "--task",
-                "survivor",
-                "--receipts",
-                args.receipts,
-                "--timeout",
-                str(args.timeout),
-            ]
-        )
+        verify_argv = [
+            "verify",
+            "--root",
+            str(root),
+            "--task",
+            "survivor",
+            "--timeout",
+            str(args.timeout),
+        ]
+        if args.receipts is not None:
+            verify_argv += ["--receipts", args.receipts]
+        rc = mechanical_verify.main(verify_argv)
     finally:
         alive = helper.poll() is None
         Path(args.helper_status_file).write_text("alive" if alive else "dead")
