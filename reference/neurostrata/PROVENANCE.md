@@ -8,6 +8,10 @@
 - **Excluded from the vendor:** `.git` (history — the snapshot was produced with `git archive`) and `web-ui/public/graph.json` (a symlink whose target, `../../.NeuroStrata/graph/graph.json`, is a runtime artifact outside the source repo; the symlink is broken in any vendored copy and would fail the CI symlink check).
 - **Purpose:** reference snapshot of the Rust MCP memory daemon — the local memory layer (SynapticGraph graph/vector memory, task gate, behavioral-rule guard) that this environment's agents run on. Studied and built from, not executed from here.
 
+## Updating this snapshot
+
+This tree changes only by re-vendoring: replace it wholesale with a new pinned upstream snapshot and regenerate `.github/vendor-neurostrata.sha256` in the same change. Code or dependency edits made in place — including dependency-update PRs against this tree — are closed, not merged: a merged bump would leave the tree matching no upstream commit and falsify the provenance pinned above.
+
 Branch note: the fork's default branch is `develop`, while upstream's default is `main`. At snapshot time both fork branches pointed at the pinned commit, so the snapshot is the shared `main`/`develop` head.
 
 Version note: this snapshot's `Cargo.toml` declares version **1.11.0** (2026-10-22). The daemon actually deployed on this VM is 1.9.0, installed separately (see `docs/neurostrata-reference.md`) — do not confuse the snapshot version with the deployed version.
