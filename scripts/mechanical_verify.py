@@ -149,6 +149,11 @@ def _classify_test_module(
       `test_*` functions, OR an import binds a `test_*` name (pytest
       collects test functions from the module namespace, imported
       ones included — the bound name is the evidence), OR an
+      import binds a `Test*` name that does not denote TestCase
+      in this module (an imported class's definition lives
+      elsewhere, so it cannot be resolved as a TestCase subclass
+      here; pytest collects Test* classes from the namespace,
+      imported ones included), OR an
       assignment binds a `test_*` name to a value that is not
       provably non-callable data (a literal display — `test_failure
       = failure` binds a collectable function; `test_cases = [...]`
@@ -241,6 +246,28 @@ def _classify_test_module(
                                 # trigger let a sibling TestCase class
                                 # suppress the leg and silently omit
                                 # the imported tests (Codex P2).
+                                triggers_pytest = True
+                            elif (
+                                bound.startswith("Test")
+                                and bound != "TestCase"
+                                and bound not in testcase_names
+                            ):
+                                # pytest collects Test* CLASSES from
+                                # the module namespace, imported ones
+                                # included. An imported Test* name
+                                # cannot be resolved as a TestCase
+                                # subclass from this module — its
+                                # definition lives elsewhere — so,
+                                # like a locally unresolved Test*
+                                # class, it is positive evidence for
+                                # pytest; recording the name without
+                                # the trigger let a sibling TestCase
+                                # class suppress the leg and silently
+                                # omit the imported class (Codex P2).
+                                # TestCase-denoting imports are
+                                # excluded: `TestCase` itself, and
+                                # names recorded above as its
+                                # aliases, are unittest's own class.
                                 triggers_pytest = True
                     elif isinstance(child, ast.Import):
                         for alias in child.names:

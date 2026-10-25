@@ -1665,6 +1665,195 @@ class ClassifierUncertaintyTests(unittest.TestCase):
             self.assertEqual([c.id for c in commands], ["unittest"])
             self.assertIn("test_imported", commands[0].argv)
 
+    def _write_imported_class_fixture(self, root: Path, method_body: str):
+        write(
+            root,
+            "shared.py",
+            "import unittest\n"
+            "\n"
+            "\n"
+            "class SharedCase(unittest.TestCase):\n"
+            "    pass\n"
+            "\n"
+            "\n"
+            "class TestImported:\n"
+            "    def test_failure(self):\n"
+            f"        {method_body}\n",
+        )
+        write(
+            root,
+            "test_imported_class.py",
+            "from shared import SharedCase, TestImported\n"
+            "\n"
+            "\n"
+            "class Unit(SharedCase):\n"
+            "    def test_unit(self):\n"
+            "        pass\n",
+        )
+
+    def test_imported_test_class_keeps_pytest_leg(self):
+        # Codex P2 (gap-fix round 8): pytest collects Test*
+        # classes from a module's namespace, imported ones
+        # included. The classifier recorded the imported Test*
+        # name without letting it trigger the pytest leg, so when
+        # a sibling class with an imported base (Unit(SharedCase))
+        # selected the unittest leg, discovery ran unittest alone
+        # and the imported pytest class silently never ran. An
+        # imported Test* class cannot be resolved as a TestCase
+        # subclass from this module — its definition lives
+        # elsewhere — so, like a locally unresolved Test* class,
+        # it keeps the pytest leg.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_imported_class_fixture(
+                root, "assert False, 'imported test must run'"
+            )
+            commands = discover_verification_commands(root)
+            self.assertEqual(
+                [c.id for c in commands], ["unittest", "pytest"]
+            )
+            self.assertIn("test_imported_class", commands[0].argv)
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_imported_failing_class_executes_and_fails(self):
+        # Codex's exact reproduction: verification returned PASS
+        # while a direct pytest run failed on
+        # TestImported.test_failure.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_imported_class_fixture(
+                root, "assert False, 'imported test must run'"
+            )
+            commands, results, rc, _ = self.run_fixture(root)
+            self.assertEqual(
+                [c.id for c in commands], ["unittest", "pytest"]
+            )
+            pytest_results = [
+                r for r in results if r.command.id == "pytest"
+            ]
+            self.assertEqual(len(pytest_results), 1)
+            self.assertFalse(pytest_results[0].passed)
+            self.assertGreaterEqual(
+                pytest_results[0].tests_collected, 1
+            )
+            self.assertEqual(rc, 1)
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_imported_passing_class_passes_with_pytest_leg(self):
+        # The passing shape: both legs execute, the imported
+        # class is collected by pytest, and the run PASSes.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_imported_class_fixture(root, "pass")
+            commands, results, rc, _ = self.run_fixture(root)
+            self.assertEqual(
+                [c.id for c in commands], ["unittest", "pytest"]
+            )
+            pytest_results = [
+                r for r in results if r.command.id == "pytest"
+            ]
+            self.assertEqual(len(pytest_results), 1)
+            self.assertTrue(pytest_results[0].passed)
+            self.assertGreaterEqual(
+                pytest_results[0].tests_collected, 1
+            )
+            self.assertEqual(rc, 0)
+
+    def test_imported_testcase_name_does_not_trigger_pytest(self):
+        # Guard: importing unittest's own TestCase class — under
+        # its own name or an alias — is TestCase-denoting, not
+        # pytest evidence; a module whose only class resolves
+        # through it stays unittest-only (RC2).
+        for import_line, base in (
+            ("from unittest import TestCase\n", "TestCase"),
+            ("from unittest import TestCase as TestBase\n", "TestBase"),
+        ):
+            with self.subTest(import_line=import_line):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    write(
+                        root,
+                        "test_direct.py",
+                        f"{import_line}"
+                        "\n"
+                        "\n"
+                        f"class Unit({base}):\n"
+                        "    def test_unit(self):\n"
+                        "        pass\n",
+                    )
+                    commands = discover_verification_commands(root)
+                    self.assertEqual(
+                        [c.id for c in commands], ["unittest"]
+                    )
+
+    def test_imported_test_name_subclassed_as_testcase_keeps_pytest(self):
+        # Ruling: resolution governs the LOCAL class — a class
+        # that locally resolves as a TestCase subclass (here via
+        # a second, TestCase-denoting base) selects the unittest
+        # leg — but it does not consume the import: the imported
+        # Test* name is itself in the module namespace, where
+        # pytest collects it in its own right, so the binding
+        # still triggers the pytest leg.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "shared.py",
+                "class TestBase:\n"
+                "    def test_shared(self):\n"
+                "        pass\n",
+            )
+            write(
+                root,
+                "test_subclassed.py",
+                "import unittest\n"
+                "from shared import TestBase\n"
+                "\n"
+                "\n"
+                "class Unit(TestBase, unittest.TestCase):\n"
+                "    pass\n",
+            )
+            commands = discover_verification_commands(root)
+            self.assertEqual(
+                [c.id for c in commands], ["unittest", "pytest"]
+            )
+            self.assertIn("test_subclassed", commands[0].argv)
+
+    def test_plain_module_import_gains_no_pytest_leg(self):
+        # Guard: a plain `import shared` binds only the module
+        # name — no Test* name enters the namespace — so it is
+        # not pytest evidence even though the module it names
+        # defines collectable classes.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "shared.py",
+                "import unittest\n"
+                "\n"
+                "\n"
+                "class SharedCase(unittest.TestCase):\n"
+                "    pass\n"
+                "\n"
+                "\n"
+                "class TestImported:\n"
+                "    def test_failure(self):\n"
+                "        pass\n",
+            )
+            write(
+                root,
+                "test_plain.py",
+                "import shared\n"
+                "\n"
+                "\n"
+                "class Unit(shared.SharedCase):\n"
+                "    def test_unit(self):\n"
+                "        pass\n",
+            )
+            commands = discover_verification_commands(root)
+            self.assertEqual([c.id for c in commands], ["unittest"])
+            self.assertIn("test_plain", commands[0].argv)
+
     def _write_assignment_fixture(
         self, root: Path, fn_body: str, assignment: str
     ):
