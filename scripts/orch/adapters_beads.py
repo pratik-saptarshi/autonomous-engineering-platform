@@ -10,7 +10,11 @@ Reads shell out to ``bd`` through an injectable ``runner`` seam (default
   :class:`FetchCeilingExceeded` instead of truncating.
 - by-ids: ``bd show <id> --json`` per id. On this track the native id
   *is* the human form (``dap-…``), so no identifier translation exists
-  to get wrong.
+  to get wrong. A missing id is *omitted*, per the Protocol's absence
+  semantics: ``bd show`` reports it with exit 1, a JSON
+  ``{"error": "no issues found …"}`` object on stdout, and
+  ``Issue <id> not found`` on stderr. Only that not-found signal
+  omits — every other ``bd`` failure raises :class:`BeadsError`.
 - states: resolved from the same list fetch; a requested key absent
   from the fetch is omitted, which is how callers detect a vanished
   issue.
@@ -83,7 +87,27 @@ class BeadsAdapter:
             )
         return path
 
-    def _run_bd(self, *args: str) -> list[dict]:
+    @staticmethod
+    def _is_not_found(proc, raw_id: str) -> bool:
+        """Whether a failed ``bd show`` is the CLI's not-found signal.
+
+        Verified against the real CLI: exit 1, a JSON error object
+        (``{"error": "no issues found matching the provided IDs", …}``)
+        on stdout, and ``Issue <id> not found`` on stderr. Either
+        signal suffices; anything else is a genuine failure.
+        """
+        if f"Issue {raw_id} not found" in (proc.stderr or ""):
+            return True
+        try:
+            payload = json.loads(proc.stdout or "")
+        except json.JSONDecodeError:
+            return False
+        if isinstance(payload, dict):
+            error = payload.get("error")
+            return isinstance(error, str) and "no issues found" in error
+        return False
+
+    def _run_bd(self, *args: str, not_found_id: str | None = None) -> list[dict]:
         argv = [self._bd_path(), *args]
         try:
             proc = self._runner(
@@ -95,6 +119,8 @@ class BeadsAdapter:
         except OSError as exc:
             raise BeadsError(f"failed to run bd: {exc}") from exc
         if proc.returncode != 0:
+            if not_found_id is not None and self._is_not_found(proc, not_found_id):
+                return []
             detail = (proc.stderr or "").strip()
             raise BeadsError(
                 f"bd {' '.join(args)} failed with exit {proc.returncode}"
@@ -238,7 +264,10 @@ class BeadsAdapter:
         state_by_id = self._state_map(self._fetch_all_records())
         issues = []
         for key in keys:
-            for record in self._run_bd("show", self._raw_id(key), "--json"):
+            raw_id = self._raw_id(key)
+            for record in self._run_bd(
+                "show", raw_id, "--json", not_found_id=raw_id
+            ):
                 issues.append(self._normalize(record, state_by_id))
         return issues
 

@@ -55,6 +55,52 @@ class FakeRunner:
         )
 
 
+class PerIdShowRunner:
+    """Runner whose ``bd show`` outcome depends on the requested id.
+
+    Serves the recorded payloads for present ids. ``missing_ids`` fail
+    with the real CLI's not-found shape (exit 1, a JSON error object on
+    stdout, ``Issue <id> not found`` on stderr); ``broken_ids`` fail
+    with an unrelated error.
+    """
+
+    def __init__(self, missing_ids=(), broken_ids=()):
+        self.calls = []
+        self._missing_ids = set(missing_ids)
+        self._broken_ids = set(broken_ids)
+        self._list_payload = load_fixture("beads-list.json")
+        self._show_payload = load_fixture("beads-show.json")
+
+    def __call__(self, argv, **kwargs):
+        self.calls.append((list(argv), kwargs))
+        if "list" in argv:
+            return SimpleNamespace(
+                returncode=0, stdout=json.dumps(self._list_payload), stderr=""
+            )
+        if "show" in argv:
+            raw_id = argv[argv.index("show") + 1]
+            if raw_id in self._missing_ids:
+                return SimpleNamespace(
+                    returncode=1,
+                    stdout=json.dumps(
+                        {
+                            "error": "no issues found matching the provided IDs",
+                            "hint": "try 'bd list' to see available issues",
+                            "schema_version": 1,
+                        }
+                    ),
+                    stderr=f"Issue {raw_id} not found",
+                )
+            if raw_id in self._broken_ids:
+                return SimpleNamespace(
+                    returncode=1, stdout="", stderr="database is locked"
+                )
+            return SimpleNamespace(
+                returncode=0, stdout=json.dumps(self._show_payload), stderr=""
+            )
+        return SimpleNamespace(returncode=0, stdout="[]", stderr="")
+
+
 class BeadsAdapterTests(unittest.TestCase):
     def setUp(self):
         which = mock.patch("shutil.which", return_value="/fake/bin/bd")
@@ -194,6 +240,24 @@ class BeadsAdapterTests(unittest.TestCase):
         by_key = {b.key: b for b in issues[0].blockers}
         self.assertTrue(by_key["beads:dap-test.2"].is_terminal)
         self.assertFalse(by_key["beads:dap-test.3"].is_terminal)
+
+    def test_fetch_by_ids_omits_missing_id_and_returns_present(self):
+        # The Protocol pins absence semantics: fetch_by_ids returns the
+        # requested issues that are present. A missing id (bd show's
+        # not-found signal) is omitted; the present id is still served.
+        runner = PerIdShowRunner(missing_ids={"dap-missing"})
+        adapter = BeadsAdapter(make_workflow(), runner=runner)
+        issues = adapter.fetch_by_ids(["dap-test.1", "dap-missing"])
+        self.assertEqual([issue.identifier for issue in issues], ["dap-test.1"])
+
+    def test_fetch_by_ids_other_show_failure_still_raises(self):
+        # Only the not-found signal omits. Any other bd show failure
+        # (here: a locked database) stays a loud BeadsError.
+        runner = PerIdShowRunner(broken_ids={"dap-test.1"})
+        adapter = BeadsAdapter(make_workflow(), runner=runner)
+        with self.assertRaises(BeadsError) as ctx:
+            adapter.fetch_by_ids(["dap-test.1"])
+        self.assertIn("database is locked", str(ctx.exception))
 
     # -- states -------------------------------------------------------------
 
