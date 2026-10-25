@@ -1325,9 +1325,25 @@ cmd_migrate() {
     echo "LANE: migrate: no legacy coordinator state at $LEGACY_LANES_DIR"
     exit 1
   fi
+  # Quiescence (Codex P2): a live legacy launcher holds its lane's
+  # fence inside the legacy directory for its whole lifetime.
+  # Moving the manifest without the fence disconnects the two: the
+  # destination's fresh fence probes free, so the next claim
+  # auto-settles the migrated lane as interrupted while its worker
+  # still runs — and that worker escapes capacity accounting.
+  # Refuse while any legacy lane fence is held, before anything
+  # moves; migration requires a quiescent legacy pool.
+  local f name
+  for f in "$LEGACY_LANES_DIR"/*.json; do
+    [ -e "$f" ] || continue
+    name="$(basename "$f" .json)"
+    if fence_is_held "$name" "$LEGACY_LANES_DIR"; then
+      echo "LANE: refuse migrate: legacy lane $name has a live launcher (fence held: $LEGACY_LANES_DIR/$name.fence); migration requires a quiescent legacy pool — stop legacy launchers first"
+      exit 1
+    fi
+  done
   # Refuse before moving anything when a destination already exists:
   # a half-migrated pool is worse than a refused one.
-  local f name
   for f in "$LEGACY_LANES_DIR"/*.json; do
     [ -e "$f" ] || continue
     name="$(basename "$f" .json)"
@@ -2536,6 +2552,67 @@ PYEOF
   [ "$rc31d2" -eq 0 ] || case_fails=1
   [ ! -e "$forge_wts/phi-thirtytwo" ] || case_fails=1
   report_case "quarantine-survives-adopting-claim"
+
+  # --- Case 32: migrate-refuses-while-legacy-fence-held ---
+  # Codex P2: migrating under a live legacy launcher disconnects
+  # the manifest from the fence the launcher still holds in the
+  # legacy directory. The destination's fresh fence probes free,
+  # so the next claim auto-settles the migrated lane as
+  # interrupted and its still-running worker escapes capacity
+  # accounting (a second claim succeeded at --capacity 1 in the
+  # repro). Migration requires a quiescent legacy pool: refuse
+  # while any legacy lane fence is held, naming the lane, and
+  # move nothing.
+  local live_home="$selftest_root/live-home"
+  local live_legacy="$live_home/workspace/worktrees/.lanes"
+  local live_wts="$live_home/workspace/worktrees"
+  local live_new="$live_home/.local/state/aep/lanes"
+  mkdir -p "$live_home"
+  local out32leg="$selftest_root/out32leg.txt"
+  AEP_LANES_DIR="$live_legacy" AEP_WORKTREES_ROOT="$live_wts" HOME="$live_home" \
+    bash "$self_path" claim --repo "$repo" --project rho --lane thirtythree \
+    --branch br-thirtythree --base HEAD --worker w33 \
+    --exec sh -c "echo \$\$ > $selftest_root/worker-33.pid; while [ ! -f $selftest_root/worker-33.stop ]; do sleep 0.2; done" >"$out32leg" 2>&1 &
+  local launcher33=$!
+  BG_PIDS+=("$launcher33")
+  local wi33=0
+  while [ $wi33 -lt 50 ] && [ ! -f "$live_legacy/rho-thirtythree.json" ]; do
+    sleep 0.1
+    wi33=$((wi33 + 1))
+  done
+  [ -f "$live_legacy/rho-thirtythree.json" ] || case_fails=1
+  wait_for_file "$selftest_root/worker-33.pid" || case_fails=1
+  local worker33_pid=""
+  worker33_pid=$(cat "$selftest_root/worker-33.pid" 2>/dev/null || true)
+  [ -n "$worker33_pid" ] || case_fails=1
+  local wi33r=0
+  while [ $wi33r -lt 50 ] && [ "$(jget "$live_legacy/rho-thirtythree.json" worker_pid)" != "$worker33_pid" ]; do
+    sleep 0.1
+    wi33r=$((wi33r + 1))
+  done
+  [ "$(jget "$live_legacy/rho-thirtythree.json" worker_pid)" = "$worker33_pid" ] || case_fails=1
+  # The launcher is alive, holding the legacy fence: refuse.
+  local out32m="$selftest_root/out32m.txt" rc32m=0
+  env -u AEP_LANES_DIR HOME="$live_home" AEP_WORKTREES_ROOT="$live_wts" \
+    bash "$self_path" migrate >"$out32m" 2>&1 || rc32m=$?
+  [ "$rc32m" -eq 1 ] || case_fails=1
+  grep -q "rho-thirtythree" "$out32m" || case_fails=1
+  [ -f "$live_legacy/rho-thirtythree.json" ] || case_fails=1
+  [ ! -e "$live_new/rho-thirtythree.json" ] || case_fails=1
+  # Quiesce the pool: stop the worker; the launcher settles the
+  # claim and exits, releasing the fence. Migration now proceeds.
+  : >"$selftest_root/worker-33.stop"
+  wait "$launcher33" 2>/dev/null || true
+  if [ -n "$worker33_pid" ]; then
+    wait_for_pid_dead "$worker33_pid" || case_fails=1
+  fi
+  local out32m2="$selftest_root/out32m2.txt" rc32m2=0
+  env -u AEP_LANES_DIR HOME="$live_home" AEP_WORKTREES_ROOT="$live_wts" \
+    bash "$self_path" migrate >"$out32m2" 2>&1 || rc32m2=$?
+  [ "$rc32m2" -eq 0 ] || case_fails=1
+  [ -f "$live_new/rho-thirtythree.json" ] || case_fails=1
+  [ ! -e "$live_legacy/rho-thirtythree.json" ] || case_fails=1
+  report_case "migrate-refuses-while-legacy-fence-held"
 
   return "$fails"
 }

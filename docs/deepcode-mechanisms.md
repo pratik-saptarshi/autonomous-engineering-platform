@@ -159,6 +159,8 @@ The state directory used to default to `~/workspace/worktrees/.lanes` — inside
 
 `status` is the exception: it still lists legacy lanes read-only, each line marked `legacy`, so an operator can see what is waiting on migration. No code path reads or settles legacy state for a mutating command — there is no dual-directory operation.
 
+**Migration requires a quiescent legacy pool.** A live legacy launcher holds its lane's fence inside the legacy directory; moving the manifest without the fence would disconnect the two, letting the next claim settle the lane as interrupted while its worker still runs (and escapes capacity accounting). `migrate` therefore probes every legacy lane's fence first and refuses — naming the held lane — while any is held.
+
 **Migrated lanes are quarantined.** Migration imports a manifest from a worker-writable tree, so its provenance is untrusted: moving it into the trusted state directory must not launder a planted manifest into ownership proof (the migration path itself was the follow-up panel's P1-3 repro — the four `release --clean` ownership signals are sound against *stale* manifests but cannot distinguish *planted* ones). `migrate` therefore stamps each imported lane with a marker under `$AEP_LANES_DIR/.quarantine/` (outside the manifest set). While the marker exists, `release --clean` and `reap` refuse for that lane; `status` marks the line `quarantined`; read paths and plain `release` work normally. The quarantine clears only per lane, by one of:
 
 - `lane-coord.sh trust --name <name>` — the operator's confirmation after inspecting that lane's manifest, recorded as an `operator-trusted` entry in the lane's history log (outside the manifest itself); or
