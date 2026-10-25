@@ -24,6 +24,9 @@ Scenario map (from the task brief, Step 1, plus carried rulings):
   - settle failure: finalize raising after exec preserves the child's
     exit code and prints a warning (Risk #15).
   - `run watch` refusal: exit 64 with the pointer to `ghg watch`.
+  - `pr checks --watch` refusal: exit 64 — gh's checks watcher polls
+    internally (10s default) past a single reservation, the same
+    ungated shape as `run watch`; one-shot `pr checks` passes through.
   - Ruling R1's deferred test: a gate denial mid-watch makes
     `ghg watch` exit 75 with the denial line.
   - actor precedence: --actor > $GHG_ACTOR.
@@ -306,6 +309,44 @@ class TestDenial(RunTestCase):
         self.assertEqual(proc.returncode, 64)
         self.assertIn("ghg watch", proc.stderr)
         self.assertEqual(self.stub_calls(), 0)
+
+    def test_pr_checks_watch_is_refused(self):
+        proc = self.run_cli(
+            ["run", "--", "pr", "checks", "42", "--watch"])
+        self.assertEqual(proc.returncode, 64)
+        self.assertIn("ghg watch", proc.stderr)
+        self.assertEqual(self.stub_calls(), 0)
+
+    def test_pr_checks_watch_refused_with_repo_flag_before_command(self):
+        proc = self.run_cli(
+            ["run", "--", "-R", "owner/repo", "pr", "checks", "42",
+             "--watch"])
+        self.assertEqual(proc.returncode, 64)
+        self.assertIn("ghg watch", proc.stderr)
+        self.assertEqual(self.stub_calls(), 0)
+
+    def test_pr_checks_watch_refused_with_repo_flag_between(self):
+        proc = self.run_cli(
+            ["run", "--", "pr", "--repo", "owner/repo", "checks", "42",
+             "--watch"])
+        self.assertEqual(proc.returncode, 64)
+        self.assertIn("ghg watch", proc.stderr)
+        self.assertEqual(self.stub_calls(), 0)
+
+    def test_pr_checks_watch_refused_with_equals_form(self):
+        proc = self.run_cli(
+            ["run", "--", "pr", "checks", "42", "--watch=true"])
+        self.assertEqual(proc.returncode, 64)
+        self.assertIn("ghg watch", proc.stderr)
+        self.assertEqual(self.stub_calls(), 0)
+
+    def test_pr_checks_without_watch_passes_through(self):
+        proc = self.run_cli(["run", "--", "pr", "checks", "42"])
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(self.stub_argv(), [["pr", "checks", "42"]])
+        rows = self.call_rows()
+        self.assertTrue(rows)
+        self.assertEqual({r[4] for r in rows}, {"ok"})
 
 
 class TestBypassAndFailOpen(RunTestCase):

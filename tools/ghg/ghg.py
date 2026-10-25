@@ -1187,6 +1187,19 @@ def cmd_run(args):
               " `ghg watch --repo OWNER/REPO --run ID` instead",
               file=sys.stderr, flush=True)
         return 64
+    if _first_positionals(gh_args) == ["pr", "checks"] and any(
+            tok == "--watch" or tok.startswith("--watch=")
+            for tok in gh_args):
+        # `gh pr checks --watch` polls internally (10s default
+        # refresh) until the checks finish — the same ungated loop
+        # as `run watch`, behind a single reservation. Refuse it;
+        # a one-shot `pr checks` stays a normal gated call.
+        print("ghg: `gh pr checks --watch` is refused by `ghg run`"
+              " — it polls outside the gate; run `gh pr checks`"
+              " one-shot, or `ghg watch --repo OWNER/REPO --run ID`"
+              " for a run's checks",
+              file=sys.stderr, flush=True)
+        return 64
     actor = resolve_actor(args.actor)
     code, out = _gated(gh_args, actor, capture=False,
                        wait=max(0.0, args.wait or 0.0))
