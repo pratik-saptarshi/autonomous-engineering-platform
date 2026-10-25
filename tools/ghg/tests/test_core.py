@@ -391,6 +391,26 @@ class TestRedaction(CoreTestCase):
         self.assertIn("<redacted len=11>", out)   # "Hello World"
         self.assertIn("<redacted len=8>", out)    # "msg body"
 
+    def test_redact_header_values(self):
+        out = ghg.redact_argv(
+            ["api", "x", "-H", "Authorization: Bearer SECRET"])
+        self.assertNotIn("SECRET", out)
+        self.assertIn("<redacted len=28>", out)  # "Authorization: Bearer SECRET"
+
+        out = ghg.redact_argv(
+            ["api", "x", "--header", "X-Trace: SECRET"])
+        self.assertNotIn("SECRET", out)
+        self.assertIn("<redacted len=15>", out)  # "X-Trace: SECRET"
+
+        out = ghg.redact_argv(
+            ["api", "x", "--header=Authorization: Bearer SECRET"])
+        self.assertNotIn("SECRET", out)
+        self.assertIn("--header=<redacted len=28>", out)
+
+    def test_non_flag_equals_token_untouched(self):
+        out = ghg.redact_argv(["api", "x", "foo=bar"])
+        self.assertIn("foo=bar", out)
+
     def test_reserved_row_stores_redacted_argv(self):
         ledger = self.make_ledger()
         ledger.reserve_all(

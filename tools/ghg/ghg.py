@@ -437,15 +437,17 @@ def classify(argv):
 
 # ------------------------------------------------------------ redaction
 
-_REDACT_FLAGS = {"--body", "--title", "-m", "--message", "--body-file"}
+_REDACT_FLAGS = {"--body", "--title", "-m", "--message", "--body-file",
+                 "-H", "--header"}
 
 
 def redact_argv(argv):
     """Join argv for ledger storage, redacting sensitive flag values.
 
-    The values of --body, --title, -m/--message and --body-file are
-    replaced by `<redacted len=N>` in both spellings (`--body text`
-    and `--body=text`). Response bodies/credentials are never stored.
+    The values of --body, --title, -m/--message, --body-file and
+    -H/--header are replaced by `<redacted len=N>` in both spellings
+    (`--body text` and `--body=text`). Response bodies/credentials
+    are never stored.
     """
     argv = [str(a) for a in argv]
     out = []
