@@ -1071,6 +1071,33 @@ def cmd_watch(args):
 
 # ------------------------------------------------------------------- run
 
+# Inherited flags gh accepts before/between the command words
+# (`gh -R owner/repo run watch 42`, `gh run --repo owner/repo watch
+# 123`). Only these two are known to take a separate value token;
+# every other `-` token is skipped whole (`--repo=<v>` and `-R<v>`
+# included). An unknown flag's value can look positional and cause a
+# false refusal — the safe direction; gh's full grammar is not
+# modeled here.
+_VALUE_FLAGS = ("-R", "--repo")
+
+
+def _first_positionals(gh_args, count=2):
+    """The first `count` positional (non-flag) tokens of a gh argv."""
+    positionals = []
+    i = 0
+    while i < len(gh_args) and len(positionals) < count:
+        tok = gh_args[i]
+        if tok in _VALUE_FLAGS:
+            i += 2
+            continue
+        if tok.startswith("-"):
+            i += 1
+            continue
+        positionals.append(tok)
+        i += 1
+    return positionals
+
+
 def cmd_run(args):
     gh_args = list(args.gh_args)
     if gh_args and gh_args[0] == "--":
@@ -1080,7 +1107,7 @@ def cmd_run(args):
               " (expected `ghg run -- <gh args...>`)",
               file=sys.stderr, flush=True)
         return 2
-    if gh_args[:2] == ["run", "watch"]:
+    if _first_positionals(gh_args) == ["run", "watch"]:
         print("ghg: `gh run watch` is refused by `ghg run` — use"
               " `ghg watch --repo OWNER/REPO --run ID` instead",
               file=sys.stderr, flush=True)

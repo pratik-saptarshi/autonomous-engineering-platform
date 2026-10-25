@@ -202,6 +202,26 @@ class TestRunPassThrough(RunTestCase):
         self.assertEqual([(r[0], r[4]) for r in rows],
                          [("tester", "ok")])
 
+    def test_flag_carrying_non_watch_passes_through(self):
+        proc = self.run_cli(
+            ["run", "--", "-R", "owner/repo", "pr", "list"])
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(self.stub_argv(),
+                         [["-R", "owner/repo", "pr", "list"]])
+        rows = self.call_rows()
+        self.assertTrue(rows)
+        self.assertEqual({r[4] for r in rows}, {"ok"})
+
+    def test_run_view_with_repo_flag_passes_through(self):
+        proc = self.run_cli(
+            ["run", "--", "run", "--repo", "owner/repo", "view", "123"])
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(self.stub_argv(),
+                         [["run", "--repo", "owner/repo", "view", "123"]])
+        rows = self.call_rows()
+        self.assertTrue(rows)
+        self.assertEqual({r[4] for r in rows}, {"ok"})
+
     def test_actor_precedence_flag_over_env(self):
         proc = self.run_cli(["run", "--actor", "alice", "--",
                              "repo", "view"], {"GHG_ACTOR": "bob"})
@@ -262,6 +282,27 @@ class TestDenial(RunTestCase):
 
     def test_run_watch_is_refused(self):
         proc = self.run_cli(["run", "--", "run", "watch", "42"])
+        self.assertEqual(proc.returncode, 64)
+        self.assertIn("ghg watch", proc.stderr)
+        self.assertEqual(self.stub_calls(), 0)
+
+    def test_run_watch_refused_with_repo_flag_before_command(self):
+        proc = self.run_cli(
+            ["run", "--", "-R", "owner/repo", "run", "watch", "42"])
+        self.assertEqual(proc.returncode, 64)
+        self.assertIn("ghg watch", proc.stderr)
+        self.assertEqual(self.stub_calls(), 0)
+
+    def test_run_watch_refused_with_repo_flag_between(self):
+        proc = self.run_cli(
+            ["run", "--", "run", "--repo", "owner/repo", "watch", "123"])
+        self.assertEqual(proc.returncode, 64)
+        self.assertIn("ghg watch", proc.stderr)
+        self.assertEqual(self.stub_calls(), 0)
+
+    def test_run_watch_refused_with_repo_equals_form(self):
+        proc = self.run_cli(
+            ["run", "--", "run", "--repo=owner/repo", "watch", "123"])
         self.assertEqual(proc.returncode, 64)
         self.assertIn("ghg watch", proc.stderr)
         self.assertEqual(self.stub_calls(), 0)
