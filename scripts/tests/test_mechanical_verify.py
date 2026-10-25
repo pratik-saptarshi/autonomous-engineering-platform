@@ -1209,6 +1209,99 @@ class ClassifierUncertaintyTests(unittest.TestCase):
             self.assertEqual(results[0].tests_collected, 0)
             self.assertEqual(results[1].tests_collected, 1)
 
+    def test_load_tests_hook_routes_to_unittest(self):
+        # Codex P2 (gap-fix round 2, N1): a module that builds its
+        # suite via unittest's load_tests protocol declares no
+        # TestCase subclass, but only the unittest loader executes
+        # load_tests — pytest never calls the hook. The hook alone
+        # must select the unittest leg.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "test_loadtests.py",
+                "import unittest\n"
+                "\n"
+                "\n"
+                "def _passing():\n"
+                "    pass\n"
+                "\n"
+                "\n"
+                "def load_tests(loader, tests, pattern):\n"
+                "    suite = unittest.TestSuite()\n"
+                "    suite.addTest(unittest.FunctionTestCase(_passing))\n"
+                "    return suite\n",
+            )
+            commands = discover_verification_commands(root)
+            self.assertEqual([c.id for c in commands], ["unittest"])
+            self.assertIn("test_loadtests", commands[0].argv)
+
+    def test_load_tests_failing_case_executes_and_fails(self):
+        # Codex's exact reproduction: a load_tests module whose
+        # suite contains a FAILING FunctionTestCase, beside a
+        # passing plain pytest module. Before the fix the module
+        # was classified pytest-only; pytest collected nothing from
+        # it (it never executes load_tests) and verification PASSed
+        # without running the failing case.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "test_loadtests.py",
+                "import unittest\n"
+                "\n"
+                "\n"
+                "def _boom():\n"
+                "    raise AssertionError('load_tests case must run')\n"
+                "\n"
+                "\n"
+                "def load_tests(loader, tests, pattern):\n"
+                "    suite = unittest.TestSuite()\n"
+                "    suite.addTest(unittest.FunctionTestCase(_boom))\n"
+                "    return suite\n",
+            )
+            write(
+                root,
+                "test_plain.py",
+                "def test_ok():\n"
+                "    pass\n",
+            )
+            commands, results, rc, _ = self.run_fixture(root)
+            self.assertIn("unittest", [c.id for c in commands])
+            unittest_results = [
+                r for r in results if r.command.id == "unittest"
+            ]
+            self.assertEqual(len(unittest_results), 1)
+            self.assertEqual(unittest_results[0].tests_collected, 1)
+            self.assertFalse(unittest_results[0].passed)
+            self.assertEqual(rc, 1)
+
+    def test_load_tests_passing_suite_passes(self):
+        # The passing shape: the unittest leg executes the suite
+        # load_tests builds, collects its case, and the run PASSes.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "test_loadtests.py",
+                "import unittest\n"
+                "\n"
+                "\n"
+                "def _passing():\n"
+                "    pass\n"
+                "\n"
+                "\n"
+                "def load_tests(loader, tests, pattern):\n"
+                "    suite = unittest.TestSuite()\n"
+                "    suite.addTest(unittest.FunctionTestCase(_passing))\n"
+                "    return suite\n",
+            )
+            commands, results, rc, _ = self.run_fixture(root)
+            self.assertEqual([c.id for c in commands], ["unittest"])
+            self.assertEqual(rc, 0)
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0].tests_collected, 1)
+
     def test_deselected_is_not_counted_as_collected(self):
         # Judge rider (correctness P2-B): deselected tests were
         # FILTERED OUT by the runner; counting them inflates the

@@ -99,7 +99,10 @@ def _classify_test_module(
       of `unittest.TestCase`, or a module-local TestCase subclass
       (transitively — the unittest loader collects them all). Imports
       alone never create the leg: `import unittest.mock` defines
-      nothing the unittest loader could collect.
+      nothing the unittest loader could collect. A module-level
+      `load_tests` hook also selects the leg: the hook is the
+      module's suite under unittest's loading protocol, and pytest
+      never executes it.
     - pytest trigger iff the module defines module-level (or async)
       `test_*` functions, OR `Test*` classes containing `test_*`
       methods that are NOT TestCase subclasses, OR the module has no
@@ -138,9 +141,10 @@ def _classify_test_module(
     imported_names: set[str] = set()
     classes: list[ast.ClassDef] = []
     triggers_pytest = False
+    has_load_tests = False
 
     def visit(node: ast.AST, in_class: bool, in_func: bool) -> None:
-        nonlocal triggers_pytest
+        nonlocal triggers_pytest, has_load_tests
         for child in ast.iter_child_nodes(node):
             if isinstance(child, ast.ClassDef):
                 if not in_class and not in_func:
@@ -149,12 +153,18 @@ def _classify_test_module(
             elif isinstance(
                 child, (ast.FunctionDef, ast.AsyncFunctionDef)
             ):
-                if (
-                    not in_class
-                    and not in_func
-                    and child.name.startswith("test_")
-                ):
-                    triggers_pytest = True
+                if not in_class and not in_func:
+                    if child.name.startswith("test_"):
+                        triggers_pytest = True
+                    elif child.name == "load_tests":
+                        # unittest's loading protocol: the hook IS
+                        # the module's suite, and only the unittest
+                        # loader executes it (pytest never calls
+                        # it). Without the leg, a suite the hook
+                        # builds — e.g. FunctionTestCases, with no
+                        # TestCase subclass declared — is silently
+                        # omitted (Codex P2).
+                        has_load_tests = True
                 visit(child, in_class, True)
             else:
                 if not in_class and not in_func:
@@ -190,6 +200,15 @@ def _classify_test_module(
                             for target in child.targets:
                                 if isinstance(target, ast.Name):
                                     testcase_names.add(target.id)
+                        for target in child.targets:
+                            if (
+                                isinstance(target, ast.Name)
+                                and target.id == "load_tests"
+                            ):
+                                # `load_tests = <callable>` binds the
+                                # same module attribute the unittest
+                                # loader invokes.
+                                has_load_tests = True
                 visit(child, in_class, in_func)
 
     visit(tree, False, False)
@@ -261,7 +280,7 @@ def _classify_test_module(
             break
         pending = deferred
 
-    has_unittest = False
+    has_unittest = has_load_tests
     for cls in classes:
         if resolved.get(cls.name):
             has_unittest = True
