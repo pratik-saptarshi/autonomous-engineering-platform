@@ -972,6 +972,53 @@ def cmd_watch(args):
         Ledger(conn).reap_abandoned()
     except Exception:
         pass  # housekeeping must never break the watch itself
+    row = get_row(conn, run_key)
+    if row is not None and row["status"] == "completed":
+        # Adoption Task 2: a pre-existing completed row is never
+        # trusted blindly — the run may have been rerun since the row
+        # was written, and this invocation did not observe the write.
+        # Exactly one gated read decides what happens next.
+        code, out = gated_gh(
+            ["run", "view", str(run_id), "--repo", args.repo,
+             "--json", "status,conclusion,attempt"], actor)
+        if code == 75:  # gate denial, surfaced like poll_once's
+            line = out.strip() or "ghg: DENIED"
+            print(line, file=sys.stderr, flush=True)
+            return 75
+        fresh_status = fresh_conclusion = None
+        if code == 0:
+            try:
+                payload = json.loads(out)
+                fresh_status = payload["status"]
+                fresh_conclusion = payload.get("conclusion")
+            except (ValueError, KeyError, AttributeError):
+                fresh_status = None
+        if fresh_status is None:
+            # An inconclusive read never falls back to the cache.
+            print("ghg: could not revalidate completed run %s;"
+                  " refusing to trust the cached conclusion"
+                  % run_id, file=sys.stderr, flush=True)
+            return 1
+        if fresh_status == "completed":
+            print("ghg watch: run %s completed conclusion=%s"
+                  % (run_id, fresh_conclusion), flush=True)
+            return 0 if fresh_conclusion == "success" else 1
+        # A rerun is in progress: reset the stale row and fall into
+        # the normal claim/poll flow below. The reset is safe because
+        # a completed row has no live writer — the poller that
+        # completed it exited at completion, try_claim never hands a
+        # completed row to a new poller, and write_status is
+        # epoch-guarded to the dead poller — and the guard clause
+        # keeps the write off any row that has left the completed
+        # state since the check. In-progress fencing is untouched.
+        # poller is NOT NULL in the schema, so the owner is cleared to
+        # the empty sentinel: it can never equal a real self_id
+        # ("<pid>-<uuid>"), and heartbeat=0 routes try_claim straight
+        # to its takeover branch.
+        conn.execute(
+            "UPDATE watches SET status='watching', conclusion=NULL,"
+            " poller='', heartbeat=0 WHERE run_key = ?"
+            " AND status='completed'", (run_key,))
     deadline = time.monotonic() + args.timeout
     is_poller = False
     epoch = None

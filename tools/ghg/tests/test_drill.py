@@ -77,7 +77,8 @@ if argv[:2] == ["run", "view"]:
         plan = json.load(f)
     entry = plan[min(n, len(plan) - 1)]
     print(json.dumps({"status": entry["status"],
-                      "conclusion": entry.get("conclusion")}))
+                      "conclusion": entry.get("conclusion"),
+                      "attempt": entry.get("attempt", 1)}))
     sys.exit(0)
 
 bump(os.environ["GHG_STUB_CALLS"])

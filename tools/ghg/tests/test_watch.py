@@ -67,7 +67,8 @@ entry = plan[min(n, len(plan) - 1)]
 if entry.get("sleep"):
     time.sleep(entry["sleep"])
 print(json.dumps({"status": entry["status"],
-                  "conclusion": entry.get("conclusion")}))
+                  "conclusion": entry.get("conclusion"),
+                  "attempt": entry.get("attempt", 1)}))
 """
 
 
@@ -252,6 +253,75 @@ class TestIntervalFloor(WatchTestCase):
     def test_e_production_default_floor_is_45(self):
         ghg = load_ghg_module()
         self.assertEqual(ghg.DEFAULT_INTERVAL_FLOOR, 45)
+
+
+class TestCompletedRowRevalidation(WatchTestCase):
+    """Adoption Task 2: a completed row is never trusted blindly.
+
+    A watch invocation that finds a pre-existing completed row (the
+    original poller process is gone) must revalidate it with exactly
+    one gated read before printing anything: a fresh completed payload
+    is printed; a not-completed payload means a rerun is in progress,
+    so the row is reset and the normal claim/poll flow takes over.
+    """
+
+    def test_rerun_second_watch_revalidates_resets_and_repolls(self):
+        self.set_plan([
+            {"status": "in_progress", "conclusion": None, "attempt": 1},
+            {"status": "completed", "conclusion": "failure", "attempt": 1},
+            {"status": "in_progress", "conclusion": None, "attempt": 2},
+            {"status": "completed", "conclusion": "success", "attempt": 2},
+        ])
+        first = self.spawn_watcher()
+        code, out, _ = self.finish(first)
+        self.assertEqual(code, 1)
+        self.assertIn("ghg watch: run 42 completed conclusion=failure",
+                      out)
+        self.assertEqual(self.stub_calls(), 2)
+        row = self.watch_row()
+        self.assertEqual(row[4], "completed")
+        self.assertEqual(row[5], "failure")
+        # The first watcher (and poller) process has exited. GitHub now
+        # reports attempt 2 in progress (entries 3-4 of the plan): the
+        # second watch must NOT print attempt 1's cached conclusion —
+        # it revalidates (1 read), resets, claims, and polls attempt 2
+        # to completion (1 poll).
+        second = self.spawn_watcher()
+        code, out, _ = self.finish(second)
+        self.assertEqual(code, 0)
+        self.assertNotIn("conclusion=failure", out)
+        self.assertIn("ghg watch: run 42 completed conclusion=success",
+                      out)
+        self.assertEqual(self.stub_calls(), 4)
+        row = self.watch_row()
+        self.assertEqual(row[4], "completed")
+        self.assertEqual(row[5], "success")
+
+    def test_no_rerun_second_watch_one_read_zero_polls(self):
+        self.set_plan([
+            {"status": "in_progress", "conclusion": None, "attempt": 1},
+            {"status": "completed", "conclusion": "success", "attempt": 1},
+        ])
+        first = self.spawn_watcher()
+        code, out, _ = self.finish(first)
+        self.assertEqual(code, 0)
+        self.assertIn("ghg watch: run 42 completed conclusion=success",
+                      out)
+        self.assertEqual(self.stub_calls(), 2)
+        # Second invocation on the still-completed run: exactly one
+        # additional stub call — the revalidation read — and no poll
+        # sequence (a claim+poll flow would show up as further calls:
+        # try_claim never hands out a completed row, so any extra call
+        # beyond the one read is a regression).
+        second = self.spawn_watcher()
+        code, out, _ = self.finish(second)
+        self.assertEqual(code, 0)
+        self.assertIn("ghg watch: run 42 completed conclusion=success",
+                      out)
+        self.assertEqual(self.stub_calls(), 3)
+        row = self.watch_row()
+        self.assertEqual(row[4], "completed")
+        self.assertEqual(row[5], "success")
 
 
 class TestBrokenDb(WatchTestCase):
