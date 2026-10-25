@@ -154,10 +154,15 @@ The state directory used to default to `~/workspace/worktrees/.lanes` — inside
 
 **Migration rule.** While any `*.json` manifest remains at the legacy location (`~/workspace/worktrees/.lanes`) and `AEP_LANES_DIR` is unset, `claim`, `release`, and `reap` refuse (exit 1) with one shared message naming the legacy path, the new default, and the two remedies:
 
-1. Inspect the manifests at the legacy location, then move the directory's contents to the new default — after which the lanes settle normally, through the existing gates.
+1. Inspect the manifests at the legacy location, then run `lane-coord.sh migrate` to move them to the new default.
 2. Or set `AEP_LANES_DIR` to the legacy path to keep operating there deliberately.
 
 `status` is the exception: it still lists legacy lanes read-only, each line marked `legacy`, so an operator can see what is waiting on migration. No code path reads or settles legacy state for a mutating command — there is no dual-directory operation.
+
+**Migrated lanes are quarantined.** Migration imports a manifest from a worker-writable tree, so its provenance is untrusted: moving it into the trusted state directory must not launder a planted manifest into ownership proof (the migration path itself was the follow-up panel's P1-3 repro — the four `release --clean` ownership signals are sound against *stale* manifests but cannot distinguish *planted* ones). `migrate` therefore stamps each imported lane with a marker under `$AEP_LANES_DIR/.quarantine/` (outside the manifest set). While the marker exists, `release --clean` and `reap` refuse for that lane; `status` marks the line `quarantined`; read paths and plain `release` work normally. The quarantine clears only per lane, by one of:
+
+- `lane-coord.sh trust --name <name>` — the operator's confirmation after inspecting that lane's manifest, recorded as an `operator-trusted` entry in the lane's history log (outside the manifest itself); or
+- a fresh `claim` of the same name, which re-stamps the manifest natively and discharges the marker.
 
 **Operator notes.**
 
@@ -172,7 +177,9 @@ The state directory used to default to `~/workspace/worktrees/.lanes` — inside
 | `release --name <name> [--clean [--force-dirty]]` | The normal teardown path (see below). Without `--clean`, settles the claim and leaves the worktree in place. |
 | `reap --name <name>` | Settle a claim whose launcher is provably dead, without touching the worktree. Refuses while the fence is held. |
 | `status [--name <name>] [--capacity <n>]` | Show each lane's state, epoch, worker, fence state, and path, plus the pool line (`LANE: pool: <n> claimed of <capacity>`). |
-| `--self-test` | The built-in 29-case suite (also run in CI by the `script-tests` job). |
+| `migrate` | Move legacy-location manifests into the state dir, quarantining each imported lane (see *Migrated lanes are quarantined*). |
+| `trust --name <name>` | Record the operator's per-lane confirmation for a quarantined migrated lane, clearing its quarantine marker. |
+| `--self-test` | The built-in 30-case suite (also run in CI by the `script-tests` job). |
 
 ### Exit codes
 

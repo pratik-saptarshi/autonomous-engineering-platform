@@ -56,9 +56,16 @@
 #     manifests remain at the legacy location and AEP_LANES_DIR is
 #     unset, claim/release/reap refuse with migration instructions
 #     and status lists the legacy lanes read-only; a lane is settled
-#     only after migration, under the normal gates. Placement removes
-#     the state from the workers' tasked tree; it is NOT a write
-#     boundary against a determined same-uid process.
+#     only after migration, under the normal gates. Migration itself
+#     runs through `migrate`, which QUARANTINES every imported lane
+#     (panel P1-3): a manifest from the worker-writable legacy tree
+#     is untrusted provenance, so release --clean and reap refuse
+#     for it until `trust --name <name>` records the operator's
+#     per-lane confirmation (in the lane's history log, outside the
+#     manifest set) or a fresh claim re-stamps the manifest
+#     natively. Placement removes the state from the workers' tasked
+#     tree; it is NOT a write boundary against a determined same-uid
+#     process.
 set -euo pipefail
 
 # Platform-standard tool locations (see TOOLS.md): non-interactive runs
@@ -107,8 +114,43 @@ refuse_if_legacy_state() {
   legacy_state_present || return 0
   echo "LANE: refuse: legacy coordinator state at $LEGACY_LANES_DIR"
   echo "LANE: coordinator state moved to $LANES_DIR; claim/release/reap refuse while legacy manifests remain (status lists them read-only)"
-  echo "LANE: remedy: inspect the manifests in $LEGACY_LANES_DIR, then move the directory's contents to $LANES_DIR"
+  echo "LANE: remedy: inspect the manifests in $LEGACY_LANES_DIR, then run lane-coord.sh migrate to move them to $LANES_DIR (migrated lanes are quarantined: release --clean and reap refuse until lane-coord.sh trust --name <name> records your confirmation for each inspected lane)"
   echo "LANE: remedy: or set AEP_LANES_DIR=$LEGACY_LANES_DIR to keep operating on the legacy location deliberately"
+  exit 1
+}
+
+# Migration quarantine (panel P1-3): a manifest that arrives via the
+# legacy path comes from a worker-writable tree, so its provenance
+# is untrusted — placement in the trusted state dir must not launder
+# it into ownership proof for destructive operations. `migrate`
+# stamps each imported lane with a marker under
+# $LANES_DIR/.quarantine/ (a directory of marker files, outside the
+# manifest set itself). While the marker exists, release --clean and
+# reap refuse for the lane; read paths and plain release work
+# normally. The marker is cleared only by `trust` (the operator's
+# per-lane confirmation, recorded in the lane's history log —
+# outside the manifest) or by a fresh claim, which re-stamps the
+# manifest natively.
+QUARANTINE_DIR() { printf '%s/.quarantine' "$LANES_DIR"; }
+
+lane_quarantined() { # $1 = name
+  [ -f "$(QUARANTINE_DIR)/$1" ]
+}
+
+quarantine_lane() { # $1 = name
+  mkdir -p "$(QUARANTINE_DIR)"
+  printf '%s migrated from %s\n' "$(now_iso)" "$LEGACY_LANES_DIR" \
+    >"$(QUARANTINE_DIR)/$1"
+}
+
+clear_quarantine() { # $1 = name
+  rm -f "$(QUARANTINE_DIR)/$1"
+}
+
+refuse_if_quarantined() { # $1 = name, $2 = operation label
+  lane_quarantined "$1" || return 0
+  echo "LANE: refuse $2 $1: manifest arrived via legacy migration and is quarantined (untrusted provenance); it cannot authorize a destructive operation"
+  echo "LANE: remedy: inspect the manifest, then run lane-coord.sh trust --name $1 to record operator confirmation, or re-claim the lane"
   exit 1
 }
 
@@ -121,6 +163,8 @@ usage() {
   echo "usage: lane-coord.sh release --name <name> [--clean [--force-dirty]]" >&2
   echo "usage: lane-coord.sh reap --name <name>" >&2
   echo "usage: lane-coord.sh status [--name <name>]" >&2
+  echo "usage: lane-coord.sh migrate" >&2
+  echo "usage: lane-coord.sh trust --name <name>" >&2
   echo "usage: lane-coord.sh --self-test" >&2
 }
 
@@ -887,6 +931,9 @@ cmd_claim() {
     "$$" "$epoch" "claimed" "$(now_iso)" 0 0 \
     "$POLICY_INTEGRITY" "$POLICY_FILE_RESOLVED" "$POLICY_SHA256"
   history_append "$name" "claimed" "$epoch" "$worker"
+  # A fresh claim re-stamps the manifest natively: any migration
+  # quarantine on this name is discharged by the claim itself.
+  clear_quarantine "$name"
 
   # Release the capacity lock — the transaction is over.
   flock -u 9 || true
@@ -1012,6 +1059,10 @@ cmd_reap() {
 
   # Legacy-state gate: refuse before any state is read or created.
   refuse_if_legacy_state
+  # Quarantine gate: reap settles a lane destructively (the claim is
+  # closed as interrupted), so a migrated manifest's word is not
+  # enough — same rule as release --clean.
+  refuse_if_quarantined "$name" "reap"
 
   # Settle bookkeeping only, under the capacity lock (same
   # serialization as release): probe, check, and write can never
@@ -1111,6 +1162,11 @@ cmd_release() {
       echo "LANE: refuse clean $name: no manifest"
       exit 1
     fi
+    # Quarantine gate (panel P1-3): the four signals below are sound
+    # against STALE manifests but cannot distinguish a PLANTED one —
+    # a migrated manifest is not ownership proof until the operator
+    # confirms it (trust) or a fresh claim re-stamps it.
+    refuse_if_quarantined "$name" "clean"
     if fence_is_held "$name"; then
       echo "LANE: refuse clean $name: fence held (launcher alive)"
       exit 1
@@ -1226,6 +1282,87 @@ cmd_release() {
   echo "LANE: released $name"
 }
 
+cmd_migrate() {
+  [ $# -eq 0 ] || {
+    usage
+    exit 2
+  }
+  if [ -n "${AEP_LANES_DIR:-}" ]; then
+    echo "LANE: refuse migrate: AEP_LANES_DIR is set ($AEP_LANES_DIR); migration into the default location requires it unset"
+    exit 1
+  fi
+  if ! legacy_state_present; then
+    echo "LANE: migrate: no legacy coordinator state at $LEGACY_LANES_DIR"
+    exit 1
+  fi
+  # Refuse before moving anything when a destination already exists:
+  # a half-migrated pool is worse than a refused one.
+  local f name
+  for f in "$LEGACY_LANES_DIR"/*.json; do
+    [ -e "$f" ] || continue
+    name="$(basename "$f" .json)"
+    if [ -e "$LANES_DIR/$name.json" ]; then
+      echo "LANE: refuse migrate: $LANES_DIR/$name.json already exists; resolve the collision first"
+      exit 1
+    fi
+  done
+  ensure_lanes_dir
+  for f in "$LEGACY_LANES_DIR"/*.json; do
+    [ -e "$f" ] || continue
+    name="$(basename "$f" .json)"
+    mv "$f" "$LANES_DIR/$name.json"
+    if [ -f "$LEGACY_LANES_DIR/$name.log" ]; then
+      mv "$LEGACY_LANES_DIR/$name.log" "$LANES_DIR/$name.log"
+    fi
+    quarantine_lane "$name"
+    echo "LANE: migrated $name from $LEGACY_LANES_DIR (quarantined: release --clean and reap refuse until lane-coord.sh trust --name $name)"
+  done
+}
+
+cmd_trust() {
+  local name=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+    --name)
+      [ $# -ge 2 ] || {
+        usage
+        exit 2
+      }
+      name="$2"
+      shift 2
+      ;;
+    *)
+      usage
+      exit 2
+      ;;
+    esac
+  done
+  if [ -z "$name" ]; then
+    usage
+    exit 2
+  fi
+  if ! [[ "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    usage
+    exit 2
+  fi
+  refuse_if_legacy_state
+  local manifest_file="$LANES_DIR/$name.json"
+  if [ ! -f "$manifest_file" ]; then
+    echo "LANE: refuse trust $name: no manifest"
+    exit 1
+  fi
+  if ! lane_quarantined "$name"; then
+    echo "LANE: refuse trust $name: lane is not quarantined"
+    exit 1
+  fi
+  clear_quarantine "$name"
+  local epoch worker
+  epoch=$(manifest_get "$manifest_file" epoch 2>/dev/null || echo 0)
+  worker=$(manifest_get "$manifest_file" worker 2>/dev/null || echo unknown)
+  history_append "$name" "operator-trusted" "$epoch" "$worker"
+  echo "LANE: trusted $name (quarantine cleared by operator confirmation)"
+}
+
 cmd_status() {
   local name="" capacity_flag=""
   while [ $# -gt 0 ]; do
@@ -1267,7 +1404,9 @@ cmd_status() {
     worker=$(manifest_get "$f" worker 2>/dev/null || true)
     path=$(manifest_get "$f" path 2>/dev/null || true)
     if fence_is_held "$n"; then fence_state="held"; else fence_state="free"; fi
-    echo "$n state=$state epoch=$epoch worker=$worker fence=$fence_state path=$path"
+    local quarantine_suffix=""
+    if lane_quarantined "$n"; then quarantine_suffix=" quarantined"; fi
+    echo "$n state=$state epoch=$epoch worker=$worker fence=$fence_state path=$path$quarantine_suffix"
   }
 
   print_legacy_status_line() { # $1 = manifest file in $LEGACY_LANES_DIR
@@ -2076,10 +2215,19 @@ json.dump(data, open(sys.argv[1], "w"))
 
   # --- Case 25: migrated-lane-settles-normally ---
   # Perform the documented remedy: the manifests were inspected
-  # above; now move the legacy directory's contents to the new
-  # default (the directory itself becomes the new state dir).
-  mkdir -p "$legacy_home/.local/state/aep"
-  mv "$legacy_dir" "$new_dir" || case_fails=1
+  # above; now run migrate, which moves the legacy directory's
+  # contents to the new default and quarantines each migrated lane
+  # (untrusted provenance — see case 30). Non-destructive settling
+  # (plain release) works for a quarantined lane; the lane is no
+  # longer reported as legacy, but as quarantined.
+  local out25m="$selftest_root/out25m.txt" rc25m=0
+  env -u AEP_LANES_DIR HOME="$legacy_home" AEP_WORKTREES_ROOT="$legacy_wts" \
+    bash "$self_path" migrate >"$out25m" 2>&1 || rc25m=$?
+  [ "$rc25m" -eq 0 ] || case_fails=1
+  grep -q "LANE: migrated sigma-twentyfive" "$out25m" || case_fails=1
+  [ -f "$new_dir/sigma-twentyfive.json" ] || case_fails=1
+  [ ! -e "$legacy_dir/sigma-twentyfive.json" ] || case_fails=1
+  [ -f "$new_dir/.quarantine/sigma-twentyfive" ] || case_fails=1
   local out25="$selftest_root/out25.txt" rc25=0
   env -u AEP_LANES_DIR HOME="$legacy_home" AEP_WORKTREES_ROOT="$legacy_wts" \
     bash "$self_path" release --name sigma-twentyfive >"$out25" 2>&1 || rc25=$?
@@ -2093,6 +2241,7 @@ json.dump(data, open(sys.argv[1], "w"))
   [ "$rc25s" -eq 0 ] || case_fails=1
   grep -q "sigma-twentyfive state=released" "$out25s" || case_fails=1
   if grep -q " legacy$" "$out25s"; then case_fails=1; fi
+  grep -q " quarantined$" "$out25s" || case_fails=1
   # A fresh HOME with no legacy state: the script creates the new
   # default on demand, mode 700, and the claim runs normally.
   local fresh_home="$selftest_root/fresh-home"
@@ -2215,6 +2364,39 @@ STUBEOF
   esac
   report_case "gate-and-claim-resolve-same-policy"
 
+  # --- Case 30: migrated-manifest-quarantined-from-clean ---
+  # The panel P1-3 attack: a manifest planted at the legacy
+  # location (worker-writable) naming a real foreign worktree with
+  # all four ownership signals satisfied must not become
+  # release --clean's ownership proof by being migrated into the
+  # trusted state dir. sigma-twentyfive (cases 23–25) is exactly
+  # such a lane: genuinely claimed at the legacy location, migrated
+  # in case 25, now released with its worktree intact and its
+  # worker dead — every --clean signal green. While quarantined,
+  # --clean refuses and removes nothing; after the operator's
+  # per-lane trust (recorded in the lane log, outside the manifest),
+  # --clean proceeds through the normal signals.
+  local out30="$selftest_root/out30.txt" rc30=0
+  env -u AEP_LANES_DIR HOME="$legacy_home" AEP_WORKTREES_ROOT="$legacy_wts" \
+    bash "$self_path" release --name sigma-twentyfive --clean >"$out30" 2>&1 || rc30=$?
+  [ "$rc30" -eq 1 ] || case_fails=1
+  grep -q "quarantined" "$out30" || case_fails=1
+  [ -d "$legacy_wts/sigma-twentyfive" ] || case_fails=1
+  [ "$(jget "$new_dir/sigma-twentyfive.json" state)" = "released" ] || case_fails=1
+  local out30t="$selftest_root/out30t.txt" rc30t=0
+  env -u AEP_LANES_DIR HOME="$legacy_home" AEP_WORKTREES_ROOT="$legacy_wts" \
+    bash "$self_path" trust --name sigma-twentyfive >"$out30t" 2>&1 || rc30t=$?
+  [ "$rc30t" -eq 0 ] || case_fails=1
+  [ ! -e "$new_dir/.quarantine/sigma-twentyfive" ] || case_fails=1
+  grep -q " operator-trusted " "$new_dir/sigma-twentyfive.log" || case_fails=1
+  local out30c="$selftest_root/out30c.txt" rc30c=0
+  env -u AEP_LANES_DIR HOME="$legacy_home" AEP_WORKTREES_ROOT="$legacy_wts" \
+    bash "$self_path" release --name sigma-twentyfive --clean >"$out30c" 2>&1 || rc30c=$?
+  [ "$rc30c" -eq 0 ] || case_fails=1
+  grep -q "LANE: cleaned sigma-twentyfive" "$out30c" || case_fails=1
+  [ ! -e "$legacy_wts/sigma-twentyfive" ] || case_fails=1
+  report_case "migrated-manifest-quarantined-from-clean"
+
   return "$fails"
 }
 
@@ -2243,6 +2425,14 @@ reap)
 status)
   shift
   cmd_status "$@"
+  ;;
+migrate)
+  shift
+  cmd_migrate "$@"
+  ;;
+trust)
+  shift
+  cmd_trust "$@"
   ;;
 *)
   usage
