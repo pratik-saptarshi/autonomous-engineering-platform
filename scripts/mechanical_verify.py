@@ -754,6 +754,7 @@ def run_all(
     budget_seconds=600,
     mem_available_kb=available_memory_kb,
     on_result=None,
+    between_commands=None,
 ) -> int:
     mem_kb = mem_available_kb() if mem_available_kb is not None else None
     if mem_kb is not None and mem_kb < MIN_MEMORY_KB:
@@ -782,6 +783,20 @@ def run_all(
         executed += 1
         if on_result is not None:
             on_result(result)
+        if result.passed and between_commands is not None:
+            # In-run binding revalidation (panel SEC-P0-1): the hook
+            # returns a description when the tree moved during this
+            # command. Abort BEFORE the next command runs — a later
+            # command must never execute against a substituted tree,
+            # and no completion record may seal the segment.
+            excursion = between_commands()
+            if excursion is not None:
+                print(
+                    f"VERIFY: FAIL tree binding changed during the "
+                    f"run: {excursion} — aborting without a "
+                    f"completion record"
+                )
+                return 1
         if result.passed:
             print(f"VERIFY: {command.id} PASS")
         else:
@@ -1122,6 +1137,40 @@ def tree_clean(root: Path, receipts_path: Path | None = None) -> bool:
             continue
         return False
     return True
+
+
+def binding_excursion(
+    root: Path, binding: dict, receipts_path: Path | None = None
+) -> str | None:
+    """Describe how the live tree has moved from `binding`, or None
+    when it still matches. Git mode only (fs mode returns None; its
+    seal recomputes the whole-tree digest instead).
+
+    Head and digest are compared independently: a reset to a
+    different commit with identical tree content moves the head
+    while the digest stands still, and the segment's claim is about
+    the recorded commit, not merely its content. The working tree
+    must also still be clean — an uncommitted excursion is movement
+    even when HEAD never changes. This observes the tree BETWEEN
+    commands; a single command that swaps and restores entirely
+    within its own execution is not observable this way (that needs
+    an execution sandbox, outside the same-uid threat model).
+    """
+    if binding.get("mode") != "git":
+        return None
+    try:
+        current = tree_binding(root, receipts_path)
+    except (OSError, ValueError) as exc:
+        return f"tree binding no longer readable ({exc})"
+    if current["head"] != binding["head"]:
+        return (
+            f"HEAD moved {binding['head']} -> {current['head']}"
+        )
+    if current["tree_digest"] != binding["tree_digest"]:
+        return "tree digest changed at the recorded HEAD"
+    if not tree_clean(root, receipts_path):
+        return "working tree no longer clean"
+    return None
 
 
 def _chain_sha256(body: dict, prev_chain: str) -> str:
@@ -1627,6 +1676,22 @@ def main(argv: list[str] | None = None) -> int:
         def on_result(result: VerificationResult) -> None:
             append_receipt(receipts_path, task, result, run_id=run_id)
 
+    between_commands = None
+    if binding is not None and binding["mode"] == "git":
+        # Close the bind -> first-command gap as well: revalidate
+        # once immediately before the first command runs.
+        excursion = binding_excursion(root, binding, receipts_path)
+        if excursion is not None:
+            print(
+                f"VERIFY: FAIL tree binding changed during the "
+                f"run: {excursion} — aborting without a "
+                f"completion record"
+            )
+            return 1
+
+        def between_commands() -> str | None:
+            return binding_excursion(root, binding, receipts_path)
+
     rc = run_all(
         root,
         commands,
@@ -1634,6 +1699,7 @@ def main(argv: list[str] | None = None) -> int:
         budget_seconds=args.budget,
         mem_available_kb=available_memory_kb,
         on_result=on_result,
+        between_commands=between_commands,
     )
     if rc == 0 and receipts_path is not None:
         # run_all returns 0 only when every command executed and

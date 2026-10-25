@@ -839,6 +839,128 @@ class BindingTests(unittest.TestCase):
         self.assertIn("--historical", proc.stdout)
 
 
+SWAP_MAKEFILE_H1 = "test:\n\tgit reset --hard HEAD~1\n\ttrue\n"
+
+
+def swap_fixture(root: Path, swap_body: str, makefile_h0: str) -> None:
+    """Panel P0 attack fixture: an npm-test wrapper (swap.sh) runs
+    first and may move HEAD; make-test then runs against whatever
+    tree HEAD names. At H0 the Makefile is `makefile_h0`."""
+    git(root, "init", "-q", "-b", "main")
+    write(
+        root,
+        "package.json",
+        json.dumps({"scripts": {"test": "sh swap.sh"}}),
+    )
+    write(root, "swap.sh", swap_body)
+    write(root, "Makefile", makefile_h0)
+    git(root, "add", ".")
+    git(
+        root,
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@example.invalid",
+        "commit",
+        "-q",
+        "-m",
+        "H0",
+    )
+
+
+class InRunBindingTests(unittest.TestCase):
+    """Bucket A1 (panel SEC-P0-1): the binding is revalidated around
+    each command. A command that moves HEAD mid-run — even one that
+    restores it before the seal — must abort the run with no
+    completion record, so the segment can never validate as a PASS
+    for a tree the later commands did not run against."""
+
+    def test_commit_reset_round_trip_aborts_without_completion(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            swap = (
+                "#!/bin/sh\n"
+                "git config user.name Fixture\n"
+                "git config user.email fixture@example.invalid\n"
+                "cat > Makefile <<'EOF'\n"
+                + SWAP_MAKEFILE_H1
+                + "EOF\n"
+                "git add Makefile\n"
+                "git commit -q -m H1-passing-tree\n"
+            )
+            # At H0 `make test` fails; only the swapped-in H1 tree
+            # (whose recipe resets back to H0, then passes) is green.
+            swap_fixture(root, swap, "test:\n\tfalse\n")
+            receipts = root / "r.jsonl"
+            proc = verify(root, "swap", receipts)
+            self.assertNotEqual(
+                proc.returncode, 0, proc.stdout + proc.stderr
+            )
+            self.assertIn("binding changed during the run", proc.stdout)
+            kinds = [r.get("kind") for r in read_receipts(receipts)]
+            self.assertNotIn("run-complete", kinds)
+            proc = check(receipts, "swap")
+            self.assertNotEqual(
+                proc.returncode, 0, proc.stdout + proc.stderr
+            )
+            self.assertNotIn("RECEIPTS: PASS", proc.stdout)
+
+    def test_commit_without_reset_aborts_without_completion(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            swap = (
+                "#!/bin/sh\n"
+                "git config user.name Fixture\n"
+                "git config user.email fixture@example.invalid\n"
+                "printf 'test:\\n\\ttrue\\n' > Makefile\n"
+                "git add Makefile\n"
+                "git commit -q -m H1-passing-tree\n"
+            )
+            swap_fixture(root, swap, "test:\n\tfalse\n")
+            receipts = root / "r.jsonl"
+            proc = verify(root, "swap", receipts)
+            self.assertNotEqual(
+                proc.returncode, 0, proc.stdout + proc.stderr
+            )
+            self.assertIn("binding changed during the run", proc.stdout)
+            kinds = [r.get("kind") for r in read_receipts(receipts)]
+            self.assertNotIn("run-complete", kinds)
+
+    def test_empty_commit_same_tree_aborts_without_completion(self):
+        # HEAD moves while the tree digest stands still: the segment
+        # claims the recorded COMMIT, so head alone moving is enough.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            swap = (
+                "#!/bin/sh\n"
+                "git config user.name Fixture\n"
+                "git config user.email fixture@example.invalid\n"
+                "git commit -q --allow-empty -m empty-detour\n"
+                "git reset --hard HEAD~1\n"
+                "git commit -q --allow-empty -m empty-other\n"
+            )
+            swap_fixture(root, swap, "test:\n\ttrue\n")
+            receipts = root / "r.jsonl"
+            proc = verify(root, "swap", receipts)
+            self.assertNotEqual(
+                proc.returncode, 0, proc.stdout + proc.stderr
+            )
+            self.assertIn("binding changed during the run", proc.stdout)
+            kinds = [r.get("kind") for r in read_receipts(receipts)]
+            self.assertNotIn("run-complete", kinds)
+
+    def test_no_swap_control_seals_and_validates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            swap_fixture(root, "#!/bin/sh\ntrue\n", "test:\n\ttrue\n")
+            receipts = root / "r.jsonl"
+            proc = verify(root, "swap", receipts)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            proc = check(receipts, "swap")
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("RECEIPTS: PASS", proc.stdout)
+
+
 class PlacementAndStrictTypeTests(unittest.TestCase):
     """Task 8 (overseer remediation R7): (a) verify refuses a receipts
     file that is tracked by git inside the root — evidence must not be
