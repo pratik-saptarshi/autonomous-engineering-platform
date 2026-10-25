@@ -620,6 +620,12 @@ def load_workflow(path: str, remote_of=None) -> Workflow:
         raise WorkflowError(
             "field 'workspace_on_terminal' must be \"keep\" or \"release-clean\""
         )
+    if values["author_association"] not in ("owner", "any"):
+        # The value is deliberately not interpolated: it may be a
+        # resolved $ENV value, which diagnostics never print.
+        raise WorkflowError(
+            "field 'author_association' must be \"owner\" or \"any\""
+        )
     if values["transition_on_success"] and values["done_state"] is None:
         raise WorkflowError(
             "field 'transition_on_success' is true but 'done_state' is not set"

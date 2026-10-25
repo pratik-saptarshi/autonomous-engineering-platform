@@ -10,7 +10,13 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from orch.workflow import FIELD_CONSUMERS, Workflow, WorkflowError, load_workflow
+from orch.workflow import (
+    FIELD_CONSUMERS,
+    Workflow,
+    WorkflowError,
+    _KINDS,
+    load_workflow,
+)
 
 
 def fake_remote(url=None, branch="main"):
@@ -24,7 +30,7 @@ tracker: github
 repo: octo/orch-proj
 managed_by: orchestrator
 assignee: pratik
-author_association: member
+author_association: any
 active_states: [open, in_progress]
 terminal_states: [closed, done]
 done_state: done
@@ -102,7 +108,7 @@ class TestFullSpec(WorkflowLoadCase):
         self.assertEqual(wf.repo, "octo/orch-proj")
         self.assertEqual(wf.managed_by, "orchestrator")
         self.assertEqual(wf.assignee, "pratik")
-        self.assertEqual(wf.author_association, "member")
+        self.assertEqual(wf.author_association, "any")
         self.assertEqual(wf.active_states, ("open", "in_progress"))
         self.assertEqual(wf.terminal_states, ("closed", "done"))
         self.assertEqual(wf.done_state, "done")
@@ -193,6 +199,16 @@ class TestCensus(WorkflowLoadCase):
         for consumer in FIELD_CONSUMERS.values():
             self.assertIsInstance(consumer, str)
             self.assertTrue(consumer)
+
+    def test_kinds_registry_covers_every_consumer_field(self):
+        # prompt_template is the one field with no _KINDS entry (it is
+        # the file body, set outside typed conversion); every other
+        # consumer field must have a kind, or the loader cannot parse
+        # it. Guards a future field added to FIELD_CONSUMERS but not
+        # to the kind registry.
+        self.assertEqual(
+            set(_KINDS) | {"prompt_template"}, set(FIELD_CONSUMERS)
+        )
 
 
 class TestEnvResolution(WorkflowLoadCase):
@@ -341,6 +357,34 @@ class TestValidation(WorkflowLoadCase):
         spec = MINIMAL_SPEC.replace("tracker: beads", "tracker: jira")
         msg = self.load_error(spec)
         self.assertIn("tracker", msg)
+
+    def test_author_association_outside_the_defined_set_fails(self):
+        spec = MINIMAL_SPEC.replace(
+            "terminal_states: [closed]",
+            "terminal_states: [closed]\nauthor_association: member",
+        )
+        msg = self.load_error(spec)
+        self.assertIn("author_association", msg)
+
+    def test_author_association_defined_values_load(self):
+        for value in ("owner", "any"):
+            spec = MINIMAL_SPEC.replace(
+                "terminal_states: [closed]",
+                f"terminal_states: [closed]\nauthor_association: {value}",
+            )
+            wf = self.load(spec)
+            self.assertEqual(wf.author_association, value)
+
+    def test_env_sourced_invalid_author_association_is_not_printed(self):
+        secret = "resolved-association-secret-4d2e"
+        spec = MINIMAL_SPEC.replace(
+            "terminal_states: [closed]",
+            "terminal_states: [closed]\nauthor_association: $ORCH_TEST_ASSOC",
+        )
+        with mock.patch.dict(os.environ, {"ORCH_TEST_ASSOC": secret}):
+            msg = self.load_error(spec)
+        self.assertIn("author_association", msg)
+        self.assertNotIn(secret, msg)
 
     def test_env_sourced_invalid_tracker_value_is_not_printed(self):
         # Regression: a resolved $ENV value must never appear in loader

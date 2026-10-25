@@ -52,10 +52,11 @@ import statistics
 from datetime import datetime, timezone
 from pathlib import Path
 
-from orch.claims import lane_name_for
+from orch.claims import ACTIVE_CLAIM_STATE, lane_name_for
 from orch.model import Issue
 
 __all__ = [
+    "ObservationLogError",
     "active_lane_names",
     "append_observation",
     "build_observation",
@@ -64,7 +65,13 @@ __all__ = [
     "summarize",
 ]
 
-_ACTIVE_CLAIM_STATE = "claimed"
+
+class ObservationLogError(ValueError):
+    """An observation log line is not valid JSON.
+
+    The message names the log path and the malformed line, so the CLI
+    can surface it as a clean error instead of a traceback.
+    """
 
 
 def parse_ts(value) -> datetime | None:
@@ -182,7 +189,7 @@ def active_lane_names(lanes_dir, start: datetime, end: datetime) -> set[str]:
         claimed_at = parse_ts(data.get("claimed_at"))
         if claimed_at is None or claimed_at > end:
             continue
-        if data.get("state") == _ACTIVE_CLAIM_STATE:
+        if data.get("state") == ACTIVE_CLAIM_STATE:
             names.add(path.stem)
             continue
         updated_at = parse_ts(data.get("updated_at"))
@@ -197,10 +204,20 @@ def read_observations(path) -> list[dict]:
     if not log_path.is_file():
         return []
     observations = []
-    for line in log_path.read_text(encoding="utf-8").splitlines():
+    for lineno, line in enumerate(
+        log_path.read_text(encoding="utf-8").splitlines(), start=1
+    ):
         line = line.strip()
-        if line:
+        if not line:
+            continue
+        try:
             observations.append(json.loads(line))
+        except json.JSONDecodeError as exc:
+            preview = line if len(line) <= 120 else line[:117] + "..."
+            raise ObservationLogError(
+                f"malformed observation log {log_path}: "
+                f"line {lineno} is not valid JSON: {preview!r}"
+            ) from exc
     return observations
 
 

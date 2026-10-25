@@ -36,6 +36,7 @@ from orch.adapters_github import (
 from orch.claims import ManifestClaimView, LanesDirMissing, _resolve_lanes_dir
 from orch.engine import select
 from orch.observe import (
+    ObservationLogError,
     active_lane_names,
     append_observation,
     build_observation,
@@ -43,7 +44,12 @@ from orch.observe import (
     read_observations,
     summarize,
 )
-from orch.workflow import WorkflowError, load_workflow
+from orch.workflow import (
+    WorkflowError,
+    _default_remote_of,
+    _normalize_remote,
+    load_workflow,
+)
 
 __all__ = ["main"]
 
@@ -61,6 +67,7 @@ _KNOWN_ERRORS = (
     GitHubError,
     BudgetDenied,
     BudgetExceeded,
+    ObservationLogError,
     OSError,
 )
 
@@ -141,11 +148,41 @@ def _cmd_preflight(args, out, err) -> int:
     )
 
     if workflow.tracker == "github":
-        check(
-            True,
-            f"repo/remote agreement: spec repo {workflow.repo} matches "
-            "the project origin remote (enforced at load)",
-        )
+        # Compare here, not just at load: with
+        # allow_repo_remote_mismatch set the loader loads a mismatching
+        # spec, and this line must report that rather than claim an
+        # agreement that does not hold.
+        remote_url, _default_branch = _default_remote_of(workflow.project_root)
+        if remote_url is None:
+            check(
+                False,
+                "repo/remote agreement: could not resolve the project "
+                "origin remote to compare against the spec repo "
+                f"{workflow.repo}",
+            )
+        else:
+            remote_repo = _normalize_remote(remote_url)
+            if remote_repo.lower() == workflow.repo.lower():
+                check(
+                    True,
+                    f"repo/remote agreement: spec repo {workflow.repo} "
+                    f"matches the project origin remote ({remote_repo})",
+                )
+            elif workflow.allow_repo_remote_mismatch:
+                check(
+                    True,
+                    f"repo/remote agreement: mismatch — spec repo "
+                    f"{workflow.repo} differs from the project origin "
+                    f"remote ({remote_repo}); allowed by "
+                    "allow_repo_remote_mismatch: true",
+                )
+            else:
+                check(
+                    False,
+                    f"repo/remote agreement: mismatch — spec repo "
+                    f"{workflow.repo} differs from the project origin "
+                    f"remote ({remote_repo})",
+                )
         polls_per_hour = 3600 / workflow.poll_seconds
         projected = polls_per_hour * workflow.max_calls_per_poll
         check(

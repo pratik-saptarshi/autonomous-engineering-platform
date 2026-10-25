@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 __all__ = [
+    "ACTIVE_CLAIM_STATE",
     "ClaimView",
     "LanesDirMissing",
     "ManifestClaimView",
@@ -35,7 +36,7 @@ _NON_SLUG_CHARS = re.compile(r"[^a-z0-9-]")
 _MAX_LANE_NAME = 48
 _TRUNCATED_BODY = 41
 _HASH_PREFIX = 6
-_ACTIVE_CLAIM_STATE = "claimed"
+ACTIVE_CLAIM_STATE = "claimed"
 
 
 class LanesDirMissing(Exception):
@@ -119,7 +120,7 @@ class ManifestClaimView:
                     f"skipping lane manifest {path.name}: no usable 'state' field"
                 )
                 continue
-            if state == _ACTIVE_CLAIM_STATE:
+            if state == ACTIVE_CLAIM_STATE:
                 self._claimed.add(path.stem)
 
     def claimed_lanes(self) -> set[str]:

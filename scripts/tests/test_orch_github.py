@@ -262,6 +262,10 @@ class GitHubAdapterTests(unittest.TestCase):
 
     def test_points_default_reads_the_ledger_for_the_orch_actor(self):
         with tempfile.TemporaryDirectory() as tmp:
+            # Construct the adapter BEFORE seeding: its poll window
+            # opens at construction, so rows stamped afterwards can
+            # never fall before the window on a second boundary.
+            adapter = GitHubAdapter(make_workflow(), runner=FakeRunner())
             db = Path(tmp) / "ghg.db"
             conn = sqlite3.connect(db)
             conn.execute(
@@ -285,7 +289,6 @@ class GitHubAdapterTests(unittest.TestCase):
             )
             conn.commit()
             conn.close()
-            adapter = GitHubAdapter(make_workflow(), runner=FakeRunner())
             with mock.patch.dict("os.environ", {"GHG_STATE_DIR": tmp}):
                 self.assertEqual(adapter.points_spent(), 7)
 

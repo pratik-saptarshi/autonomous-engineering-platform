@@ -255,7 +255,8 @@ against `BeadsAdapter` and `GitHubAdapter` (`comment` and
 `transition`) at acceptance time. The dry-run created no files
 outside the observation log (asserted by the CLI suite on a temp
 tree), constructed no store, and `bd` was invoked read-only
-(`list` only).
+throughout — `list` for the fetch, and `ready --json` for the
+independent cross-check recorded in the expectation section above.
 
 ## GitHub section — deferred (Step 5)
 

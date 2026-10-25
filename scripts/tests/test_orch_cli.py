@@ -422,6 +422,19 @@ class SummarizeTests(CliTestCase):
         self.assertIn("mean churn: n/a", out)
         self.assertIn("pickup lag: n/a", out)
 
+    def test_malformed_log_line_is_a_clean_error_not_a_traceback(self):
+        log = self.root / "obs.jsonl"
+        log.write_text(
+            json.dumps(self.base_obs()) + "\nthis is not json\n",
+            encoding="utf-8",
+        )
+        code, out, err = self.run_cli(["dry-run", "--summarize", str(log)])
+        self.assertNotEqual(code, 0)
+        self.assertIn(str(log), err)
+        self.assertIn("line 2", err)
+        self.assertIn("this is not json", err)
+        self.assertNotIn("Traceback", out + err)
+
 
 class PreflightTests(CliTestCase):
     def test_beads_preflight_passes_with_fixture_bd(self):
@@ -486,6 +499,42 @@ class PreflightTests(CliTestCase):
         self.assertEqual(code, 0, out + err)
         # defaults: poll_seconds 300 -> 12 polls/hour; cap 6 calls/poll
         self.assertIn("72", out)
+        self.assertIn("matches the project origin remote", out)
+        self.assertIn("preflight: PASS", out)
+
+    def test_github_preflight_reports_allowed_mismatch_as_such(self):
+        repo = self.root / "proj"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo),
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/example/proj.git",
+            ],
+            check=True,
+        )
+        bin_dir = self.make_bin(
+            {"git": shutil.which("git"), "ghg": "script", "bd": "script"}
+        )
+        spec = self.write_spec(
+            github_spec(repo)
+            .replace("repo: example/proj", "repo: example/other")
+            .replace(
+                "base_ref: main",
+                "base_ref: main\nallow_repo_remote_mismatch: true",
+            )
+        )
+        with mock.patch.dict(os.environ, {"PATH": bin_dir}):
+            code, out, err = self.run_cli(["preflight", "--workflow", spec])
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("mismatch", out)
+        self.assertIn("allow_repo_remote_mismatch", out)
+        self.assertNotIn("matches the project origin remote", out)
         self.assertIn("preflight: PASS", out)
 
     def test_preflight_never_prints_resolved_env_value(self):
