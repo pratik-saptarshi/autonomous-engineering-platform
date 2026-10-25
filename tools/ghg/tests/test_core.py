@@ -309,6 +309,28 @@ class TestSeeding(CoreTestCase):
         after = reset + 10
         self.assertEqual(ledger.spend("core", 3600, now=after), 0)
 
+    def test_seed_refresh_keeps_rolling_window_spend(self):
+        reset = int(time.time()) + 120
+        self.set_rate_limit(rate_limit_payload(3000, reset))
+        ledger = self.make_ledger()
+        ledger.snapshot()
+        seeded_at = int(ledger.meta_get("seeded_at"))
+        for _ in range(6):
+            self.insert_call("core", 100, "ok", seeded_at + 1)
+        # The first seed's reset passes and a fresh snapshot
+        # re-seeds from GitHub's new `used` (10). _maybe_seed is
+        # called directly because snapshot() cannot be driven at a
+        # synthetic now (it uses wall-clock + a TTL cache).
+        t2 = reset + 10
+        self.assertLess(t2 - (seeded_at + 1), 3600)
+        ledger._maybe_seed(rate_limit_payload(10, t2 + 3600), t2)
+        self.assertEqual(int(ledger.meta_get("seed_core")), 10)
+        # Rolling semantics: the 600 of pre-reset ledger spend is
+        # still inside the 3600s window at t2, so it stays in the
+        # cap — spend is max(seed-anchored 10, rolling 600), not
+        # the new seed-anchored figure alone.
+        self.assertEqual(ledger.spend("core", 3600, now=t2), 600)
+
     def test_snapshot_cached_within_ttl(self):
         reset = int(time.time()) + 3600
         self.set_rate_limit(rate_limit_payload(10, reset))

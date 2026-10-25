@@ -558,8 +558,14 @@ class Ledger:
     def spend(self, bucket, window_s, now=None):
         """Terminal spend inside the rolling window (never reserved).
 
-        For `core` under an active seed, the effective spend is
-        seed_core + ledger spend accrued after seeded_at.
+        For `core` under an active seed, the effective spend is the
+        max of the seed-anchored figure (seed_core + ledger spend
+        accrued after seeded_at) and the pure rolling ledger sum
+        over the window. In steady state the seed-anchored figure
+        dominates; right after a re-seed the rolling sum dominates,
+        so pre-reset spend still inside the window stays in the cap
+        (rolling semantics). Max, never a sum of the two — no spend
+        is double-counted.
         """
         now = int(time.time()) if now is None else int(now)
         since = now - int(window_s)
@@ -573,9 +579,12 @@ class Ledger:
                 # the seed IS post-seed spend (a fresh DB has no
                 # pre-seed rows). Using seeded_at itself made the
                 # seeding second's spend invisible to the cap.
-                return seed_core + self._sum(
+                seed_anchored = seed_core + self._sum(
                     bucket, "('ok', 'error', 'bypass')",
                     max(since, seeded_at - 1))
+                rolling = self._sum(
+                    bucket, "('ok', 'error', 'bypass')", since)
+                return max(seed_anchored, rolling)
         return self._sum(bucket, "('ok', 'error', 'bypass')", since)
 
     def in_flight(self, bucket, window_s, now=None):
