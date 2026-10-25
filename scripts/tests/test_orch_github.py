@@ -16,6 +16,7 @@ from orch.adapters_github import (
     GitHubAdapter,
     gated_argv,
 )
+from orch.engine import Reason, select
 from orch.workflow import Workflow
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "orch"
@@ -305,6 +306,52 @@ class GitHubAdapterTests(unittest.TestCase):
             self.adapter.comment("github:101", "hello")
         with self.assertRaises(NotImplementedError):
             self.adapter.transition("github:101", "closed")
+
+
+class _StubClaimView:
+    def claimed_lanes(self):
+        return set()
+
+    def running_by_state(self):
+        return {}
+
+
+class GitHubTerminalityTests(unittest.TestCase):
+    """Panel A1: a closed blocker blocks iff the spec declares it.
+
+    Issue 103 is blocked only by the closed issue 42 (via its
+    blocked-by:42 label), so its fate is decided entirely by whose
+    terminal vocabulary governs. It is assigned to someone-else.
+    """
+
+    def run_selection(self, **overrides):
+        workflow = make_workflow(**overrides)
+        adapter = GitHubAdapter(workflow, runner=FakeRunner())
+        candidates = adapter.fetch_candidates()
+        return select(candidates, workflow, _StubClaimView(), set())
+
+    def test_closed_blocker_not_terminal_when_spec_omits_closed(self):
+        adapter = GitHubAdapter(
+            make_workflow(terminal_states=("done",)), runner=FakeRunner()
+        )
+        issues = {i.identifier: i for i in adapter.fetch_candidates()}
+        blocker = issues["103"].blockers[0]
+        self.assertEqual(blocker.key, "github:42")
+        self.assertEqual(blocker.state, "closed")
+        self.assertFalse(blocker.is_terminal)
+
+    def test_closed_blocker_blocks_when_spec_omits_closed(self):
+        result = self.run_selection(
+            terminal_states=("done",), assignee="someone-else"
+        )
+        self.assertNotIn("103", [i.identifier for i in result.dispatch])
+        self.assertEqual(result.rejections["103"][0], Reason.BLOCKED)
+
+    def test_closed_blocker_does_not_block_when_spec_declares_closed(self):
+        result = self.run_selection(
+            terminal_states=("closed",), assignee="someone-else"
+        )
+        self.assertIn("103", [i.identifier for i in result.dispatch])
 
 
 if __name__ == "__main__":

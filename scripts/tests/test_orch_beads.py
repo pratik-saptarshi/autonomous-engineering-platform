@@ -8,6 +8,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from orch.adapters_beads import BeadsAdapter, BeadsError, FetchCeilingExceeded
+from orch.engine import Reason, select
 from orch.workflow import Workflow
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "orch"
@@ -155,14 +156,17 @@ class BeadsAdapterTests(unittest.TestCase):
         issue = self.fetch_by_identifier()["dap-test.4"]
         self.assertEqual(issue.blockers, ())
 
-    def test_closed_blocker_is_terminal_even_with_empty_terminal_states(self):
+    def test_closed_blocker_not_terminal_when_spec_omits_closed(self):
+        # Panel A1: terminality is the spec's alone — no track-pinned
+        # union. A spec whose terminal_states omit "closed" gets a
+        # non-terminal closed blocker (it still blocks).
         adapter = BeadsAdapter(
             make_workflow(terminal_states=()), runner=FakeRunner()
         )
         by_id = {i.identifier: i for i in adapter.fetch_candidates()}
         blocker = by_id["dap-test.1"].blockers[0]
         self.assertEqual(blocker.key, "beads:dap-test.2")
-        self.assertTrue(blocker.is_terminal)
+        self.assertFalse(blocker.is_terminal)
 
     # -- priority / assignee ---------------------------------------------
 
@@ -296,6 +300,77 @@ class BeadsAdapterTests(unittest.TestCase):
         with self.assertRaises(NotImplementedError) as ctx:
             self.adapter.transition("beads:dap-test.1", "closed")
         self.assertEqual(str(ctx.exception), "read-only in Stage 1")
+
+
+class _StubClaimView:
+    def claimed_lanes(self):
+        return set()
+
+    def running_by_state(self):
+        return {}
+
+
+class _ListRunner:
+    """Runner serving one fixed ``bd list`` payload."""
+
+    def __init__(self, payload):
+        self._payload = payload
+        self.calls = []
+
+    def __call__(self, argv, **kwargs):
+        self.calls.append((list(argv), kwargs))
+        return SimpleNamespace(
+            returncode=0, stdout=json.dumps(self._payload), stderr=""
+        )
+
+
+class BeadsTerminalityEndToEndTests(unittest.TestCase):
+    """Panel A1: a closed blocker blocks iff the spec declares it.
+
+    The candidate x-1 is blocked only by the closed x-2, so its fate is
+    decided entirely by whose terminal vocabulary governs.
+    """
+
+    PAYLOAD = [
+        {
+            "id": "x-1",
+            "status": "open",
+            "title": "Candidate",
+            "assignee": "worker-a",
+            "issue_type": "task",
+            "priority": 1,
+            "created_at": "2026-01-01T09:00:00Z",
+            "dependencies": [
+                {"type": "blocks", "depends_on_id": "x-2", "issue_id": "x-1"}
+            ],
+        },
+        {
+            "id": "x-2",
+            "status": "closed",
+            "title": "Blocker",
+            "issue_type": "task",
+        },
+    ]
+
+    def setUp(self):
+        which = mock.patch("shutil.which", return_value="/fake/bin/bd")
+        which.start()
+        self.addCleanup(which.stop)
+
+    def run_selection(self, **overrides):
+        workflow = make_workflow(**overrides)
+        adapter = BeadsAdapter(workflow, runner=_ListRunner(self.PAYLOAD))
+        candidates = adapter.fetch_candidates()
+        return select(candidates, workflow, _StubClaimView(), set())
+
+    def test_closed_blocker_blocks_when_spec_omits_closed(self):
+        result = self.run_selection(terminal_states=("done",))
+        self.assertEqual(result.dispatch, [])
+        self.assertEqual(result.rejections["x-1"][0], Reason.BLOCKED)
+
+    def test_closed_blocker_does_not_block_when_spec_declares_closed(self):
+        result = self.run_selection(terminal_states=("closed",))
+        self.assertEqual([i.identifier for i in result.dispatch], ["x-1"])
 
 
 if __name__ == "__main__":

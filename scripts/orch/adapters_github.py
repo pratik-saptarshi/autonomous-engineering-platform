@@ -152,9 +152,11 @@ class GitHubAdapter:
         self._runner = runner
         self._points_of = points_of
         self._actor = f"orch-{workflow.project_slug}"
+        # Terminality is the spec's alone (panel A1): no hardcoded
+        # addition to the workflow's terminal_states.
         self._terminal_states = {
             str(state).lower() for state in workflow.terminal_states
-        } | {"closed"}
+        }
         self._priority_labels = {
             str(name).lower(): value
             for name, value in workflow.priority_labels.items()

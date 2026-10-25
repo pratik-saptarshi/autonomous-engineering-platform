@@ -87,9 +87,12 @@ def _filter_reason(
         return Reason.NOT_ASSIGNED, "author_ok is false"
 
     for blocker in issue.blockers:
-        if not blocker.is_terminal and (
-            _normalize_state(blocker.state) not in terminal_states
-        ):
+        # Terminality is derived once, here: the blocker's state
+        # against the workflow's terminal set. The adapters derive
+        # BlockerRef.is_terminal from the same set, so the two can no
+        # longer disagree — and a spec that omits a track's native
+        # terminal word fails closed (the blocker blocks).
+        if _normalize_state(blocker.state) not in terminal_states:
             return Reason.BLOCKED, blocker.key
 
     if lane in claimed_lanes:

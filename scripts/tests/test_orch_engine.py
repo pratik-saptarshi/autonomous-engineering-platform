@@ -213,6 +213,18 @@ class SelectTests(unittest.TestCase):
         result = self.select([issue])
         self.assertEqual(result.rejections["PROJ-1"][0], Reason.BLOCKED)
 
+    def test_closed_blocker_blocks_when_spec_omits_closed(self):
+        # Panel A1: terminality is the spec's alone. The engine derives
+        # it from the blocker's state against the workflow's terminal
+        # set — a ref baked is_terminal=True against some other
+        # vocabulary (the adapters' old hardcoded union) cannot unblock.
+        workflow = make_workflow(terminal_states=("done",))
+        blocker = BlockerRef("beads:X", "closed", True)
+        issue = make_issue(blockers=(blocker,))
+        result = self.select([issue], workflow=workflow)
+        self.assertEqual(result.dispatch, [])
+        self.assertEqual(result.rejections["PROJ-1"][0], Reason.BLOCKED)
+
     def test_terminal_state_rejected(self):
         issue = make_issue(state="closed")
         result = self.select([issue])

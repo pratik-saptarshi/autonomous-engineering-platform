@@ -66,12 +66,13 @@ class BeadsAdapter:
         self._runner = runner
         self.last_fetch_count = 0
         self.last_type_excluded_count = 0
-        # "closed" is terminal on this track regardless of the spec's
-        # terminal vocabulary (the pinned state-mapping rule); the
-        # workflow's terminal states add to it.
+        # Terminality is the spec's alone: a blocker counts as blocking
+        # until its state is in the workflow's terminal_states. There
+        # is no track-pinned addition — the engine derives it the same
+        # way, from the same set (panel A1).
         self._terminal_states = {
             str(state).lower() for state in workflow.terminal_states
-        } | {"closed"}
+        }
 
     # ------------------------------------------------------------------
     # bd plumbing
