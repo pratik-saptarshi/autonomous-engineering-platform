@@ -164,6 +164,64 @@ class DiscoveryTests(unittest.TestCase):
                 ),
             )
 
+    def test_discovers_scripts_unittest_from_scripts_tests(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "scripts/tests/test_sample.py", "import unittest\n")
+            commands = discover_verification_commands(root)
+            self.assertEqual([c.id for c in commands], ["scripts-unittest"])
+            self.assertEqual(
+                commands[0].argv,
+                (
+                    "python3",
+                    "-m",
+                    "unittest",
+                    "discover",
+                    "-s",
+                    "scripts/tests",
+                    "-v",
+                ),
+            )
+
+    def test_scripts_tests_empty_discovers_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "scripts" / "tests").mkdir(parents=True)
+            self.assertEqual(discover_verification_commands(root), ())
+
+    def test_scripts_tests_without_test_files_discovers_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "scripts/tests/helper.py", "VALUE = 1\n")
+            write(root, "scripts/tests/fixtures.txt", "data\n")
+            self.assertEqual(discover_verification_commands(root), ())
+
+    def test_scripts_tests_symlink_discovers_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            external = base / "external"
+            write(external, "test_real.py", "import unittest\n")
+            (root / "scripts").mkdir(parents=True)
+            os.symlink(external, root / "scripts" / "tests")
+            self.assertEqual(discover_verification_commands(root), ())
+
+    def test_scripts_tests_symlinked_test_file_discovers_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            foreign = write(base / "elsewhere", "test_real.py", "import unittest\n")
+            tests_dir = root / "scripts" / "tests"
+            tests_dir.mkdir(parents=True)
+            os.symlink(foreign, tests_dir / "test_sample.py")
+            self.assertEqual(discover_verification_commands(root), ())
+
+    def test_no_scripts_directory_discovers_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "src/app.py", "VALUE = 1\n")
+            self.assertEqual(discover_verification_commands(root), ())
+
     def test_no_markers_discovers_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(discover_verification_commands(Path(tmp)), ())
@@ -306,6 +364,54 @@ class UnittestExecutionTests(unittest.TestCase):
             )
             self.assertEqual(self.run_fixture(root), 0)
             self.assertTrue((root / "marker.ran").is_file())
+
+
+class ScriptsUnittestExecutionTests(unittest.TestCase):
+    def test_scripts_tests_only_fixture_verifies_and_records_receipt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            write(
+                root,
+                "scripts/tests/test_sample.py",
+                "import unittest\n\n\n"
+                "class Sample(unittest.TestCase):\n"
+                "    def test_sample(self):\n"
+                "        pass\n",
+            )
+            receipts = base / "receipts.jsonl"
+            stdout = io.StringIO()
+            with mock.patch.object(
+                mechanical_verify, "available_memory_kb", return_value=10**9
+            ):
+                with contextlib.redirect_stdout(stdout):
+                    rc = mechanical_verify.main(
+                        [
+                            "verify",
+                            "--root",
+                            str(root),
+                            "--task",
+                            "t",
+                            "--receipts",
+                            str(receipts),
+                        ]
+                    )
+            self.assertEqual(rc, 0, stdout.getvalue())
+            self.assertIn("VERIFY: scripts-unittest PASS", stdout.getvalue())
+            records = [
+                json.loads(line) for line in receipts.read_text().splitlines()
+            ]
+            run_receipts = [
+                r for r in records if r.get("command_id") == "scripts-unittest"
+            ]
+            self.assertEqual(len(run_receipts), 1)
+            self.assertEqual(run_receipts[0]["exit_code"], 0)
+            self.assertFalse(run_receipts[0]["timed_out"])
+            check_stdout = io.StringIO()
+            with contextlib.redirect_stdout(check_stdout):
+                check_rc = mechanical_verify.check_receipts(receipts, "t")
+            self.assertEqual(check_rc, 0, check_stdout.getvalue())
 
 
 class CliTests(unittest.TestCase):
