@@ -34,8 +34,42 @@ if python3 -c 'import py_compile, sys; py_compile.compile(sys.argv[1], cfile=sys
 fi
 
 # ghg.py is broken: record the fallback and degrade per verb.
+# The trace must not persist sensitive flag values (--body, --title,
+# -m/--message, --body-file, -H/--header — the same set ghg.py's
+# redact_argv covers), in separate-token, `--flag=value`, and combined
+# `-H<value>`/`-m<value>` spellings. Unlike redact_argv the shell
+# rendering omits the value length: `<redacted>`, not
+# `<redacted len=N>` — the length is itself a minor leak.
+safe_argv=""
+redact_next=0
+for tok in "$@"; do
+    if [ "$redact_next" = 1 ]; then
+        safe_argv="$safe_argv <redacted>"
+        redact_next=0
+        continue
+    fi
+    case $tok in
+        --body|--title|-m|--message|--body-file|-H|--header)
+            safe_argv="$safe_argv $tok"
+            redact_next=1
+            ;;
+        --body=*|--title=*|--message=*|--body-file=*|--header=*)
+            safe_argv="$safe_argv ${tok%%=*}=<redacted>"
+            ;;
+        -H?*)
+            safe_argv="$safe_argv -H=<redacted>"
+            ;;
+        -m?*)
+            safe_argv="$safe_argv -m=<redacted>"
+            ;;
+        *)
+            safe_argv="$safe_argv $tok"
+            ;;
+    esac
+done
+safe_argv=${safe_argv# }
 printf '%s ghg.py failed py_compile; fallback verb=%s argv=%s\n' \
-    "$(date +%s)" "${1:-}" "$*" >> "$STATE_DIR/fallback.log" 2>/dev/null || true
+    "$(date +%s)" "${1:-}" "$safe_argv" >> "$STATE_DIR/fallback.log" 2>/dev/null || true
 
 verb=${1:-}
 case "$verb" in

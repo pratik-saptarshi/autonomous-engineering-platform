@@ -293,6 +293,41 @@ class TestShimFallback(DrillTestCase):
         self.assertIn("py_compile", fallback)
         self.assertIn("verb=run", fallback)
 
+    def test_h_fallback_trace_redacts_argv_values(self):
+        # FR3-3: the fallback trace line is written on the fail-open
+        # path where ghg.py (and its redact_argv) cannot run, so the
+        # shim itself must keep sensitive flag values out of
+        # fallback.log — in both the separate-token and `=` spellings.
+        broken = self.root / "broken"
+        (broken / "bin").mkdir(parents=True)
+        shutil.copy(SHIM, broken / "bin" / "ghg")
+        (broken / "bin" / "ghg").chmod(0o755)
+        (broken / "ghg.py").write_text("def broken(:\n")
+        proc = subprocess.run(
+            [str(broken / "bin" / "ghg"), "run", "--",
+             "pr", "create", "--title", "TITLETOK",
+             "--body", "PRIVATE_BODY",
+             "-H", "Authorization: Bearer BEARERTOK",
+             "--header=X-Custom:HEADERTOK",
+             "--body=BODYEQTOK",
+             "-HCOMBINEDTOK"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, env=self.env(), timeout=30)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        fallback = (self.state_dir / "fallback.log").read_text()
+        # The trace still records its diagnostic fields.
+        self.assertTrue(fallback.split()[0].isdigit(), fallback)
+        self.assertIn("py_compile", fallback)
+        self.assertIn("verb=run", fallback)
+        self.assertIn("pr create", fallback)
+        # No secret value survives in any spelling.
+        for secret in ("TITLETOK", "PRIVATE_BODY", "BEARERTOK",
+                       "HEADERTOK", "BODYEQTOK", "COMBINEDTOK"):
+            self.assertNotIn(secret, fallback)
+        self.assertIn("<redacted>", fallback)
+        self.assertIn("--body <redacted>", fallback)
+        self.assertIn("--header=<redacted>", fallback)
+
     def test_g_run_through_symlink_uses_real_gate(self):
         # The documented fleet install is a symlink (~/go/bin/ghg ->
         # .../tools/ghg/bin/ghg). The shim must resolve $0's symlink
