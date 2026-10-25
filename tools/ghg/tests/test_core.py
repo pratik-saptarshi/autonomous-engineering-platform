@@ -405,6 +405,13 @@ class TestClassify(CoreTestCase):
             (["api", "-f", "q=1", "-H", "A: b", "graphql"],
              [("graphql", 2), ("content", 1)]),
             (["api", "-H", "A: b", "graphql"], [("graphql", 2)]),
+            (["api", "--cache", "60", "graphql", "-f", "query=..."],
+             [("graphql", 2), ("content", 1)]),
+            (["api", "--hostname", "ghe.example.com", "graphql"],
+             [("graphql", 2)]),
+            (["api", "-p", "corsair", "graphql"], [("graphql", 2)]),
+            (["api", "--preview", "corsair", "graphql"],
+             [("graphql", 2)]),
             # Combined spelling: already skipped whole.
             (["api", "--method=POST", "graphql", "-f", "query=..."],
              [("graphql", 2), ("content", 1)]),

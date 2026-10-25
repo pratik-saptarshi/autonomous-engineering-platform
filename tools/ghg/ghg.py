@@ -420,7 +420,8 @@ _API_PARAM_FLAGS = {"-f", "--field", "-F", "--raw-field", "--input"}
 # whole by _first_positionals already.
 _API_VALUE_FLAGS = ("-X", "--method", "-f", "--raw-field", "-F",
                     "--field", "-H", "--header", "-q", "--jq", "-t",
-                    "--template", "--input")
+                    "--template", "--input", "--cache", "--hostname",
+                    "-p", "--preview")
 
 
 def _is_mutating(argv):
