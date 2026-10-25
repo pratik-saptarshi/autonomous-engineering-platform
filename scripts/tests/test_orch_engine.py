@@ -213,6 +213,40 @@ class SelectTests(unittest.TestCase):
         result = self.select([issue])
         self.assertEqual(result.rejections["PROJ-1"][0], Reason.BLOCKED)
 
+    def test_terminal_twin_does_not_veto_live_issue(self):
+        # Panel A2: collision is assessed among live issues only. A
+        # terminal slug-twin reports its state reason and never vetoes
+        # the survivor.
+        live = make_issue("dap-1.2")
+        twin = make_issue("dap-1-2", state="closed")
+        result = self.select([live, twin])
+        self.assertEqual(result.dispatch, [live])
+        reason, detail = result.rejections["dap-1-2"]
+        self.assertEqual(reason, Reason.STATE_TERMINAL)
+        self.assertEqual(detail, "closed")
+
+    def test_inactive_twin_does_not_veto_live_issue(self):
+        live = make_issue("dap-1.2")
+        twin = make_issue("dap-1-2", state="deferred")
+        result = self.select([live, twin])
+        self.assertEqual(result.dispatch, [live])
+        self.assertEqual(
+            result.rejections["dap-1-2"][0], Reason.STATE_NOT_ACTIVE
+        )
+
+    def test_live_twins_collide_even_when_one_is_unassigned(self):
+        # Only state grounds remove an issue from the collision set;
+        # two state-eligible twins still both reject NAME_COLLISION
+        # (collision precedence over assignment is unchanged).
+        first = make_issue("dap-1.2")
+        second = make_issue("dap-1-2", assigned_to_worker=False)
+        result = self.select([first, second])
+        self.assertEqual(result.dispatch, [])
+        for identifier in ("dap-1.2", "dap-1-2"):
+            self.assertEqual(
+                result.rejections[identifier][0], Reason.NAME_COLLISION
+            )
+
     def test_closed_blocker_blocks_when_spec_omits_closed(self):
         # Panel A1: terminality is the spec's alone. The engine derives
         # it from the blocker's state against the workflow's terminal

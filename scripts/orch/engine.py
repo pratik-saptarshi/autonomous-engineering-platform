@@ -72,14 +72,17 @@ def _filter_reason(
     if issue.key in completed:
         return Reason.ALREADY_COMPLETED, issue.key
 
-    if lane in colliding_lanes:
-        return Reason.NAME_COLLISION, lane
-
+    # State rejections are determined before collision (panel A2): a
+    # state-rejected issue always reports its state reason, never
+    # NAME_COLLISION.
     state = _normalize_state(issue.state)
     if state in terminal_states:
         return Reason.STATE_TERMINAL, state
     if state not in active_states:
         return Reason.STATE_NOT_ACTIVE, state
+
+    if lane in colliding_lanes:
+        return Reason.NAME_COLLISION, lane
 
     if not issue.assigned_to_worker:
         return Reason.NOT_ASSIGNED, "assigned_to_worker is false"
@@ -128,8 +131,15 @@ def select(
         for state, count in claims.running_by_state().items()
     }
 
+    # Collision is assessed only among issues not already rejected on
+    # state grounds (panel A2): the claim-time ambiguity the check
+    # exists for is among live issues, so a terminal or inactive twin
+    # never vetoes a survivor.
     lane_groups: dict[str, list[Issue]] = {}
     for issue in candidates:
+        state = _normalize_state(issue.state)
+        if state in terminal_states or state not in active_states:
+            continue
         lane_groups.setdefault(lane_name_for(issue.identifier), []).append(issue)
     colliding_lanes = {
         lane for lane, group in lane_groups.items() if len(group) > 1
