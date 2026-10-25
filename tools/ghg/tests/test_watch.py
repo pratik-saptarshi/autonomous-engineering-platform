@@ -287,6 +287,81 @@ class TestTakeover(WatchTestCase):
         self.assertEqual(self.stub_calls(), 4)
 
 
+class TestOwnerIntervalLease(WatchTestCase):
+    """FR3-4: the takeover lease is a property of the CURRENT poller.
+
+    The predicate must compare heartbeat age against 2 x the interval
+    stored on the row (the owner's cadence), not 2 x the waiter's
+    interval — an owner mid-poll at interval=120 heartbeats, then reads
+    for up to ~115s, and a default (45s) waiter must not displace it.
+    """
+
+    def _open(self, name="unit.db"):
+        ghg = load_ghg_module()
+        conn = ghg.open_db(self.root / name)
+        self.addCleanup(conn.close)
+        return ghg, conn
+
+    def _age_heartbeat(self, conn, run_key, age_s):
+        conn.execute(
+            "UPDATE watches SET heartbeat = ? WHERE run_key = ?",
+            (int(time.time()) - age_s, run_key))
+
+    def test_takeover_uses_stored_owner_interval(self):
+        ghg, conn = self._open()
+        key = "owner/repo#99"
+        claimed, epoch = ghg.try_claim(conn, key, "owner-1", 120)
+        self.assertTrue(claimed)
+        self.assertEqual(epoch, 1)
+        # Heartbeat age 100: past a 45s waiter's 2x lease (90) but well
+        # inside the owner's 2x120 lease (240) — no takeover.
+        self._age_heartbeat(conn, key, 100)
+        claimed, _ = ghg.try_claim(conn, key, "waiter-1", 45)
+        self.assertFalse(claimed)
+        row = ghg.get_row(conn, key)
+        self.assertEqual(row["poller"], "owner-1")
+        self.assertEqual(row["interval"], 120)
+        # Heartbeat age 250: past the owner's lease — the waiter takes
+        # over, and the row now carries the NEW owner's interval.
+        self._age_heartbeat(conn, key, 250)
+        claimed, epoch = ghg.try_claim(conn, key, "waiter-1", 45)
+        self.assertTrue(claimed)
+        self.assertEqual(epoch, 2)
+        row = ghg.get_row(conn, key)
+        self.assertEqual(row["poller"], "waiter-1")
+        self.assertEqual(row["interval"], 45)
+
+    def test_open_db_migrates_pre_interval_schema(self):
+        path = self.root / "legacy.db"
+        conn = sqlite3.connect(str(path))
+        conn.execute(
+            "CREATE TABLE watches("
+            " run_key TEXT PRIMARY KEY,"
+            " epoch INTEGER NOT NULL,"
+            " poller TEXT NOT NULL,"
+            " heartbeat INTEGER NOT NULL,"
+            " status TEXT,"
+            " conclusion TEXT,"
+            " updated INTEGER NOT NULL)")
+        conn.execute(
+            "INSERT INTO watches VALUES (?, 1, ?, ?, NULL, NULL, ?)",
+            ("owner/repo#7", "old-poller", 123, 123))
+        conn.commit()
+        conn.close()
+        ghg, conn = self._open("legacy.db")
+        cols = [r[1] for r in
+                conn.execute("PRAGMA table_info(watches)").fetchall()]
+        self.assertIn("interval", cols)
+        # Pre-existing rows read the fleet default via the column DEFAULT.
+        row = ghg.get_row(conn, "owner/repo#7")
+        self.assertEqual(row["interval"], 45)
+        # Idempotent: opening the migrated DB again is a no-op.
+        conn2 = ghg.open_db(path)
+        self.addCleanup(conn2.close)
+        row = ghg.get_row(conn2, "owner/repo#7")
+        self.assertEqual(row["interval"], 45)
+
+
 class TestIntervalFloor(WatchTestCase):
     def test_e_floor_raises_interval_and_spaces_polls(self):
         self.set_plan([

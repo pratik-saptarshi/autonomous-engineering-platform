@@ -48,7 +48,8 @@ CREATE TABLE IF NOT EXISTS watches(
     heartbeat INTEGER NOT NULL,
     status TEXT,
     conclusion TEXT,
-    updated INTEGER NOT NULL
+    updated INTEGER NOT NULL,
+    interval INTEGER NOT NULL DEFAULT 45
 )
 """
 
@@ -308,6 +309,7 @@ def open_db(path):
         try:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute(WATCHES_SCHEMA)
+            _migrate_watches(conn)
             break
         except sqlite3.OperationalError as exc:
             if _is_busy(exc) and attempt < 4:
@@ -315,6 +317,21 @@ def open_db(path):
                 continue
             raise
     return conn
+
+
+def _migrate_watches(conn):
+    """Additive migrations for watches tables from older schemas.
+
+    FR3-4: the `interval` column (the current poller's cadence — the
+    basis of the takeover lease) postdates the first shipped schema.
+    Idempotent: ALTERs only when the column is absent, and
+    pre-existing rows take the DEFAULT (the fleet floor, 45).
+    """
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(watches)")]
+    if "interval" not in cols:
+        conn.execute(
+            "ALTER TABLE watches ADD COLUMN"
+            " interval INTEGER NOT NULL DEFAULT 45")
 
 
 def _is_busy(exc):
@@ -325,7 +342,7 @@ def _is_busy(exc):
 def get_row(conn, run_key):
     return conn.execute(
         "SELECT run_key, epoch, poller, heartbeat, status, conclusion,"
-        " updated FROM watches WHERE run_key = ?",
+        " updated, interval FROM watches WHERE run_key = ?",
         (run_key,)).fetchone()
 
 
@@ -900,8 +917,8 @@ def try_claim(conn, run_key, self_id, interval):
         conn.execute(
             "INSERT OR IGNORE INTO watches"
             " (run_key, epoch, poller, heartbeat, status, conclusion,"
-            "  updated) VALUES (?, 1, ?, ?, NULL, NULL, ?)",
-            (run_key, self_id, now, now))
+            "  updated, interval) VALUES (?, 1, ?, ?, NULL, NULL, ?, ?)",
+            (run_key, self_id, now, now, interval))
         row = get_row(conn, run_key)
         if row is None or row["status"] == "completed":
             conn.execute("COMMIT")
@@ -909,13 +926,17 @@ def try_claim(conn, run_key, self_id, interval):
         if row["poller"] == self_id:
             conn.execute("COMMIT")
             return True, row["epoch"]
-        if now - row["heartbeat"] > 2 * interval:
+        # The lease is the CURRENT poller's: heartbeat age is compared
+        # against 2 x the interval stored on the row, never the
+        # waiter's own (a slow owner mid-poll is not displaceable by a
+        # fast waiter's shorter lease).
+        if now - row["heartbeat"] > 2 * row["interval"]:
             cur = conn.execute(
                 "UPDATE watches SET poller = ?, epoch = epoch + 1,"
-                " heartbeat = ?, updated = ?"
+                " heartbeat = ?, updated = ?, interval = ?"
                 " WHERE run_key = ? AND epoch = ?"
                 " AND (status IS NULL OR status <> 'completed')",
-                (self_id, now, now, run_key, row["epoch"]))
+                (self_id, now, now, interval, run_key, row["epoch"]))
             if cur.rowcount == 1:
                 conn.execute("COMMIT")
                 return True, row["epoch"] + 1
