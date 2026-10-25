@@ -11,7 +11,19 @@
 #   anything else -> exit 70 with a message
 set -u
 
-SHIM_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+# Resolve $0's symlink chain first: the documented install is a
+# symlink (~/go/bin/ghg -> .../tools/ghg/bin/ghg), and ghg.py must be
+# located relative to the shim's real path. Portable readlink loop —
+# no `readlink -f` (not POSIX/macOS-safe).
+GHG_SELF=$0
+while [ -L "$GHG_SELF" ]; do
+    GHG_LINK=$(readlink "$GHG_SELF") || break
+    case $GHG_LINK in
+        /*) GHG_SELF=$GHG_LINK ;;
+        *) GHG_SELF=$(dirname -- "$GHG_SELF")/$GHG_LINK ;;
+    esac
+done
+SHIM_DIR=$(CDPATH= cd -- "$(dirname -- "$GHG_SELF")" && pwd)
 GHG_PY="$SHIM_DIR/../ghg.py"
 STATE_DIR=${GHG_STATE_DIR:-"$HOME/workspace/ghg-state"}
 REAL_GH=${GHG_REAL_GH:-/usr/bin/gh}

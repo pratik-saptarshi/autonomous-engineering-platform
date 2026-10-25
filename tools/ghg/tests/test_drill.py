@@ -292,6 +292,35 @@ class TestShimFallback(DrillTestCase):
         self.assertIn("py_compile", fallback)
         self.assertIn("verb=run", fallback)
 
+    def test_g_run_through_symlink_uses_real_gate(self):
+        # The documented fleet install is a symlink (~/go/bin/ghg ->
+        # .../tools/ghg/bin/ghg). The shim must resolve $0's symlink
+        # chain before locating ghg.py: invoked through a symlink it
+        # must run the real gate, not degrade to the raw fallback.
+        linkbin = self.root / "linkbin"
+        linkbin.mkdir()
+        os.symlink(SHIM, linkbin / "ghg")
+        proc = subprocess.run(
+            [str(linkbin / "ghg"), "run", "--", "api", "repos/octo/demo"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, env=self.env(), timeout=30)
+        self.assertNotIn("Traceback", proc.stderr)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        # The stub saw the call exactly once, with ghg's argv stripped.
+        logged = [json.loads(line) for line in
+                  self.argv_file.read_text().splitlines()]
+        self.assertEqual(logged, [["api", "repos/octo/demo"]])
+        # The real gate ran: the call finalized a ledger row (the raw
+        # fallback in test_d writes none — it never even creates the
+        # ledger, hence the guard).
+        try:
+            rows = self.ledger("SELECT bucket, cost, outcome FROM calls")
+        except sqlite3.OperationalError:
+            rows = []
+        self.assertEqual(rows, [("core", 1, "ok")])
+        # No fallback was taken, so no fallback.log entry exists.
+        self.assertFalse((self.state_dir / "fallback.log").exists())
+
 
 class TestLightweight(DrillTestCase):
     def test_e_median_gate_overhead_under_300ms(self):
