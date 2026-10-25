@@ -226,6 +226,10 @@ def _gated(argv, actor, timeout=None, capture=True, wait=0.0,
         return _fail_open(argv, actor, capture, timeout,
                           "ledger open failed: %s" % exc)
     try:
+        # With a caller budget (the watcher's deadline), the snapshot
+        # refresh below and the gated read share one shrinking clock
+        # starting here — not a fresh budget per step.
+        started = time.monotonic() if budget_s is not None else None
         try:
             if budget_s is None:
                 ledger.snapshot()  # opportunistic refresh + seed
@@ -252,7 +256,16 @@ def _gated(argv, actor, timeout=None, capture=True, wait=0.0,
             if deadline is None or time.monotonic() >= deadline:
                 return 75, _denial_line(ledger)
             time.sleep(min(30.0, max(0.0, deadline - time.monotonic())))
-        code, out = _exec_real_gh(argv, capture, timeout)
+        exec_timeout = timeout
+        if budget_s is not None:
+            # Clamp to what remains of the budget after the snapshot
+            # refresh, so refresh + read sum to <= budget + <1s (the
+            # 1s floor idiom); with no caller timeout the remaining
+            # budget itself becomes the read's timeout.
+            remaining_s = budget_s - (time.monotonic() - started)
+            exec_timeout = (max(remaining_s, 1) if timeout is None
+                            else max(min(timeout, remaining_s), 1))
+        code, out = _exec_real_gh(argv, capture, exec_timeout)
         try:
             ledger.finalize(row_ids, "ok" if code == 0 else "error")
         except Exception as exc:
@@ -944,8 +957,9 @@ def poll_once(conn, run_key, repo, run_id, self_id, epoch, interval,
     inconclusive poll), 'fenced', or 'denied'. `budget_s` is the
     watcher's remaining deadline budget: the gated read's timeout is
     the interval-derived value capped by it (the 1s floor idiom
-    applies), and the gate's snapshot refresh is bounded by it too —
-    a single poll can no longer outlive the caller's `--timeout`.
+    applies), and the gate's snapshot refresh shares the same
+    shrinking clock, so one poll cycle stays within the budget plus
+    the sub-second floor overrun.
     """
     row = get_row(conn, run_key)  # (i) fencing re-check
     if row is None or row["poller"] != self_id or row["epoch"] != epoch:

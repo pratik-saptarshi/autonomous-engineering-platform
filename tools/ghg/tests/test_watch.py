@@ -457,6 +457,36 @@ class TestPollDeadline(WatchTestCase):
                         "snapshot refresh was not bounded by the"
                         " remaining deadline: %.3fs" % elapsed)
 
+    def test_slow_snapshot_and_poll_share_one_deadline(self):
+        # Composed regression (FR3-2 fix round): the two tests above
+        # bound the snapshot refresh and the poll read separately,
+        # each against the cycle-start budget. Composed in one cycle
+        # they must share a single shrinking clock: a 2s snapshot
+        # refresh followed by a 2s status read under --timeout 2.5
+        # must finish at ~2.5s (+ the sub-second floor), not at the
+        # ~4s+ the two stacked per-step bounds allow.
+        self.stub.write_text(COMBINED_STUB_GH)
+        os.environ["GHG_STUB_API_SLEEP"] = "2"
+        self.addCleanup(os.environ.pop, "GHG_STUB_API_SLEEP", None)
+        self.set_plan([
+            {"status": "in_progress", "conclusion": None, "sleep": 2},
+        ])
+        started = time.monotonic()
+        proc = self.spawn_watcher(interval="45", timeout_s="2.5")
+        code, out, _ = self.finish(proc)
+        elapsed = time.monotonic() - started
+        self.assertEqual(code, 1)
+        self.assertIn("ghg watch: run 42 timeout after 2.5s", out)
+        self.assertNotIn("conclusion=", out)
+        # Both slow steps really ran inside this one poll cycle:
+        # exactly one rate_limit fetch and one run view call.
+        self.assertEqual(self.api_calls(), 1)
+        self.assertEqual(self.stub_calls(), 1)
+        self.assertLess(elapsed, 3.5,
+                        "snapshot + poll read were not jointly"
+                        " bounded by the watch deadline: %.3fs"
+                        % elapsed)
+
 
 class TestBrokenDb(WatchTestCase):
     def test_watch_broken_db_exits_70_without_traceback(self):
