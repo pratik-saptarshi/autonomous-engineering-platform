@@ -650,8 +650,12 @@ def _count_collected(
     the sum of the outcome groups in the summary line
     (passed+failed+skipped+errors+xfailed+xpassed) EXCLUDING
     `deselected` — deselected tests were filtered OUT by the runner
-    and never collected for execution (panel correctness P2-B);
-    `no tests ran` is 0. An unparseable count is 0 — a Python command
+    and never collected for execution (panel correctness P2-B).
+    Zero collection is recognized only from the runner's final
+    summary line itself (`no tests ran in …s`): the same phrase in
+    test output (exposed by e.g. `addopts = -s`) is a diagnostic,
+    not the summary, and must not override it (Codex P2, round 4).
+    An unparseable count is 0 — a Python command
     that cannot prove it collected anything fails the count gate in
     VerificationResult.passed. Skips count as collected (deliberate
     ruling): the guarantee is "routed to a runner that collects the
@@ -663,8 +667,6 @@ def _count_collected(
         return int(match.group(1)) if match is not None else 0
     if command_id == "pytest":
         combined = stdout + "\n" + stderr
-        if "no tests ran" in combined:
-            return 0
         total: int | None = None
         for line in combined.splitlines():
             if not _PYTEST_SUMMARY_TAIL_RE.search(line):
@@ -676,6 +678,13 @@ def _count_collected(
                     for count, label in groups
                     if label != "deselected"
                 )
+            elif "no tests ran" in line:
+                # The summary line itself reports zero collection.
+                # The phrase anywhere else (a test's printed
+                # diagnostic) never reaches this branch: it is
+                # either not summary-shaped or superseded by the
+                # real summary, which pytest prints last.
+                total = 0
         return total if total is not None else 0
     return None
 

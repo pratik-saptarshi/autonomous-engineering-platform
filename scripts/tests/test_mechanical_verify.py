@@ -1015,6 +1015,61 @@ class CollectedCountTests(unittest.TestCase):
             self.assertEqual(result.tests_collected, 0)
             self.assertFalse(result.passed)
 
+    def test_diagnostic_no_tests_ran_phrase_does_not_zero_count(self):
+        # Codex P2 (round 4): with `addopts = -s`, a passing test's
+        # printed diagnostic containing the phrase `no tests ran`
+        # must not override the runner's final summary — only the
+        # summary line is authoritative for zero collection.
+        stdout = (
+            "test_diag.py::test_warns PASSED-diagnostic: "
+            "no tests ran in the legacy suite\n"
+            "============================== 1 passed in 0.00s "
+            "==============================\n"
+        )
+        count = mechanical_verify._count_collected(
+            "pytest", stdout, ""
+        )
+        self.assertEqual(count, 1)
+
+    def test_genuine_no_tests_ran_summary_is_zero(self):
+        # The genuine zero-collection outcome is the summary line
+        # itself reading `no tests ran in …s` — still 0.
+        stdout = (
+            "============================= test session starts "
+            "==============================\n"
+            "collected 0 items\n"
+            "============================ no tests ran in 0.01s "
+            "=============================\n"
+        )
+        count = mechanical_verify._count_collected(
+            "pytest", stdout, ""
+        )
+        self.assertEqual(count, 0)
+
+    def test_pytest_leg_with_diagnostic_phrase_passes_count_gate(self):
+        # Run-level shape of the same finding: pytest exits 0, the
+        # diagnostic phrase appears in test output, the summary
+        # reports 1 passed — the leg collects 1 and passes.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_verification(
+                root,
+                VerificationCommand(
+                    "pytest",
+                    "Python tests",
+                    (
+                        sys.executable,
+                        "-c",
+                        "print('diagnostic: no tests ran in the "
+                        "legacy suite'); "
+                        "print('1 passed in 0.00s')",
+                    ),
+                ),
+            )
+            self.assertEqual(result.exit_code, 0)
+            self.assertEqual(result.tests_collected, 1)
+            self.assertTrue(result.passed)
+
 
 class ClassifierUncertaintyTests(unittest.TestCase):
     """Bucket A2 (panel CLASS-P1): classification uncertainty routes
