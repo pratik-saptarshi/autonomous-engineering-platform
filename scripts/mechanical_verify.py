@@ -1250,9 +1250,11 @@ def tree_clean(root: Path, receipts_path: Path | None = None) -> bool:
     """Git-mode cleanliness predicate for the binding gate.
 
     `git status --porcelain` must be empty after dropping (i) the
-    receipts file itself and anything under `.superpowers/` (the
-    workflow's own bookkeeping) and (ii) untracked entries whose path
-    has a component in FS_EXCLUDED_DIRS (tool caches the run itself
+    receipts file itself and UNTRACKED entries under `.superpowers/`
+    (the workflow's own bookkeeping — a TRACKED `.superpowers/` entry
+    that is modified or staged counts as dirty like any other
+    tracked change) and (ii) untracked entries whose path has a
+    component in FS_EXCLUDED_DIRS (tool caches the run itself
     creates). Modified or staged tracked entries always count as
     dirty; the exclusions never hide a tracked change.
     """
@@ -1287,7 +1289,9 @@ def tree_clean(root: Path, receipts_path: Path | None = None) -> bool:
             idx += 1  # rename/copy: the source path field follows
         if receipts_rel is not None and path == receipts_rel:
             continue
-        if path == ".superpowers" or path.startswith(".superpowers/"):
+        if status == b"??" and (
+            path == ".superpowers" or path.startswith(".superpowers/")
+        ):
             continue
         if status == b"??" and any(
             part in FS_EXCLUDED_DIRS for part in path.split("/")

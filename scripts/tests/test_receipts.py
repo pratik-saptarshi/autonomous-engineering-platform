@@ -779,6 +779,29 @@ class BindingTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
             self.assertIn("RECEIPTS: PASS", proc.stdout)
 
+    def test_tracked_superpowers_modification_is_dirty(self):
+        # Bucket A4 (panel CLEAN-P1): the .superpowers/ drop in
+        # tree_clean applies only to UNTRACKED bookkeeping. A tracked
+        # file under .superpowers/ that is modified is a real tree
+        # change: verify refuses at the start gate and a default
+        # check-receipts rejects a segment sealed before the change.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_git_repo(root)
+            commit_file(root, ".superpowers/ledger.md", "progress\n", "ledger")
+            receipts = root / "r.jsonl"
+            self.assertTrue(mechanical_verify.tree_clean(root, receipts))
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            write(root, ".superpowers/ledger.md", "tampered\n")
+            self.assertFalse(mechanical_verify.tree_clean(root, receipts))
+            proc = check(receipts, "1")
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("RECEIPTS: DIRTY", proc.stdout)
+            proc = verify(root, "2", receipts)
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("tree not clean at HEAD", proc.stdout)
+
     def test_legacy_segment_without_binding_is_unbound(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
