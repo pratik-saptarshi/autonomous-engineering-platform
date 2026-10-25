@@ -21,7 +21,7 @@ in it.
 
 ```yaml
 tracker: beads
-project_root: /home/hatch/workspace/repos/document-accessibility-pipeline
+project_root: ~/workspace/repos/document-accessibility-pipeline
 assignee: CloudBot Neo-green
 active_states: [open]
 terminal_states: [closed]
@@ -112,7 +112,7 @@ Preflight:
 
 ```
 ok: workflow loads (tracker: beads)
-ok: tracker tool: bd found at /home/hatch/go/bin/bd
+ok: tracker tool: bd found at ~/go/bin/bd
 ok: lanes directory: resolved as lane-coord resolves it (0 active claims)
 ok: issue_types (effective): task, bug, story, spike, chore
 ok: managed_by: absent (the one-dispatcher declaration)
@@ -123,7 +123,7 @@ preflight: PASS
 Dry-run (with `--log`):
 
 ```
-dry-run: /home/hatch/workspace/goals/autonomous-code-defense-factory/hidden_files/orch-stage1/dap.workflow.md (tracker: beads)
+dry-run: ~/workspace/goals/autonomous-code-defense-factory/hidden_files/orch-stage1/dap.workflow.md (tracker: beads)
 would dispatch (0):
 rejected (71):
   dap-2dj NOT_ASSIGNED (assigned_to_worker is false)
@@ -200,7 +200,7 @@ rejected (71):
 fetch: 82 records fetched, type-excluded: 11
 claim-view warnings: none
 stage-1 limits: per-state caps evaluated against this batch only (no store); GitHub blockers reflect label data only; the completed set is empty (no store exists in Stage 1)
-observation appended: /home/hatch/workspace/goals/autonomous-code-defense-factory/hidden_files/orch-stage1/dap-observation.jsonl
+observation appended: ~/workspace/goals/autonomous-code-defense-factory/hidden_files/orch-stage1/dap-observation.jsonl
 ```
 
 `--summarize` over the resulting log (one observation — the
