@@ -486,6 +486,33 @@ _DEFAULTS = {
     "allow_repo_remote_mismatch": False,
 }
 
+# Load-time minimum for every numeric workflow field (panel A3) — the
+# tightest bound its semantics demand:
+# - a value the engine divides by, counts down from, or retries up to
+#   must be >= 1; 0 there can only be a typo;
+# - a cap may be 0: cap_global: 0 / a per-state cap of 0 is a
+#   deliberate dispatch pause, cancel_grace_s: 0 kills immediately,
+#   workspace_max_age_h: 0 disables the sweep (documented on the
+#   Workflow dataclass);
+# - a negative duration or backoff is meaningless.
+# priority_labels values are deliberately absent: they are relative
+# ordering weights, and any integer (including negative) is meaningful.
+_NUMERIC_MINIMUMS = {
+    "poll_seconds": 1,
+    "max_calls_per_poll": 1,
+    "github_fetch_limit": 1,
+    "max_candidates": 1,
+    "cap_global": 0,
+    "run_deadline_s": 1,
+    "stall_s": 1,
+    "cancel_grace_s": 0,
+    "hook_timeout_s": 1,
+    "backoff_base_s": 0,
+    "backoff_cap_s": 0,
+    "max_infra_attempts": 1,
+    "workspace_max_age_h": 0,
+}
+
 _REQUIRED = {
     "project_root",
     "project_slug",
@@ -626,6 +653,22 @@ def load_workflow(path: str, remote_of=None) -> Workflow:
         raise WorkflowError(
             "field 'author_association' must be \"owner\" or \"any\""
         )
+    # Numeric ranges (panel A3): a spec typo must fail here, at load —
+    # not as a preflight traceback (poll_seconds: 0 divided the
+    # cadence) or a silently all-rejecting run (cap_global: -1). The
+    # message names the field and the bound only; the value may be a
+    # resolved $ENV value, which diagnostics never print.
+    for field_name, minimum in _NUMERIC_MINIMUMS.items():
+        value = values[field_name]
+        if value is not None and value < minimum:
+            raise WorkflowError(
+                f"field '{field_name}' must be >= {minimum}"
+            )
+    for state, cap in values["cap_per_state"].items():
+        if cap < 0:
+            raise WorkflowError(
+                f"field 'cap_per_state' for state {state!r} must be >= 0"
+            )
     if values["transition_on_success"] and values["done_state"] is None:
         raise WorkflowError(
             "field 'transition_on_success' is true but 'done_state' is not set"

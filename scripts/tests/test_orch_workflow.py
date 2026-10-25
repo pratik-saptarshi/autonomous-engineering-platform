@@ -456,6 +456,121 @@ class TestValidation(WorkflowLoadCase):
         self.assertEqual(wf.cap_per_state, {"open": 2, "blocked": 1})
 
 
+class TestNumericRanges(WorkflowLoadCase):
+    """Panel A3: numeric fields have load-time ranges, not just types.
+
+    Each bound is the tightest its semantics demand: a value the engine
+    divides by or counts down from must be >= 1; a cap may be 0 (a
+    deliberate pause / immediate kill / disabled sweep); a negative
+    duration or backoff is meaningless. priority_labels values are
+    deliberately unbounded — they are relative ordering weights.
+    """
+
+    def spec_with(self, line):
+        return MINIMAL_SPEC.replace(
+            "terminal_states: [closed]", f"terminal_states: [closed]\n{line}"
+        )
+
+    def assert_range_error(self, line, field):
+        msg = self.load_error(self.spec_with(line))
+        self.assertIn(field, msg)
+
+    def assert_loads(self, line, field, expected):
+        wf = self.load(self.spec_with(line))
+        self.assertEqual(getattr(wf, field), expected)
+
+    def test_poll_seconds_below_one_fails(self):
+        # poll_seconds is the preflight cadence divisor: 0 used to
+        # crash preflight with a raw ZeroDivisionError traceback.
+        for bad in ("0", "-5"):
+            with self.subTest(bad=bad):
+                self.assert_range_error(f"poll_seconds: {bad}", "poll_seconds")
+
+    def test_poll_seconds_one_loads(self):
+        self.assert_loads("poll_seconds: 1", "poll_seconds", 1)
+
+    def test_counting_fields_below_one_fail(self):
+        # A poll allowed zero calls, a fetch limit of zero, or zero
+        # infra attempts can only be a typo.
+        for field in (
+            "max_calls_per_poll",
+            "github_fetch_limit",
+            "max_candidates",
+            "run_deadline_s",
+            "stall_s",
+            "hook_timeout_s",
+            "max_infra_attempts",
+        ):
+            with self.subTest(field=field):
+                self.assert_range_error(f"{field}: 0", field)
+
+    def test_counting_fields_one_loads(self):
+        for field in (
+            "max_calls_per_poll",
+            "github_fetch_limit",
+            "max_candidates",
+            "run_deadline_s",
+            "stall_s",
+            "hook_timeout_s",
+            "max_infra_attempts",
+        ):
+            with self.subTest(field=field):
+                self.assert_loads(f"{field}: 1", field, 1)
+
+    def test_cap_global_negative_fails(self):
+        # -1 used to load and silently reject every candidate.
+        self.assert_range_error("cap_global: -1", "cap_global")
+
+    def test_cap_global_zero_loads_as_a_deliberate_pause(self):
+        self.assert_loads("cap_global: 0", "cap_global", 0)
+
+    def test_cap_per_state_negative_fails_in_both_forms(self):
+        self.assert_range_error("cap_per_state: [open=-1]", "cap_per_state")
+        spec = MINIMAL_SPEC.replace(
+            "terminal_states: [closed]",
+            "terminal_states: [closed]\ncap_per_state:\n  open: -1",
+        )
+        msg = self.load_error(spec)
+        self.assertIn("cap_per_state", msg)
+
+    def test_cap_per_state_zero_loads(self):
+        self.assert_loads(
+            "cap_per_state: [open=0]", "cap_per_state", {"open": 0}
+        )
+
+    def test_cancel_grace_negative_fails_zero_loads(self):
+        # 0 = kill immediately after the deadline; that is meaningful.
+        self.assert_range_error("cancel_grace_s: -1", "cancel_grace_s")
+        self.assert_loads("cancel_grace_s: 0", "cancel_grace_s", 0)
+
+    def test_negative_backoffs_fail_zero_loads(self):
+        self.assert_range_error("backoff_base_s: -1", "backoff_base_s")
+        self.assert_range_error("backoff_cap_s: -0.5", "backoff_cap_s")
+        self.assert_loads("backoff_base_s: 0", "backoff_base_s", 0)
+        self.assert_loads("backoff_cap_s: 0", "backoff_cap_s", 0)
+
+    def test_workspace_max_age_negative_fails_zero_loads(self):
+        # 0 is documented in the Workflow dataclass as "sweep disabled".
+        self.assert_range_error(
+            "workspace_max_age_h: -1", "workspace_max_age_h"
+        )
+        self.assert_loads("workspace_max_age_h: 0", "workspace_max_age_h", 0)
+
+    def test_priority_labels_values_are_deliberately_unbounded(self):
+        self.assert_loads(
+            "priority_labels: [priority:low=-1]",
+            "priority_labels",
+            {"priority:low": -1},
+        )
+
+    def test_env_sourced_out_of_range_value_is_not_printed(self):
+        spec = self.spec_with("poll_seconds: $ORCH_TEST_POLL")
+        with mock.patch.dict(os.environ, {"ORCH_TEST_POLL": "-42"}):
+            msg = self.load_error(spec)
+        self.assertIn("poll_seconds", msg)
+        self.assertNotIn("-42", msg)
+
+
 class TestRemoteCrossCheck(WorkflowLoadCase):
     GITHUB_SPEC = MINIMAL_SPEC.replace("tracker: beads", "tracker: github\nrepo: octo/orch-proj")
 
