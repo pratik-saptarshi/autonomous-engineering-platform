@@ -13,9 +13,14 @@ Task 3: `ghg run`, the budget-gated pass-through — and the real
 gate behind `gated_gh`, replacing Task 1's direct pass-through
 behind the same signature.
 
-Later, Task 4 adds `ghg check` / `ghg status`. The interfaces those
-tasks consume are fixed here: `open_db()`, `gated_gh(argv, actor)`,
-and the `watches` schema.
+Task 4: `ghg check` (flow pre-flight), `ghg status` (reconciliation
+and drift, with the drift history in $GHG_STATE_DIR/drift.jsonl),
+and `ghg prune` (30-day ledger pruning). The drift-check cron that
+consumes them is specified in DRIFT-CHECK.md — spec only; installing
+it is a separate operator step.
+
+The interfaces those tasks consume are fixed here: `open_db()`,
+`gated_gh(argv, actor)`, and the `watches` schema.
 
 Python 3 standard library only. Runtime state lives in $GHG_STATE_DIR
 (default ~/workspace/ghg-state), never in the source tree (ruling R5).
@@ -314,6 +319,7 @@ OUTCOMES = {"reserved", "ok", "error", "denied", "bypass",
 TERMINAL_OUTCOMES = OUTCOMES - {"reserved"}
 RESERVATION_TTL_S = 600  # reservations older than 10 min are reaped
 SNAPSHOT_TTL_S = 60
+PRUNE_AGE_S = 30 * 86400  # `ghg prune` deletes calls rows older than this
 
 CALLS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS calls(
@@ -676,6 +682,67 @@ class Ledger:
         except sqlite3.OperationalError as exc:
             raise GateBroken(str(exc)) from exc
 
+    # -- check / status / prune -------------------------------------------
+
+    def fits(self, charges, now=None):
+        """Dry-run of reserve_all's cap arithmetic — writes nothing.
+
+        Returns a denial dict ({bucket, window_s, cap, reset}) for
+        the first charge that does not fit current headroom, or
+        None when every charge fits. This is `ghg check`'s engine.
+        """
+        now = int(time.time()) if now is None else int(now)
+        added = {}
+        for bucket, cost in [(str(b), int(c)) for b, c in charges]:
+            for window_s, cap in self.limits.get(bucket, []):
+                used = self.spend(bucket, window_s, now=now) \
+                    + self.in_flight(bucket, window_s, now=now) \
+                    + added.get(bucket, 0)
+                if used + cost > cap:
+                    return {"bucket": bucket, "window_s": window_s,
+                            "cap": cap, "reset": now + window_s}
+            added[bucket] = added.get(bucket, 0) + cost
+        return None
+
+    def outcome_count(self, outcome, window_s, bucket=None, now=None):
+        """Row count for one outcome inside the rolling window."""
+        now = int(time.time()) if now is None else int(now)
+        if bucket is None:
+            row = self.conn.execute(
+                "SELECT COUNT(*) FROM calls"
+                " WHERE outcome = ? AND ts > ?",
+                (outcome, now - int(window_s))).fetchone()
+        else:
+            row = self.conn.execute(
+                "SELECT COUNT(*) FROM calls"
+                " WHERE outcome = ? AND bucket = ? AND ts > ?",
+                (outcome, bucket, now - int(window_s))).fetchone()
+        return int(row[0])
+
+    def top_actors(self, limit=5, window_s=3600, now=None):
+        """Top actors by terminal spend in the window: [(actor, n)]."""
+        now = int(time.time()) if now is None else int(now)
+        rows = self.conn.execute(
+            "SELECT actor, COALESCE(SUM(cost), 0) AS total FROM calls"
+            " WHERE outcome IN ('ok', 'error', 'bypass') AND ts > ?"
+            " GROUP BY actor ORDER BY total DESC, actor ASC LIMIT ?",
+            (now - int(window_s), int(limit))).fetchall()
+        return [(row[0], int(row[1])) for row in rows]
+
+    def prune(self, now=None):
+        """Delete `calls` rows older than 30 days; return the count.
+
+        Raises GateBroken on DB/lock failure, like the reaper.
+        """
+        now = int(time.time()) if now is None else int(now)
+        try:
+            cur = self.conn.execute(
+                "DELETE FROM calls WHERE ts < ?",
+                (now - PRUNE_AGE_S,))
+        except sqlite3.OperationalError as exc:
+            raise GateBroken(str(exc)) from exc
+        return cur.rowcount
+
     # -- snapshot ---------------------------------------------------------
 
     def _fetch_rate_limit(self):
@@ -955,6 +1022,238 @@ def cmd_run(args):
     return code
 
 
+# ---------------------------------------------------- check / status
+
+def _snapshot_resources(payload):
+    if not isinstance(payload, dict):
+        return {}
+    resources = payload.get("resources")
+    return resources if isinstance(resources, dict) else {}
+
+
+def build_status(ledger, now=None):
+    """Assemble the `ghg status` data (also the --json document).
+
+    Core spend is read on its 3600 s window only: under an active
+    seed, spend("core", ...) returns the hourly seed-adjusted figure
+    regardless of the window asked for, so a non-hourly core window
+    would mislabel it. Core drift = GitHub `used` − that same
+    seed-adjusted spend. GraphQL drift is the snapshot's points
+    figure minus the ledger's flat-charge spend — reported only as a
+    coarse hour-scale number, and only when positive.
+    """
+    now = int(time.time()) if now is None else int(now)
+    try:
+        payload = ledger.snapshot()  # opportunistic refresh (housekeep.)
+    except Exception:
+        payload = None  # snapshot is failure-tolerant by design
+    resources = _snapshot_resources(payload)
+    buckets = {}
+    for bucket, default_pairs in DEFAULT_LIMITS.items():
+        pairs = ledger.limits.get(bucket, default_pairs)
+        windows = [{
+            "window_s": window_s,
+            "cap": cap,
+            "spend": ledger.spend(bucket, window_s, now=now),
+            "in_flight": ledger.in_flight(bucket, window_s, now=now),
+        } for window_s, cap in pairs]
+        truth = resources.get(bucket)
+        github = None
+        if isinstance(truth, dict):
+            try:
+                github = {"used": int(truth["used"]),
+                          "remaining": int(truth["remaining"]),
+                          "reset": int(truth["reset"])}
+            except (KeyError, ValueError, TypeError):
+                github = None
+        widest = max([w for w, _c in pairs], default=3600)
+        buckets[bucket] = {
+            "windows": windows,
+            "github": github,
+            "bypass": ledger.outcome_count("bypass", widest,
+                                           bucket=bucket, now=now),
+        }
+    drift_core = None
+    core_github = buckets["core"]["github"]
+    if core_github is not None:
+        drift_core = core_github["used"] \
+            - ledger.spend("core", 3600, now=now)
+    drift_graphql = None
+    graphql_github = buckets["graphql"]["github"]
+    if graphql_github is not None:
+        coarse = graphql_github["used"] \
+            - ledger.spend("graphql", 3600, now=now)
+        if coarse > 0:
+            drift_graphql = coarse
+    return {
+        "buckets": buckets,
+        "drift": {
+            "core": drift_core if drift_core is not None
+                    and drift_core > 0 else None,
+            "core_signed": drift_core,
+            "graphql_coarse": drift_graphql,
+        },
+        "top_actors": [{"actor": actor, "spend": total}
+                       for actor, total in
+                       ledger.top_actors(now=now)],
+        "ungated_errors": ledger.outcome_count(
+            "ungated_error", 3600, now=now),
+    }
+
+
+def _append_drift_history(data, now):
+    """Append this run's drift figures to $GHG_STATE_DIR/drift.jsonl.
+
+    One core entry on every status run that has a snapshot (signed —
+    history survives window rolls), plus a graphql entry, flagged
+    coarse, whenever a coarse figure is reported. Best effort: a
+    history write must never break `ghg status` itself.
+    """
+    entries = []
+    if data["drift"]["core_signed"] is not None:
+        entries.append({"ts": now, "bucket": "core",
+                        "drift": data["drift"]["core_signed"]})
+    if data["drift"]["graphql_coarse"] is not None:
+        entries.append({"ts": now, "bucket": "graphql",
+                        "drift": data["drift"]["graphql_coarse"],
+                        "coarse": True})
+    if not entries:
+        return
+    try:
+        directory = state_dir()
+        directory.mkdir(parents=True, exist_ok=True)
+        with open(directory / "drift.jsonl", "a") as fh:
+            for entry in entries:
+                fh.write(json.dumps(entry) + "\n")
+    except OSError:
+        pass
+
+
+def _format_status(data):
+    lines = []
+    for bucket, info in data["buckets"].items():
+        parts = []
+        for window in info["windows"]:
+            parts.append("spend=%d/%d per %ds in_flight=%d" % (
+                window["spend"], window["cap"], window["window_s"],
+                window["in_flight"]))
+        line = "%s: %s bypass=%d" % (bucket, "; ".join(parts),
+                                     info["bypass"])
+        if info["github"] is not None:
+            line += " github_used=%d github_remaining=%d reset=%d" % (
+                info["github"]["used"], info["github"]["remaining"],
+                info["github"]["reset"])
+        lines.append(line)
+    if data["drift"]["core"] is not None:
+        lines.append(
+            "drift: +%d core calls not through ghg"
+            " (includes interactive and connector-path use)"
+            % data["drift"]["core"])
+    if data["drift"]["graphql_coarse"] is not None:
+        lines.append(
+            "drift: +%d graphql (coarse, hour-scale only — GitHub"
+            " charges points, ghg charges flat per invocation)"
+            % data["drift"]["graphql_coarse"])
+    if data["top_actors"]:
+        lines.append("top actors: " + ", ".join(
+            "%s=%d" % (entry["actor"], entry["spend"])
+            for entry in data["top_actors"]))
+    lines.append("ungated_errors (1h): %d" % data["ungated_errors"])
+    return "\n".join(lines)
+
+
+def _open_ledger():
+    """Ledger for the read-mostly verbs; None (after a message) if
+    the gateway state itself is broken — exit 70, the shim's code
+    for check/status when there is nothing to execute."""
+    try:
+        return Ledger()
+    except Exception as exc:
+        print("ghg: gateway state unavailable: %s" % exc,
+              file=sys.stderr, flush=True)
+        return None
+
+
+def _reap_housekeeping(ledger):
+    """Every verb reaps stale reservations on invocation."""
+    try:
+        ledger.reap_abandoned()
+    except GateBroken as exc:
+        print("ghg: gateway state unavailable: %s" % exc,
+              file=sys.stderr, flush=True)
+        return False
+    return True
+
+
+def cmd_check(args):
+    gh_args = list(args.gh_args)
+    if gh_args and gh_args[0] == "--":
+        gh_args = gh_args[1:]
+    if not gh_args:
+        print("ghg check: no gh arguments given"
+              " (expected `ghg check -- <gh args...>`)",
+              file=sys.stderr, flush=True)
+        return 2
+    ledger = _open_ledger()
+    if ledger is None:
+        return 70
+    try:
+        if not _reap_housekeeping(ledger):
+            return 70
+        try:
+            ledger.snapshot()  # opportunistic refresh + first-use seed
+        except Exception:
+            pass  # snapshot is failure-tolerant by design
+        denial = ledger.fits(classify(gh_args))
+        if denial is not None:
+            ledger.last_denial = denial
+            print(_denial_line(ledger), file=sys.stderr, flush=True)
+            return 75
+        print("ghg check: OK — charges fit current headroom")
+        return 0
+    finally:
+        ledger.close()
+
+
+def cmd_status(args):
+    ledger = _open_ledger()
+    if ledger is None:
+        return 70
+    try:
+        if not _reap_housekeeping(ledger):
+            return 70
+        now = int(time.time())
+        data = build_status(ledger, now=now)
+        _append_drift_history(data, now)
+        if args.json:
+            print(json.dumps(data, indent=2))
+        else:
+            print(_format_status(data))
+        return 0
+    finally:
+        ledger.close()
+
+
+def cmd_prune(args):
+    ledger = _open_ledger()
+    if ledger is None:
+        return 70
+    try:
+        if not _reap_housekeeping(ledger):
+            return 70
+        try:
+            deleted = ledger.prune()
+        except GateBroken as exc:
+            print("ghg: gateway state unavailable: %s" % exc,
+                  file=sys.stderr, flush=True)
+            return 70
+        print("ghg prune: deleted %d calls rows older than 30 days"
+              % deleted)
+        return 0
+    finally:
+        ledger.close()
+
+
 # ------------------------------------------------------------------ cli
 
 def main(argv=None):
@@ -970,11 +1269,24 @@ def main(argv=None):
     run.add_argument("--actor", default=None)
     run.add_argument("--wait", type=float, default=0)
     run.add_argument("gh_args", nargs=argparse.REMAINDER)
+    check = sub.add_parser(
+        "check", help="pre-flight: would these charges fit headroom?")
+    check.add_argument("gh_args", nargs=argparse.REMAINDER)
+    status = sub.add_parser(
+        "status", help="ledger spend vs GitHub truth, drift, actors")
+    status.add_argument("--json", action="store_true")
+    sub.add_parser("prune", help="delete calls rows older than 30 days")
     args = parser.parse_args(argv)
     if args.verb == "watch":
         return cmd_watch(args)
     if args.verb == "run":
         return cmd_run(args)
+    if args.verb == "check":
+        return cmd_check(args)
+    if args.verb == "status":
+        return cmd_status(args)
+    if args.verb == "prune":
+        return cmd_prune(args)
     parser.error("unknown verb: %s" % args.verb)
     return 2
 
