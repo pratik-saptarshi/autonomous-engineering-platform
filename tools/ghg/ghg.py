@@ -9,9 +9,13 @@ Task 2: the slim ledger and budget core — the `calls` table, rolling-
 window `spend`/`in_flight`, atomic `reserve_all`/`finalize`, the
 `rate_limit` `snapshot()` with first-use core seeding, and `classify`.
 
-Later tasks add `ghg run` (Task 3) and `ghg check` / `ghg status`
-(Task 4). The interfaces those tasks consume are fixed here:
-`open_db()`, `gated_gh(argv, actor)`, and the `watches` schema.
+Task 3: `ghg run`, the budget-gated pass-through — and the real
+gate behind `gated_gh`, replacing Task 1's direct pass-through
+behind the same signature.
+
+Later, Task 4 adds `ghg check` / `ghg status`. The interfaces those
+tasks consume are fixed here: `open_db()`, `gated_gh(argv, actor)`,
+and the `watches` schema.
 
 Python 3 standard library only. Runtime state lives in $GHG_STATE_DIR
 (default ~/workspace/ghg-state), never in the source tree (ruling R5).
@@ -69,7 +73,10 @@ def interval_floor():
     return float(DEFAULT_INTERVAL_FLOOR)
 
 
-def resolve_actor():
+def resolve_actor(explicit=None):
+    """Actor precedence: --actor > $GHG_ACTOR > git top-level > unknown."""
+    if explicit:
+        return explicit
     env = os.environ.get("GHG_ACTOR")
     if env:
         return env
@@ -84,22 +91,175 @@ def resolve_actor():
     return "unknown"
 
 
-def gated_gh(argv, actor, timeout=None):
-    """Run the real `gh` with `argv`; return (exit code, stdout).
+# ------------------------------------------------------- gated execution
 
-    Task 1: a direct pass-through. Task 3 swaps in the budget gate
-    behind this same signature. A subprocess timeout is reported as
-    exit code 124 with no output (an inconclusive poll, never a write).
+def _exec_real_gh(argv, capture, timeout):
+    """Exec the real `gh`; return (exit code, stdout-or-None).
+
+    A subprocess timeout is exit 124 (an inconclusive call), a missing
+    binary 127 — both finalize as `error`, never as success.
     """
     try:
-        proc = subprocess.run(
-            [real_gh()] + list(argv),
-            capture_output=True, text=True, timeout=timeout)
+        if capture:
+            proc = subprocess.run(
+                [real_gh()] + list(argv),
+                capture_output=True, text=True, timeout=timeout)
+            return proc.returncode, proc.stdout
+        proc = subprocess.run([real_gh()] + list(argv), timeout=timeout)
+        return proc.returncode, None
     except subprocess.TimeoutExpired:
-        return 124, ""
+        return 124, "" if capture else None
     except OSError:
-        return 127, ""
-    return proc.returncode, proc.stdout
+        return 127, "" if capture else None
+
+
+def _fallback_log(line):
+    try:
+        directory = state_dir()
+        directory.mkdir(parents=True, exist_ok=True)
+        with open(directory / "fallback.log", "a") as fh:
+            fh.write("%d %s\n" % (int(time.time()), line))
+    except OSError:
+        pass  # the log is a trace, never a reason to block the call
+
+
+def _record_terminal(ledger, charges, actor, argv, outcome):
+    """Write one already-terminal ledger row per charge."""
+    now = int(time.time())
+    text = redact_argv(list(argv))
+    for bucket, cost in charges:
+        ledger.conn.execute(
+            "INSERT INTO calls (ts, actor, bucket, cost, argv, outcome)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (now, actor, bucket, cost, text, outcome))
+
+
+def _snapshot_core_reset(ledger):
+    """GitHub's core reset epoch from the (cached) snapshot, or None."""
+    try:
+        payload = ledger.snapshot()
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    core = None
+    resources = payload.get("resources")
+    if isinstance(resources, dict):
+        core = resources.get("core")
+    if not isinstance(core, dict):
+        core = payload.get("rate")
+    if isinstance(core, dict):
+        try:
+            return int(core["reset"])
+        except (KeyError, ValueError, TypeError):
+            return None
+    return None
+
+
+def _denial_line(ledger):
+    denial = ledger.last_denial or {}
+    bucket = denial.get("bucket", "unknown")
+    cap = denial.get("cap", "?")
+    reset = denial.get("reset")
+    if bucket == "core":
+        snap_reset = _snapshot_core_reset(ledger)
+        if snap_reset is not None:
+            reset = snap_reset
+    return "ghg: DENIED bucket=%s reset=%s cap=%s" % (bucket, reset, cap)
+
+
+def _fail_open(argv, actor, capture, timeout, reason):
+    """GateBroken path: exec anyway, leave the designed traces."""
+    print("ghg: WARNING gateway unavailable (%s); executing ungated"
+          % reason, file=sys.stderr, flush=True)
+    _fallback_log("ghg gate broken: %s; ungated pass-through argv=%s"
+                  % (reason, redact_argv(list(argv))))
+    code, out = _exec_real_gh(argv, capture, timeout)
+    try:
+        with Ledger() as ledger:
+            _record_terminal(ledger, classify(argv), actor, argv,
+                             "ungated_error")
+    except Exception:
+        pass  # best effort only — the fallback log already traced it
+    return code, out
+
+
+def _gated(argv, actor, timeout=None, capture=True, wait=0.0):
+    """The engine behind `gated_gh` (captured) and `cmd_run` (stdio).
+
+    Returns (exit code, stdout). On a budget denial the exit code is
+    75 and stdout is the denial line (callers surface it on stderr).
+    Finalize is only ever called with ok / error here; bypass and
+    ungated_error rows are written terminal directly.
+    """
+    argv = [str(a) for a in argv]
+    if os.environ.get("GHG_BYPASS") == "1":
+        print("ghg: WARNING GHG_BYPASS=1 — budget caps skipped for"
+              " this call (still counted, as bypass)",
+              file=sys.stderr, flush=True)
+        try:
+            ledger = Ledger()
+        except Exception as exc:
+            return _fail_open(argv, actor, capture, timeout,
+                              "ledger open failed: %s" % exc)
+        code, out = _exec_real_gh(argv, capture, timeout)
+        try:
+            _record_terminal(ledger, classify(argv), actor, argv,
+                             "bypass")
+        except Exception as exc:
+            print("ghg: WARNING bypass record failed: %s" % exc,
+                  file=sys.stderr, flush=True)
+            _fallback_log("bypass record failed: %s argv=%s"
+                          % (exc, redact_argv(argv)))
+        finally:
+            ledger.close()
+        return code, out
+    try:
+        ledger = Ledger()
+    except Exception as exc:
+        return _fail_open(argv, actor, capture, timeout,
+                          "ledger open failed: %s" % exc)
+    try:
+        try:
+            ledger.snapshot()  # opportunistic refresh + first-use seed
+        except Exception:
+            pass  # snapshot is failure-tolerant by design
+        charges = classify(argv)
+        deadline = time.monotonic() + wait if wait else None
+        while True:
+            try:
+                row_ids = ledger.reserve_all(charges, actor, argv)
+            except GateBroken as exc:
+                return _fail_open(argv, actor, capture, timeout,
+                                  "reserve failed: %s" % exc)
+            if row_ids is not None:
+                break
+            if deadline is None or time.monotonic() >= deadline:
+                return 75, _denial_line(ledger)
+            time.sleep(min(30.0, max(0.0, deadline - time.monotonic())))
+        code, out = _exec_real_gh(argv, capture, timeout)
+        try:
+            ledger.finalize(row_ids, "ok" if code == 0 else "error")
+        except Exception as exc:
+            # Risk #15: never mask a success into a duplicate create —
+            # the caller sees the child's exit code plus this warning.
+            print("ghg: WARNING ledger finalize failed after the call"
+                  " executed (child exit %d preserved): %s"
+                  % (code, exc), file=sys.stderr, flush=True)
+        return code, out
+    finally:
+        ledger.close()
+
+
+def gated_gh(argv, actor, timeout=None):
+    """Run the real `gh` through the budget gate; (exit code, stdout).
+
+    Task 3: the real gate (Task 1's pass-through stub replaced behind
+    this same signature, `timeout` included — the watcher passes its
+    per-poll timeout through it). Exit 75 means a budget denial, with
+    the denial line as the returned output.
+    """
+    return _gated(argv, actor, timeout=timeout, capture=True)
 
 
 # ------------------------------------------------------------------ db
@@ -771,6 +931,30 @@ def cmd_watch(args):
         time.sleep(min(effective, max(0.0, remaining())))
 
 
+# ------------------------------------------------------------------- run
+
+def cmd_run(args):
+    gh_args = list(args.gh_args)
+    if gh_args and gh_args[0] == "--":
+        gh_args = gh_args[1:]
+    if not gh_args:
+        print("ghg run: no gh arguments given"
+              " (expected `ghg run -- <gh args...>`)",
+              file=sys.stderr, flush=True)
+        return 2
+    if gh_args[:2] == ["run", "watch"]:
+        print("ghg: `gh run watch` is refused by `ghg run` — use"
+              " `ghg watch --repo OWNER/REPO --run ID` instead",
+              file=sys.stderr, flush=True)
+        return 64
+    actor = resolve_actor(args.actor)
+    code, out = _gated(gh_args, actor, capture=False,
+                       wait=max(0.0, args.wait or 0.0))
+    if code == 75 and out:
+        print(out, file=sys.stderr, flush=True)
+    return code
+
+
 # ------------------------------------------------------------------ cli
 
 def main(argv=None):
@@ -782,9 +966,15 @@ def main(argv=None):
     watch.add_argument("--run", required=True)
     watch.add_argument("--interval", type=float, default=None)
     watch.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)
+    run = sub.add_parser("run", help="budget-gated pass-through to gh")
+    run.add_argument("--actor", default=None)
+    run.add_argument("--wait", type=float, default=0)
+    run.add_argument("gh_args", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     if args.verb == "watch":
         return cmd_watch(args)
+    if args.verb == "run":
+        return cmd_run(args)
     parser.error("unknown verb: %s" % args.verb)
     return 2
 
