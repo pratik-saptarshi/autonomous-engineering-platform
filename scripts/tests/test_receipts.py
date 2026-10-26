@@ -2,6 +2,7 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -719,6 +720,50 @@ class BindingTests(unittest.TestCase):
             proc = check_bound(receipts, "1", root)
             self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
             self.assertIn("RECEIPTS: PASS", proc.stdout)
+
+    def test_scripts_symlink_external_suite_cannot_seal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            external = base / "external"
+            passing = (
+                "import unittest\n\n"
+                "class ExternalTests(unittest.TestCase):\n"
+                "    def test_passes(self):\n"
+                "        self.assertTrue(True)\n"
+            )
+            external_test = write(
+                external, "tests/test_external.py", passing
+            )
+            git(root, "init", "-q", "-b", "main")
+            os.symlink(external, root / "scripts")
+            git(root, "add", "scripts")
+            git(
+                root,
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "-q",
+                "-m",
+                "fixture",
+            )
+            receipts = root / "r.jsonl"
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+            parsed = read_receipts(receipts) if receipts.exists() else []
+            self.assertNotIn(
+                "run-complete", [record.get("kind") for record in parsed]
+            )
+            external_test.write_text(
+                passing.replace("assertTrue(True)", "assertTrue(False)"),
+                encoding="utf-8",
+            )
+            proc = check_bound(receipts, "1", root)
+            self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertNotIn("RECEIPTS: PASS", proc.stdout)
 
     def test_head_moved_default_fails_historical_passes(self):
         # Panel stale-PASS repro, git form: seal on a passing tree,

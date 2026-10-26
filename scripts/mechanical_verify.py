@@ -684,15 +684,27 @@ def discover_verification_commands(root: Path) -> tuple[VerificationCommand, ...
 
     # 8. Scripts test suite (AEP addition) — suites living in
     # scripts/tests, run exactly as CI's script-tests job's
-    # unittest-discover step runs them. Require at least one real
-    # (non-symlink) file matching unittest discover's default pattern
-    # (test*.py) in a real (non-symlink) directory: an empty or
-    # test-less directory must not manufacture a vacuous command, and
-    # a symlinked suite must not attest a foreign tree's tests.
-    scripts_tests = root / "scripts" / "tests"
+    # unittest-discover step runs them. The caller-selected root may
+    # itself be a symlink, but below that boundary both scripts and
+    # scripts/tests must be real directories, no entry anywhere in
+    # the scripts/tests subtree may be a symlink, and at least one
+    # top-level test*.py must be a regular file. This keeps the leg
+    # from attesting a foreign tree's tests while avoiding a vacuous
+    # command for an empty or test-less directory.
+    scripts_dir = root / "scripts"
+    scripts_tests = scripts_dir / "tests"
     if (
-        scripts_tests.is_dir()
+        scripts_dir.is_dir()
+        and not scripts_dir.is_symlink()
+        and scripts_tests.is_dir()
         and not scripts_tests.is_symlink()
+        and not any(
+            Path(dirpath, entry).is_symlink()
+            for dirpath, dirnames, filenames in os.walk(
+                scripts_tests, followlinks=False
+            )
+            for entry in (*dirnames, *filenames)
+        )
         and any(
             entry.is_file() and not entry.is_symlink()
             for entry in scripts_tests.glob("test*.py")
