@@ -114,6 +114,12 @@ umask 077
 SESSION_ID="$$-$(date +%s)"
 
 if [[ -n "$PROJECT_DIR" ]]; then
+  # Normalize to an absolute path before deriving session paths from it: the
+  # script cd's into SCRIPT_DIR below, after which a relative PROJECT_DIR
+  # would resolve against the wrong directory. The directory is allowed not
+  # to exist yet, so create it first; fail loudly if it cannot be resolved.
+  mkdir -p "$PROJECT_DIR" || exit 1
+  PROJECT_DIR="$(cd "$PROJECT_DIR" && pwd)" || exit 1
   SESSION_DIR="${PROJECT_DIR}/.superpowers/brainstorm/${SESSION_ID}"
   # Persist the bound port and key per project so a restart reuses them and an
   # already-open browser tab reconnects to the same URL with a valid cookie.
