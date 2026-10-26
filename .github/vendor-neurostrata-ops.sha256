@@ -1,8 +1,8 @@
 96032bcdd989b59e4ebd7794104662212b4e5b3c556c5c6d3a4fba57e1588d91  ./PROVENANCE.md
 ceb00d0fb6b90b5a51728b3e90515020b93fe2a79e63e1b9adb14c5482a6807e  ./bin/idle-reaper.sh
 70c7370a2d46497cf5699a5de3d1ed8afaa7972de422b26e75d969a3614c1731  ./bin/watchdog-backup.sh
-62e6e92cd7322ecd3cfa3dba8bded6dacbe907166389ce701267d15526318c02  ./crons/CRONS.md
-3e3c9e109d023f68dd13a1d370d81d0f4a8e8fb36114daf60ffdff9ddd50b7b8  ./crons/watchdog-cron-body.md
+d1e87a7db6edaf9c4e656123a11b60340ab4612c0931026b7b1a1864bdc9a7dc  ./crons/CRONS.md
+44650116158ff33c7231234a3ad05aab87222d8987e1d4980403d9acf4ebd724  ./crons/watchdog-cron-body.md
 2cb0d5237d7f7fbb9ccc3f28d2c0deb24102d4fbfaf12f94043e2aacff25634f  ./model-switch/MODEL-SWITCH-BGESMALLQ-PLAN.md
 775b5079bd0bd2d07b1dd2f2a95182df81494459780cb9fa56b5d506fb03a250  ./runbooks/IDLE-REAPER.md
 4e5a6da0ff2518bbec5c4da91c192fa2e0135021c7e3592ecfc15b4a202e4a66  ./runbooks/OPERATIONS.md

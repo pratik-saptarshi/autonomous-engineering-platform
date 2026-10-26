@@ -11,7 +11,7 @@ its stated failure condition.
 
 | Job | Cadence | Runs | Reports when |
 | --- | --- | --- | --- |
-| `neurostrata-watchdog` | every 2h | `bash ~/workspace/neurostrata/bin/watchdog-backup.sh`, then health-checks `neurostrata-mcp status` | daemon down after 2 restart attempts (with no expected-down line — see below), or `ERROR` in the run's log lines |
+| `neurostrata-watchdog` | every 2h | `bash ~/workspace/neurostrata/bin/watchdog-backup.sh`, then health-checks `neurostrata-mcp status` | daemon down after 2 restart attempts (with no expected-down line — see below), `ERROR` in the run's log lines, or a nonzero script exit code (even with no `ERROR` line — see below) |
 | `neurostrata-idle-reaper` | every 15m | `bash ~/workspace/neurostrata/bin/idle-reaper.sh` | the reaper script itself is broken (non-zero exit, or no fresh line in `~/workspace/neurostrata/reaper.log`); routine SKIP/REAPED outcomes never report |
 | `neurostrata-export` | every 168h (7d) | `neurostrata-mcp export-graph` → `~/workspace/neurostrata/exports/memories-YYYYMMDD.json` (keeps newest 4) | the daemon is down (export skipped), the export fails, or the exported JSON fails verification |
 
@@ -19,14 +19,18 @@ its stated failure condition.
 
 See `watchdog-cron-body.md` in this directory. Key terms, matching the body:
 the expected-down branch comes first — if this run's log lines contain
-`daemon down (reaped by idle-reaper, expected)` and no `ERROR`, the run is
+`daemon down (reaped by idle-reaper, expected)`, no `ERROR`, and exit code 0, the run is
 routine: no attempt-2 retry, no outage alert, stay silent. Otherwise, max 2
 restart attempts per run. Exit codes: the script exits 0 on both success
 paths (no-change and successful backup); exit 1 on exactly two failures —
 sha256 mismatch of the backup copy (the bad copy is deleted first), and
 Drive catch-up failing twice on the no-change path. On the changed path a
 Drive double-failure only logs `ERROR` and still exits 0 — the body's
-`ERROR` rule, not the exit code, catches it. A full run (stop → consistent
+`ERROR` rule, not the exit code, catches it. The body also reports on any
+nonzero script exit even when no `ERROR` line exists: the script can die
+mid-step under `set -e` without logging (e.g. the backup copy failing on a
+full or unwritable staging area) while its EXIT trap still restarts the
+daemon healthy, so both silent branches in the body require exit code 0. A full run (stop → consistent
 copy → sha256 → Drive upload → restart → health check) takes ~10s since
 the 2026-10-23 model switch (measured range 8–25s); the older ~30–45s
 figure was the Nomic-era timing. Change detection runs *before* any stop,
