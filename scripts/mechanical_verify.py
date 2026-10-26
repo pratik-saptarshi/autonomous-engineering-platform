@@ -688,27 +688,38 @@ def discover_verification_commands(root: Path) -> tuple[VerificationCommand, ...
     # itself be a symlink, but below that boundary both scripts and
     # scripts/tests must be real directories, no entry anywhere in
     # the scripts/tests subtree may be a symlink, and at least one
-    # top-level test*.py must be a regular file. This keeps the leg
-    # from attesting a foreign tree's tests while avoiding a vacuous
-    # command for an empty or test-less directory.
+    # top-level test*.py must be a regular file. The inventory must
+    # also be complete: os.walk ignores scandir errors by default,
+    # so any part of the subtree that cannot be listed disqualifies
+    # the leg (fail closed) instead of silently truncating the
+    # inventory. This keeps the leg from attesting a foreign tree's
+    # tests while avoiding a vacuous command for an empty or
+    # test-less directory.
     scripts_dir = root / "scripts"
     scripts_tests = scripts_dir / "tests"
-    if (
+    scripts_suite_contained = (
         scripts_dir.is_dir()
         and not scripts_dir.is_symlink()
         and scripts_tests.is_dir()
         and not scripts_tests.is_symlink()
-        and not any(
+    )
+    if scripts_suite_contained:
+        inventory_errors: list[OSError] = []
+        subtree_has_symlink = any(
             Path(dirpath, entry).is_symlink()
             for dirpath, dirnames, filenames in os.walk(
-                scripts_tests, followlinks=False
+                scripts_tests,
+                followlinks=False,
+                onerror=inventory_errors.append,
             )
             for entry in (*dirnames, *filenames)
         )
-        and any(
-            entry.is_file() and not entry.is_symlink()
-            for entry in scripts_tests.glob("test*.py")
+        scripts_suite_contained = (
+            not inventory_errors and not subtree_has_symlink
         )
+    if scripts_suite_contained and any(
+        entry.is_file() and not entry.is_symlink()
+        for entry in scripts_tests.glob("test*.py")
     ):
         add(
             VerificationCommand(

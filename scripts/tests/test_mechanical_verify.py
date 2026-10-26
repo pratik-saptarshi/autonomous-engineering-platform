@@ -417,6 +417,26 @@ class DiscoveryTests(unittest.TestCase):
             )
             self.assertEqual(discover_verification_commands(root), ())
 
+    @unittest.skipIf(
+        os.geteuid() == 0, "root bypasses directory permission checks"
+    )
+    def test_scripts_tests_unlistable_subtree_discovers_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            foreign_helper = write(
+                base / "external", "helper.py", "VALUE = 99\n"
+            )
+            write(root, "scripts/tests/test_sample.py", "import unittest\n")
+            write(root, "scripts/tests/zzz_pkg/__init__.py", "")
+            pkg = root / "scripts" / "tests" / "zzz_pkg"
+            os.symlink(foreign_helper, pkg / "helper.py")
+            pkg.chmod(0o111)
+            try:
+                self.assertEqual(discover_verification_commands(root), ())
+            finally:
+                pkg.chmod(0o755)
+
     def test_root_symlink_discovers_scripts_unittest(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
