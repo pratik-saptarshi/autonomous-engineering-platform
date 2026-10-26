@@ -79,7 +79,11 @@ drive_catch_up() {
   if [ -n "$drive_sha" ] && [ "$drive_sha" = "$want_sha" ]; then
     return 0
   fi
-  newest="$(ls -1t "$STAGE"/db-*.db 2>/dev/null | head -1 || true)"
+  # "Newest" = greatest filename-embedded timestamp (db-YYYYMMDD-HHMMSS.db
+  # sorts chronologically), never greatest mtime: staged copies are made
+  # with cp -p, so a copy of a restored DB carries the old backup's mtime
+  # and mtime ordering would pick a stale copy. (Overseer A2, 2026-10-26.)
+  newest="$(ls -1 "$STAGE"/db-*.db 2>/dev/null | sort -r | head -1 || true)"
   if [ -z "$newest" ]; then
     log "WARNING: Drive catch-up wanted (sha ${want_sha:0:12}…) but no staged backup exists"
     return 0
@@ -118,7 +122,12 @@ start_daemon() {
     mv "$DAEMON_LOG" "$DAEMON_LOG.$(date +%Y%m%d-%H%M%S)"
   fi
   # keep the last 10 rotations
-  ls -1t "$DAEMON_LOG".* 2>/dev/null | tail -n +11 | xargs -r rm -f
+  # Guarded (|| true): with no rotations present (fresh instance, cleared
+  # logs) ls exits 2, and under set -euo pipefail that aborted start_daemon()
+  # before the daemon ever spawned — the zero-rotation state is exactly the
+  # fresh-instance state this function exists to recover. (Overseer C1,
+  # 2026-10-26; same failure class as the 2026-10-22 ulimit abort below.)
+  ls -1t "$DAEMON_LOG".* 2>/dev/null | tail -n +11 | xargs -r rm -f || true
   # 9>&- : do NOT let the daemon inherit the flock FD — otherwise every future
   # run sees the lock as held by the live daemon and refuses to start.
   # Enable core dumps for #21 diagnosis: a native abort leaves a core file
@@ -162,8 +171,11 @@ wait_healthy() {
 # or ambiguous: an unexpectedly crashed daemon must always be restarted.
 reaped_expected() {
   local r w re we
-  r="$(grep "REAPED" "$REAPER_LOG" 2>/dev/null | tail -1 | sed 's/^\[//;s/\].*//')"
-  w="$(grep -E "starting daemon|daemon (restarted, healthy|recovered)" "$LOG" 2>/dev/null | tail -1 | sed 's/^\[//;s/\].*//')"
+  # The || true guards keep a no-match grep (a legitimate state) from
+  # aborting the caller under set -euo pipefail: this function must return
+  # its classification, never kill the script, whatever context calls it.
+  r="$(grep "REAPED" "$REAPER_LOG" 2>/dev/null | tail -1 | sed 's/^\[//;s/\].*//' || true)"
+  w="$(grep -E "starting daemon|daemon (restarted, healthy|recovered)" "$LOG" 2>/dev/null | tail -1 | sed 's/^\[//;s/\].*//' || true)"
   if [ -z "$r" ]; then
     return 1
   fi
@@ -308,7 +320,23 @@ else
   log "WARNING: Drive upload not configured — local backup is the only tier"
 fi
 
-# 8. Prune staging to the 3 newest copies
-ls -1t "$STAGE"/db-*.db 2>/dev/null | tail -n +4 | xargs -r rm -f
+# 8. Prune staging to the 3 newest copies. Ordering is by the timestamp
+# embedded in the filename (db-YYYYMMDD-HHMMSS.db sorts chronologically),
+# never by mtime: copies are made with cp -p, so a staged copy of a
+# restored DB carries the old backup's mtime, and mtime ordering pruned
+# the newest backup first — right after its checksum was recorded in
+# .last-db-sha256. (Overseer A2, 2026-10-26.) The copy the local
+# watermark references (matched by content hash — the watermark stores
+# a sha256, not a filename) is never pruned. Guarded (|| true) like the
+# rotation prune in start_daemon(): an empty staging dir is a no-op,
+# not an abort under set -euo pipefail. (Overseer A1.)
+WM_SHA="$(cat "$SHA_FILE" 2>/dev/null || true)"
+ls -1 "$STAGE"/db-*.db 2>/dev/null | sort -r | tail -n +4 | while IFS= read -r old; do
+  if [ -n "$WM_SHA" ] && [ "$(sha256sum "$old" | awk '{print $1}')" = "$WM_SHA" ]; then
+    log "prune: keeping $(basename "$old") — referenced by .last-db-sha256"
+    continue
+  fi
+  rm -f "$old"
+done || true
 log "done"
 exit 0

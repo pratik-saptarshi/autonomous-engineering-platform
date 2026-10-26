@@ -25,6 +25,13 @@ LOG="${REAPER_LOG:-$HOME/workspace/neurostrata/reaper.log}"
 MIN_UPTIME_MIN="${REAPER_MIN_UPTIME_MIN:-45}"
 PORT=34343
 
+# Pin UTC: the watchdog parses reaper.log timestamps as UTC (its
+# reaped_expected recency check), so every timestamp this script emits
+# must be UTC. Without this pin, a run under a local ambient TZ would
+# write skewed timestamps and corrupt that comparison; the two scripts
+# agree today only because this VM runs UTC.
+export TZ=UTC
+
 ts() { date '+%Y-%m-%d %H:%M:%S'; }
 log() { printf '[%s] %s\n' "$(ts)" "$1" >> "$LOG"; }
 

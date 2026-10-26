@@ -33,14 +33,21 @@ Exact steps (cron tools; no file edits):
 2. Confirm: `cron.status` with `id: "neurostrata-idle-reaper"` shows `enabled: false`.
 
 What happens next: nothing else to unwind. The daemon simply stays up; if it is
-currently down (reaped), the 2h `neurostrata-watchdog` cron restarts it on its
-next run, or any MCP stdio spawn starts it on demand (verified in source).
-No state files, no config changes, no other jobs depend on the reaper.
+currently down (reaped), it stays down by design — the watchdog's no-change
+path classifies it as reaped-expected and leaves it down. It comes back when
+the DB next changes (that watchdog run restarts it after the backup), when an
+MCP stdio spawn starts it on demand (verified in source), or when you start it
+manually (below). No state files, no config changes, no other jobs depend on
+the reaper.
 
 How to verify rollback: `cron.list` (with `include_disabled: true`) shows the
-cron disabled; within 2h, `~/go/bin/neurostrata-mcp status` shows
-`status: healthy` and stays healthy (no further REAPED lines appear in
-`~/workspace/neurostrata/reaper.log`).
+cron disabled, and no new REAPED lines appear in
+`~/workspace/neurostrata/reaper.log`. Do NOT verify by daemon health: a daemon
+that was reaped-down at rollback time stays down indefinitely (above), so a
+"not running" status is the expected state, not a failed rollback. To confirm
+the daemon itself still works, demand-start it once (an MCP client spawn, or
+the manual start below), see `status: healthy`, and leave it up — with the
+reaper disabled it will stay up.
 
 **Daemon down and needed NOW** — don't wait for the 2h watchdog; start it
 exactly as the watchdog does, then confirm health:
@@ -63,11 +70,17 @@ After any change (install, disable, re-enable, tuning):
 ```bash
 tail -5 ~/workspace/neurostrata/reaper.log   # fresh SKIP/REAPED line, current timestamp
 ~/go/bin/neurostrata-mcp status 2>/dev/null | head -1   # healthy, or "daemon: not running" right after a REAPED line (expected)
-ls ~/.config/NeuroStrata/data/db/ladybug.db.wal.unclean.* 2>/dev/null | wc -l   # unclean-shutdown markers; must not grow after REAPED lines
+ls ~/.config/NeuroStrata/data/db/ladybug.db.wal.unclean.* 2>/dev/null | wc -l   # unclean-shutdown markers; growth is the current steady state — see below
 ```
 
-A REAPED line followed by a new `wal.unclean` marker means the shutdown was
-not clean — disable the cron and report.
+About the marker count: the markers grow in steady state at roughly the
+watchdog's 2h cadence (nine present on 2026-10-26), and their source is
+undetermined — no script reads them. A new marker after a REAPED line
+therefore no longer proves an unclean reaper shutdown. Treat a new marker
+as an attribution question: correlate its timestamp against `reaper.log`
+and `watchdog.log` before concluding anything. The old prescription —
+disable the cron on any new marker — is suspended pending that attribution;
+followed literally, it would now fire on normal steady-state growth.
 
 ## Tuning
 
