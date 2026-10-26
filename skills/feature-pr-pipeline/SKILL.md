@@ -1,6 +1,7 @@
 ---
 name: feature-pr-pipeline
 version: 1.0.0
+author: pratik-saptarshi
 description: >
   Standardized feature-to-PR workflow — plan, implement with subagent-driven
   TDD, independent whole-branch review, hygiene pass, then PR with CI and
@@ -28,7 +29,7 @@ This skill orchestrates five companion workflow skills. At Stage 0, confirm each
 - `subagent-driven-development` — fresh implementer subagent + reviewer per task
 - `test-driven-development` — RED → GREEN → refactor
 - `scrubbing-public-tree` — pre-push hygiene pass
-- `finishing-a-development-branch` — push/PR integration decision (procedure inlined in Stage 5 below; installing the companion skill is optional)
+- `finishing-a-development-branch` — push/PR integration decision
 
 If a companion is missing, install it or substitute its documented procedure before proceeding — the stages below reference these skills as written.
 
@@ -76,13 +77,14 @@ Stage 7: Merge      → auto-merge (`gh pr merge --squash --auto`) on repos unde
 
 ### Stage 5 — Integrate
 
-- Push the branch and open the PR per the Authorization rule above: ask once, naming the exact branch (unless the repo's auto-merge rule covers this run) — `git push -u origin <branch>`, then open the PR with a Conventional Commit title summarizing the change. If the companion skill `finishing-a-development-branch` is installed, follow it as written; otherwise this procedure is the complete substitute.
+- Follow `finishing-a-development-branch` for the push/PR decision, per the Authorization rule above (ask once, name the branch).
 - **Gate:** branch pushed and PR opened with user authorization. If the user declines, the pipeline ends here: report the local branch state and stop — do not proceed to Stage 6.
 
 ### Stage 6 — Gate
 
 - Monitor CI to completion. Read every review comment and inline thread. Fix real findings; adjudicate non-findings explicitly. Route every fix back through the applicable gates (independent review for logic/prose changes, hygiene for any new content) before pushing the update. Repeat until CI is green and all threads resolved.
-- **Gate:** CI green; every review comment and thread resolved.
+- **Codex final-head gate.** Where the repo's Codex review is active, Stage 6 is not complete until Codex has reviewed the PR's FINAL head (the summary comment's `commit_sha` equals the current head) — unless the class-recurrence trigger below has fired and its census + cap-and-file are recorded, in which case the census's own commits may postdate Codex's last review by design. This gate is a staleness check: it establishes that Codex has reviewed the current tree, and nothing more. Codex silence is not evidence of correctness, and high-risk surfaces still require independent panel or human review per this pipeline. **Class-recurrence trigger:** when a second finding lands in the same defect class or mechanism (classes per the pattern analysis's taxonomy) after that class was claimed fixed, stop point-fixing that class. The next step is a generalization pass — a full census of the component across its mechanism families (grammar, state, identity, provenance, surfaces) — before any further point fix in that class. The default continuation after the census is cap-and-file: the census's remaining findings in that class are filed as issues and the PR may proceed, with the user notified asynchronously. Autonomous lanes never park waiting for a user decision on this trigger.
+- **Gate:** CI green; every review comment and thread resolved; Codex (where the repo's Codex review is active) has reviewed the final head, or the class-recurrence trigger fired and its census + cap-and-file are recorded.
 
 ### Stage 7 — Merge
 

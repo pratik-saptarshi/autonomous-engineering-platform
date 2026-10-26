@@ -1,29 +1,30 @@
-# Grilling
+---
+name: grilling
+description: Grill the user relentlessly about a plan, decision, or idea. Use when the user wants to stress-test their thinking, or uses any 'grill' trigger phrases.
+---
 
-Stress-test the user's thinking about a plan, decision, or idea through a relentless interview. Use when the user wants their thinking challenged, or uses a "grill" trigger phrase. This is adversarial on purpose: brainstorming explores what they want, grilling attacks whether it holds up.
+Interview the user relentlessly until you reach a shared understanding. Map this as a **design tree**: every decision branches into the decisions that hang off it.
 
-## Map the design tree
+Work the tree in **rounds**. The **frontier** is every decision whose prerequisites are already settled: the questions you can ask _now_ without guessing at answers you haven't heard yet. Ask the whole frontier in one round: number each question and give your recommended answer. Then wait for the user's answers before the next round.
 
-- Treat every decision as a branch: each choice opens the decisions that hang off it.
+Format a round like so:
 
-- Work the tree in **rounds**. The **frontier** is every decision whose prerequisites are already settled: the questions you can ask now without guessing at unheard answers.
+```
+❓ **Q1** - **<question title>**: <question body, might be multiple paragraphs, including multiple choices>
 
-- Ask the whole frontier in one round. Number each question, give your recommended answer, and word each question so "yes" accepts your recommendation.
+➡️ <your recommended answer>
 
-## Run a round
+---
 
-- Format a round with one block per question: the question title and body (choices included where they help), followed by your recommended answer.
+❓ **Q2** - **<question title>**: <question body, might be multiple paragraphs, including multiple choices>
 
-- Finding facts is your job, never the user's. When a frontier question needs a fact from the environment, dispatch a `subagent.spawn` to find it; do not ask the user for anything you could look up yourself.
+➡️ <your recommended answer>
+```
 
-- Do not block on the lookup: a running exploration is an unsettled prerequisite, so only questions downstream of it wait; ask the rest of the frontier now.
+Word each question so "yes" accepts your recommended answer.
 
-- Decisions belong to the user. Put each to them and wait for answers before the next round.
+Each round the user answers reshapes the tree: settled decisions push the frontier outward and unblock questions that depended on them. Recompute the frontier and ask the next round. A question whose answer depends on another question still open in this round belongs to a _later_ round, not this one.
 
-## Advance the frontier
+Finding _facts_ is your job, never the user's. When a frontier question needs a fact from the environment (filesystem, tools, etc.), dispatch a sub-agent to find it; don't ask the user for anything you could look up yourself. Don't block on it: a running exploration is an unsettled prerequisite, so only the questions downstream of it wait for the sub-agent to report; ask the rest of the frontier now. The _decisions_ are the user's: put each to them and wait.
 
-- Each round of answers reshapes the tree: settled decisions push the frontier outward and unblock dependent questions.
-
-- Recompute the frontier and ask the next round. A question whose answer depends on one still open this round belongs to a later round, not this one.
-
-- The session ends when the frontier is empty: every branch visited, nothing silently assumed. Do not act on the plan until the user confirms you share an understanding.
+The session is done when the frontier is empty: every branch of the design tree visited, nothing left silently assumed. Do not act on it until the user confirms you have reached a shared understanding.

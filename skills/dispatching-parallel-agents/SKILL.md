@@ -1,49 +1,167 @@
+---
+name: dispatching-parallel-agents
+description: Use when facing 2+ independent tasks that can be worked on without shared state or sequential dependencies
+---
+
 # Dispatching Parallel Agents
 
-## Decide whether work is parallelizable
+## Overview
 
-- Dispatch parallel subagents when you face two or more independent tasks with no shared state and no sequential dependency. Independent investigations, independent research threads, and independent build tasks all qualify.
+You delegate tasks to specialized agents with isolated context. By precisely crafting their instructions and context, you ensure they stay focused and succeed at their task. They should never inherit your session's context or history — you construct exactly what they need. This also preserves your own context for coordination work.
 
-- Keep the work with a single agent when the tasks are related and fixing one might fix the others, when understanding needs the full system state, or when agents would interfere by editing the same files or resources.
+When you have multiple unrelated failures (different test files, different subsystems, different bugs), investigating them sequentially wastes time. Each investigation is independent and can happen in parallel.
 
-## Group into independent domains
+**Core principle:** Dispatch one agent per independent problem domain. Let them work concurrently.
 
-- Group the work by problem domain before dispatching. Name each domain by what is broken or what it must produce.
+## When to Use
 
-- Give each domain to exactly one subagent. One agent per domain keeps scopes from overlapping.
+```dot
+digraph when_to_use {
+    "Multiple failures?" [shape=diamond];
+    "Are they independent?" [shape=diamond];
+    "Single agent investigates all" [shape=box];
+    "One agent per problem domain" [shape=box];
+    "Can they work in parallel?" [shape=diamond];
+    "Sequential agents" [shape=box];
+    "Parallel dispatch" [shape=box];
 
-## Write a focused brief for each agent
+    "Multiple failures?" -> "Are they independent?" [label="yes"];
+    "Are they independent?" -> "Single agent investigates all" [label="no - related"];
+    "Are they independent?" -> "Can they work in parallel?" [label="yes"];
+    "Can they work in parallel?" -> "Parallel dispatch" [label="yes"];
+    "Can they work in parallel?" -> "Sequential agents" [label="no - shared state"];
+}
+```
 
-- Make each brief self-contained. A subagent never inherits your session context, so paste in every fact, error message, file path, and constraint it needs. Nothing else.
+**Use when:**
+- 3+ test files failing with different root causes
+- Multiple subsystems broken independently
+- Each problem can be understood without context from others
+- No shared state between investigations
 
-- Keep the brief focused on one clear problem domain with one clear goal.
+**Don't use when:**
+- Failures are related (fix one might fix others)
+- Need to understand full system state
+- Agents would interfere with each other
 
-- State the constraints explicitly, such as which files it may touch and what it must not change.
+## The Pattern
 
-- State exactly what to return, such as a summary of the root cause and the changes made.
+### 1. Identify Independent Domains
 
-- Keep briefs lean. Everything you paste into a dispatch stays in your context for the rest of the session, so hand over file paths rather than pasted file contents where a path will do.
+Group failures by what's broken:
+- File A tests: Tool approval flow
+- File B tests: Batch completion behavior
+- File C tests: Abort functionality
 
-## Dispatch in the same turn
+Each domain is independent - fixing tool approval doesn't affect abort tests.
 
-- Issue all the `subagent.spawn` calls in a single turn so the agents run concurrently. One dispatch per turn runs them sequentially.
+### 2. Create Focused Agent Tasks
 
-- Never dispatch multiple agents against the same files or the same shared resource at the same time.
+Each agent gets:
+- **Specific scope:** One test file or subsystem
+- **Clear goal:** Make these tests pass
+- **Constraints:** Don't change other code
+- **Expected output:** Summary of what you found and fixed
 
-## Integrate the results
+### 3. Dispatch in Parallel
 
-- Read each returned summary and check whether any agents touched the same code.
+Issue all three subagent dispatches in the same response — they run in parallel:
 
-- Run the full verification yourself after they return. Spot-check the work because agents can make systematic errors.
+```text
+Subagent (general-purpose): "Fix agent-tool-abort.test.ts failures"
+Subagent (general-purpose): "Fix batch-completion-behavior.test.ts failures"
+Subagent (general-purpose): "Fix tool-approval-race-conditions.test.ts failures"
+# All three run concurrently.
+```
 
-- Report the integrated result with evidence, following the verification-before-completion skill.
+Multiple dispatch calls in one response = parallel execution. One per response = sequential.
 
-## Avoid the common mistakes
+### 4. Review and Integrate
 
-- Do not brief too broadly. Fix all the tests leaves an agent lost, while fix the failures in this one file keeps it focused.
+When agents return:
+- Read each summary
+- Verify fixes don't conflict
+- Run full test suite
+- Integrate all changes
 
-- Do not brief without context. Paste the error messages and names, not just fix the race condition.
+## Agent Prompt Structure
 
-- Do not brief without constraints, or the agent may refactor everything around the problem.
+Good agent prompts are:
+1. **Focused** - One clear problem domain
+2. **Self-contained** - All context needed to understand the problem
+3. **Specific about output** - What should the agent return?
 
-- Do not accept a vague return. Ask for the root cause and the changes so you know what actually happened.
+```markdown
+Fix the 3 failing tests in src/agents/agent-tool-abort.test.ts:
+
+1. "should abort tool with partial output capture" - expects 'interrupted at' in message
+2. "should handle mixed completed and aborted tools" - fast tool aborted instead of completed
+3. "should properly track pendingToolCount" - expects 3 results but gets 0
+
+These are timing/race condition issues. Your task:
+
+1. Read the test file and understand what each test verifies
+2. Identify root cause - timing issues or actual bugs?
+3. Fix by:
+   - Replacing arbitrary timeouts with event-based waiting
+   - Fixing bugs in abort implementation if found
+   - Adjusting test expectations if testing changed behavior
+
+Do NOT just increase timeouts - find the real issue.
+
+Return: Summary of what you found and what you fixed.
+```
+
+## Common Mistakes
+
+**❌ Too broad:** "Fix all the tests" - agent gets lost
+**✅ Specific:** "Fix agent-tool-abort.test.ts" - focused scope
+
+**❌ No context:** "Fix the race condition" - agent doesn't know where
+**✅ Context:** Paste the error messages and test names
+
+**❌ No constraints:** Agent might refactor everything
+**✅ Constraints:** "Do NOT change production code" or "Fix tests only"
+
+**❌ Vague output:** "Fix it" - you don't know what changed
+**✅ Specific:** "Return summary of root cause and changes"
+
+## When NOT to Use
+
+**Related failures:** Fixing one might fix others - investigate together first
+**Need full context:** Understanding requires seeing entire system
+**Exploratory debugging:** You don't know what's broken yet
+**Shared state:** Agents would interfere (editing same files, using same resources)
+
+## Real Example from Session
+
+**Scenario:** 6 test failures across 3 files after major refactoring
+
+**Failures:**
+- agent-tool-abort.test.ts: 3 failures (timing issues)
+- batch-completion-behavior.test.ts: 2 failures (tools not executing)
+- tool-approval-race-conditions.test.ts: 1 failure (execution count = 0)
+
+**Decision:** Independent domains - abort logic separate from batch completion separate from race conditions
+
+**Dispatch:**
+```
+Agent 1 → Fix agent-tool-abort.test.ts
+Agent 2 → Fix batch-completion-behavior.test.ts
+Agent 3 → Fix tool-approval-race-conditions.test.ts
+```
+
+**Results:**
+- Agent 1: Replaced timeouts with event-based waiting
+- Agent 2: Fixed event structure bug (threadId in wrong place)
+- Agent 3: Added wait for async tool execution to complete
+
+**Integration:** All fixes independent, no conflicts, full suite green
+
+## Verification
+
+After agents return:
+1. **Review each summary** - Understand what changed
+2. **Check for conflicts** - Did agents edit same code?
+3. **Run full suite** - Verify all fixes work together
+4. **Spot check** - Agents can make systematic errors
