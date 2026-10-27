@@ -18,10 +18,14 @@
 //     <coverage-ledger.json> <verification-attestations.json>
 //     <dispatch-log.json> [--profile quick|standard|deep]
 //
-// In run-dir form the four artifacts (and run-metadata.json, for the
-// profile) are read from the directory. In four-file form the profile
-// comes from --profile, else from a run-metadata.json beside the
-// findings file, else "standard".
+// In run-dir form the four artifacts are read from the directory and
+// the profile comes only from the run's run-metadata.json, which is
+// the artifact of record; --profile is reserved for the four-file form
+// and is ignored in run-dir form. In four-file form the profile comes
+// from --profile, else from a run-metadata.json beside the findings
+// file. There is no default profile: when no valid profile is
+// available, or the available value is not a known profile, the
+// checker fails closed (nonzero exit, run_status: incomplete).
 //
 // Exit 0 iff every confirmed / needs_validation record satisfies all
 // rules; nonzero names the offending fingerprints, and the run is
@@ -50,7 +54,25 @@ const ROLE_BY_FIELD = [
   ["phase5_verifier_agent_id", "phase5_verifier"],
   ["replacement_verifier_agent_id", "replacement_verifier"],
 ];
+// The sidecar contract (verification-attestations.schema.md): each
+// entry carries exactly these fields — all present, no extras.
+const SIDECAR_FIELDS = [
+  "hunter_agent_id",
+  "phase3_verifier_agent_id",
+  "phase5_verifier_agent_id",
+  "replacement_verifier_agent_id",
+  "confirmation_basis",
+  "superseded_verdict",
+  "superseded_severity",
+  "static_rewalk",
+  "findings_sha256",
+  "ledger_sha256",
+];
 const INPUT_LIMIT_BYTES = 5 * 1024 * 1024;
+
+function hasRank(table, value) {
+  return Object.prototype.hasOwnProperty.call(table, value);
+}
 
 function sha256Hex(buffer) {
   return crypto.createHash("sha256").update(buffer).digest("hex");
@@ -83,15 +105,37 @@ function parseArgs(argv) {
   return { positional, profile };
 }
 
+// The profile of record in run-metadata.json. An absent, unreadable,
+// profile-less, or unknown-profile metadata file is malformed input,
+// not a cue to default: this throws and the caller fails closed.
 function profileFromMetadata(dir) {
   const metadataPath = path.join(dir, "run-metadata.json");
+  let raw;
   try {
-    const metadata = JSON.parse(fs.readFileSync(metadataPath, "utf8"));
-    if (metadata && typeof metadata.profile === "string") return metadata.profile;
+    raw = fs.readFileSync(metadataPath, "utf8");
   } catch {
-    // No readable metadata: the caller falls back to the default profile.
+    throw new Error(
+      `no valid profile: run-metadata.json is missing or unreadable in ${dir}`
+    );
   }
-  return null;
+  let metadata;
+  try {
+    metadata = JSON.parse(raw);
+  } catch {
+    throw new Error(
+      `no valid profile: run-metadata.json in ${dir} is not valid JSON`
+    );
+  }
+  if (
+    !metadata ||
+    typeof metadata.profile !== "string" ||
+    !PROFILES.has(metadata.profile)
+  ) {
+    throw new Error(
+      `no valid profile: run-metadata.json in ${dir} does not carry a known profile (quick, standard, or deep)`
+    );
+  }
+  return metadata.profile;
 }
 
 function resolveInputs(positional, profileFlag) {
@@ -105,20 +149,31 @@ function resolveInputs(positional, profileFlag) {
       ledgerFile: path.join(dir, "coverage-ledger.json"),
       sidecarFile: path.join(dir, "verification-attestations.json"),
       dispatchFile: path.join(dir, "dispatch-log.json"),
-      profile: profileFlag || profileFromMetadata(dir) || "standard",
+      // The run's recorded profile is the artifact of record: a
+      // caller-supplied --profile must not override it in run-dir
+      // form, so profileFlag is deliberately not consulted here.
+      profile: profileFromMetadata(dir),
     };
   }
   if (positional.length === 4) {
     const [findingsFile, ledgerFile, sidecarFile, dispatchFile] = positional;
+    let profile;
+    if (profileFlag !== null) {
+      if (!PROFILES.has(profileFlag)) {
+        throw new Error(
+          `no valid profile: --profile ${JSON.stringify(profileFlag)} is not a known profile (quick, standard, or deep)`
+        );
+      }
+      profile = profileFlag;
+    } else {
+      profile = profileFromMetadata(path.dirname(path.resolve(findingsFile)));
+    }
     return {
       findingsFile,
       ledgerFile,
       sidecarFile,
       dispatchFile,
-      profile:
-        profileFlag ||
-        profileFromMetadata(path.dirname(path.resolve(findingsFile))) ||
-        "standard",
+      profile,
     };
   }
   throw new Error(
@@ -185,7 +240,19 @@ function checkRun({ findings, ledger, sidecar, dispatch, profile, findingsSha, l
       continue;
     }
 
-    // Field shape.
+    // Field shape: every contract field must be present as an own
+    // property (an absent field is not the same as an explicit null),
+    // and no unknown fields may appear.
+    for (const field of SIDECAR_FIELDS) {
+      if (!Object.prototype.hasOwnProperty.call(entry, field)) {
+        fail(fp, `sidecar ${field} is missing (field presence is required)`);
+      }
+    }
+    for (const key of Object.keys(entry)) {
+      if (!SIDECAR_FIELDS.includes(key)) {
+        fail(fp, `sidecar entry has unknown field ${JSON.stringify(key)}`);
+      }
+    }
     const hunter = entry.hunter_agent_id;
     const phase3 = entry.phase3_verifier_agent_id;
     const phase5 = entry.phase5_verifier_agent_id;
@@ -199,8 +266,10 @@ function checkRun({ findings, ledger, sidecar, dispatch, profile, findingsSha, l
     for (const [field, value] of [
       ["phase5_verifier_agent_id", phase5],
       ["replacement_verifier_agent_id", replacement],
+      ["superseded_verdict", entry.superseded_verdict],
+      ["superseded_severity", entry.superseded_severity],
     ]) {
-      if (value !== null && value !== undefined && typeof value !== "string") {
+      if (value !== null && typeof value !== "string") {
         fail(fp, `sidecar ${field} must be a string or null`);
       }
     }
@@ -209,7 +278,6 @@ function checkRun({ findings, ledger, sidecar, dispatch, profile, findingsSha, l
     }
     if (
       entry.static_rewalk !== null &&
-      entry.static_rewalk !== undefined &&
       entry.static_rewalk !== "agreed" &&
       entry.static_rewalk !== "rebutted"
     ) {
@@ -238,12 +306,13 @@ function checkRun({ findings, ledger, sidecar, dispatch, profile, findingsSha, l
     }
 
     // Hunter anchor: the attested hunter owns a check on a ledger unit
-    // whose result_fingerprints contain this fingerprint (protocol §7.7).
+    // whose result_fingerprints contain this fingerprint (protocol
+    // §7.7). The anchor is check-level only: the unit's own agent_id
+    // does not anchor the hunter.
     if (typeof hunter === "string") {
       const anchored = ledger.some((unit) => {
         if (!unit || !Array.isArray(unit.result_fingerprints)) return false;
         if (!unit.result_fingerprints.includes(fp)) return false;
-        if (unit.agent_id === hunter) return true;
         return (
           Array.isArray(unit.local_checks) &&
           unit.local_checks.some((check) => check && check.agent_id === hunter)
@@ -274,8 +343,8 @@ function checkRun({ findings, ledger, sidecar, dispatch, profile, findingsSha, l
     // fields and the finding's current verdict/severity.
     let material = false;
     const supersededVerdict = entry.superseded_verdict;
-    if (supersededVerdict !== null && supersededVerdict !== undefined) {
-      if (!(supersededVerdict in VERDICT_RANK) || !(record.verdict in VERDICT_RANK)) {
+    if (typeof supersededVerdict === "string") {
+      if (!hasRank(VERDICT_RANK, supersededVerdict) || !hasRank(VERDICT_RANK, record.verdict)) {
         fail(fp, "superseded_verdict or current verdict is not a known verdict");
       } else if (VERDICT_RANK[record.verdict] > VERDICT_RANK[supersededVerdict]) {
         material = true;
@@ -286,12 +355,12 @@ function checkRun({ findings, ledger, sidecar, dispatch, profile, findingsSha, l
       record.severity && typeof record.severity === "object"
         ? record.severity.overall_severity
         : null;
-    if (supersededSeverity !== null && supersededSeverity !== undefined) {
-      if (!(supersededSeverity in SEVERITY_RANK)) {
+    if (typeof supersededSeverity === "string") {
+      if (!hasRank(SEVERITY_RANK, supersededSeverity)) {
         fail(fp, "superseded_severity is not a known severity");
       } else if (
         typeof currentSeverity === "string" &&
-        currentSeverity in SEVERITY_RANK &&
+        hasRank(SEVERITY_RANK, currentSeverity) &&
         SEVERITY_RANK[currentSeverity] > SEVERITY_RANK[supersededSeverity]
       ) {
         material = true;
@@ -380,6 +449,7 @@ function run(argv) {
     inputs = resolveInputs(positional, profile);
   } catch (error) {
     console.error("ERROR:", error.message);
+    console.error("run_status: incomplete");
     return 1;
   }
 

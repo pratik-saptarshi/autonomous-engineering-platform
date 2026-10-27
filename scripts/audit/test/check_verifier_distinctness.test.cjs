@@ -199,7 +199,11 @@ function sha256(text) {
 }
 
 // Build a run set, apply the test's mutation to the in-memory artifacts,
-// write the run directory, and run the checker over it (run-dir form).
+// write the run directory, and run the checker over it. By default the
+// checker runs in run-dir form; data.form = "files" selects the
+// four-file form, data.extraArgs appends CLI arguments (e.g. a
+// --profile flag), data.omitMetadata drops run-metadata.json, and
+// data.metadataProfile = null writes metadata with no profile key.
 function runChecker(mutate) {
   const data = {
     profile: "standard",
@@ -208,6 +212,10 @@ function runChecker(mutate) {
     entries: cleanEntries(),
     dispatch: cleanDispatch(),
     sidecarMutate: null,
+    form: "dir",
+    extraArgs: [],
+    omitMetadata: false,
+    metadataProfile: undefined,
   };
   if (mutate) mutate(data);
 
@@ -228,11 +236,28 @@ function runChecker(mutate) {
       JSON.stringify(data.entries, null, 2)
     );
     fs.writeFileSync(path.join(dir, "dispatch-log.json"), JSON.stringify(data.dispatch, null, 2));
-    fs.writeFileSync(
-      path.join(dir, "run-metadata.json"),
-      JSON.stringify({ run_id: "a3-fixture", profile: data.profile, run_status: "complete" }, null, 2)
-    );
-    const result = spawnSync(process.execPath, [checkerPath, dir], { encoding: "utf8" });
+    if (!data.omitMetadata) {
+      const metadata = { run_id: "a3-fixture", run_status: "complete" };
+      const metadataProfile =
+        data.metadataProfile === undefined ? data.profile : data.metadataProfile;
+      if (metadataProfile !== null) metadata.profile = metadataProfile;
+      fs.writeFileSync(
+        path.join(dir, "run-metadata.json"),
+        JSON.stringify(metadata, null, 2)
+      );
+    }
+    const args =
+      data.form === "files"
+        ? [
+            checkerPath,
+            path.join(dir, "findings.json"),
+            path.join(dir, "coverage-ledger.json"),
+            path.join(dir, "verification-attestations.json"),
+            path.join(dir, "dispatch-log.json"),
+            ...data.extraArgs,
+          ]
+        : [checkerPath, dir, ...data.extraArgs];
+    const result = spawnSync(process.execPath, args, { encoding: "utf8" });
     return { status: result.status, output: `${result.stdout}${result.stderr}` };
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -266,6 +291,20 @@ test("(b) hunter anchor missing fails", () => {
   assertFailsNaming(result, FP_ONE);
 });
 
+test("(b2) unit-owner-only hunter match does not anchor the hunter", () => {
+  const result = runChecker((data) => {
+    // The unit carrying FP_ONE keeps agent_id == hunter-1 (the unit
+    // owner), but no check on that unit carries the hunter's agent_id:
+    // the anchor is check-level only, so this must fail.
+    data.ledger = data.ledger.map((unit) =>
+      unit.result_fingerprints.includes(FP_ONE)
+        ? { ...unit, local_checks: [sourceCheck("hunter-9")] }
+        : unit
+    );
+  });
+  assertFailsNaming(result, FP_ONE);
+});
+
 test("(c) material strengthening with only two distinct agents fails", () => {
   const result = runChecker((data) => {
     // FP_ONE is material (superseded needs_validation -> confirmed), but
@@ -273,6 +312,17 @@ test("(c) material strengthening with only two distinct agents fails", () => {
     // agents are hunter-1 and verifier-1, and there is no Phase 5 record.
     data.entries[FP_ONE].phase5_verifier_agent_id = null;
     data.entries[FP_ONE].replacement_verifier_agent_id = "verifier-1";
+  });
+  assertFailsNaming(result, FP_ONE);
+});
+
+test("(c2) material strengthening with replacement_verifier_agent_id null fails", () => {
+  const result = runChecker((data) => {
+    // FP_ONE is material on its own (superseded needs_validation ->
+    // confirmed) and every other rule is satisfied by distinct agents,
+    // so only the material-presence rule can fail this fixture:
+    // deleting that rule would turn it green.
+    data.entries[FP_ONE].replacement_verifier_agent_id = null;
   });
   assertFailsNaming(result, FP_ONE);
 });
@@ -345,6 +395,88 @@ test("(j) verifier dispatched before the hunter fails", () => {
         entry.dispatched_at = "2026-10-26T09:00:00Z";
       }
     }
+  });
+  assertFailsNaming(result, FP_ONE);
+});
+
+test("(k) run-dir --profile cannot override the run's recorded standard profile", () => {
+  const result = runChecker((data) => {
+    // Standard profile of record, but phase3 == phase5 for FP_ONE: a
+    // fail under standard. Re-invoking with --profile quick must not
+    // turn it into a pass; the metadata profile governs run-dir form.
+    data.entries[FP_ONE].phase5_verifier_agent_id =
+      data.entries[FP_ONE].phase3_verifier_agent_id;
+    // Give the merged pass a dispatch record too, so that if --profile
+    // quick were (wrongly) honoured every quick rule would pass and
+    // only the recorded standard profile can fail this fixture.
+    data.dispatch.push({
+      agent_id: "verifier-1",
+      role: "phase5_verifier",
+      session_id: "sess-verifier-1",
+      dispatched_at: "2026-10-26T12:30:00Z",
+    });
+    data.extraArgs = ["--profile", "quick"];
+  });
+  assertFailsNaming(result, FP_ONE);
+});
+
+test("(l) run-dir with missing run-metadata.json fails closed", () => {
+  const result = runChecker((data) => {
+    data.omitMetadata = true;
+  });
+  assert.notEqual(result.status, 0, `expected nonzero exit, got 0: ${result.output}`);
+  assert.ok(
+    result.output.includes("run_status: incomplete"),
+    `expected run_status: incomplete in output, got: ${result.output}`
+  );
+});
+
+test("(m) run-dir with profile-less run-metadata.json fails closed", () => {
+  const result = runChecker((data) => {
+    data.metadataProfile = null;
+  });
+  assert.notEqual(result.status, 0, `expected nonzero exit, got 0: ${result.output}`);
+  assert.ok(
+    result.output.includes("run_status: incomplete"),
+    `expected run_status: incomplete in output, got: ${result.output}`
+  );
+});
+
+test("(n) four-file form with no profile from --profile or metadata fails closed", () => {
+  const result = runChecker((data) => {
+    data.form = "files";
+    data.omitMetadata = true;
+  });
+  assert.notEqual(result.status, 0, `expected nonzero exit, got 0: ${result.output}`);
+  assert.ok(
+    result.output.includes("run_status: incomplete"),
+    `expected run_status: incomplete in output, got: ${result.output}`
+  );
+});
+
+test("(o) sidecar entry missing a contract field fails naming the fingerprint", () => {
+  const result = runChecker((data) => {
+    // Omitting superseded_verdict must not read as "replaced nothing":
+    // field presence is required, distinct from an explicit null.
+    data.sidecarMutate = (entries) => {
+      delete entries[FP_ONE].superseded_verdict;
+    };
+  });
+  assertFailsNaming(result, FP_ONE);
+});
+
+test("(p) sidecar entry with an unknown extra field fails naming the fingerprint", () => {
+  const result = runChecker((data) => {
+    data.sidecarMutate = (entries) => {
+      entries[FP_ONE].extra_field = "verifier-9";
+    };
+  });
+  assertFailsNaming(result, FP_ONE);
+});
+
+test("(q) sidecar entry with an unknown superseded_verdict rank fails", () => {
+  const result = runChecker((data) => {
+    data.entries[FP_ONE].superseded_verdict = "bogus";
   });
   assertFailsNaming(result, FP_ONE);
 });
