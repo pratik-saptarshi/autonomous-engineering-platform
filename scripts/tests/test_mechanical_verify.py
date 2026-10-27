@@ -3307,11 +3307,13 @@ class ClassifierUncertaintyTests(unittest.TestCase):
         # Issue #51, the non-veto invariant for this shape —
         # the mirror of the imported-mixin test above. The star
         # import here brings NO pytest content (shared exports
-        # only a helper), so the speculative pytest leg's
-        # marginal collection is zero; it must not veto the
-        # passing deterministic unittest leg. (pytest still
-        # re-collects the module's TestCase test under its own
-        # collection semantics — the counts pin that.)
+        # only a helper), so the speculative pytest leg adds no
+        # collection of its own; it must not veto the passing
+        # deterministic unittest leg. (pytest still re-collects
+        # the module's TestCase test under its own collection
+        # semantics — the counts pin that: the leg collects 1,
+        # not zero. The LITERAL-zero presentation is pinned by
+        # the next test.)
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write(root, "shared.py", "def helper():\n    pass\n")
@@ -3335,6 +3337,121 @@ class ClassifierUncertaintyTests(unittest.TestCase):
             self.assertEqual(len(results), 2)
             self.assertEqual(results[0].tests_collected, 1)
             self.assertEqual(results[1].tests_collected, 1)
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_star_import_speculative_leg_with_literal_zero_does_not_veto(
+        self,
+    ):
+        # Issue #51, round 2: the LITERAL-zero presentation of
+        # the non-veto invariant. The TestCase carries pytest's
+        # documented opt-out marker `__test__ = False` (idiomatic
+        # for shared/abstract bases): the unittest loader ignores
+        # the marker and collects the passing test, while pytest
+        # collects literally zero and exits 5. The speculative
+        # leg sits LAST here, so no deferral to a later leg can
+        # rescue it — the non-veto must come from the verdict
+        # composition itself: a speculative leg's clean zero
+        # never vetoes a run a deterministic Python leg already
+        # passed. (On the round-1 code this run failed rc 1:
+        # the speculative leg vetoed.)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "shared.py", "def helper():\n    pass\n")
+            write(
+                root,
+                "test_star.py",
+                "import unittest\n"
+                "\n"
+                "from shared import *\n"
+                "\n"
+                "\n"
+                "class StarTests(unittest.TestCase):\n"
+                "    __test__ = False\n"
+                "\n"
+                "    def test_ok(self):\n"
+                "        pass\n",
+            )
+            commands, results, rc, _ = self.run_fixture(root)
+            self.assertEqual(
+                [c.id for c in commands], ["unittest", "pytest"]
+            )
+            self.assertEqual(rc, 0)
+            self.assertEqual(len(results), 2)
+            self.assertEqual(results[0].tests_collected, 1)
+            self.assertTrue(results[0].passed)
+            self.assertEqual(results[1].tests_collected, 0)
+            self.assertEqual(results[1].exit_code, 5)
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_deterministic_pytest_leg_with_literal_zero_still_vetoes(
+        self,
+    ):
+        # Issue #51, round 2 guard: the non-veto belongs to
+        # SPECULATIVE legs only. A closed module whose visible
+        # test_* function triggers the pytest leg
+        # deterministically presents the same literal zero
+        # (module-level `__test__ = False` suppresses pytest
+        # collection while the TestCase passes under unittest) —
+        # and that zero still vetoes: a deterministic leg
+        # collecting zero is the genuinely-empty signal the
+        # count gate exists to catch.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "test_closed.py",
+                "import unittest\n"
+                "\n"
+                "__test__ = False\n"
+                "\n"
+                "\n"
+                "def test_visible():\n"
+                "    pass\n"
+                "\n"
+                "\n"
+                "class ClosedTests(unittest.TestCase):\n"
+                "    def test_ok(self):\n"
+                "        pass\n",
+            )
+            commands, results, rc, _ = self.run_fixture(root)
+            self.assertEqual(
+                [c.id for c in commands], ["unittest", "pytest"]
+            )
+            self.assertEqual(rc, 1)
+            self.assertEqual(len(results), 2)
+            self.assertEqual(results[0].tests_collected, 1)
+            self.assertEqual(results[1].tests_collected, 0)
+            self.assertEqual(results[1].exit_code, 5)
+
+    def test_uncertain_class_only_module_collecting_zero_fails_closed(
+        self,
+    ):
+        # Issue #51, round 2 boundary: the imported-mixin
+        # speculative leg in LAST (here: only) position. The
+        # uncertain class's name is not Test*, so no pytest leg
+        # is scheduled; the speculative unittest leg collects
+        # zero because the imported base is not a TestCase.
+        # With no deterministic Python leg passing — no verdict
+        # for the non-veto to preserve — the run still fails
+        # closed, exactly like a genuinely empty discovery.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "shared_mixin.py", "class Mixin:\n    pass\n")
+            write(
+                root,
+                "test_mixin_only.py",
+                "from shared_mixin import Mixin\n"
+                "\n"
+                "\n"
+                "class CheckHelpers(Mixin):\n"
+                "    def test_ok(self):\n"
+                "        pass\n",
+            )
+            commands, results, rc, _ = self.run_fixture(root)
+            self.assertEqual([c.id for c in commands], ["unittest"])
+            self.assertEqual(rc, 1)
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0].tests_collected, 0)
 
     def test_deselected_is_not_counted_as_collected(self):
         # Judge rider (correctness P2-B): deselected tests were

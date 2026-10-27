@@ -61,6 +61,13 @@ class VerificationCommand:
     id: str
     label: str
     argv: tuple[str, ...]
+    # A leg that exists only through classification uncertainty
+    # (an unresolved class base, a star-import-open module) is
+    # marked speculative at discovery: run_all judges its clean
+    # zero collection against the union of the run instead of
+    # letting it veto a verdict deterministic legs produced
+    # (issue #51). Deterministic legs leave this False.
+    speculative: bool = False
 
 
 @dataclass(frozen=True)
@@ -305,6 +312,29 @@ def _classify_test_module(
 ) -> tuple[bool, bool]:
     """(has_unittest_leg, triggers_pytest) for one test module.
 
+    The pair-only view of _classify_module, kept for callers
+    (and tests) that do not judge speculativeness.
+    """
+    has_unittest, triggers_pytest, _, _ = _classify_module(
+        text, truncated
+    )
+    return has_unittest, triggers_pytest
+
+
+def _classify_module(
+    text: str, truncated: bool = False
+) -> tuple[bool, bool, bool, bool]:
+    """(has_unittest_leg, triggers_pytest, unittest_speculative,
+    pytest_speculative) for one test module.
+
+    A leg is SPECULATIVE when every signal that scheduled it is
+    classification uncertainty — an unresolved class base the
+    loader must decide, or a star import opening the module's
+    binding set — rather than positive evidence the runner will
+    collect something. run_all composes speculative legs'
+    results against the union of the run (issue #51); a leg
+    with any deterministic signal is not speculative.
+
     Classification follows the runners' collection semantics, by AST:
 
     - unittest leg iff the module defines a class whose bases include
@@ -379,11 +409,13 @@ def _classify_test_module(
       no builtin is a TestCase, so it resolves determinately.
     """
     if truncated:
-        return True, True
+        # Pure uncertainty: both legs on suspicion alone, so
+        # both are speculative.
+        return True, True, True, True
     try:
         tree = ast.parse(text)
     except SyntaxError:
-        return True, True
+        return True, True, True, True
 
     # Module-namespace pass: TestCase-denoting names (direct imports,
     # import aliases, assignment aliases), every imported name, every
@@ -650,6 +682,14 @@ def _classify_test_module(
             break
         pending = deferred
 
+    # Every trigger the visitor set is positive evidence found
+    # in the module's own bindings (a test_* def, an imported
+    # test_*/Test* name, a collectable assignment) — deterministic.
+    # Only the post-resolution rules below can add a SPECULATIVE
+    # trigger, and they record that they did.
+    visitor_triggers_pytest = triggers_pytest
+    pytest_speculative_trigger = False
+    pytest_deterministic_trigger = False
     has_unittest = has_load_tests
     for cls in classes:
         if resolved.get(cls.name):
@@ -661,6 +701,7 @@ def _classify_test_module(
             has_unittest = True
             if cls.name.startswith("Test"):
                 triggers_pytest = True
+                pytest_speculative_trigger = True
         elif cls.name.startswith("Test"):
             # Resolved as NOT a TestCase subclass — but pytest
             # collects Test* classes, and their test methods may be
@@ -673,6 +714,7 @@ def _classify_test_module(
             # collect; a Test* name on a non-TestCase class is the
             # opposite of that evidence, so it keeps the leg.
             triggers_pytest = True
+            pytest_deterministic_trigger = True
     if (
         has_star_import
         and not triggers_pytest
@@ -687,10 +729,13 @@ def _classify_test_module(
         # the classifier never executes imports to find out.
         # The module gains a SPECULATIVE pytest leg through
         # the same uncertainty channel as an unresolved class
-        # base above: both legs are scheduled, and the count
-        # gate judges the legs together, so a speculative leg
-        # collecting nothing extra never vetoes a passing
-        # deterministic leg. FALSE-TRIGGER BOUND: the leg
+        # base above: both legs are scheduled, and the leg is
+        # marked speculative on its command, so run_all judges
+        # a clean zero collection from it against the union of
+        # the run — it never vetoes a run another Python leg
+        # passed, in any leg position, but standing alone with
+        # zero collected it fails closed like any genuinely
+        # empty discovery. FALSE-TRIGGER BOUND: the leg
         # fires only when a TestCase-denoting class is
         # statically known in the module — a star import
         # beside no known test marker changes nothing, and a
@@ -699,9 +744,26 @@ def _classify_test_module(
         # helpers gains a leg only when it already carries
         # unittest content of its own.
         triggers_pytest = True
+        pytest_speculative_trigger = True
     if not has_unittest and not triggers_pytest:
         triggers_pytest = True  # no leg at all: the pytest default
-    return has_unittest, triggers_pytest
+    unittest_speculative = (
+        has_unittest
+        and not has_load_tests
+        and not any(resolved.get(cls.name) for cls in classes)
+    )
+    pytest_speculative = (
+        triggers_pytest
+        and pytest_speculative_trigger
+        and not visitor_triggers_pytest
+        and not pytest_deterministic_trigger
+    )
+    return (
+        has_unittest,
+        triggers_pytest,
+        unittest_speculative,
+        pytest_speculative,
+    )
 
 
 def discover_verification_commands(root: Path) -> tuple[VerificationCommand, ...]:
@@ -774,6 +836,12 @@ def discover_verification_commands(root: Path) -> tuple[VerificationCommand, ...
     if test_files:
         unittest_modules: list[str] = []
         pytest_triggered = False
+        # A shared leg is speculative only when EVERY module
+        # that scheduled it did so through classification
+        # uncertainty; one module's deterministic evidence makes
+        # the leg deterministic (issue #51).
+        unittest_speculative = True
+        pytest_speculative = True
         for path in test_files:
             try:
                 with path.open("r", encoding="utf-8", errors="ignore") as fh:
@@ -781,24 +849,37 @@ def discover_verification_commands(root: Path) -> tuple[VerificationCommand, ...
             except OSError:
                 text = ""
             truncated = len(text) > SCAN_CHARS
-            has_unittest, triggers_pytest = _classify_test_module(
-                text[:SCAN_CHARS], truncated=truncated
-            )
+            (
+                has_unittest,
+                triggers_pytest,
+                module_unittest_speculative,
+                module_pytest_speculative,
+            ) = _classify_module(text[:SCAN_CHARS], truncated=truncated)
             if has_unittest:
                 unittest_modules.append(path.stem)
+                if not module_unittest_speculative:
+                    unittest_speculative = False
             if triggers_pytest:
                 pytest_triggered = True
+                if not module_pytest_speculative:
+                    pytest_speculative = False
         if unittest_modules:
             add(
                 VerificationCommand(
                     "unittest",
                     "Python unittest",
                     ("python3", "-m", "unittest", "-v", *unittest_modules),
+                    speculative=unittest_speculative,
                 )
             )
         if pytest_triggered:
             add(
-                VerificationCommand("pytest", "Python tests", PYTEST_ARGV)
+                VerificationCommand(
+                    "pytest",
+                    "Python tests",
+                    PYTEST_ARGV,
+                    speculative=pytest_speculative,
+                )
             )
 
     # 6. Make (AEP addition).
@@ -1152,6 +1233,36 @@ def _clean_zero_collection(
     return match is not None and int(match.group(1)) == 0
 
 
+def _speculative_clean_zero(
+    command: VerificationCommand, result: VerificationResult
+) -> bool:
+    """Whether a speculative leg's failure is solely a clean zero
+    collection, judged by the pair (parsed count, exit code).
+
+    Exit 0 with a parsed zero is the historic presentation for
+    either runner. Exit 5 is each runner's no-tests code —
+    unittest's on CPython ≥3.12, pytest's by definition — but
+    the two are not equally self-evidencing: pytest exits 5
+    ONLY when it collected and selected nothing (collection
+    errors exit 2, usage errors 4), so the pair (0, 5) is
+    conclusive for a pytest leg; a unittest leg must
+    additionally present the genuine "Ran 0 tests" transcript,
+    exactly as _clean_zero_collection pins for the deferral,
+    so a runner that died before printing a summary — whose
+    count parses to a fallback zero — is not mistaken for a
+    clean zero here either.
+    """
+    if result.tests_collected != 0:
+        return False
+    if result.exit_code == 0:
+        return True
+    if result.exit_code != _UNITTEST_NO_TESTS_EXIT_CODE:
+        return False
+    if command.id == "pytest":
+        return True
+    return _clean_zero_collection(command, result)
+
+
 def _policy_path() -> Path:
     """Resolve the launch-policy file: $AEP_POLICY_DATA when set, else
     the policy.data beside this script — the same rule lane-coord.sh's
@@ -1456,6 +1567,7 @@ def run_all(
 
     started = time.monotonic()
     executed = 0
+    python_leg_passed = False
     for idx, command in enumerate(commands):
         elapsed = time.monotonic() - started
         if elapsed >= budget_seconds:
@@ -1495,7 +1607,43 @@ def run_all(
                 c.id in _PYTHON_LEG_IDS for c in commands[idx + 1 :]
             )
         )
-        if not result.passed and not defer_zero:
+        # Speculative-leg non-veto (issue #51, round 2): the
+        # deferral above is directional — it rescues a zero leg
+        # only when another Python leg runs AFTER it, and its
+        # exit-5 branch is unittest-only — so a speculative leg
+        # scheduled on suspicion (its command is marked at
+        # discovery) could still veto from last position with a
+        # literal zero (e.g. a pytest leg exiting 5 over
+        # `__test__ = False`). The non-veto is therefore a
+        # property of the leg, judged against the union of the
+        # run: a speculative leg whose only failure is a clean
+        # zero collection defers when a Python leg remains, and
+        # is excused outright when a Python leg already passed.
+        # Standing alone with zero collected it excuses
+        # nothing — no Python leg passed and none remains — so
+        # a genuinely empty discovery still fails closed, and a
+        # speculative leg collecting >0 is judged on its merits.
+        speculative_zero = (
+            not result.passed
+            and command.speculative
+            and command.id in _PYTHON_LEG_IDS
+            and _speculative_clean_zero(command, result)
+            and not result.timed_out
+            and not result.survivors_remaining
+        )
+        defer_speculative = speculative_zero and any(
+            c.id in _PYTHON_LEG_IDS for c in commands[idx + 1 :]
+        )
+        excuse_speculative = speculative_zero and python_leg_passed
+        non_veto_speculative = (
+            excuse_speculative and not defer_zero and not defer_speculative
+        )
+        if (
+            not result.passed
+            and not defer_zero
+            and not defer_speculative
+            and not excuse_speculative
+        ):
             exit_repr = (
                 "spawn-error" if result.exit_code is None else str(result.exit_code)
             )
@@ -1525,6 +1673,14 @@ def run_all(
                 return 1
         if result.passed:
             print(f"VERIFY: {command.id} PASS")
+            if command.id in _PYTHON_LEG_IDS:
+                python_leg_passed = True
+        elif non_veto_speculative:
+            print(
+                f"VERIFY: {command.id} collected zero tests — "
+                f"speculative leg does not veto the Python leg(s) "
+                f"already passed"
+            )
         else:
             print(
                 f"VERIFY: {command.id} collected zero tests — "
