@@ -3503,6 +3503,13 @@ def _path_binds_under_residue(parts: list[str]) -> bool | None:
 # - status.showUntrackedFiles: all, the call site's flag
 #   restated at the _git level so every status invocation
 #   enumerates untracked files individually.
+# - protocol.ext.allow: never. The ext:: transport runs a
+#   program the remote URL names; a delivered partial-clone
+#   config (see _repo_local_config_refusal) points it at the
+#   verifier's own object reads. GIT_NO_LAZY_FETCH already
+#   keeps every call from fetching (see _git_env); the pin
+#   closes the transport itself as a third layer, and local
+#   reads are undisturbed by it (probed, Task 18).
 #
 # Two setup-level keys a -c pin cannot retake. core.worktree IS
 # honoured from the file over the argv (setup consumes it before
@@ -3516,7 +3523,8 @@ def _path_binds_under_residue(parts: list[str]) -> bool | None:
 # the opposite). A bare declaration in a delivered worktree
 # checkout is anomalous, so tree_clean refuses it outright via
 # _repo_local_config_refusal, which also refuses repo-local
-# filter drivers (program-naming config of the fsmonitor kind).
+# filter drivers (program-naming config of the fsmonitor kind)
+# and delivered promisor / partial-clone configuration.
 _GIT_CONFIG_PINS = (
     "core.fsmonitor=false",
     "core.untrackedCache=false",
@@ -3530,6 +3538,7 @@ _GIT_CONFIG_PINS = (
     "core.symlinks=true",
     "core.autocrlf=false",
     "status.showUntrackedFiles=all",
+    "protocol.ext.allow=never",
 )
 
 
@@ -3574,15 +3583,25 @@ def _layout_git_dir(top: Path) -> str | None:
 
 def _git_env() -> dict:
     """Environment for the verifier's git invocations: the
-    caller's, plus GIT_NO_REPLACE_OBJECTS=1. Replace refs
+    caller's, plus GIT_NO_REPLACE_OBJECTS=1 and
+    GIT_NO_LAZY_FETCH=1. Replace refs
     (.git/refs/replace/<sha>) are delivered checkout state like
     .git/config: a planted ref makes ls-tree, cat-file, and
     status read substituted objects, so a seal could attest a
     tree that is not HEAD's (Task 16 review, finding F2's
-    family). The env opt-out applies to every invocation
-    uniformly, with no argv-ordering constraint."""
+    family). Lazy fetch is the partial-clone twin: a checkout
+    shaped as a partial clone makes git fetch a genuinely
+    missing object on first read, through the remote's
+    transport — for an ext:: remote URL, a program the
+    checkout's own config names — inside the verifier's call
+    (paperthin validation 7, breach B-B). The env opt-outs
+    apply to every invocation uniformly, with no argv-ordering
+    constraint: no verifier git call ever fetches, whatever
+    the delivered config says; a genuinely missing object
+    fails closed instead."""
     env = dict(os.environ)
     env["GIT_NO_REPLACE_OBJECTS"] = "1"
+    env["GIT_NO_LAZY_FETCH"] = "1"
     return env
 
 
@@ -3663,6 +3682,10 @@ def _git_tree_digest(root: Path, head: str) -> str | None:
 
 _FILTER_DRIVER_KEY = re.compile(r"^filter\..+\.(clean|smudge|process)$")
 
+_PROMISOR_KEY = re.compile(r"^remote\..+\.promisor$")
+
+_REMOTE_URL_KEY = re.compile(r"^remote\..+\.(url|pushurl)$")
+
 _DELIVERED_CONFIG_SCOPES = ("local", "worktree")
 
 
@@ -3691,7 +3714,7 @@ def _repo_local_config_refusal(root: Path) -> str | None:
     `worktree` (config.worktree under extensions.worktreeConfig)
     — never the operator's system/global config, which is
     operator environment, nor the verifier's own -c pins
-    (command scope). Two refusals:
+    (command scope). Three refusals:
 
     - Any filter.*.clean / .smudge / .process key: filter
       drivers are program-naming config delivered with the
@@ -3707,6 +3730,23 @@ def _repo_local_config_refusal(root: Path) -> str | None:
       worktree at all. The declaration is anomalous in a
       delivered worktree checkout; refusing costs nothing
       legitimate (Task 16 review, finding F1).
+    - Promisor / partial-clone configuration (paperthin
+      validation 7, breach B-B): any delivered
+      remote.*.promisor=true (effective value, last in
+      precedence order, per remote), any delivered
+      extensions.partialclone key whatever its value, and any
+      delivered remote URL (remote.*.url / .pushurl) on the
+      ext:: transport. A checkout in this shape makes git
+      fetch genuinely missing objects lazily, through the
+      remote's transport — for ext::, a program the checkout's
+      config names — inside the verifier's own calls
+      (cat-file in the content pass is the demonstrated one).
+      GIT_NO_LAZY_FETCH closes the fetch path in general (see
+      _git_env) and protocol.ext.allow=never pins the
+      transport, but the delivered shape is refused and named
+      rather than silently neutralized — the core.bare
+      posture: a partial clone's missing objects are not this
+      gate's to fetch, ever.
     """
     names = _git(root, "config", "--name-only", "--list", "--show-scope")
     if names.returncode != 0:
@@ -3726,22 +3766,86 @@ def _repo_local_config_refusal(root: Path) -> str | None:
         return "repo-local git config is not readable"
     bare_seen = False
     bare_value: str | None = None
+    partialclone_seen = False
+    promisor_values: dict[str, str | None] = {}
+    remote_url_values: dict[str, str | None] = {}
     for line in values.stdout.decode("utf-8", errors="replace").splitlines():
         scope, sep, rest = line.partition("\t")
         if not sep or scope not in _DELIVERED_CONFIG_SCOPES:
             continue
         key, eq, value = rest.partition("=")
-        if key.strip().lower() != "core.bare":
-            continue
-        bare_seen = True
-        bare_value = value if eq else None
+        key = key.strip().lower()
+        value = value if eq else None
+        if key == "core.bare":
+            bare_seen = True
+            bare_value = value
+        elif key == "extensions.partialclone":
+            partialclone_seen = True
+        elif _PROMISOR_KEY.match(key):
+            promisor_values[key] = value
+        elif _REMOTE_URL_KEY.match(key):
+            remote_url_values[key] = value
     if bare_seen and _config_bool(bare_value):
         return (
             "repo-local git config sets core.bare=true; a "
             "delivered worktree checkout declaring itself bare "
             "is refused rather than silently overridden"
         )
+    if partialclone_seen:
+        return (
+            "repo-local git config sets extensions.partialclone; "
+            "a delivered partial-clone checkout would have the "
+            "verifier's own git calls fetch missing objects "
+            "through the checkout's promisor remote, and git "
+            "mode refuses it"
+        )
+    for key, value in promisor_values.items():
+        if _config_bool(value):
+            return (
+                f"repo-local git config sets {key}=true; a "
+                "delivered promisor remote would have the "
+                "verifier's own git calls fetch missing objects "
+                "through a transport the checkout names, and git "
+                "mode refuses it"
+            )
+    for key, value in remote_url_values.items():
+        if value is not None and value.strip().lower().startswith("ext::"):
+            return (
+                f"repo-local git config sets {key} to an ext:: "
+                "transport URL; the ext:: transport is a program "
+                "the checkout names, and git mode refuses it"
+            )
     return None
+
+
+def _object_format(root: Path) -> str | None:
+    """The repo's object format ("sha1" or "sha256") as git
+    reports it, or None when the answer is unreadable or names
+    something else. The content pass frames and hashes payloads
+    with THIS format — a sha256 repo's objects are verified
+    with sha256, never refused for not being sha1."""
+    proc = _git(root, "rev-parse", "--show-object-format")
+    if proc.returncode != 0:
+        return None
+    fmt = proc.stdout.decode("ascii", errors="replace").strip()
+    return fmt if fmt in ("sha1", "sha256") else None
+
+
+# The most recent content pass's object-store integrity
+# failure, when it had one: a payload cat-file served that does
+# not hash to the SHA it was requested under. tree_clean resets
+# this on entry; the gates that surface tree_clean's verdict
+# (verify's cleanliness gate, check_receipts' DIRTY line)
+# append it exactly as they append _repo_local_config_refusal's
+# reason, so an operator can tell "the delivered object store
+# is corrupt or poisoned" from "the tree is dirty".
+_OBJECT_STORE_FAILURE: str | None = None
+
+
+def _object_store_failure_detail() -> str | None:
+    """The object-store integrity failure the latest content
+    pass recorded, or None (see _OBJECT_STORE_FAILURE)."""
+    return _OBJECT_STORE_FAILURE
 
 
 def _tracked_content_matches_head(root: Path, toplevel: Path) -> bool:
@@ -3764,12 +3868,31 @@ def _tracked_content_matches_head(root: Path, toplevel: Path) -> bool:
     review, finding F2). Comparing bytes directly consults no
     cache and executes no program: blob bytes come from one
     `git cat-file --batch` over the object store (replace
-    objects disabled, see _git_env), worktree bytes are read
-    raw. `git hash-object` was probed and rejected as the
+    objects disabled and lazy fetch disabled, see _git_env;
+    delivered promisor configuration refused, see
+    _repo_local_config_refusal), worktree bytes are read raw.
+    `git hash-object` was probed and rejected as the
     per-file instrument: it EXECUTES the entry's clean filter
     (a sentinel-writing driver ran), standing a repo-named
     program inside the verifier's own call — the hooks class
     the pins exist to exclude.
+
+    The blob side of the comparison is verified, not believed
+    (paperthin validation 7, breach B-A): git streams blob
+    payloads WITHOUT hashing them on the read path — loose,
+    packed, and alternates-reachable alike; only fsck, never
+    run here, checks — so a delivered store can serve arbitrary
+    bytes under a blob's SHA, and the forged-index half of the
+    plant then compares evil worktree bytes against evil
+    "HEAD" bytes and calls it clean. (Tree and commit objects
+    are different: git verifies their identity on the parse
+    path — a poisoned tree fails ls-tree outright.) Every
+    payload is therefore hashed inside this pass, framed as
+    the repo's object format frames it (`blob <len>` + NUL +
+    payload, under _object_format's hash), and must equal the
+    SHA ls-tree claimed before its bytes are compared; a
+    mismatch is recorded as an object-store integrity failure
+    (see _OBJECT_STORE_FAILURE) and the tree is not clean.
 
     The price, stated as git mode's limit in the docs: the
     comparison is byte-exact, so a tree whose checked-out bytes
@@ -3779,6 +3902,8 @@ def _tracked_content_matches_head(root: Path, toplevel: Path) -> bool:
     because every normalization available is either git's own
     borrowed answer or a repo-named program.
     """
+    global _OBJECT_STORE_FAILURE
+    _OBJECT_STORE_FAILURE = None
     proc = _git(root, "ls-tree", "-r", "-z", "HEAD")
     if proc.returncode != 0:
         return False
@@ -3801,6 +3926,9 @@ def _tracked_content_matches_head(root: Path, toplevel: Path) -> bool:
         )
     if not blobs:
         return True
+    object_format = _object_format(root)
+    if object_format is None:
+        return False
     try:
         batch = subprocess.Popen(
             _git_argv(root, "cat-file", "--batch"),
@@ -3833,6 +3961,28 @@ def _tracked_content_matches_head(root: Path, toplevel: Path) -> bool:
                 return False
             content = batch.stdout.read(size)
             if len(content) != size or batch.stdout.read(1) != b"\n":
+                return False
+            # The payload is verified against its claimed SHA
+            # before it is compared (see the docstring): the
+            # store's word for which bytes a SHA names is the
+            # one thing this pass may not borrow.
+            hasher = (
+                hashlib.sha1()
+                if object_format == "sha1"
+                else hashlib.sha256()
+            )
+            hasher.update(
+                b"blob " + str(size).encode("ascii") + b"\x00" + content
+            )
+            if hasher.hexdigest() != sha:
+                _OBJECT_STORE_FAILURE = (
+                    "object store integrity failure: the payload "
+                    f"served for blob {sha} ({rel}) does not hash "
+                    f"to that SHA under the repo's {object_format} "
+                    "object format — the delivered object store "
+                    "is corrupt or poisoned, and the bytes it "
+                    "serves are not HEAD's"
+                )
                 return False
             if stat.S_ISLNK(st.st_mode):
                 actual = os.readlink(target).encode(
@@ -4157,9 +4307,12 @@ def tree_clean(root: Path, receipts_path: Path | None = None) -> bool:
     disabled on every invocation (see _git_env): a planted
     replace ref would substitute the objects themselves.
     The checkout's own configuration is also REFUSED, not
-    merely pinned, in two cases (see _repo_local_config_refusal):
+    merely pinned, in three cases (see _repo_local_config_refusal):
     a filter driver definition (program-naming config of the
-    fsmonitor kind), and core.bare=true. And the index itself
+    fsmonitor kind), core.bare=true, and promisor /
+    partial-clone configuration (which would have the
+    verifier's own git calls fetch missing objects through a
+    transport the checkout names). And the index itself
     is judged after status: a tracked file carrying the
     skip-worktree or assume-unchanged bit is one status has
     been told not to look at — it reports the file clean BY
@@ -4176,6 +4329,8 @@ def tree_clean(root: Path, receipts_path: Path | None = None) -> bool:
     half, staged/index divergence, and mode state; the content
     comparison is the tracked half's authority.
     """
+    global _OBJECT_STORE_FAILURE
+    _OBJECT_STORE_FAILURE = None
     resolved = root.resolve()
     top = _git(resolved, "rev-parse", "--show-toplevel")
     if top.returncode != 0:
@@ -4740,7 +4895,9 @@ def check_receipts(
                 )
                 return 1
             if not tree_clean(resolved_root, receipts_path):
-                refusal = _repo_local_config_refusal(resolved_root)
+                refusal = _repo_local_config_refusal(
+                    resolved_root
+                ) or _object_store_failure_detail()
                 detail = f" ({refusal})" if refusal else ""
                 print(
                     f"RECEIPTS: DIRTY task {task}: "
@@ -4911,7 +5068,9 @@ def main(argv: list[str] | None = None) -> int:
             env=run_env_mode(_policy_path()),
         )
         if binding["mode"] == "git" and not tree_clean(root, receipts_path):
-            refusal = _repo_local_config_refusal(root)
+            refusal = _repo_local_config_refusal(
+                root
+            ) or _object_store_failure_detail()
             detail = f" ({refusal})" if refusal else ""
             print(
                 "VERIFY: FAIL tree not clean at HEAD "

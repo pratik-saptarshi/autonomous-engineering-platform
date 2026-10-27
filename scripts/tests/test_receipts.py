@@ -4,11 +4,13 @@ import io
 import json
 import os
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
 import unittest
 import zipfile
+import zlib
 from unittest import mock
 from pathlib import Path
 
@@ -1868,6 +1870,453 @@ class GitInstrumentPinTests(unittest.TestCase):
             proc = check(receipts, "1")
             self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
             self.assertIn("RECEIPTS: PASS", proc.stdout)
+
+
+def poison_loose_object(root: Path, sha: str, payload: bytes) -> None:
+    """Replace the loose object at `sha` with a zlib payload of
+    *payload* framed as a blob — the delivered-store lie of
+    paperthin validation 7, breach B-A: the bytes sit at the
+    genuine object's path, so every read-path git command
+    serves them under the genuine SHA."""
+    obj = root / ".git" / "objects" / sha[:2] / sha[2:]
+    obj.parent.mkdir(parents=True, exist_ok=True)
+    framed = b"blob %d\x00" % len(payload) + payload
+    obj.write_bytes(zlib.compress(framed))
+
+
+def swap_pack_idx_entries(root: Path, sha_a: str, sha_b: str) -> None:
+    """Swap two blobs' offset+CRC entries in the pack index
+    (validation 7's packed form of B-A): cat-file then serves
+    each blob's payload under the other's SHA, CRC-consistent,
+    and only fsck would notice."""
+    pack_dir = root / ".git" / "objects" / "pack"
+    idx_path = next(pack_dir.glob("*.idx"))
+    data = bytearray(idx_path.read_bytes())
+    assert data[:4] == b"\xfftOc", data[:4]
+    (version,) = struct.unpack(">I", data[4:8])
+    assert version == 2, version
+    fanout = struct.unpack(">256I", data[8 : 8 + 1024])
+    count = fanout[255]
+    sha_off = 8 + 1024
+    crc_off = sha_off + 20 * count
+    off_off = crc_off + 4 * count
+    shas = [
+        bytes(data[sha_off + 20 * i : sha_off + 20 * (i + 1)])
+        for i in range(count)
+    ]
+    ia = shas.index(bytes.fromhex(sha_a))
+    ib = shas.index(bytes.fromhex(sha_b))
+    for base in (crc_off, off_off):
+        entry_a = bytes(data[base + 4 * ia : base + 4 * ia + 4])
+        entry_b = bytes(data[base + 4 * ib : base + 4 * ib + 4])
+        data[base + 4 * ia : base + 4 * ia + 4] = entry_b
+        data[base + 4 * ib : base + 4 * ib + 4] = entry_a
+    data[-20:] = hashlib.sha1(bytes(data[:-20])).digest()
+    idx_path.write_bytes(bytes(data))
+
+
+class ObjectStoreIntegrityTests(unittest.TestCase):
+    """Task 18 (paperthin validation 7, breach B-A): the
+    content-exact pass believed the object store by name. Git
+    streams blob payloads without hashing them on the read
+    path (loose, packed, alternates alike — only fsck
+    checks), so a poisoned blob served under HEAD's blob SHA,
+    composed with Task 17's forged index, made the pass
+    compare evil worktree bytes against evil "HEAD" bytes and
+    call it clean. Every payload is now hashed inside the
+    pass, framed under the repo's own object format, and must
+    equal its claimed SHA before it is compared; a mismatch
+    is named as an object-store integrity failure in the
+    gate's message, on the verify path and the audit path
+    alike."""
+
+    AGED_NS = 1_700_000_000_000_000_000
+
+    def _repo(self, tmp: str) -> tuple[Path, str]:
+        root = Path(tmp) / "repo"
+        root.mkdir()
+        init_git_repo(root)
+        commit_file(
+            root, "test_ok.py", "def test_ok():\n    assert True\n",
+            "add test",
+        )
+        sha = git(root, "rev-parse", "HEAD:test_ok.py").stdout.strip()
+        return root, sha
+
+    def _forge_evil(
+        self, root: Path, evil: bytes, sha: str
+    ) -> None:
+        (root / "test_ok.py").write_bytes(evil)
+        os.utime(root / "test_ok.py", ns=(self.AGED_NS, self.AGED_NS))
+        forge_index_entry(root, "test_ok.py", sha)
+        status = git(root, "status", "--porcelain").stdout
+        tracked = [
+            line for line in status.splitlines()
+            if not line.startswith("??")
+        ]
+        self.assertEqual(tracked, [])
+
+    def test_loose_poison_with_forged_index_is_not_clean(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, sha = self._repo(tmp)
+            evil = b"def test_ok():\n    assert False\n"
+            poison_loose_object(root, sha, evil)
+            # The lie holds against plain git first.
+            self.assertEqual(
+                git(root, "cat-file", "-p", sha).stdout.encode(), evil
+            )
+            self._forge_evil(root, evil, sha)
+            receipts = root / "r.jsonl"
+            self.assertFalse(mechanical_verify.tree_clean(root, receipts))
+            detail = mechanical_verify._object_store_failure_detail()
+            self.assertIsNotNone(detail)
+            self.assertIn("object store integrity failure", detail)
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("object store integrity failure", proc.stdout)
+
+    @unittest.skipUnless(
+        _path_pytest_available(), "python3 on PATH has no pytest module"
+    )
+    def test_post_seal_poison_flips_audit_to_dirty(self):
+        # The validator's audit-path arm: honest seal and audit,
+        # THEN poison + forge + modify — the audit must stop
+        # blessing the segment and name the store.
+        with tempfile.TemporaryDirectory() as tmp:
+            root, sha = self._repo(tmp)
+            outside = Path(tmp) / "outside"
+            outside.mkdir()
+            write(outside, "helper.py", 'VALUE = "evil"\n')
+            sentinel = Path(tmp) / "sentinel"
+            evil = (
+                "import sys\n"
+                "from pathlib import Path\n"
+                f"sys.path.insert(0, {str(outside)!r})\n"
+                "import helper\n\n\n"
+                "def test_ok():\n"
+                "    assert helper.VALUE == 'evil'\n"
+                f"    Path({str(sentinel)!r}).write_text('ran')\n"
+            ).encode()
+            receipts = root / "r.jsonl"
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            proc = check(receipts, "1")
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            poison_loose_object(root, sha, evil)
+            self._forge_evil(root, evil, sha)
+            proc = check(receipts, "1")
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("RECEIPTS: DIRTY", proc.stdout)
+            self.assertIn("object store integrity failure", proc.stdout)
+
+    def test_packed_poison_with_forged_index_is_not_clean(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, sha = self._repo(tmp)
+            evil = b"def test_ok():\n    assert False\n"
+            # The donor blob genuinely holds the evil bytes; it
+            # is committed then removed so at HEAD it is not a
+            # tracked path (the swap poisons its entry in the
+            # other direction, and a tracked donor would be
+            # compared too).
+            commit_file(root, "donor.py", evil.decode(), "add donor")
+            donor_sha = git(
+                root, "rev-parse", "HEAD:donor.py"
+            ).stdout.strip()
+            git(root, "rm", "-q", "donor.py")
+            git(
+                root,
+                "-c", "user.name=Fixture",
+                "-c", "user.email=fixture@example.invalid",
+                "commit", "-q", "-m", "remove donor",
+            )
+            git(root, "repack", "-a", "-d", "-q")
+            git(root, "prune")
+            loose = root / ".git" / "objects" / sha[:2] / sha[2:]
+            self.assertFalse(loose.exists())
+            swap_pack_idx_entries(root, sha, donor_sha)
+            self.assertEqual(
+                git(root, "cat-file", "-p", sha).stdout.encode(), evil
+            )
+            self._forge_evil(root, evil, sha)
+            receipts = root / "r.jsonl"
+            self.assertFalse(mechanical_verify.tree_clean(root, receipts))
+            detail = mechanical_verify._object_store_failure_detail()
+            self.assertIsNotNone(detail)
+            self.assertIn("object store integrity failure", detail)
+
+    def test_alternates_poison_with_forged_index_is_not_clean(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, sha = self._repo(tmp)
+            evil = b"def test_ok():\n    assert False\n"
+            donor = Path(tmp) / "donor"
+            donor.mkdir()
+            git(donor, "init", "-q", "-b", "main")
+            commit_file(donor, "donor.py", evil.decode(), "donor")
+            poison_loose_object(donor, sha, evil)
+            (root / ".git" / "objects" / sha[:2] / sha[2:]).unlink()
+            alt = root / ".git" / "objects" / "info" / "alternates"
+            alt.parent.mkdir(parents=True, exist_ok=True)
+            alt.write_text(str(donor / ".git" / "objects") + "\n")
+            self.assertEqual(
+                git(root, "cat-file", "-p", sha).stdout.encode(), evil
+            )
+            self._forge_evil(root, evil, sha)
+            receipts = root / "r.jsonl"
+            self.assertFalse(mechanical_verify.tree_clean(root, receipts))
+            detail = mechanical_verify._object_store_failure_detail()
+            self.assertIsNotNone(detail)
+            self.assertIn("object store integrity failure", detail)
+
+    def test_sha256_repo_payloads_verified_with_sha256(self):
+        # The framing hash is the repo's own format: a sha256
+        # repo's payloads verify with sha256, not an opaque
+        # sha1 refusal. Function-level, because the index forge
+        # helper speaks the sha1 entry layout.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            root.mkdir()
+            git(
+                root, "init", "-q", "-b", "main",
+                "--object-format=sha256",
+            )
+            commit_file(root, "tracked.py", 'VALUE = "good"\n', "tracked")
+            sha = git(
+                root, "rev-parse", "HEAD:tracked.py"
+            ).stdout.strip()
+            self.assertEqual(len(sha), 64)
+            self.assertTrue(
+                mechanical_verify._tracked_content_matches_head(
+                    root, root
+                )
+            )
+            evil = b'VALUE = "evil"\n'
+            (root / "tracked.py").write_bytes(evil)
+            # Honest store: the modification is caught.
+            self.assertFalse(
+                mechanical_verify._tracked_content_matches_head(
+                    root, root
+                )
+            )
+            # Poisoned store: the same comparison believed the
+            # served bytes before this task.
+            poison_loose_object(root, sha, evil)
+            self.assertEqual(
+                git(root, "cat-file", "-p", sha).stdout.encode(), evil
+            )
+            self.assertFalse(
+                mechanical_verify._tracked_content_matches_head(
+                    root, root
+                )
+            )
+            detail = mechanical_verify._object_store_failure_detail()
+            self.assertIsNotNone(detail)
+            self.assertIn("sha256", detail)
+
+    def test_large_blob_honest_store_seals_and_audits(self):
+        # Payload verification must accept genuine objects,
+        # large ones included: a 3 MiB blob seals and audits
+        # exactly like a small one.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_git_repo(root)
+            (root / "blob.bin").write_bytes(
+                bytes(range(256)) * (3 * 1024 * 1024 // 256)
+            )
+            git(root, "add", "blob.bin")
+            git(
+                root,
+                "-c", "user.name=Fixture",
+                "-c", "user.email=fixture@example.invalid",
+                "commit", "-q", "-m", "add blob",
+            )
+            git(root, "status", "--porcelain")  # prime the index
+            receipts = root / "r.jsonl"
+            self.assertTrue(mechanical_verify.tree_clean(root, receipts))
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            proc = check(receipts, "1")
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("RECEIPTS: PASS", proc.stdout)
+
+    def test_git_invocations_disable_lazy_fetch_and_ext(self):
+        # Task 18 (validation 7, breach B-B's environment and
+        # pin layers): no verifier git call ever fetches, and
+        # the ext:: transport is pinned off on the argv.
+        captured: dict = {}
+
+        def fake_run(argv, **kwargs):
+            captured["argv"] = argv
+            captured["env"] = kwargs.get("env")
+            return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+        with mock.patch.object(mechanical_verify.subprocess, "run", fake_run):
+            mechanical_verify._git(
+                Path("/nonexistent-root"), "status", "--porcelain"
+            )
+        env = captured["env"] or {}
+        self.assertEqual(env.get("GIT_NO_LAZY_FETCH"), "1")
+        argv = captured["argv"]
+        pins = {
+            argv[i + 1] for i, a in enumerate(argv[:-1]) if a == "-c"
+        }
+        self.assertIn("protocol.ext.allow=never", pins)
+
+
+class PromisorRefusalTests(unittest.TestCase):
+    """Task 18 (paperthin validation 7, breach B-B): a
+    delivered partial-clone config makes the verifier's own
+    git calls fetch a genuinely missing blob through a program
+    the checkout's config names (the ext:: transport). The
+    delivered shape is refused in _repo_local_config_refusal,
+    lazy fetch is disabled in every call's environment, and
+    the ext:: transport is pinned off — a missing blob then
+    fails closed, never fetched, never sealed over."""
+
+    def _repo(self, tmp: str) -> tuple[Path, str]:
+        root = Path(tmp) / "repo"
+        root.mkdir()
+        init_git_repo(root)
+        commit_file(root, "tracked.py", 'VALUE = "good"\n', "add tracked")
+        sha = git(root, "rev-parse", "HEAD:tracked.py").stdout.strip()
+        return root, sha
+
+    def test_promisor_remote_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self._repo(tmp)
+            git(root, "config", "remote.origin.promisor", "true")
+            reason = mechanical_verify._repo_local_config_refusal(root)
+            self.assertIsNotNone(reason)
+            self.assertIn("promisor", reason)
+            receipts = root / "r.jsonl"
+            self.assertFalse(mechanical_verify.tree_clean(root, receipts))
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("promisor", proc.stdout)
+
+    def test_partialclone_extension_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self._repo(tmp)
+            git(root, "config", "extensions.partialclone", "origin")
+            reason = mechanical_verify._repo_local_config_refusal(root)
+            self.assertIsNotNone(reason)
+            self.assertIn("extensions.partialclone", reason)
+
+    def test_ext_transport_url_is_refused(self):
+        for key in ("remote.origin.url", "remote.origin.pushurl"):
+            with self.subTest(key=key), \
+                    tempfile.TemporaryDirectory() as tmp:
+                root, _ = self._repo(tmp)
+                git(root, "config", key, "ext::/bin/true")
+                reason = mechanical_verify._repo_local_config_refusal(
+                    root
+                )
+                self.assertIsNotNone(reason)
+                self.assertIn("ext::", reason)
+
+    def test_worktree_scope_promisor_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self._repo(tmp)
+            git(root, "config", "extensions.worktreeConfig", "true")
+            git(
+                root, "config", "--worktree",
+                "remote.origin.promisor", "true",
+            )
+            reason = mechanical_verify._repo_local_config_refusal(root)
+            self.assertIsNotNone(reason)
+            self.assertIn("promisor", reason)
+
+    def test_include_chain_promisor_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self._repo(tmp)
+            outside = write(
+                Path(tmp),
+                "included-config",
+                "[remote \"origin\"]\n\tpromisor = true\n",
+            )
+            git(root, "config", "include.path", str(outside))
+            reason = mechanical_verify._repo_local_config_refusal(root)
+            self.assertIsNotNone(reason)
+            self.assertIn("promisor", reason)
+
+    def test_inert_remote_config_is_not_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self._repo(tmp)
+            git(root, "config", "remote.origin.promisor", "false")
+            git(
+                root, "config", "remote.origin.url",
+                "https://example.invalid/repo.git",
+            )
+            git(
+                root, "config", "remote.origin.pushurl",
+                "file:///nonexistent/repo.git",
+            )
+            self.assertIsNone(
+                mechanical_verify._repo_local_config_refusal(root)
+            )
+            receipts = root / "r.jsonl"
+            self.assertTrue(mechanical_verify.tree_clean(root, receipts))
+
+    def test_operator_global_promisor_is_not_judged(self):
+        # Delivered scopes only: the operator's own global
+        # config is operator environment, never a refusal.
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self._repo(tmp)
+            home = Path(tmp) / "home"
+            home.mkdir()
+            write(
+                home,
+                ".gitconfig",
+                "[remote \"origin\"]\n"
+                "\tpromisor = true\n"
+                "\turl = ext::/bin/true\n"
+                "[extensions]\n"
+                "\tpartialclone = origin\n",
+            )
+            with mock.patch.dict(os.environ, {"HOME": str(home)}):
+                self.assertIsNone(
+                    mechanical_verify._repo_local_config_refusal(root)
+                )
+
+    def test_promisor_missing_blob_never_fetches(self):
+        # The validator's fixture end-to-end: genuinely absent
+        # blob, delivered promisor config on the ext::
+        # transport. The sentinel must not fire — the refusal
+        # speaks first, and fetch is disabled beneath it.
+        with tempfile.TemporaryDirectory() as tmp:
+            root, sha = self._repo(tmp)
+            (root / ".git" / "objects" / sha[:2] / sha[2:]).unlink()
+            sentinel = Path(tmp) / "fetch-fired"
+            script = write(
+                Path(tmp),
+                "fetch.sh",
+                f"#!/bin/sh\ntouch {sentinel}\nexit 1\n",
+            )
+            script.chmod(0o755)
+            git(root, "config", "extensions.partialclone", "origin")
+            git(root, "config", "remote.origin.promisor", "true")
+            git(root, "config", "remote.origin.url", f"ext::{script}")
+            git(root, "config", "protocol.ext.allow", "always")
+            receipts = root / "r.jsonl"
+            self.assertFalse(mechanical_verify.tree_clean(root, receipts))
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertFalse(sentinel.exists())
+            self.assertIn("promisor", proc.stdout + proc.stderr)
+
+    def test_missing_blob_without_promisor_config_fails_closed(self):
+        # Plain corruption (no promisor shape): the missing
+        # blob fails the pass closed — never a fetch, never a
+        # seal over absent bytes.
+        with tempfile.TemporaryDirectory() as tmp:
+            root, sha = self._repo(tmp)
+            (root / ".git" / "objects" / sha[:2] / sha[2:]).unlink()
+            self.assertIsNone(
+                mechanical_verify._repo_local_config_refusal(root)
+            )
+            receipts = root / "r.jsonl"
+            self.assertFalse(mechanical_verify.tree_clean(root, receipts))
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
 
 
 class ResidueCodeBindingTests(unittest.TestCase):
