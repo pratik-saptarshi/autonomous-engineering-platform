@@ -933,6 +933,72 @@ def _pytest_argv(root: Path) -> tuple[str, ...]:
     return PYTEST_ARGV
 
 
+def _pytest_collectable_file(name: str) -> bool:
+    """Whether pytest collection imports the file *name*:
+    its default test-module patterns (python_files =
+    test_*.py *_test.py), plus conftest.py, which pytest
+    imports from every directory it collects in and whose
+    hooks can steer collection."""
+    return (
+        name == "conftest.py"
+        or (name.startswith("test_") and name.endswith(".py"))
+        or name.endswith("_test.py")
+    )
+
+
+def _bare_pytest_scope_has_symlink(root: Path) -> bool:
+    """Whether the bare pytest leg's collection scope at *root*
+    reaches content through a symlink (issue #62).
+
+    The bare leg runs pytest with no path arguments, so
+    collection walks the tree below root (steered only by the
+    project's config, which is itself in-tree evidence).
+    Collection traverses symlinked directories and executes
+    symlinked collectable files, while the tree binding records
+    only a link's target *string* — content reached through a
+    link is bound nowhere, and mutating the target after
+    sealing leaves a stale PASS standing. The scope therefore
+    disqualifies the leg when it contains:
+
+    - any symlinked DIRECTORY below root, at any depth — the
+      conservative form: config can widen collection
+      (testpaths, norecursedirs overrides), so no directory
+      below root is provably outside the scope; or
+    - any symlinked FILE pytest would collect, judged by name
+      (see _pytest_collectable_file). The file rule is
+      deliberately name-scoped: a symlinked data file or helper
+      module is never imported by collection, so it
+      disqualifies nothing.
+
+    The walk prunes only .git — the VCS's own subtree, which
+    the binding likewise never attests as project content. The
+    caller-selected root itself may be a symlink: it is the
+    boundary the binding canonicalizes, and only entries below
+    it are judged. The walk never follows links, and any walk
+    error disqualifies the leg (fail closed): a scope that
+    cannot be inventoried cannot be attested symlink-free.
+    """
+    errors: list[OSError] = []
+    for dirpath, dirnames, filenames in os.walk(
+        root, followlinks=False, onerror=errors.append
+    ):
+        current = Path(dirpath)
+        descend: list[str] = []
+        for name in dirnames:
+            if name == ".git":
+                continue
+            if (current / name).is_symlink():
+                return True
+            descend.append(name)
+        dirnames[:] = descend
+        for name in filenames:
+            if _pytest_collectable_file(name) and (
+                current / name
+            ).is_symlink():
+                return True
+    return bool(errors)
+
+
 def discover_verification_commands(root: Path) -> tuple[VerificationCommand, ...]:
     # Symlink policy (issues #63, #64): a symlinked marker or
     # config file does not schedule, gate, or steer its leg. The
@@ -953,6 +1019,15 @@ def discover_verification_commands(root: Path) -> tuple[VerificationCommand, ...
     # whose walk treats a symlink candidate as selected at its
     # position without reading it — deliberately conservative,
     # since over-insulation is the safe direction).
+    # Issue #62: the bare pytest leg is additionally disqualified
+    # when its collection scope contains a symlink (see
+    # _bare_pytest_scope_has_symlink). Excluding links from
+    # discovery's own reads cannot help there — the leg runs
+    # pytest over the whole tree, and pytest's own traversal is
+    # what reaches the linked content — so the leg is not
+    # scheduled at all. The check is lazy and memoized: trees
+    # that never become pytest candidates pay no walk, and
+    # sections 4 and 5 share the one result.
     # The caller-selected root itself may be a symlink — it is
     # the boundary the binding canonicalizes; every check below
     # applies to entries under it.
@@ -963,6 +1038,13 @@ def discover_verification_commands(root: Path) -> tuple[VerificationCommand, ...
         if command.id not in seen:
             seen.add(command.id)
             commands.append(command)
+
+    scope_check: list[bool] = []
+
+    def bare_pytest_disqualified() -> bool:
+        if not scope_check:
+            scope_check.append(_bare_pytest_scope_has_symlink(root))
+        return scope_check[0]
 
     # 1. Go (AEP addition).
     if _is_real_file(root / "go.mod"):
@@ -1001,7 +1083,7 @@ def discover_verification_commands(root: Path) -> tuple[VerificationCommand, ...
             for name in _PYTEST_CONFIG_CANDIDATES
         )
         or (root / "tests").exists()
-    ):
+    ) and not bare_pytest_disqualified():
         add(
             VerificationCommand("pytest", "Python tests", _pytest_argv(root))
         )
@@ -1068,7 +1150,7 @@ def discover_verification_commands(root: Path) -> tuple[VerificationCommand, ...
                     speculative=unittest_speculative,
                 )
             )
-        if pytest_triggered:
+        if pytest_triggered and not bare_pytest_disqualified():
             add(
                 VerificationCommand(
                     "pytest",

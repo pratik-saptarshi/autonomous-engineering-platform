@@ -311,7 +311,13 @@ class DiscoveryTests(unittest.TestCase):
     def test_symlinked_test_file_does_not_steer_mixed_partition(self):
         # A real module's routing is unchanged by a symlinked
         # sibling: the link contributes no classification of its
-        # own in either direction.
+        # own in either direction. In the pytest direction the
+        # observable result is now [] rather than the bare leg:
+        # issue #62 disqualifies that leg whenever a symlinked
+        # collectable file sits in its collection scope, because
+        # the leg collects by traversal, not by name — the link
+        # still classifies nothing, but the leg it would share
+        # the run with cannot be sealed over it.
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             root = base / "root"
@@ -349,7 +355,7 @@ class DiscoveryTests(unittest.TestCase):
             )
             os.symlink(external, root / "ext_test.py")
             commands = discover_verification_commands(root)
-            self.assertEqual([c.id for c in commands], ["pytest"])
+            self.assertEqual([c.id for c in commands], [])
 
     def test_symlinked_test_file_with_in_tree_target_discovers_nothing(self):
         # The rule is on the entry, not the target's location: a
@@ -1105,6 +1111,204 @@ class DiscoveryTests(unittest.TestCase):
             self.assertIn("test_ok", result.stdout)
             self.assertNotIn("test_steered", result.stdout)
 
+    # Issue #62: the bare pytest leg is disqualified when its
+    # collection scope contains a symlink. Pytest collection
+    # traverses linked directories and executes symlinked
+    # collectable files, while the tree binding records only a
+    # link's target string — so a sealed PASS must never rest on
+    # content reached through a link. Directories are in scope
+    # anywhere below root (the .git subtree excepted); files are
+    # in scope by pytest's collection names (test_*.py,
+    # *_test.py, conftest.py). Other legs are unaffected, and
+    # the caller-selected root itself may remain a symlink.
+
+    def test_symlinked_tests_directory_disqualifies_bare_pytest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            write(root, "pytest.ini", "[pytest]\n")
+            write(root, "go.mod")
+            external = base / "external"
+            write(
+                external,
+                "test_ext.py",
+                "def test_ext():\n    assert True\n",
+            )
+            os.symlink(external, root / "tests")
+            ids = [c.id for c in discover_verification_commands(root)]
+            self.assertEqual(ids, ["go-test"])
+
+    def test_symlinked_scripts_directory_disqualifies_bare_pytest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            write(root, "pytest.ini", "[pytest]\n")
+            external = base / "external"
+            write(
+                external,
+                "test_ext.py",
+                "def test_ext():\n    assert True\n",
+            )
+            os.symlink(external, root / "scripts")
+            ids = [c.id for c in discover_verification_commands(root)]
+            self.assertEqual(ids, [])
+
+    def test_nested_symlinked_directory_disqualifies_bare_pytest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            write(root, "pytest.ini", "[pytest]\n")
+            write(
+                root,
+                "tests/test_local.py",
+                "def test_local():\n    assert True\n",
+            )
+            external = base / "external"
+            write(
+                external,
+                "test_ext.py",
+                "def test_ext():\n    assert True\n",
+            )
+            os.symlink(external, root / "tests" / "sub")
+            ids = [c.id for c in discover_verification_commands(root)]
+            self.assertEqual(ids, [])
+
+    def test_symlinked_conftest_disqualifies_bare_pytest(self):
+        # A conftest steers collection through its hooks; pytest
+        # imports it from every directory it collects in, at the
+        # root and nested alike.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            write(root, "pytest.ini", "[pytest]\n")
+            write(
+                root,
+                "test_local.py",
+                "def test_local():\n    assert True\n",
+            )
+            external = write(base, "external/conftest.py", "# ext\n")
+            os.symlink(external, root / "conftest.py")
+            ids = [c.id for c in discover_verification_commands(root)]
+            self.assertEqual(ids, [])
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            write(root, "pytest.ini", "[pytest]\n")
+            write(
+                root,
+                "tests/test_local.py",
+                "def test_local():\n    assert True\n",
+            )
+            external = write(base, "external/conftest.py", "# ext\n")
+            os.symlink(external, root / "tests" / "conftest.py")
+            ids = [c.id for c in discover_verification_commands(root)]
+            self.assertEqual(ids, [])
+
+    def test_symlinked_collectable_test_file_disqualifies_bare_pytest(
+        self,
+    ):
+        # The file form of the same mechanism (Task 6 review §4):
+        # the leg, once scheduled by independent evidence,
+        # executes symlinked test modules through pytest's own
+        # traversal — at the root and nested, under both of
+        # pytest's test-file name shapes.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            write(root, "pytest.ini", "[pytest]\n")
+            external = write(
+                base,
+                "external/test_ext.py",
+                "def test_ext():\n    assert True\n",
+            )
+            os.symlink(external, root / "test_link.py")
+            ids = [c.id for c in discover_verification_commands(root)]
+            self.assertEqual(ids, [])
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            write(root, "pytest.ini", "[pytest]\n")
+            write(
+                root,
+                "tests/test_local.py",
+                "def test_local():\n    assert True\n",
+            )
+            external = write(
+                base,
+                "external/test_ext.py",
+                "def test_ext():\n    assert True\n",
+            )
+            os.symlink(external, root / "tests" / "test_link.py")
+            ids = [c.id for c in discover_verification_commands(root)]
+            self.assertEqual(ids, [])
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            write(root, "pytest.ini", "[pytest]\n")
+            write(
+                root,
+                "tests/test_local.py",
+                "def test_local():\n    assert True\n",
+            )
+            external = write(
+                base,
+                "external/plain.py",
+                "def test_plain():\n    assert True\n",
+            )
+            os.symlink(external, root / "tests" / "plain_test.py")
+            ids = [c.id for c in discover_verification_commands(root)]
+            self.assertEqual(ids, [])
+
+    def test_symlinked_non_collectable_files_keep_bare_pytest(self):
+        # The file rule is name-scoped: symlinks pytest would
+        # never collect (a data file, a non-test module name) do
+        # not disqualify the leg.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            write(root, "pytest.ini", "[pytest]\n")
+            write(
+                root,
+                "tests/test_local.py",
+                "def test_local():\n    assert True\n",
+            )
+            notes = write(base, "external/notes.txt", "data\n")
+            helper = write(base, "external/helper.py", "VALUE = 1\n")
+            os.symlink(notes, root / "notes_link.txt")
+            os.symlink(helper, root / "helper_link.py")
+            ids = [c.id for c in discover_verification_commands(root)]
+            self.assertEqual(ids, ["pytest"])
+
+    def test_bare_pytest_scope_clean_below_symlinked_root(self):
+        # The caller-selected root itself may be a symlink (it is
+        # the boundary the binding canonicalizes); a clean scope
+        # below it still schedules the leg.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            write(root, "pytest.ini", "[pytest]\n")
+            write(
+                root,
+                "tests/test_local.py",
+                "def test_local():\n    assert True\n",
+            )
+            root_link = base / "root_link"
+            os.symlink(root, root_link)
+            ids = [
+                c.id for c in discover_verification_commands(root_link)
+            ]
+            self.assertEqual(ids, ["pytest"])
+
     def test_discovers_scripts_unittest_from_scripts_tests(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1322,6 +1526,126 @@ class DiscoveryTests(unittest.TestCase):
     def test_no_markers_discovers_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(discover_verification_commands(Path(tmp)), ())
+
+
+class BarePytestSymlinkScopeTests(unittest.TestCase):
+    """Issue #62 end to end: a sealed PASS never rests on tests
+    the bare pytest leg collected through a symlinked directory.
+    The fs binding records a symlink's target string, never the
+    target's contents, so pre-fix this shape sealed a PASS over
+    external bytes and kept blessing it after those bytes were
+    mutated (the stale-PASS escape)."""
+
+    def _verify(self, root: Path, receipts: Path):
+        stdout = io.StringIO()
+        with mock.patch.object(
+            mechanical_verify, "available_memory_kb", return_value=10**9
+        ):
+            with contextlib.redirect_stdout(stdout):
+                rc = mechanical_verify.main(
+                    [
+                        "verify",
+                        "--root",
+                        str(root),
+                        "--task",
+                        "t",
+                        "--receipts",
+                        str(receipts),
+                    ]
+                )
+        records = []
+        if receipts.exists():
+            records = [
+                json.loads(line)
+                for line in receipts.read_text().splitlines()
+            ]
+        return rc, records, stdout.getvalue()
+
+    def _check(self, receipts: Path, root: Path):
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            rc = mechanical_verify.check_receipts(receipts, "t", root)
+        return rc, stdout.getvalue()
+
+    @unittest.skipUnless(_pytest_on_path(), "no pytest on PATH")
+    def test_sealed_pass_refused_after_tests_dir_replaced_by_symlink(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            receipts = base / "receipts.jsonl"
+            write(root, "pytest.ini", "[pytest]\n")
+            write(
+                root,
+                "tests/test_ok.py",
+                "def test_ok():\n    assert True\n",
+            )
+            # Seal over the all-real tree; the unmutated tree
+            # still verifies and audits clean.
+            rc, records, output = self._verify(root, receipts)
+            self.assertEqual(rc, 0, output)
+            pytest_receipts = [
+                r for r in records if r.get("command_id") == "pytest"
+            ]
+            self.assertEqual(len(pytest_receipts), 1)
+            self.assertEqual(pytest_receipts[0]["exit_code"], 0)
+            rc, output = self._check(receipts, root)
+            self.assertEqual(rc, 0, output)
+            self.assertIn("RECEIPTS: PASS", output)
+            # Mutate: the real directory is replaced by a symlink
+            # to external content (passing bytes the seal never
+            # bound). The audit of the OLD receipt against the
+            # mutated tree refuses — STALE, because the fs digest
+            # no longer matches the segment: the directory's
+            # entries were replaced by a single link entry.
+            external = base / "external"
+            write(
+                external,
+                "test_ext.py",
+                "def test_ext():\n    assert True\n",
+            )
+            shutil.rmtree(root / "tests")
+            os.symlink(external, root / "tests")
+            rc, output = self._check(receipts, root)
+            self.assertNotEqual(rc, 0, output)
+            self.assertIn("STALE", output)
+            self.assertIn("live tree digest does not match", output)
+            # And the mutated tree's own verify path cannot seal a
+            # fresh PASS over the linked content: discovery
+            # disqualifies the leg, leaving no commands at all.
+            ids = [c.id for c in discover_verification_commands(root)]
+            self.assertNotIn("pytest", ids)
+            rc, _, output = self._verify(root, receipts)
+            self.assertEqual(rc, 2, output)
+            self.assertIn("no verification commands discovered", output)
+
+    @unittest.skipUnless(_pytest_on_path(), "no pytest on PATH")
+    def test_symlinked_tests_dir_tree_seals_no_pytest_pass(self):
+        # The escape tree itself: the only test content lives
+        # outside the tree, reached through a tests symlink.
+        # Pre-fix this sealed a PASS (and kept blessing it after
+        # the external bytes changed); now the leg is disqualified
+        # at discovery, verify finds no commands, and nothing is
+        # sealed.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            receipts = base / "receipts.jsonl"
+            write(root, "pytest.ini", "[pytest]\n")
+            external = base / "external"
+            write(
+                external,
+                "test_ext.py",
+                "def test_ext():\n    assert True\n",
+            )
+            os.symlink(external, root / "tests")
+            rc, _, output = self._verify(root, receipts)
+            self.assertEqual(rc, 2, output)
+            self.assertIn("no verification commands discovered", output)
+            self.assertFalse(receipts.exists())
 
 
 def _pid_dead(pid: int) -> bool:
