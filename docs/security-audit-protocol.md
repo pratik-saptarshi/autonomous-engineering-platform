@@ -4,8 +4,9 @@ This document is the audit lane's protocol: the verdict vocabulary and
 contracts, the environment condition for this VM, the static-proof trace
 contract, the run-budget contract, the findings-schema profile the
 lane validates against, the coverage ledger and run-artifact layout
-that are the system of record for coverage (§7), and the verifier
-phases with dispatch-recorded distinctness (§9). It is AEP-owned. The vendored security-audit
+that are the system of record for coverage (§7), the verifier
+phases with dispatch-recorded distinctness (§9), and the standing
+hunter checklists and self-audit targets (§10). It is AEP-owned. The vendored security-audit
 skill under `reference/security-audit-skill/` (pin `c1c8a8c`) is the
 source the contracts below are adopted from; vendored files are data and
 are never edited by this lane.
@@ -814,3 +815,118 @@ PASS: 2 verified record(s) satisfy finder/verifier distinctness   (exit 0)
 
 The fixture (a) variant of the same run (Phase 3 verifier set to the
 hunter) still fails the checker, naming `fp-candidate-one` (exit 1).
+
+## 10. Standing hunter checklists and self-audit targets
+
+Sections 1–9 define how an audit run works. This section defines the
+two standing hunts the lane runs against AEP itself, so that audit
+scheduling does not re-derive its targets each time: Election
+E-first-run chooses from the target sets below, and later audit
+scheduling cites this section as the standing targets list.
+
+### 10.1 The standing prompt set, cited by path only
+
+The standing prompt set for both checklists is the two vendored class
+files, cited by path only:
+
+- `reference/security-audit-skill/skills/security-audit/SUPPLY-CHAIN-AND-RELEASE.md`
+- `reference/security-audit-skill/skills/security-audit/AI-AND-LLM.md`
+
+No content is copied out of those files into this protocol. A
+re-vendor that moves the pin therefore updates the checklist with
+the pin, and the vendored tree itself is never edited by this lane.
+
+A checklist run is an audit run. It emits the same artifacts as any
+other run — `coverage-ledger.json`, `findings.json`,
+`run-metadata.json`, the attestation sidecar, and the dispatch log —
+into the external run root of §7.6, under the §1 verdicts and the §4
+budget, with the §9 verifier rule (a fresh, dispatch-recorded
+verifier distinct from the hunter) applied to every candidate.
+
+### 10.2 Supply-chain and release: the standing target set
+
+The supply-chain hunt targets AEP's own release path:
+
+- The source publisher — the path by which AEP source is published.
+- ghg, the GitHub gateway (`tools/ghg/`) — the counted, capped path
+  every GitHub call in this lane takes.
+- The vendoring path — the vendor manifests under `.github/` and the
+  vendor-integrity job that checks the snapshots under `reference/`
+  against them.
+
+Two open residuals are already-tracked inputs to this hunt, named
+here so a run treats them as known state, not as rediscoveries:
+
+- Issue #38 — receipt stdout hashing: raw capped bytes for
+  `stdout_sha256` on non-UTF-8 output.
+- Issue #55 — the fs-digest format change invalidating pre-change fs
+  receipts.
+
+Two further items form this hunt's worked set. They are the two P0s
+of the 2026-10-26 overseer panel report on main
+(`review_panel_report_main_2026-10-26.md`). At Task A4's Step 0
+re-check (2026-10-26) both were verified still open on this branch's
+tree — the evidence below is the code as read, not the report's
+prose — and neither was found in the tracked-issue record (a ghg
+read of the repository's issues, all states, returned no issue for
+either). Both are verifier evidence-integrity defects in AEP's own
+release/verification path, which is why they sit in this class:
+
+- Panel Action Item 1 — the environment-scrub policy is re-read per
+  leg from an unbound file. `scripts/mechanical_verify.py:973`
+  resolves the policy path from the environment or beside the
+  verifier script — never from the verified root and never covered
+  by the tree binding, whose fields are exactly root, head, tree
+  digest, and mode (`tree_binding`,
+  `scripts/mechanical_verify.py:1614`). `run_verification`
+  (`scripts/mechanical_verify.py:1140`) builds each leg's
+  environment by reading that policy afresh, and `run_all` calls it
+  once per command (`scripts/mechanical_verify.py:1283`), while the
+  run-start record samples the environment mode only once
+  (`scripts/mechanical_verify.py:2263`). A mid-run rewrite of the
+  policy file therefore changes what a later leg scrubs, under a
+  sealed record that states the run-start mode.
+- Panel Action Item 2 (panel item Y1) — fs mode has no between-legs
+  tree re-validation. The `between_commands` hook is installed only
+  when the binding mode is git
+  (`scripts/mechanical_verify.py:2275`), and `binding_excursion`
+  returns no excursion for any non-git mode
+  (`scripts/mechanical_verify.py:1730`). In fs mode the seal is a
+  single final-digest re-comparison
+  (`scripts/mechanical_verify.py:2311`), so a between-legs
+  swap-and-restore is invisible to the run: a later leg can execute
+  on substituted bytes and the run can still seal.
+
+### 10.3 AI and LLM: the standing target set
+
+The AI/LLM hunt targets AEP as an agent system:
+
+- The NeuroStrata inscription surface — what the lane writes into
+  persistent memory, and what a later session retrieves from it: the
+  persistent-memory poisoning class, where a bad inscription is
+  durable, is retrieved as trusted context, and outlives the run
+  that produced it.
+- Subagent and MCP trust inheritance — what a delegated lane
+  inherits from its parent and from the tools it is handed: lane
+  delegation, and the scope of the ghg token a delegated agent acts
+  under.
+- Approval binding — whether an approval binds to the action it was
+  given for: merge authorizations, and waiver handling, where a
+  waiver recorded for one state must not be read as covering
+  another.
+
+### 10.4 Routing rule for findings
+
+Where a finding lands is decided by what it is against (the E-venue
+designed default, in force):
+
+- A finding against AEP-owned code files as an AEP issue.
+- A finding inside `reference/**` is never filed as an AEP defect
+  and is never silently dropped. It routes to fork/upstream
+  disposition, and the run records that disposition in the run's
+  findings file as a verdict-shaped record — in this protocol's
+  prose terms, an `audit:confirmed`, `audit:needs_validation`, or
+  `audit:rejected` record as the evidence supports — whose
+  disposition names either a filed fork issue or an explicit
+  accept-risk note. A snapshot finding with neither name recorded is
+  an incomplete run record, not a closed finding.
