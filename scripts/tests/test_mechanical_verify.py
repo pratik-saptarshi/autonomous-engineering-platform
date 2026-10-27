@@ -637,6 +637,219 @@ class DiscoveryTests(unittest.TestCase):
                 root / "setup.cfg",
             )
 
+    # Round 3 (#63, #64): the per-name content conditions are
+    # judged on PARSED structure (tomllib / configparser),
+    # never on raw text. Round 2 matched the section names as
+    # substrings, so a header appearing in a COMMENT made the
+    # walk stop one candidate early: it selected the real file,
+    # left the argv unpinned, and real pytest — which parses —
+    # fell through to a symlinked setup.cfg and read it through
+    # the link (review fixtures A and B, both demonstrated
+    # end-to-end).
+
+    def test_pytest_config_content_conditions_use_parsed_structure(
+        self,
+    ):
+        # Headers in comments or string values are not sections
+        # or tables; real ones still qualify, in both formats.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "tox.ini", "# [pytest]\n[testenv]\n")
+            self.assertIsNone(
+                mechanical_verify._pytest_config_selected(root)
+            )
+            write(
+                root,
+                "tox.ini",
+                '[testenv]\ncommands = echo "[pytest]"\n',
+            )
+            self.assertIsNone(
+                mechanical_verify._pytest_config_selected(root)
+            )
+            write(
+                root,
+                "tox.ini",
+                "[testenv]\ncommands =\n    echo hi\n    [pytest]\n",
+            )
+            self.assertIsNone(
+                mechanical_verify._pytest_config_selected(root)
+            )
+            write(root, "tox.ini", "[pytest]\n")
+            self.assertEqual(
+                mechanical_verify._pytest_config_selected(root),
+                root / "tox.ini",
+            )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "pyproject.toml",
+                '# [tool.pytest.ini_options]\n[project]\nname = "x"\n',
+            )
+            self.assertIsNone(
+                mechanical_verify._pytest_config_selected(root)
+            )
+            write(
+                root,
+                "pyproject.toml",
+                '[project]\ndescription = "[tool.pytest.ini_options]"\n',
+            )
+            self.assertIsNone(
+                mechanical_verify._pytest_config_selected(root)
+            )
+            write(
+                root, "pyproject.toml", "[tool.pytest.ini_options]\n"
+            )
+            self.assertEqual(
+                mechanical_verify._pytest_config_selected(root),
+                root / "pyproject.toml",
+            )
+            write(
+                root,
+                "pyproject.toml",
+                '[tool]\npytest = { minversion = "6.0" }\n',
+            )
+            self.assertEqual(
+                mechanical_verify._pytest_config_selected(root),
+                root / "pyproject.toml",
+            )
+            write(root, "pyproject.toml", "[tool.pytest\nbroken = \n")
+            self.assertIsNone(
+                mechanical_verify._pytest_config_selected(root)
+            )
+
+    def test_commented_tox_ini_section_leaves_symlinked_setup_cfg_candidate(
+        self,
+    ):
+        # Review fixture A: the only [pytest] in tox.ini is a
+        # comment, so tox.ini does not qualify; selection falls
+        # through to the symlinked setup.cfg and the leg is
+        # insulated.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            (root / "tests").mkdir(parents=True)
+            write(root, "tox.ini", "# [pytest]\n\n[testenv]\ndeps = pytest\n")
+            external = write(base, "external/setup.cfg", "[tool:pytest]\n")
+            os.symlink(external, root / "setup.cfg")
+            commands = discover_verification_commands(root)
+            self.assertEqual([c.id for c in commands], ["pytest"])
+            self.assertIn("-c", commands[0].argv)
+            self.assertIn(os.devnull, commands[0].argv)
+
+    def test_commented_pyproject_ini_options_leaves_symlinked_setup_cfg_candidate(
+        self,
+    ):
+        # Review fixture B: the only
+        # [tool.pytest.ini_options] in pyproject.toml is a
+        # comment; the symlinked setup.cfg is the selected
+        # candidate and the leg is insulated.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            (root / "tests").mkdir(parents=True)
+            write(
+                root,
+                "pyproject.toml",
+                '# [tool.pytest.ini_options]\n[project]\nname = "x"\n',
+            )
+            external = write(base, "external/setup.cfg", "[tool:pytest]\n")
+            os.symlink(external, root / "setup.cfg")
+            commands = discover_verification_commands(root)
+            self.assertEqual([c.id for c in commands], ["pytest"])
+            self.assertIn("-c", commands[0].argv)
+            self.assertIn(os.devnull, commands[0].argv)
+
+    def test_unparseable_pyproject_falls_through_to_symlinked_setup_cfg(
+        self,
+    ):
+        # An unparseable candidate does not qualify (real
+        # pytest would abort on it rather than use it), so the
+        # walk continues to the symlinked setup.cfg and
+        # insulates the leg.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            (root / "tests").mkdir(parents=True)
+            write(root, "pyproject.toml", "[tool.pytest\nbroken = \n")
+            external = write(base, "external/setup.cfg", "[tool:pytest]\n")
+            os.symlink(external, root / "setup.cfg")
+            commands = discover_verification_commands(root)
+            self.assertEqual([c.id for c in commands], ["pytest"])
+            self.assertIn("-c", commands[0].argv)
+            self.assertIn(os.devnull, commands[0].argv)
+
+    @unittest.skipUnless(_pytest_on_path(), "no pytest on PATH")
+    def test_commented_tox_ini_cannot_mask_symlinked_setup_cfg_steering(
+        self,
+    ):
+        # Review fixture A, end to end: pre-fix the walk
+        # selected the comment-fooled tox.ini, left the argv
+        # unpinned, and pytest fell through to the symlinked
+        # setup.cfg — the foreign suite ran and passed.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            (root / "tests").mkdir(parents=True)
+            write(root, "tests/test_ok.py", "def test_ok():\n    assert True\n")
+            steered = base / "external" / "steered"
+            write(
+                steered,
+                "test_steered.py",
+                "def test_steered():\n    assert True\n",
+            )
+            write(
+                base,
+                "external/setup.cfg",
+                f"[tool:pytest]\ntestpaths = {steered}\n",
+            )
+            os.symlink(base / "external" / "setup.cfg", root / "setup.cfg")
+            write(root, "tox.ini", "# [pytest]\n\n[testenv]\ndeps = pytest\n")
+            commands = discover_verification_commands(root)
+            self.assertEqual([c.id for c in commands], ["pytest"])
+            result = run_verification(root, commands[0])
+            self.assertEqual(result.exit_code, 0)
+            self.assertEqual(result.tests_collected, 1)
+            self.assertIn("test_ok", result.stdout)
+            self.assertNotIn("test_steered", result.stdout)
+
+    @unittest.skipUnless(_pytest_on_path(), "no pytest on PATH")
+    def test_commented_pyproject_cannot_mask_symlinked_setup_cfg_steering(
+        self,
+    ):
+        # Review fixture B, end to end: the comment-fooled
+        # pyproject.toml masked the symlinked setup.cfg the
+        # same way.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            (root / "tests").mkdir(parents=True)
+            write(root, "tests/test_ok.py", "def test_ok():\n    assert True\n")
+            steered = base / "external" / "steered"
+            write(
+                steered,
+                "test_steered.py",
+                "def test_steered():\n    assert True\n",
+            )
+            write(
+                base,
+                "external/setup.cfg",
+                f"[tool:pytest]\ntestpaths = {steered}\n",
+            )
+            os.symlink(base / "external" / "setup.cfg", root / "setup.cfg")
+            write(
+                root,
+                "pyproject.toml",
+                '# [tool.pytest.ini_options]\n[project]\nname = "x"\n',
+            )
+            commands = discover_verification_commands(root)
+            self.assertEqual([c.id for c in commands], ["pytest"])
+            result = run_verification(root, commands[0])
+            self.assertEqual(result.exit_code, 0)
+            self.assertEqual(result.tests_collected, 1)
+            self.assertIn("test_ok", result.stdout)
+            self.assertNotIn("test_steered", result.stdout)
+
     @unittest.skipUnless(_pytest_on_path(), "no pytest on PATH")
     def test_symlinked_pytest_toml_cannot_steer_collection(self):
         # The reviewer's round-2 fixture: pytest.toml outranks

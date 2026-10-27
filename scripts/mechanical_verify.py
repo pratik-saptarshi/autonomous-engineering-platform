@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import ast
 import builtins
+import configparser
 import ctypes
 import fcntl
 import hashlib
@@ -25,6 +26,7 @@ import subprocess
 import sys
 import threading
 import time
+import tomllib
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -784,35 +786,91 @@ _PYTEST_CONFIG_CANDIDATES = (
     "setup.cfg",
 )
 
-# Candidates pytest treats as a config source on existence alone
-# (findpaths.load_config_dict_from_file): pytest.ini/.pytest.ini
-# are sources even when empty, and pytest.toml/.pytest.toml even
-# without a [pytest] table. The remaining candidates qualify
-# only with content: pyproject.toml needs a [tool.pytest] table
-# with keys of its own or a [tool.pytest.ini_options] table,
-# tox.ini a [pytest] section, setup.cfg a [tool:pytest] section.
-_PYTEST_CONFIG_ALWAYS = frozenset(
-    ("pytest.toml", ".pytest.toml", "pytest.ini", ".pytest.ini")
-)
+# Candidates pytest treats as a config source on existence
+# alone (findpaths.load_config_dict_from_file): only
+# pytest.ini/.pytest.ini, which are sources even when empty.
+# pytest.toml/.pytest.toml are sources with any content — even
+# without a [pytest] table — but the file must still parse as
+# TOML (pytest aborts on an unparseable candidate). The
+# remaining candidates qualify only with content: pyproject.toml
+# needs a [tool.pytest] table with keys of its own or a
+# [tool.pytest.ini_options] table, tox.ini a [pytest] section,
+# setup.cfg a [tool:pytest] section. Every content condition is
+# evaluated on the PARSED structure (tomllib for the .toml
+# family, configparser for the .ini names) — never on raw text:
+# a section name appearing in a comment or a string value is
+# not a section (round-3 finding F2).
+_PYTEST_CONFIG_ALWAYS = frozenset(("pytest.ini", ".pytest.ini"))
+
+
+def _parse_toml(text: str) -> dict | None:
+    """The TOML document in *text*, or None when it does not
+    parse. Real pytest raises UsageError on an unparseable
+    candidate (it aborts rather than skipping the file); the
+    walk treats it as non-qualifying and moves on — see the
+    divergences named in _pytest_config_selected."""
+    try:
+        return tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        return None
 
 
 def _pyproject_config_qualifies(text: str) -> bool:
-    """Whether a pyproject.toml's text makes it pytest's inifile:
-    a [tool.pytest.ini_options] table, or a [tool.pytest] table
-    carrying at least one key of its own (an empty [tool.pytest]
-    table — no keys, no ini_options — does not qualify during
-    pytest's scan)."""
-    if "[tool.pytest.ini_options]" in text:
+    """Whether a pyproject.toml makes it pytest's inifile,
+    judged on the parsed document exactly as
+    findpaths.load_config_dict_from_file judges it: a
+    [tool.pytest] table carrying at least one key of its own
+    (anything but ini_options), or a [tool.pytest.ini_options]
+    table (present even when empty). An empty [tool.pytest]
+    table — no keys, no ini_options — does not qualify, and a
+    header appearing only in a comment or a string value is
+    not a table. The [tool] pytest = {...} inline-table form
+    parses to the same structure and qualifies, as in pytest."""
+    config = _parse_toml(text)
+    if config is None:
+        return False
+    tool = config.get("tool")
+    if not isinstance(tool, dict):
+        return False
+    pytest_table = tool.get("pytest")
+    if not isinstance(pytest_table, dict):
+        return False
+    if "ini_options" in pytest_table:
         return True
-    in_table = False
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("["):
-            in_table = stripped.startswith("[tool.pytest]")
-            continue
-        if in_table and "=" in stripped and not stripped.startswith("#"):
-            return True
-    return False
+    return any(key != "ini_options" for key in pytest_table)
+
+
+def _ini_config_has_section(text: str, section: str) -> bool:
+    """Whether INI *text* contains a real *section*, judged on
+    the parsed structure: comment lines, string values, and
+    indented continuation lines are not sections. An
+    unparseable file has no sections (real pytest aborts on
+    it; see _parse_toml for why the walk may move on)."""
+    parser = configparser.ConfigParser(
+        interpolation=None, allow_no_value=True, strict=False
+    )
+    try:
+        parser.read_string(text)
+    except configparser.Error:
+        return False
+    return parser.has_section(section)
+
+
+def _pytest_config_qualifies(name: str, text: str) -> bool:
+    """Whether the real file *name* with contents *text* is a
+    config source for pytest, per the per-name content
+    conditions of findpaths.load_config_dict_from_file."""
+    if name in ("pytest.toml", ".pytest.toml"):
+        # A dedicated .toml is always a source once it parses,
+        # even without a [pytest] table.
+        return _parse_toml(text) is not None
+    if name == "pyproject.toml":
+        return _pyproject_config_qualifies(text)
+    if name == "tox.ini":
+        return _ini_config_has_section(text, "pytest")
+    if name == "setup.cfg":
+        return _ini_config_has_section(text, "tool:pytest")
+    return name in _PYTEST_CONFIG_ALWAYS
 
 
 def _pytest_config_selected(root: Path) -> Path | None:
@@ -821,17 +879,29 @@ def _pytest_config_selected(root: Path) -> Path | None:
     _pytest.config.findpaths.locate_config (pytest 9) —
     pytest.toml, .pytest.toml, pytest.ini, .pytest.ini,
     pyproject.toml, tox.ini, setup.cfg — with pytest's per-name
-    content conditions (see _PYTEST_CONFIG_ALWAYS,
-    _pyproject_config_qualifies; tox.ini needs a [pytest]
-    section, setup.cfg a [tool:pytest] section), or None when no
-    candidate qualifies. Only real files are read: a symlink
-    candidate is reported at its precedence position without
-    being read. That is deliberately conservative — whether
-    pytest would honour the link depends on the unbound target's
-    contents, so the walk treats the link as the selected config
-    and the leg is insulated (see _pytest_argv);
-    over-insulation is the safe direction. Among real files the
-    walk's selection matches pytest's."""
+    content conditions (see _PYTEST_CONFIG_ALWAYS and
+    _pytest_config_qualifies), or None when no candidate
+    qualifies. Only real files are read: a symlink candidate
+    is reported at its precedence position without being read.
+    That is deliberately conservative — whether pytest would
+    honour the link depends on the unbound target's contents,
+    so the walk treats the link as the selected config and the
+    leg is insulated (see _pytest_argv); over-insulation is
+    the safe direction.
+
+    Among real files the walk's selection matches pytest's,
+    with two known benign divergences. (1) When nothing
+    qualifies anywhere, pytest's found_pyproject_toml fallback
+    selects a non-qualifying pyproject.toml as an EMPTY
+    config; the walk returns None. The fallback config carries
+    no options and the file is real and in-tree, and the argv
+    is identical either way, so nothing can steer through it.
+    (2) An unparseable candidate makes real pytest abort with
+    UsageError rather than skip the file; the walk treats it
+    as non-qualifying and continues. A later selection the
+    abort would have pre-empted is still safe: a real file is
+    bound content, a symlink is insulated, and when nothing
+    later qualifies the unpinned run meets the same abort."""
     for name in _PYTEST_CONFIG_CANDIDATES:
         candidate = root / name
         if not candidate.is_file():
@@ -841,18 +911,13 @@ def _pytest_config_selected(root: Path) -> Path | None:
         if name in _PYTEST_CONFIG_ALWAYS:
             return candidate
         try:
-            text = candidate.read_text(encoding="utf-8", errors="ignore")
+            text = candidate.read_text(encoding="utf-8")
         except OSError:
             return candidate
-        if name == "pyproject.toml":
-            if _pyproject_config_qualifies(text):
-                return candidate
-        elif name == "tox.ini":
-            if "[pytest]" in text:
-                return candidate
-        elif name == "setup.cfg":
-            if "[tool:pytest]" in text:
-                return candidate
+        except UnicodeDecodeError:
+            continue
+        if _pytest_config_qualifies(name, text):
+            return candidate
     return None
 
 
