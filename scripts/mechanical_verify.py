@@ -3042,7 +3042,11 @@ def _residue_file_binds(
     runs by name). A file under .git outside that set, an
     archive under an arbitrary name among them, is unbound;
     it has effect only through bound code loading it by
-    explicit path, the disclosed explicit-path family."""
+    explicit path — the disclosed explicit-path family — or
+    through pytest collection traversal entering .git, which
+    requires a bound config whose norecursedirs admits it
+    and is refused at discovery for the bare leg (see
+    _selected_config_traversal_enters_residue)."""
     if active == ".git":
         return (
             inside[0] == "hooks"
