@@ -2898,6 +2898,39 @@ class ClassifierUncertaintyTests(unittest.TestCase):
                 [c.id for c in commands], ["unittest", "pytest"]
             )
 
+    def test_annotated_assignment_bound_test_function_keeps_pytest_leg(
+        self,
+    ):
+        # Issue #57: the AnnAssign sub-form for test_*
+        # FUNCTIONS — `test_ann: object = _impl` binds the
+        # same module attribute as the plain assignment, so
+        # beside a TestCase sibling the module keeps the
+        # pytest leg (the class form above pins Test* names;
+        # this pins the function form).
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "test_annassign_function.py",
+                "import unittest\n"
+                "\n"
+                "\n"
+                "def _impl():\n"
+                "    pass\n"
+                "\n"
+                "\n"
+                "test_ann: object = _impl\n"
+                "\n"
+                "\n"
+                "class Unit(unittest.TestCase):\n"
+                "    def test_unit(self):\n"
+                "        pass\n",
+            )
+            commands = discover_verification_commands(root)
+            self.assertEqual(
+                [c.id for c in commands], ["unittest", "pytest"]
+            )
+
     def test_non_test_class_assignment_does_not_trigger_pytest(self):
         # No overcorrection: binding the same class under a
         # non-Test* name is not pytest evidence — pytest collects
@@ -3040,16 +3073,104 @@ class ClassifierUncertaintyTests(unittest.TestCase):
             commands = discover_verification_commands(root)
             self.assertEqual([c.id for c in commands], ["unittest"])
 
-    def test_unpacked_arity_mismatch_uses_whole_value_rule(self):
-        # Ruling: where an unpacking level has no one-to-one
-        # correspondence — arity mismatch here, a starred
-        # element likewise — that level's names fall back to
-        # the whole-value rule against that level's value; a
-        # tuple display is literal data, so nothing triggers.
+    def test_unpacked_arity_mismatch_judges_paired_elements(self):
+        # Issue #52 supersedes round 9's whole-value ruling
+        # for sequence values: an arity mismatch no longer
+        # falls back to judging the tuple as literal data.
+        # Each plainly-bound element is judged against its
+        # corresponding value element — TestA pairs with
+        # Helper and triggers for its own name; TestB has no
+        # corresponding element and triggers nothing by
+        # itself. (The line is a runtime ValueError, so both
+        # legs fail on it at collection; scheduling the leg
+        # cannot produce a false pass.)
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self._write_unpack_fixture(
                 root, "TestA, TestB = (Helper,)"
+            )
+            commands = discover_verification_commands(root)
+            self.assertEqual(
+                [c.id for c in commands], ["unittest", "pytest"]
+            )
+
+    def test_unpacked_arity_mismatch_testcase_element_is_alias(
+        self,
+    ):
+        # Issue #52, per-element judgment under arity
+        # mismatch: an element that plainly denotes TestCase
+        # is an alias for its paired name (no trigger for
+        # that name), while the next element decides its own
+        # name — a class element triggers, literal data does
+        # not.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_unpack_fixture(
+                root,
+                "TestAlias, TestB = unittest.TestCase, Helper, Other",
+            )
+            commands = discover_verification_commands(root)
+            self.assertEqual(
+                [c.id for c in commands], ["unittest", "pytest"]
+            )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_unpack_fixture(
+                root,
+                "TestAlias, TestB = unittest.TestCase, 42, Other",
+            )
+            commands = discover_verification_commands(root)
+            self.assertEqual([c.id for c in commands], ["unittest"])
+
+    def test_unpacked_starred_assignment_judges_plainly_bound_names(
+        self,
+    ):
+        # Issue #52's example: `TestA, *rest = Helper,
+        # Other`. The starred element no longer sends the
+        # whole level to the whole-value rule — TestA is
+        # plainly bound to Helper and is judged against it,
+        # so the pytest leg is kept.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_unpack_fixture(
+                root, "TestA, *rest = Helper, Other"
+            )
+            commands = discover_verification_commands(root)
+            self.assertEqual(
+                [c.id for c in commands], ["unittest", "pytest"]
+            )
+            self.assertIn("test_unpacked", commands[0].argv)
+
+    def test_unpacked_starred_remainder_with_testcase_value_triggers(
+        self,
+    ):
+        # Issue #52's starred-remainder ruling: the starred
+        # target binds a list of the remaining values, and
+        # it triggers when at least one remaining value
+        # denotes a TestCase. The plainly-bound prefix
+        # element here (`first` = 42) triggers nothing, so
+        # the remainder alone decides.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_unpack_fixture(
+                root, "first, *TestRemainder = 42, unittest.TestCase"
+            )
+            commands = discover_verification_commands(root)
+            self.assertEqual(
+                [c.id for c in commands], ["unittest", "pytest"]
+            )
+
+    def test_unpacked_starred_remainder_of_plain_values_does_not_trigger(
+        self,
+    ):
+        # Negative control for the remainder ruling: a
+        # starred remainder of plain (non-TestCase-denoting)
+        # values does not trigger by itself, and neither
+        # does the literal-bound prefix element.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write_unpack_fixture(
+                root, "first, *TestRemainder = 42, Helper, Other"
             )
             commands = discover_verification_commands(root)
             self.assertEqual([c.id for c in commands], ["unittest"])

@@ -159,14 +159,12 @@ def _assignment_target_triggers(
     A plain name target is judged against the whole value (the
     round 7/9 rule: the name triggers unless the value is provably
     non-callable literal data). An unpacking target — a tuple or
-    list of names — whose value is a tuple or list of MATCHING
-    arity is judged PER ELEMENT: `TestA, TestB = Helper, Other`
-    binds TestA to Helper and TestB to Other, so each name is
-    judged against its own element, recursing into nested
-    unpackings. Where a level has no one-to-one correspondence —
-    arity mismatch, a starred element on either side, or a
-    non-sequence value — that level's names fall back to the
-    whole-value rule against that level's value.
+    list of names — whose value is a tuple or list is judged by
+    `_unpacking_triggers` (per element where correspondence is
+    determinate; issue #52). Where the value is not a sequence
+    display there is no per-element correspondence, and the
+    level's names fall back to the whole-value rule against that
+    value.
     """
     if isinstance(target, ast.Name):
         return not isinstance(
@@ -175,25 +173,9 @@ def _assignment_target_triggers(
             target.id, _value_denotes_testcase(value, testcase_names)
         )
     if isinstance(target, (ast.Tuple, ast.List)):
-        if (
-            isinstance(value, (ast.Tuple, ast.List))
-            and len(target.elts) == len(value.elts)
-            and not any(
-                isinstance(element, ast.Starred)
-                for element in target.elts
-            )
-            and not any(
-                isinstance(element, ast.Starred)
-                for element in value.elts
-            )
-        ):
-            return any(
-                _assignment_target_triggers(
-                    element, element_value, testcase_names
-                )
-                for element, element_value in zip(
-                    target.elts, value.elts
-                )
+        if isinstance(value, (ast.Tuple, ast.List)):
+            return _unpacking_triggers(
+                target.elts, value.elts, testcase_names
             )
         if isinstance(value, _NON_CALLABLE_VALUE_TYPES):
             return False
@@ -205,6 +187,104 @@ def _assignment_target_triggers(
             for name in _assignment_target_names(target)
         )
     return False
+
+
+def _unpacking_triggers(
+    target_elts: list[ast.expr],
+    value_elts: list[ast.expr],
+    testcase_names: set[str],
+) -> bool:
+    """Whether one unpacking level (sequence target, sequence
+    value) binds a pytest-collectable name.
+
+    Ruling (issue #52, superseding round 9's whole-value
+    fallback for sequence values): judge per element. Each
+    plainly-bound target element is judged against its
+    corresponding value element — the prefix elements pair
+    left-aligned with the leading value elements and the suffix
+    elements pair right-aligned with the trailing ones, so
+    determinate pairings survive an arity mismatch and a
+    starred element alike; a target element with no
+    corresponding value element triggers nothing by itself.
+    Determinate value elements are those outside a value-side
+    spread: elements before it sit at fixed leading positions
+    and elements after it at fixed trailing ones.
+
+    The starred target binds a LIST of the remaining values.
+    It triggers only if at least one remaining value denotes a
+    TestCase; if the remainder's contents are statically
+    unknowable (a value-side spread feeds it), it does not
+    trigger by itself.
+    """
+    target_star = next(
+        (
+            index
+            for index, element in enumerate(target_elts)
+            if isinstance(element, ast.Starred)
+        ),
+        None,
+    )
+    value_star = next(
+        (
+            index
+            for index, element in enumerate(value_elts)
+            if isinstance(element, ast.Starred)
+        ),
+        None,
+    )
+    if target_star is None:
+        target_prefix = target_elts
+        target_suffix: list[ast.expr] = []
+        starred: ast.expr | None = None
+    else:
+        target_prefix = target_elts[:target_star]
+        target_suffix = target_elts[target_star + 1 :]
+        starred = target_elts[target_star]
+    if value_star is None:
+        # Every value position is fixed: the prefix pairs from
+        # the head of the list, reserving the tail for the
+        # suffix targets; the two segments never overlap.
+        lead = value_elts[
+            : max(0, len(value_elts) - len(target_suffix))
+        ]
+        trail = (
+            value_elts[len(value_elts) - len(target_suffix) :]
+            if target_suffix
+            else []
+        )
+    else:
+        lead = value_elts[:value_star]
+        trail = value_elts[value_star + 1 :]
+
+    triggers = False
+    prefix_pairs = list(zip(target_prefix, lead))
+    suffix_pairs = list(
+        zip(reversed(target_suffix), reversed(trail))
+    )
+    for element, element_value in prefix_pairs + suffix_pairs:
+        if _assignment_target_triggers(
+            element, element_value, testcase_names
+        ):
+            triggers = True
+
+    if starred is not None and value_star is None:
+        inner = starred.value
+        if isinstance(inner, ast.Name) and (
+            inner.id.startswith("test_")
+            or inner.id.startswith("Test")
+        ):
+            remainder = value_elts[
+                len(prefix_pairs) : len(value_elts)
+                - len(suffix_pairs)
+            ]
+            if any(
+                _value_denotes_testcase(
+                    element_value, testcase_names
+                )
+                for element_value in remainder
+            ):
+                triggers = True
+    return triggers
 
 
 def _dotted_name(node: ast.expr) -> str | None:
@@ -254,11 +334,15 @@ def _classify_test_module(
       `test_cases = [...]` and `TestData = {...}` bind tables and do
       not; a `Test*` name bound to TestCase itself denotes
       unittest's class, recorded as an alias, not a pytest class;
-      an unpacking assignment whose target and value correspond
-      one-to-one is judged per element — `TestA, TestB = Helper,
-      Other` binds two collectable classes, `test_a, test_b = 1, 2`
-      binds none — while a level with no correspondence falls back
-      to the whole-value rule for its names),
+      an unpacking assignment with a sequence value is judged
+      per element wherever correspondence is determinate —
+      `TestA, TestB = Helper, Other` binds two collectable
+      classes, `test_a, test_b = 1, 2` binds none, determinate
+      pairings survive an arity mismatch or a starred element,
+      and the starred remainder triggers only when a remaining
+      value denotes a TestCase — while a sequence target bound
+      to a non-sequence value falls back to the whole-value
+      rule for its names),
       OR a `Test*`
       class that is NOT resolved as a TestCase subclass (its test
       methods may be inherited from a local helper or written
