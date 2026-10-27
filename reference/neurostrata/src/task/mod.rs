@@ -7,6 +7,8 @@
 //! sections 1 through 3 and 6 through 8.
 
 pub mod gate;
+pub mod intake;
+pub mod intent;
 pub mod machine;
 pub mod wiring;
 
@@ -15,7 +17,7 @@ use crate::traits::{Embedder, MemoryPayload, SearchResult, VectorStore};
 use machine::{annotate, apply, Ctx, Status, Task};
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex, OnceLock, Weak};
 
 // ── small helpers shared by every handler ──────────────────────────────────
 
@@ -51,16 +53,6 @@ fn string_list(args: &Value, key: &str) -> Result<Vec<String>, String> {
 /// `task_update`, and saying so points at the one tool that can.
 pub const DONE_FUNNEL_MESSAGE: &str =
     "ERROR: done is reachable only via neurostrata_task_complete, which requires memory extraction (Lock 2).";
-
-fn check_namespace(namespace: &str) -> Result<(), String> {
-    if namespace.contains('/') || namespace.contains('\\') {
-        return Err(
-            "ERROR [NAMESPACE]: The namespace cannot be a file path. It must be the exact project name (e.g., 'NeuroStrata'). Do not use slashes."
-                .to_string(),
-        );
-    }
-    Ok(())
-}
 
 fn encode(body: &Value) -> String {
     serde_json::to_string_pretty(body)
@@ -137,7 +129,7 @@ async fn existing_ids(
     namespace: &str,
 ) -> Result<HashSet<String>, String> {
     store
-        .list(namespace, None)
+        .list(namespace, None, None)
         .await
         .map(|rows| rows.into_iter().map(|r| r.id).collect())
         .map_err(|e| format!("Failed to list memories for id allocation: {}", e))
@@ -380,6 +372,18 @@ async fn store_new_task(
     Ok((id, payload))
 }
 
+/// Secret scan over a task write's caller-supplied strings, in the
+/// add_memory refusal shape: the scanner's verdict text is the refusal.
+/// A task write is a store write, so it meets the same scanner.
+fn scan_for_task_create(title: &str, metadata: &Value) -> Option<String> {
+    crate::secrets::scan_entry_point(title, metadata, "task_create").map(|r| r.to_string())
+}
+
+/// The task_update surface of the same scan (see scan_for_task_create).
+fn scan_for_task_update(title: &str, metadata: &Value) -> Option<String> {
+    crate::secrets::scan_entry_point(title, metadata, "task_update").map(|r| r.to_string())
+}
+
 // ── tool: neurostrata_task_create ──────────────────────────────────────────
 
 pub async fn handle_task_create(
@@ -401,7 +405,7 @@ pub async fn handle_task_create(
         }
     };
     let namespace = crate::server::resolve_namespace(&store, namespace).await;
-    if let Err(e) = check_namespace(&namespace) {
+    if let Err(e) = crate::domain::validate_namespace(&namespace) {
         return e;
     }
 
@@ -494,6 +498,15 @@ pub async fn handle_task_create(
         top_level.insert("contained_by".to_string(), json!([parent]));
     }
 
+    // The caller's strings meet the scanner before the write below — the
+    // only store write in this handler. The title scans as content; the
+    // assembled metadata (description, labels, blocked_by, links) scans
+    // as the metadata values it is stored as.
+    let scan_meta = json!({ "fields": task_meta.clone(), "links": top_level.clone() });
+    if let Some(rejection) = scan_for_task_create(&title, &scan_meta) {
+        return rejection;
+    }
+
     match store_new_task(
         &store,
         &emb,
@@ -517,6 +530,32 @@ pub async fn handle_task_create(
 
 // ── tool: neurostrata_task_claim ───────────────────────────────────────────
 
+/// Per-task claim locks: task id -> the lock serializing that task's claim
+/// sequence. Weak entries so a lock is dropped once no claim holds it; dead
+/// entries are pruned on each call, so the map tracks live claims, not every
+/// task ever claimed.
+static CLAIM_LOCKS: OnceLock<StdMutex<HashMap<String, Weak<tokio::sync::Mutex<()>>>>> =
+    OnceLock::new();
+
+/// The lock `handle_task_claim` holds across its whole load -> decide ->
+/// upsert sequence. Claim's only production caller runs inside the daemon's
+/// MCP dispatch (`process_mcp_request`); stdio processes are pure proxies
+/// and never execute the handler, so this process-global registry serializes
+/// all claim traffic in the shipped topology. The store's upsert API has no
+/// conditional write to build a CAS on, so the process lock is the smallest
+/// honest atomicity mechanism.
+fn claim_lock(task_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+    let registry = CLAIM_LOCKS.get_or_init(|| StdMutex::new(HashMap::new()));
+    let mut map = registry.lock().expect("claim lock registry poisoned");
+    map.retain(|_, lock| lock.strong_count() > 0);
+    if let Some(lock) = map.get(task_id).and_then(Weak::upgrade) {
+        return lock;
+    }
+    let lock = Arc::new(tokio::sync::Mutex::new(()));
+    map.insert(task_id.to_string(), Arc::downgrade(&lock));
+    lock
+}
+
 pub async fn handle_task_claim(args: Value, store: Arc<dyn VectorStore>) -> String {
     let id = match required_str(&args, "id") {
         Ok(v) => v.to_string(),
@@ -526,13 +565,24 @@ pub async fn handle_task_claim(args: Value, store: Arc<dyn VectorStore>) -> Stri
         Ok(v) => v,
         Err(e) => return e,
     };
+    // A claim without a session has no holder identity to exclude others
+    // with: refuse before any state is read or written, and never persist
+    // an empty session_id.
+    let session = match required_str(&args, "session_id") {
+        Ok(v) => v.to_string(),
+        Err(e) => return e,
+    };
     let namespace = crate::server::resolve_namespace(&store, namespace).await;
-    if let Err(e) = check_namespace(&namespace) {
+    if let Err(e) = crate::domain::validate_namespace(&namespace) {
         return e;
     }
 
     let assignee = arg_str(&args, "assignee").unwrap_or("unknown").to_string();
-    let session = arg_str(&args, "session_id").unwrap_or("").to_string();
+
+    // Serialize the whole load -> decide -> upsert sequence per task: two
+    // concurrent claims on one task can no longer both observe it unclaimed.
+    let lock = claim_lock(&id);
+    let _claim_guard = lock.lock().await;
 
     let (mut task, vector) = match load_task(&store, &namespace, &id).await {
         Ok(found) => found,
@@ -637,6 +687,12 @@ pub async fn handle_task_claim(args: Value, store: Arc<dyn VectorStore>) -> Stri
         obj.insert("session_id".to_string(), json!(session));
     }
 
+    // No re-read guard here: the per-task claim lock above is held across
+    // this save, so no claim-path writer can interleave between the load
+    // and the upsert. (The R7 best-effort re-read this replaces could only
+    // ever fire for an out-of-process claim writer, and none exists — every
+    // claim enters through this handler in the daemon process.)
+
     if let Err(e) = save_task(&store, &namespace, &id, vector, task.payload.clone()).await {
         return e;
     }
@@ -672,7 +728,7 @@ pub async fn handle_task_update(
         Err(e) => return e,
     };
     let namespace = crate::server::resolve_namespace(&store, namespace).await;
-    if let Err(e) = check_namespace(&namespace) {
+    if let Err(e) = crate::domain::validate_namespace(&namespace) {
         return e;
     }
 
@@ -727,6 +783,19 @@ pub async fn handle_task_update(
         && !has_blocked_by
     {
         return "ERROR: nothing to update: pass at least one of title, status, note, priority, assignee, add_labels, blocked_by.".to_string();
+    }
+
+    // The caller's strings meet the scanner before the task is loaded for
+    // writing: the new title as content, the note / assignee / add_labels /
+    // blocked_by as the metadata values they are stored as.
+    let scan_meta = json!({
+        "note": &note,
+        "assignee": &assignee,
+        "add_labels": &add_labels,
+        "blocked_by": &blocked_by,
+    });
+    if let Some(rejection) = scan_for_task_update(new_title.as_deref().unwrap_or(""), &scan_meta) {
+        return rejection;
     }
 
     let (mut task, mut vector) = match load_task(&store, &namespace, &id).await {
@@ -853,7 +922,7 @@ pub async fn handle_task_list(args: Value, store: Arc<dyn VectorStore>) -> Strin
         Err(e) => return e,
     };
     let namespace = crate::server::resolve_namespace(&store, namespace).await;
-    if let Err(e) = check_namespace(&namespace) {
+    if let Err(e) = crate::domain::validate_namespace(&namespace) {
         return e;
     }
 
@@ -883,7 +952,7 @@ pub async fn handle_task_list(args: Value, store: Arc<dyn VectorStore>) -> Strin
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    let memories = match store.list(&namespace, None).await {
+    let memories = match store.list(&namespace, None, None).await {
         Ok(m) => m,
         Err(e) => {
             return format!(
@@ -968,6 +1037,32 @@ pub(crate) fn blocked_message(id: &str) -> String {
     )
 }
 
+/// The maps one parsed follow_up_tasks spec spawns with: its task
+/// metadata and its top-level links. Assembled in exactly one place so
+/// the pre-completion secret scan (Task 6) reads the same values the
+/// spawn itself stores.
+fn follow_up_maps(
+    parent_id: &str,
+    description: &Option<String>,
+    task_type: &str,
+    priority: i64,
+    labels: &[String],
+) -> (Map<String, Value>, Map<String, Value>) {
+    let mut task_meta = Map::new();
+    task_meta.insert("priority".to_string(), json!(priority));
+    task_meta.insert("task_type".to_string(), json!(task_type));
+    task_meta.insert("spawned_from".to_string(), json!(parent_id));
+    if !labels.is_empty() {
+        task_meta.insert("labels".to_string(), json!(labels.to_vec()));
+    }
+    if let Some(d) = description {
+        task_meta.insert("description".to_string(), json!(d));
+    }
+    let mut top_level = Map::new();
+    top_level.insert("related_to".to_string(), json!([parent_id]));
+    (task_meta, top_level)
+}
+
 /// Q2 -- the Lock 2 enforcement point. Success requires at least one inbound
 /// EXTRACTED_FROM edge *after* the call, checked in the design's order:
 /// pre-existing edge, `link_memory_id` re-upsert (no re-embed), inline
@@ -987,7 +1082,7 @@ pub async fn handle_task_complete(
     let id = required_str(&args, "id")?.to_string();
     let namespace_arg = required_str(&args, "namespace")?;
     let namespace = crate::server::resolve_namespace(&store, namespace_arg).await;
-    check_namespace(&namespace)?;
+    crate::domain::validate_namespace(&namespace)?;
 
     let (task, vector) = load_task(&store, &namespace, &id).await?;
     // The clock the gate reads with: a lesson row that has been retired is
@@ -1004,6 +1099,89 @@ pub async fn handle_task_complete(
     let reason = arg_str(&args, "reason").unwrap_or("").to_string();
     let link_memory_id = arg_str(&args, "link_memory_id").map(|s| s.to_string());
     let memory = args.get("memory").cloned();
+
+    // M3: optional inline follow_up_tasks. Validate everything before any
+    // mutation so a bad entry cannot leave the parent half-completed.
+    let mut follow_up_specs: Vec<(String, Option<String>, String, i64, Vec<String>)> = Vec::new();
+    if let Some(fu) = args.get("follow_up_tasks") {
+        if !fu.is_null() {
+            let arr = match fu.as_array() {
+                Some(a) => a,
+                None => {
+                    return Err("ERROR: 'follow_up_tasks' must be an array.".to_string());
+                }
+            };
+            for (i, item) in arr.iter().enumerate() {
+                if !item.is_object() {
+                    return Err(format!("ERROR: follow_up_tasks[{}] must be an object.", i));
+                }
+                let title = match item.get("title").and_then(|t| t.as_str()) {
+                    Some(t) => match check_title(t) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return Err(format!("ERROR: follow_up_tasks[{}].title: {}", i, e))
+                        }
+                    },
+                    None => {
+                        return Err(format!(
+                            "ERROR: follow_up_tasks[{}] requires a non-empty 'title'.",
+                            i
+                        ))
+                    }
+                };
+                let description = item
+                    .get("description")
+                    .and_then(|s| s.as_str())
+                    .map(|s| s.to_string())
+                    .filter(|s| !s.is_empty());
+                let task_type = match item.get("task_type").and_then(|t| t.as_str()) {
+                    None => "task".to_string(),
+                    Some(t) if ["task", "bug", "feature", "epic"].contains(&t) => t.to_string(),
+                    Some(t) => {
+                        return Err(format!(
+                            "ERROR: follow_up_tasks[{}].task_type '{}' invalid.",
+                            i, t
+                        ))
+                    }
+                };
+                let priority = match item.get("priority") {
+                    None => 2i64,
+                    Some(Value::Number(n))
+                        if n
+                            .as_i64()
+                            .map(|p| (0..=4).contains(&p))
+                            .unwrap_or(false) =>
+                    {
+                        n.as_i64().unwrap_or(2)
+                    }
+                    Some(_) => {
+                        return Err(format!(
+                            "ERROR: follow_up_tasks[{}].priority must be an integer 0-4.",
+                            i
+                        ))
+                    }
+                };
+                let labels = match string_list(item, "labels") {
+                    Ok(v) => v,
+                    Err(e) => return Err(format!("ERROR: follow_up_tasks[{}].labels: {}", i, e)),
+                };
+                follow_up_specs.push((title, description, task_type, priority, labels));
+            }
+        }
+    }
+    // Task 6: a follow-up spawn is a task_create-shaped store write, so
+    // every spec's caller strings meet the same scanner BEFORE any
+    // mutation of this completion — a trip on any spec refuses the whole
+    // completion and spawns nothing.
+    for (title, description, task_type, priority, labels) in &follow_up_specs {
+        let (task_meta, top_level) =
+            follow_up_maps(&id, description, task_type, *priority, labels);
+        let scan_meta = json!({ "fields": task_meta, "links": top_level });
+        if let Some(rejection) = scan_for_task_create(title, &scan_meta) {
+            return Err(rejection);
+        }
+    }
+
     let actor = task
         .task_field("assignee")
         .and_then(|v| v.as_str())
@@ -1012,7 +1190,7 @@ pub async fn handle_task_complete(
 
     let list_now = || async {
         store
-            .list(&namespace, None)
+            .list(&namespace, None, None)
             .await
             .map_err(|e| format!("Failed to list memories in '{}': {}", namespace, e))
     };
@@ -1165,6 +1343,11 @@ pub async fn handle_task_complete(
             }
             // The same lineage stamps add_memory gives every new row.
             crate::server::stamp_new_memory(&mut meta);
+            // A procedure minted by an extraction is locally authored,
+            // exactly as if add_memory had written it (Program Task 3).
+            if memory_type == "procedure" {
+                crate::tools::procedure::stamp_local_trust(&mut meta);
+            }
             // An extraction is an insertion: it meets the same scanner.
             if let Some(rejection) =
                 crate::secrets::scan_entry_point(&content, &meta, "task_complete")
@@ -1175,6 +1358,13 @@ pub async fn handle_task_complete(
             // is no top-level `domain` argument on this path, so
             // `register_domain` applies to that field and is a no-op when the
             // memory carries no domain. The decision precedes the write.
+            // Mirror handle_add_memory: normalize the domain to its slug before
+            // the registry check so canonical keys agree across the two paths.
+            if let Some(slug) = crate::domain::domain_key(&meta) {
+                if let Some(meta_obj) = meta.as_object_mut() {
+                    meta_obj.insert("domain".to_string(), Value::String(slug));
+                }
+            }
             if let Some(raw) = meta.get("domain").cloned() {
                 let register_domain = args
                     .get("register_domain")
@@ -1209,6 +1399,25 @@ pub async fn handle_task_complete(
                 dedup.as_ref(),
             )
             .await?;
+            // If the extraction was blocked by dedup rather than written, do
+            // not fall through to the generic Lock 2 refusal: name the
+            // candidate so the agent can retry with link_memory_id instead of
+            // looping on the same content.
+            if matches!(
+                report.decision,
+                crate::judgment::policy::DedupDecision::BlockedExact
+                    | crate::judgment::policy::DedupDecision::BlockedModel
+            ) {
+                let candidate = report
+                    .linked_existing_id
+                    .clone()
+                    .or_else(|| report.dedup_hint.as_ref().map(|h| h.candidate_id.clone()))
+                    .unwrap_or_else(|| "<unknown>".to_string());
+                return Err(format!(
+                    "ERROR: extraction was blocked by dedup ({:?}). The lesson matches an existing memory '{}'. Retry neurostrata_task_complete with link_memory_id: \"{}\" instead of memory.content, or pass a materially different content.",
+                    report.decision, candidate, candidate
+                ));
+            }
             // Only now, with the extraction durable: a cache failure is
             // reported and never undoes the acceptance.
             if let Some(domains) = pending_registry.take() {
@@ -1257,13 +1466,38 @@ pub async fn handle_task_complete(
 
     // With the edge in place the ExtractionRequired guard is satisfied.
     let ctx = Ctx {
-        reason,
+        reason: reason.clone(),
         extraction_edge_exists: true,
         actor,
         session: String::new(),
     };
     let completed = apply(&task, Status::Done, &ctx).map_err(|e| format!("ERROR: {}", e))?;
     save_task(&store, &namespace, &id, vector, completed.payload.clone()).await?;
+
+    // M3: spawn follow-up tasks now that the parent is done. Each inherits
+    // the caller's user/agent defaults and carries spawned_from + related_to.
+    let follow_user_id = arg_str(&args, "user_id").unwrap_or("unknown").to_string();
+    let follow_agent = arg_str(&args, "agent_name").map(|s| s.to_string());
+    let mut follow_up_created_ids: Vec<String> = Vec::new();
+    for (title, description, task_type, priority, labels) in &follow_up_specs {
+        let (task_meta, top_level) =
+            follow_up_maps(&id, description, task_type, *priority, labels);
+        match store_new_task(
+            &store,
+            &emb,
+            &namespace,
+            title,
+            &follow_user_id,
+            follow_agent.as_deref(),
+            task_meta,
+            top_level,
+        )
+        .await
+        {
+            Ok((new_id, _payload)) => follow_up_created_ids.push(new_id),
+            Err(e) => return Err(e),
+        }
+    }
 
     let extracted: Vec<String> = memories
         .iter()
@@ -1279,17 +1513,36 @@ pub async fn handle_task_complete(
         .map(|m| m.id.clone())
         .collect();
 
+    // M3: task_intent_signals from reason + memory.content
+    let mut scan_text = reason.clone();
+    if let Some(mem) = &memory {
+        if let Some(c) = mem.get("content").and_then(|v| v.as_str()) {
+            scan_text.push(' ');
+            scan_text.push_str(c);
+        }
+    }
+    let signals: Vec<Value> = crate::task::intent::detect_task_intents(&scan_text)
+        .into_iter()
+        .map(|s| {
+            json!({
+                "marker": s.marker,
+                "excerpt": s.excerpt,
+            })
+        })
+        .collect();
+
     let mut reply = json!({
         "task": task_summary(&id, &completed.payload),
         "extracted_memory_ids": extracted,
+        "follow_up_tasks_created": follow_up_created_ids,
+        "task_intent_signals": signals,
         "transition": { "from": task.status().as_str(), "to": "done" },
     });
     if !registry_warnings.is_empty() {
         reply["registry_warning"] = json!(registry_warnings.join("; "));
     }
 
-    serde_json::to_string_pretty(&reply)
-        .map_err(|e| format!("Internal serialization error: {}", e))
+    serde_json::to_string_pretty(&reply).map_err(|e| format!("Internal serialization error: {}", e))
 }
 
 // ── tool: neurostrata_task_validate ────────────────────────────────────────
@@ -1300,7 +1553,7 @@ pub async fn handle_task_validate(args: Value, store: Arc<dyn VectorStore>) -> S
         Err(e) => return e,
     };
     let namespace = crate::server::resolve_namespace(&store, namespace).await;
-    if let Err(e) = check_namespace(&namespace) {
+    if let Err(e) = crate::domain::validate_namespace(&namespace) {
         return e;
     }
     match gate::run(&store, &namespace).await {
@@ -1342,6 +1595,7 @@ pub fn snapshot_prefix(memories: &[SearchResult]) -> String {
     });
 
     let mut out = String::from("Zero-Action Start: claim or create a task before editing.\n");
+    out.push_str("Task recognition: a statement of future/deferred work ('TODO:', 'we should also', 'later we need to', 'remaining work:', ...) is a task, not a note — capture it with neurostrata_task_create.\n");
     if claimed.is_empty() && ready.is_empty() {
         out.push_str("No tasks are claimed or ready in this namespace.\n");
         return out;
@@ -1428,6 +1682,17 @@ writes one Episodic Buffer entry per firing.
   `neurostrata_procedure_perform`.
 - `task_create` rejects `task_type: "recurring"` -- the rejection error
   itself points at this section.
+
+## 6. Task recognition (heuristic)
+A statement of future/deferred work is a TASK, not a note:
+- Explicit tags: `TODO:`, `FIXME:`, `follow-up:`, `next step:`, `action item:`,
+  `remaining work:`.
+- Modal deferral: `we should also`, `later we need to`, `still need to`,
+  `must also fix`, `need to follow up`, `filed follow-up`, `defer`/`deferred`.
+When you see one in user/agent speech, logs, or memory content, capture it
+with `neurostrata_task_create` (namespace, title) instead of letting it
+evaporate. The lexical detector surfaces these as `task_intent_signals` in
+`neurostrata_append_log` and as a `TASK NUDGE` line in `neurostrata_add_memory`.
 "#,
         ns = namespace
     )
@@ -1447,7 +1712,7 @@ pub async fn handle_bootstrap(
         Err(e) => return e,
     };
     let namespace = crate::server::resolve_namespace(&store, namespace).await;
-    if let Err(e) = check_namespace(&namespace) {
+    if let Err(e) = crate::domain::validate_namespace(&namespace) {
         return e;
     }
     let project_description = arg_str(&args, "project_description").map(|s| s.to_string());
@@ -1463,6 +1728,14 @@ pub async fn handle_bootstrap(
     task_meta.insert("task_type".to_string(), json!("task"));
     if let Some(desc) = &project_description {
         task_meta.insert("description".to_string(), json!(desc));
+    }
+    // Task 6: the caller-supplied project_description is stored as task
+    // metadata, so it meets the same scanner before the insert below —
+    // in the shape task_create scans with (title as content, the
+    // assembled metadata as the values).
+    let scan_meta = json!({ "fields": task_meta.clone(), "links": Map::new() });
+    if let Some(rejection) = scan_for_task_create(title, &scan_meta) {
+        return rejection;
     }
     let (task_id, _) = match store_new_task(
         &store,
@@ -1559,26 +1832,40 @@ pub async fn handle_bootstrap(
 /// runnable hook flips it — an agent extends this file instead of inventing a
 /// workflow. Both invocations are host-agnostic (GitHub, GitLab, Gitea, a bare
 /// repo over SSH), which is the whole reason the hook is the default.
-const SCAFFOLDED_PRE_PUSH_HOOK: &str = r#"#!/bin/bash
+pub(crate) const SCAFFOLDED_PRE_PUSH_HOOK: &str = r#"#!/bin/bash
 # NeuroStrata task gate — scaffolded by neurostrata-bootstrap / task_setup.
 #
 # The hook IS the gate. It runs on every push on ANY git host, so it is the
 # required default; CI is vendor-specific and only a defense-in-depth extra.
 # Install once with:  bash scripts/install-hooks.sh
+# (`neurostrata-mcp hooks install` writes these exact bytes into the
+# directory git actually runs hooks from, core.hooksPath honored — one
+# hook text for both install paths, so they cannot drift.)
 
-command -v neurostrata-mcp >/dev/null || exit 0
-[ -n "$NEUROSTRATA_SKIP_GATE" ] && exit 0
+command -v neurostrata-mcp >/dev/null 2>&1 || { echo "warning: neurostrata-mcp not found — gate NOT run for this push" >&2; exit 0; }
+if [ "$NEUROSTRATA_SKIP_GATE" = "1" ]; then
+    echo "NeuroStrata task gate: skipped (NEUROSTRATA_SKIP_GATE=1) — the gate did NOT run for this push" >&2
+    exit 0
+fi
 
 NAMESPACE=$(basename "$(git rev-parse --show-toplevel)")
 
 # ── NeuroStrata gate (required) ────────────────────────────────────────────
-# --strict maps an unavailable database to a blocking exit too, so the exit
-# code below is the gate's verdict: a failed gate fails the push.
+# --strict maps an unavailable database to a blocking exit too, so a 1
+# below is always a verdict: violations, or a database that could not be
+# checked under --strict. The hook blocks on the verdict code only.
 neurostrata-mcp task gate "$NAMESPACE" --strict
 code=$?
-if [ $code -ne 0 ]; then
+if [ $code -eq 1 ]; then
     echo "Push blocked: resolve the tasks above, or NEUROSTRATA_SKIP_GATE=1 git push" >&2
     exit 1
+fi
+# A 2 here is never a verdict: under --strict the gate itself exits
+# only 0 or 1, so a 2 means the binary that answered was stale,
+# foreign, or died before it could report. Announced, never silent —
+# and it still does not block (0 and 2 pass, per the exit line below).
+if [ $code -eq 2 ]; then
+    echo "warning: neurostrata-mcp task gate exited 2 — the gate could NOT run for this push; proceeding without it" >&2
 fi
 
 # ── project guards (add yours here) ────────────────────────────────────────
@@ -1594,7 +1881,7 @@ if [ ${#PROJECT_GATES[@]} -gt 0 ]; then
     done
 fi
 
-exit 0
+exit 0   # 0 and 2 both pass here unless --strict flips 2 to blocking
 "#;
 
 /// The scaffolded `scripts/install-hooks.sh`: tracks the hook in the repo
@@ -1636,7 +1923,7 @@ echo "Verify: neurostrata_task_setup should report verified.hook_installed: true
 /// instead made the two disagree: a `core.hooksPath` in the global config made
 /// the installer write to the global path while this reported unhooked
 /// (FINDING-bootstrap-wiring-nudge fix round 1).
-fn git_hooks_dir(root: &std::path::Path) -> std::path::PathBuf {
+pub(crate) fn git_hooks_dir(root: &std::path::Path) -> std::path::PathBuf {
     let configured = std::process::Command::new("git")
         .args(["config", "--get", "core.hooksPath"])
         .current_dir(root)
@@ -2207,7 +2494,7 @@ pub async fn handle_task_setup(
         Err(e) => return e,
     };
     let namespace = crate::server::resolve_namespace(&store, namespace).await;
-    if let Err(e) = check_namespace(&namespace) {
+    if let Err(e) = crate::domain::validate_namespace(&namespace) {
         return e;
     }
     let root = std::path::Path::new(project_root);
@@ -2448,7 +2735,7 @@ pub async fn import_beads(
     let mut summary = ImportSummary::default();
 
     let rows = store
-        .list(namespace, None)
+        .list(namespace, None, None)
         .await
         .map_err(|e| format!("ERROR: could not list '{}': {}", namespace, e))?;
     let mut seen_bead_ids: HashSet<String> = rows
@@ -3858,8 +4145,99 @@ mod tests {
         assert_eq!(payload.metadata["task"]["session_id"], json!("ses_a"));
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_claims_exactly_one_wins() {
+        let real = store_with_namespace("MyProj").await;
+        let id = create_task(&real, "MyProj", "the work", 2).await;
+        // SlowGetStore widens the load -> decide -> upsert window so the two
+        // claims genuinely overlap; without a per-task claim lock both win.
+        let store: Arc<dyn VectorStore> = Arc::new(SlowGetStore {
+            inner: real.clone(),
+        });
+        let a = tokio::spawn(handle_task_claim(
+            json!({ "namespace": "MyProj", "id": id, "assignee": "agent-a", "session_id": "ses_a" }),
+            store.clone(),
+        ));
+        let b = tokio::spawn(handle_task_claim(
+            json!({ "namespace": "MyProj", "id": id, "assignee": "agent-b", "session_id": "ses_b" }),
+            store.clone(),
+        ));
+        let replies = [a.await.unwrap(), b.await.unwrap()];
+        let wins = replies
+            .iter()
+            .filter(|r| r.contains("\"claimed\": true"))
+            .count();
+        assert_eq!(
+            wins, 1,
+            "exactly one concurrent claim may win: {:?}",
+            replies
+        );
+        let loser = replies
+            .iter()
+            .find(|r| !r.contains("\"claimed\": true"))
+            .expect("the loser replied");
+        assert!(loser.starts_with("ERROR: task"), "{}", loser);
+        assert!(
+            loser.contains("claimed by agent-"),
+            "the loser is told who holds the task: {}",
+            loser
+        );
+
+        let (_, payload) = real.get("MyProj", &id).await.unwrap().unwrap();
+        let holder = payload.metadata["task"]["session_id"].as_str().unwrap();
+        assert!(
+            holder == "ses_a" || holder == "ses_b",
+            "the persisted holder is the winner: {}",
+            holder
+        );
+        assert_eq!(
+            payload.metadata["task"]["history"].as_array().unwrap().len(),
+            1,
+            "only the winning claim is persisted"
+        );
+    }
+
     #[tokio::test]
-    async fn re_claiming_from_the_same_session_is_idempotent() {
+    async fn empty_session_claim_is_refused() {
+        let store = store_with_namespace("MyProj").await;
+        let id = create_task(&store, "MyProj", "the work", 2).await;
+
+        for args in [
+            json!({ "namespace": "MyProj", "id": id, "assignee": "agent-a" }),
+            json!({ "namespace": "MyProj", "id": id, "assignee": "agent-a", "session_id": "" }),
+            json!({ "namespace": "MyProj", "id": id, "assignee": "agent-a", "session_id": "   " }),
+        ] {
+            let reply = handle_task_claim(args, store.clone()).await;
+            assert!(reply.starts_with("ERROR:"), "{}", reply);
+            assert!(
+                reply.contains("session_id"),
+                "the refusal names the requirement: {}",
+                reply
+            );
+        }
+
+        assert_eq!(
+            status_of(&store, "MyProj", &id).await,
+            Status::Open,
+            "a refused claim changes nothing"
+        );
+        let (_, payload) = store.get("MyProj", &id).await.unwrap().unwrap();
+        assert!(
+            payload.metadata["task"].get("session_id").is_none(),
+            "no empty session is persisted: {:?}",
+            payload.metadata["task"]
+        );
+        assert!(
+            payload.metadata["task"]["history"]
+                .as_array()
+                .unwrap()
+                .is_empty(),
+            "no transition is persisted"
+        );
+    }
+
+    #[tokio::test]
+    async fn same_session_reclaim_is_idempotent() {
         let store = store_with_namespace("MyProj").await;
         let id = create_task(&store, "MyProj", "the work", 2).await;
         let args = json!({ "namespace": "MyProj", "id": id, "assignee": "agent-a", "session_id": "ses_a" });
@@ -3929,7 +4307,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn claiming_a_done_task_names_the_legal_transition_instead() {
+    async fn claim_after_completion_still_refused() {
         let store = store_with_namespace("MyProj").await;
         let id = create_task(&store, "MyProj", "the work", 2).await;
         // Hand-edit the status: the machine still refuses done -> in_progress.
@@ -4096,7 +4474,7 @@ mod tests {
         let id = create_task(&store, "MyProj", "the work", 2).await;
         claim(&store, &id).await;
 
-        let before = store.list("MyProj", None).await.unwrap().len();
+        let before = store.list("MyProj", None, None).await.unwrap().len();
         let reply = handle_task_complete(
             json!({
                 "namespace": "MyProj",
@@ -4117,7 +4495,7 @@ mod tests {
         let extracted = parsed["extracted_memory_ids"].as_array().unwrap();
         assert_eq!(extracted.len(), 1);
 
-        let after = store.list("MyProj", None).await.unwrap();
+        let after = store.list("MyProj", None, None).await.unwrap();
         assert_eq!(after.len(), before + 1, "one memory was written");
         let written = after
             .iter()
@@ -4211,7 +4589,7 @@ mod tests {
         let id = create_task(&store, "MyProj", "the work", 2).await;
         claim(&store, &id).await;
 
-        let before = store.list("MyProj", None).await.unwrap().len();
+        let before = store.list("MyProj", None, None).await.unwrap().len();
         let err = handle_task_complete(
             json!({
                 "namespace": "MyProj",
@@ -4235,7 +4613,7 @@ mod tests {
                 && err.contains("must be an array of task ids"),
             "the rejection must name the malformed key, not the generic Lock-2 block: {err}"
         );
-        let after = store.list("MyProj", None).await.unwrap();
+        let after = store.list("MyProj", None, None).await.unwrap();
         assert_eq!(after.len(), before, "the intended memory was NOT created");
         assert_eq!(
             status_of(&store, "MyProj", &id).await,
@@ -4451,6 +4829,117 @@ mod tests {
         }
     }
 
+    /// Wraps a real store and delays every task-row `get` briefly, widening
+    /// the claim handler's load -> decide -> upsert window so two spawned
+    /// claims overlap deterministically instead of racing by scheduler luck.
+    struct SlowGetStore {
+        inner: Arc<dyn VectorStore>,
+    }
+
+    #[async_trait::async_trait]
+    impl VectorStore for SlowGetStore {
+        async fn init(&self, namespace: &str) -> anyhow::Result<()> {
+            self.inner.init(namespace).await
+        }
+        async fn upsert(
+            &self,
+            namespace: &str,
+            id: &str,
+            vector: Vec<f32>,
+            payload: MemoryPayload,
+        ) -> anyhow::Result<crate::traits::UpsertReport> {
+            self.inner.upsert(namespace, id, vector, payload).await
+        }
+        async fn search(
+            &self,
+            namespace: &str,
+            vector: Vec<f32>,
+            limit: usize,
+            include_tasks: bool,
+            include_archived: bool,
+        ) -> anyhow::Result<Vec<SearchResult>> {
+            self.inner
+                .search(namespace, vector, limit, include_tasks, include_archived)
+                .await
+        }
+        async fn delete(&self, namespace: &str, id: &str) -> anyhow::Result<()> {
+            self.inner.delete(namespace, id).await
+        }
+        async fn clear_ingested(&self, namespace: &str) -> anyhow::Result<()> {
+            self.inner.clear_ingested(namespace).await
+        }
+        async fn relink_edges(&self, namespace: &str) -> anyhow::Result<usize> {
+            self.inner.relink_edges(namespace).await
+        }
+        async fn list(
+            &self,
+            namespace: &str,
+            user_id: Option<&str>,
+            memory_type: Option<&str>,
+        ) -> anyhow::Result<Vec<SearchResult>> {
+            self.inner.list(namespace, user_id, memory_type).await
+        }
+        async fn get(
+            &self,
+            namespace: &str,
+            id: &str,
+        ) -> anyhow::Result<Option<(Vec<f32>, MemoryPayload)>> {
+            let found = self.inner.get(namespace, id).await?;
+            if let Some((_, payload)) = &found {
+                if payload.metadata.get("task").is_some() {
+                    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+                }
+            }
+            Ok(found)
+        }
+        async fn relocate(
+            &self,
+            id: &str,
+            from: &str,
+            to: &str,
+        ) -> anyhow::Result<crate::traits::RelocateOutcome> {
+            self.inner.relocate(id, from, to).await
+        }
+        async fn list_namespaces(&self) -> anyhow::Result<Vec<String>> {
+            self.inner.list_namespaces().await
+        }
+        async fn export_graph(
+            &self,
+            include_retired: bool,
+            include_archived: bool,
+            project_contexts: &std::collections::HashMap<String, std::path::PathBuf>,
+            anchor_override: Option<&crate::source_context::ScopedAnchorOverride>,
+        ) -> anyhow::Result<serde_json::Value> {
+            self.inner
+                .export_graph(
+                    include_retired,
+                    include_archived,
+                    project_contexts,
+                    anchor_override,
+                )
+                .await
+        }
+        async fn increment_access_count(&self, namespace: &str, id: &str) -> anyhow::Result<()> {
+            self.inner.increment_access_count(namespace, id).await
+        }
+        async fn export_database(&self, dir: &str) -> anyhow::Result<()> {
+            self.inner.export_database(dir).await
+        }
+        async fn checkpoint(&self) -> anyhow::Result<()> {
+            self.inner.checkpoint().await
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+
+    impl crate::traits::AsAny for SlowGetStore {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+
     /// Wraps a real store and hides every extraction-declaring row from
     /// `list`. `upsert` still lands, so the inline lesson really is written --
     /// the gate simply cannot see the edge it declared, which is the one
@@ -4499,8 +4988,9 @@ mod tests {
             &self,
             namespace: &str,
             user_id: Option<&str>,
+            memory_type: Option<&str>,
         ) -> anyhow::Result<Vec<SearchResult>> {
-            let rows = self.inner.list(namespace, user_id).await?;
+            let rows = self.inner.list(namespace, user_id, memory_type).await?;
             Ok(rows
                 .into_iter()
                 .filter(|r| r.payload.metadata.get("extracted_from").is_none())
@@ -4549,7 +5039,17 @@ mod tests {
         async fn checkpoint(&self) -> anyhow::Result<()> {
             self.inner.checkpoint().await
         }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
     }
+
+impl crate::traits::AsAny for ListHidingStore {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
 
     /// The ordering invariant the emit site carries: a `Superseded` published
     /// on the inline path claims the task gave way to a lesson. If the Lock 2
@@ -4597,7 +5097,7 @@ mod tests {
         // The write itself did land -- this is the case the pulse would have
         // lied about, not a path that failed earlier.
         let lesson_count = real
-            .list("MyProj", None)
+            .list("MyProj", None, None)
             .await
             .unwrap()
             .iter()
@@ -4674,7 +5174,7 @@ mod tests {
         let store = store_with_namespace("MyProj").await;
         let id = create_task(&store, "MyProj", "the work", 2).await;
         claim(&store, &id).await;
-        let before = store.list("MyProj", None).await.unwrap().len();
+        let before = store.list("MyProj", None, None).await.unwrap().len();
 
         let err = handle_task_complete(
             json!({
@@ -4690,8 +5190,298 @@ mod tests {
         .await
         .expect_err("a secret must not be stored as an extraction");
         assert!(err.contains("ERROR [SECURITY]"), "{}", err);
-        assert_eq!(store.list("MyProj", None).await.unwrap().len(), before);
+        assert_eq!(store.list("MyProj", None, None).await.unwrap().len(), before);
         assert_eq!(status_of(&store, "MyProj", &id).await, Status::InProgress);
+    }
+
+    /// A scanner-detectable fixture token, built at runtime so no
+    /// secret-shaped literal sits in the source.
+    fn scanner_fixture_token() -> String {
+        format!("ghp_{}", "Ab1".repeat(12))
+    }
+
+    /// Task 6 (J15): a task create is a store write, so its caller strings
+    /// meet the same scanner add_memory applies — title, description, and
+    /// metadata string values — and a refusal writes nothing.
+    #[tokio::test]
+    async fn secret_in_task_create_is_refused() {
+        let store = store_with_namespace("MyProj").await;
+        let before = store.list("MyProj", None, None).await.unwrap().len();
+        let secret = scanner_fixture_token();
+
+        // In the title (the task's content).
+        let reply = handle_task_create(
+            json!({ "namespace": "MyProj", "title": format!("use {} to push", secret) }),
+            emb(),
+            store.clone(),
+        )
+        .await;
+        assert!(reply.contains("ERROR [SECURITY]"), "got {}", reply);
+        assert!(reply.contains("github_pat"), "got {}", reply);
+
+        // In the description (stored metadata).
+        let reply = handle_task_create(
+            json!({
+                "namespace": "MyProj",
+                "title": "an ordinary title",
+                "description": format!("the token is {}", secret)
+            }),
+            emb(),
+            store.clone(),
+        )
+        .await;
+        assert!(reply.contains("ERROR [SECURITY]"), "got {}", reply);
+
+        // In a label (metadata string values).
+        let reply = handle_task_create(
+            json!({
+                "namespace": "MyProj",
+                "title": "an ordinary title",
+                "labels": [secret]
+            }),
+            emb(),
+            store.clone(),
+        )
+        .await;
+        assert!(reply.contains("ERROR [SECURITY]"), "got {}", reply);
+
+        assert_eq!(
+            store.list("MyProj", None, None).await.unwrap().len(),
+            before,
+            "no refused create reached the store"
+        );
+    }
+
+    /// Task 6 (J15): a task update's caller strings — new title, note —
+    /// meet the same scanner, and a refusal leaves the stored task
+    /// byte-identical.
+    #[tokio::test]
+    async fn secret_in_task_update_is_refused() {
+        let store = store_with_namespace("MyProj").await;
+        let id = create_task(&store, "MyProj", "the work", 2).await;
+        let secret = scanner_fixture_token();
+
+        // In the new title (the task's content).
+        let reply = handle_task_update(
+            json!({
+                "namespace": "MyProj",
+                "id": id,
+                "title": format!("renamed with {}", secret)
+            }),
+            emb(),
+            store.clone(),
+        )
+        .await;
+        assert!(reply.contains("ERROR [SECURITY]"), "got {}", reply);
+        assert!(reply.contains("github_pat"), "got {}", reply);
+
+        // In a note (history metadata).
+        let reply = handle_task_update(
+            json!({
+                "namespace": "MyProj",
+                "id": id,
+                "note": format!("progress: {}", secret)
+            }),
+            emb(),
+            store.clone(),
+        )
+        .await;
+        assert!(reply.contains("ERROR [SECURITY]"), "got {}", reply);
+
+        let (_, payload) = store.get("MyProj", &id).await.unwrap().unwrap();
+        assert_eq!(payload.content, "the work", "the refused update never wrote");
+    }
+
+    /// Task 6 fix round: the follow-up specs a completion spawns are
+    /// task_create-shaped writes, so they are scanned before the parent
+    /// is mutated — a secret in any spec refuses the whole completion
+    /// and spawns nothing, not even the clean spec listed first.
+    #[tokio::test]
+    async fn secret_in_follow_up_task_is_refused() {
+        let store = store_with_namespace("MyProj").await;
+        let id = create_task(&store, "MyProj", "the work", 2).await;
+        claim(&store, &id).await;
+        let before = store.list("MyProj", None, None).await.unwrap().len();
+        let secret = scanner_fixture_token();
+
+        let err = handle_task_complete(
+            json!({
+                "namespace": "MyProj",
+                "id": id,
+                "memory": { "content": "a clean lesson from the work" },
+                "follow_up_tasks": [
+                    { "title": "a perfectly clean follow-up" },
+                    { "title": format!("use {} to push", secret) }
+                ]
+            }),
+            emb(),
+            store.clone(),
+            None,
+            quiet_bus(),
+        )
+        .await
+        .expect_err("a secret in a follow-up spec must refuse the completion");
+        assert!(err.contains("ERROR [SECURITY]"), "{}", err);
+        assert!(err.contains("github_pat"), "{}", err);
+        assert_eq!(
+            store.list("MyProj", None, None).await.unwrap().len(),
+            before,
+            "no follow-up (clean or otherwise) was spawned"
+        );
+        assert_eq!(status_of(&store, "MyProj", &id).await, Status::InProgress);
+    }
+
+    /// Task 6 fix round: bootstrap stores the caller-supplied
+    /// project_description as task metadata, so it is scanned before the
+    /// first task is inserted — a refusal creates nothing.
+    #[tokio::test]
+    async fn secret_in_bootstrap_description_is_refused() {
+        let store = temp_store().await;
+        let secret = scanner_fixture_token();
+        let reply = handle_bootstrap(
+            json!({
+                "namespace": "MyProj",
+                "project_root": "/tmp",
+                "project_description": format!("the token is {}", secret)
+            }),
+            emb(),
+            store.clone(),
+        )
+        .await;
+        assert!(reply.contains("ERROR [SECURITY]"), "got {}", reply);
+        assert!(reply.contains("github_pat"), "got {}", reply);
+        assert!(
+            !store
+                .list_namespaces()
+                .await
+                .unwrap()
+                .contains(&"MyProj".to_string()),
+            "the refused bootstrap created no namespace content"
+        );
+    }
+
+    /// Task 6 fix round: blocked_by entries are stored task metadata, so
+    /// a secret among them refuses the create like any other field.
+    #[tokio::test]
+    async fn secret_in_blocked_by_is_refused() {
+        let store = store_with_namespace("MyProj").await;
+        let before = store.list("MyProj", None, None).await.unwrap().len();
+        let secret = scanner_fixture_token();
+        let reply = handle_task_create(
+            json!({
+                "namespace": "MyProj",
+                "title": "an ordinary title",
+                "blocked_by": [secret]
+            }),
+            emb(),
+            store.clone(),
+        )
+        .await;
+        assert!(reply.contains("ERROR [SECURITY]"), "got {}", reply);
+        assert_eq!(
+            store.list("MyProj", None, None).await.unwrap().len(),
+            before,
+            "no refused create reached the store"
+        );
+    }
+
+    /// Task 6's false-positive pin: ordinary text passes every newly
+    /// scanned surface and lands exactly as it did before the coverage.
+    #[tokio::test]
+    async fn clean_content_passes_all_surfaces() {
+        let store = store_with_namespace("MyProj").await;
+        let id = create_task(&store, "MyProj", "write the quarterly report", 2).await;
+
+        // Task create (title + description + labels).
+        let reply = handle_task_create(
+            json!({
+                "namespace": "MyProj",
+                "title": "draft the release notes",
+                "description": "summarize the merged changes for the changelog",
+                "labels": ["docs", "release"]
+            }),
+            emb(),
+            store.clone(),
+        )
+        .await;
+        let parsed: Value = serde_json::from_str(&reply).expect("json reply");
+        assert!(parsed["id"].is_string(), "clean create stored: {}", reply);
+
+        // Task update (note).
+        let reply = handle_task_update(
+            json!({
+                "namespace": "MyProj",
+                "id": id,
+                "note": "outline finished, drafting next"
+            }),
+            emb(),
+            store.clone(),
+        )
+        .await;
+        let parsed: Value = serde_json::from_str(&reply).expect("json reply");
+        assert_eq!(parsed["status"], json!("open"));
+
+        // set_metadata (values) on a dedicated row.
+        store
+            .upsert(
+                "MyProj",
+                "clean-meta-row",
+                emb().embed("a plain fact").await.unwrap(),
+                MemoryPayload {
+                    content: "a plain fact".to_string(),
+                    user_id: "kenton".to_string(),
+                    memory_type: "fact".to_string(),
+                    agent_name: None,
+                    location: String::new(),
+                    location_lines: String::new(),
+                    metadata: json!({}),
+                },
+            )
+            .await
+            .expect("seed the row");
+        let outcome = crate::server::set_metadata(
+            &*store,
+            "MyProj",
+            "clean-meta-row",
+            json!({ "reviewer": "sam", "summary": "an ordinary progress note" }),
+        )
+        .await
+        .expect("clean metadata writes");
+        assert_eq!(outcome, crate::server::MetadataOutcome::Updated);
+        let (_, payload) = store
+            .get("MyProj", "clean-meta-row")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(payload.metadata["summary"], json!("an ordinary progress note"));
+
+        // Ingest (a clean document's extracted text).
+        store.init("clean-ingest").await.expect("create the schema");
+        let tmp = std::env::temp_dir().join(format!("ns-clean-ingest-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).expect("create temp dir");
+        std::fs::write(tmp.join("notes.rs"), "fn summarize() {}").expect("write test file");
+        let schema = crate::parser::schema::ParserSchema::load(include_str!("../schema.json"))
+            .expect("shipped schema parses");
+        let outcome = crate::parser::ingest::ingest_directory(
+            &tmp,
+            &schema,
+            emb(),
+            store.clone(),
+            "clean-ingest",
+            None,
+        )
+        .await;
+        assert!(outcome.is_ok(), "clean ingest succeeds: {:?}", outcome.err());
+        let file_id = crate::parser::ingest::qualified_id("clean-ingest", "notes.rs");
+        assert!(
+            store
+                .get("clean-ingest", &file_id)
+                .await
+                .expect("read back")
+                .is_some(),
+            "clean file node stored"
+        );
+        std::fs::remove_dir_all(&tmp).ok();
     }
 
     #[tokio::test]
@@ -5327,8 +6117,14 @@ mod tests {
     #[tokio::test]
     async fn bootstrap_creates_the_first_task_and_returns_the_instructions() {
         let store = temp_store().await;
+        // Keep the fixture isolated from sandbox-created mounts at `/tmp`;
+        // some environments expose a synthetic `/tmp/.git` directory.
+        let project_root = std::env::temp_dir().join(format!(
+            "neurostrata-bootstrap-non-git-{}",
+            uuid::Uuid::new_v4()
+        ));
         let reply = handle_bootstrap(
-            json!({ "namespace": "MyProj", "project_root": "/tmp" }),
+            json!({ "namespace": "MyProj", "project_root": project_root }),
             emb(),
             store.clone(),
         )
@@ -5452,6 +6248,21 @@ mod tests {
         assert!(reply.starts_with("ERROR [NAMESPACE]"), "{}", reply);
     }
 
+    #[tokio::test]
+    async fn site_refuses_illegal_namespace() {
+        // "bad ns" passes the old hand-rolled check (it has no slash, and
+        // the namespace-existence refusal is a different message); only the
+        // shared DR-1 validator refuses it as a namespace-shape violation.
+        let store = temp_store().await;
+        let reply = handle_task_create(
+            json!({ "namespace": "bad ns", "title": "a perfectly fine title" }),
+            emb(),
+            store,
+        )
+        .await;
+        assert!(reply.contains("ERROR [NAMESPACE]"), "{}", reply);
+    }
+
     // ── task_setup (sections 3.2 and 8) ─────────────────────────────────
 
     #[tokio::test]
@@ -5547,7 +6358,7 @@ mod tests {
         );
 
         // The tasks really exist, in creation order.
-        let rows = store.list("proj", None).await.unwrap();
+        let rows = store.list("proj", None, None).await.unwrap();
         let tasks: Vec<_> = rows
             .iter()
             .filter(|r| r.payload.memory_type == "task")
@@ -5566,7 +6377,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn setup_on_a_clean_project_suggests_the_plain_hook_and_no_conflicts() {
+    async fn setup_on_a_clean_project_suggests_the_plain_hook_and_flags_the_seeded_overlap() {
         let root = std::env::temp_dir().join(format!("ns-setup-clean-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(root.join(".git/hooks")).unwrap();
         std::fs::write(root.join("package.json"), "{}").unwrap();
@@ -5580,7 +6391,19 @@ mod tests {
         .await;
         let parsed: Value = serde_json::from_str(&reply).expect("json reply");
 
-        assert_eq!(parsed["conflicts"], json!([]));
+        // R16 made ARRAY_DISTANCE bind whole-number vectors (the stub
+        // embedder's), so the setup search now finds the seeded rule and the
+        // overlap is reported -- the binder working as intended, not a
+        // conflict-free project. Pre-R16 the query errored and setup
+        // swallowed it, so this expectation read as no conflicts.
+        let conflicts = parsed["conflicts"].as_array().expect("conflicts list");
+        assert_eq!(conflicts.len(), 1, "conflicts: {:?}", parsed["conflicts"]);
+        assert_eq!(conflicts[0]["kind"], json!("suggested_rule_overlap"));
+        assert_eq!(conflicts[0]["existing"], json!("always use podman"));
+        assert_eq!(
+            conflicts[0]["suggestion"],
+            json!("JavaScript/TypeScript project: install from the lockfile and keep the package scripts (test, lint) green before pushing.")
+        );
         assert_eq!(parsed["tasks_created"], json!([]));
         assert_eq!(
             parsed["instructions"][0]["cmd"],
@@ -5620,7 +6443,7 @@ mod tests {
             "the broken line is counted, not fatal"
         );
 
-        let rows = store.list("proj", None).await.unwrap();
+        let rows = store.list("proj", None, None).await.unwrap();
         let tasks: Vec<_> = rows
             .iter()
             .filter(|r| r.payload.memory_type == "task")
@@ -5685,7 +6508,7 @@ mod tests {
         assert_eq!(second.created, 0, "re-runs skip everything");
         assert_eq!(second.skipped_existing, 2);
 
-        let rows = store.list("proj", None).await.unwrap();
+        let rows = store.list("proj", None, None).await.unwrap();
         let tasks: Vec<_> = rows
             .iter()
             .filter(|r| r.payload.memory_type == "task")

@@ -7,7 +7,7 @@ use crate::judgment::laya_onnx::{LocalTrainingRuntime, ModelVersion};
 
 
 /// Training job state machine.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum TrainingJobState {
     WaitingForData,
@@ -73,10 +73,9 @@ impl Trainer {
 
     /// Run a training job for candidate version.
     pub async fn train_candidate(&self, version: &ModelVersion) -> Result<()> {
-        // Phase-0: no-op trainer. Real laya-train invocation via bridge contract
-        // is wired in Task 3.
+        // R10: Training is not implemented in this build.
         let _ = version;
-        Ok(())
+        Err(anyhow::anyhow!("training is not available in this build (Laya trainer not provisioned)"))
     }
 
     /// Transition job state (no-ops in Phase-0 stub).
@@ -104,10 +103,10 @@ mod tests {
     #[test]
     fn evaluation_report_default_fields() {
         let report = EvaluationReport {
-            candidate: "v0.0.0-bridge".to_string(),
+            candidate: "bridge-placeholder".to_string(),
             suites: vec![],
         };
-        assert_eq!(report.candidate, "v0.0.0-bridge");
+        assert_eq!(report.candidate, "bridge-placeholder");
         assert!(report.gold_metrics().is_none());
     }
 }

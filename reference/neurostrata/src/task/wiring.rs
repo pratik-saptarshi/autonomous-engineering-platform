@@ -74,8 +74,8 @@ pub const AUTOMATIC_WIRES: &[Wire] = &[
     Wire {
         id: "zero-action-start",
         runs_in: RunsIn::Core,
-        blocks: true,
-        reason: "no state-mutating action before a Goal exists and is claimed",
+        blocks: false,
+        reason: "no state-mutating action before a Goal exists and is claimed (advisory; no interception point for arbitrary actions)",
     },
     Wire {
         id: "single-daemon-lock",
@@ -163,6 +163,11 @@ pub const REMINDER_WIRES: &[Reminder] = &[
         id: "task-first",
         fires_on: "before-edit",
         text: "claim or create a Goal before editing; edits with no task close with no memory extracted",
+    },
+    Reminder {
+        id: "task-capture-on-intent",
+        fires_on: "during-work",
+        text: "when speech or a log entry contains a task-shaped statement (TODO:, 'later we need to', 'we should also', ...), capture it with neurostrata_task_create instead of letting it evaporate",
     },
 ];
 

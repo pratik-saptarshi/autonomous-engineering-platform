@@ -106,7 +106,7 @@ pub async fn process_mcp_request(
                 "tools": [
                     {
                         "name": "neurostrata_add_memory",
-                        "description": "Store an architectural rule, project pattern, or task insight.",
+                        "description": "Store an architectural rule, project pattern, or task insight. Task recognition: if the content contains a task-shaped statement (TODO:, 'we should also', 'later we need to', 'remaining work:', 'defer'/'deferred'), consider neurostrata_task_create instead of or in addition to storing it as a memory.",
                         "inputSchema": {
                             "type": "object",
                             "properties": {
@@ -243,7 +243,7 @@ pub async fn process_mcp_request(
                     },
                     {
                         "name": "neurostrata_task_create",
-                        "description": "Create a tracked unit of work. Zero-Action Start: no file edits before a task exists and is claimed by this session.",
+                        "description": "Create a tracked unit of work. Zero-Action Start: no file edits before a task exists and is claimed by this session. Task recognition: a statement of future/deferred work (TODO:, FIXME:, 'we should also', 'later we need to', 'remaining work:', 'defer'/'deferred') is a task, not a note — capture it here instead of letting it evaporate.",
                         "inputSchema": {
                             "type": "object",
                             "properties": {
@@ -329,6 +329,7 @@ pub async fn process_mcp_request(
                                     },
                                     "required": ["content"]
                                 },
+                                "follow_up_tasks": { "type": "array", "items": { "type": "object", "properties": { "title": { "type": "string" }, "description": { "type": "string" }, "task_type": { "type": "string", "enum": ["task", "bug", "feature", "epic"] }, "priority": { "type": "integer", "enum": [0,1,2,3,4] }, "labels": { "type": "array", "items": { "type": "string" } } }, "required": ["title"] }, "description": "Optional list of follow-up tasks to create after this task is done. Each becomes an open task with spawned_from=parent and a related_to edge." },
                                 "link_memory_id": { "type": "string", "description": "Bind an already-written memory to this task via EXTRACTED_FROM. Its vector is reused as-is; linking never re-embeds." }
                             },
                             "required": ["id", "namespace"]
@@ -436,7 +437,7 @@ pub async fn process_mcp_request(
                     },
                     {
                         "name": "neurostrata_archive_memory",
-                        "description": "Mark a memory as archived by writing a tombstone beside it. The row keeps its content, id and metadata; archived is merged in rather than replacing what was there. Metadata-only: no retrieval path filters on it yet, so an archived memory still appears in search_memory in 1.8.0.",
+                        "description": "Mark a memory as archived by writing a tombstone beside it. The row keeps its content, id and metadata; archived is merged in rather than replacing what it was there. Metadata-only: no retrieval path filters on it yet, so an archived memory still appears in search_memory in 1.8.0.",
                         "inputSchema": {
                             "type": "object",
                             "properties": {
@@ -444,6 +445,54 @@ pub async fn process_mcp_request(
                                 "namespace": { "type": "string", "description": "The exact project name (e.g., 'NeuroStrata') the memory lives in." }
                             },
                             "required": ["id", "namespace"]
+                        }
+                    },
+                    {
+                        "name": "neurostrata_task_intake",
+                        "description": "Submit text for durable task intake. Runs M2 lexical detection to find task-shaped statements, creates an immutable receipt (source_kind, source_revision, source_digest), and spawns candidate(s) with review_state=pending. Returns receipt and candidates. Explicit zeros when no candidates.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "namespace": { "type": "string", "description": "The exact project name (e.g., 'NeuroStrata')." },
+                                "source_kind": { "type": "string", "enum": ["conversation", "manual", "imported", "tool"], "description": "Origin of the intake. Defaults to conversation." },
+                                "source_revision": { "type": "string", "description": "Revision identifier (git commit, timestamp, etc.) for traceability." },
+                                "source_digest": { "type": "string", "description": "Content hash for idempotency; same digest = same receipt." },
+                                "text": { "type": "string", "description": "Raw text to analyze for task intents." },
+                                "title": { "type": "string", "description": "Optional explicit title (for manual intake)." },
+                                "description": { "type": "string", "description": "Optional explicit description (for manual intake)." }
+                            },
+                            "required": ["namespace", "source_revision", "source_digest", "text"]
+                        }
+                    },
+                    {
+                        "name": "neurostrata_task_intake_list",
+                        "description": "List intake receipts or candidates with filters and pagination. Always returns explicit zeros for count/total/offset/limit. Candidates are NOT in task_list, memory recall, graph export, or mesh.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "namespace": { "type": "string", "description": "The exact project name." },
+                                "mode": { "type": "string", "enum": ["receipts", "candidates"], "description": "What to list. Defaults to candidates." },
+                                "review_state": { "type": "string", "enum": ["pending", "in_review", "accepted", "dismissed"], "description": "Filter candidates by review state." },
+                                "disposition": { "type": "string", "enum": ["pending", "created", "linked", "dismissed"], "description": "Filter candidates by disposition." },
+                                "limit": { "type": "integer", "description": "Max items to return. Default 50." },
+                                "offset": { "type": "integer", "description": "Pagination offset. Default 0." }
+                            },
+                            "required": ["namespace"]
+                        }
+                    },
+                    {
+                        "name": "neurostrata_task_intake_resolve",
+                        "description": "Resolve a candidate with CAS (compare-and-swap). Disposition: created (spawns task), linked (attaches to existing task), dismissed. Requires cas_version for optimistic concurrency. Returns updated candidate and task_created flag.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "namespace": { "type": "string", "description": "The exact project name." },
+                                "candidate_id": { "type": "string", "description": "The candidate id to resolve." },
+                                "disposition": { "type": "string", "enum": ["created", "linked", "dismissed"], "description": "Resolution outcome." },
+                                "task_id": { "type": "string", "description": "Task id when disposition is created or linked." },
+                                "cas_version": { "type": "integer", "description": "Expected cas_version for optimistic concurrency." }
+                            },
+                            "required": ["namespace", "candidate_id", "disposition", "cas_version"]
                         }
                     }
                 ]
@@ -649,6 +698,27 @@ pub async fn process_mcp_request(
                             result_text =
                                 crate::task::handle_task_validate(arguments, store.clone()).await;
                         }
+                        "neurostrata_task_intake" => {
+                            result_text = crate::task::intake::handle_intake(
+                                arguments,
+                                store.clone(),
+                            )
+                            .await;
+                        }
+                        "neurostrata_task_intake_list" => {
+                            result_text = crate::task::intake::handle_intake_list(
+                                arguments,
+                                store.clone(),
+                            )
+                            .await;
+                        }
+                        "neurostrata_task_intake_resolve" => {
+                            result_text = crate::task::intake::handle_intake_resolve(
+                                arguments,
+                                store.clone(),
+                            )
+                            .await;
+                        }
                         "neurostrata_bootstrap" => {
                             result_text = crate::task::handle_bootstrap(
                                 arguments,
@@ -852,22 +922,51 @@ async fn answer_with_error(
     }
 }
 
+/// The proxy's HTTP client. It carries the daemon bearer token (read
+/// from the token file the daemon maintains) in its default headers:
+/// without it, every forwarded /mcp call is a 401 against the daemon's
+/// auth middleware -- the Task 1 F1 regression, in which the product's
+/// primary client surface went dark the moment the daemon learned to
+/// authenticate.
+fn proxy_client() -> reqwest::Client {
+    let mut headers = reqwest::header::HeaderMap::new();
+    if let Some(token) = crate::daemon::read_token_file("daemon.token") {
+        if let Ok(val) = reqwest::header::HeaderValue::from_str(&format!("Bearer {}", token)) {
+            headers.insert(reqwest::header::AUTHORIZATION, val);
+        }
+    }
+    reqwest::Client::builder()
+        // Separate from the overall bound on purpose. A port with nothing behind
+        // it hangs rather than refusing on this machine -- the same behaviour
+        // DaemonProbe in main.rs exists to describe -- so without this, a daemon
+        // that is not running is indistinguishable from one that is merely slow,
+        // and the wait is the whole timeout rather than a few seconds.
+        .default_headers(headers)
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(proxy_timeout())
+        .build()
+        .unwrap()
+}
+
+/// One forwarding attempt: POST the JSON-RPC request to the daemon's
+/// /mcp endpoint with the proxy client. The startup-wait loop in
+/// `start_mcp_proxy` retries this on connect errors while the daemon is
+/// still starting.
+async fn forward_mcp_request(
+    client: &reqwest::Client,
+    url: &str,
+    request: &Value,
+) -> reqwest::Result<reqwest::Response> {
+    client.post(url).json(request).send().await
+}
+
 pub async fn start_mcp_proxy(origin: DaemonOrigin) -> io::Result<()> {
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut reader = BufReader::new(stdin).lines();
     let mut writer = stdout;
 
-    let client = reqwest::Client::builder()
-        // Separate from the overall bound on purpose. A port with nothing behind
-        // it hangs rather than refusing on this machine -- the same behaviour
-        // DaemonProbe in main.rs exists to describe -- so without this, a daemon
-        // that is not running is indistinguishable from one that is merely slow,
-        // and the wait is the whole timeout rather than a few seconds.
-        .connect_timeout(std::time::Duration::from_secs(5))
-        .timeout(proxy_timeout())
-        .build()
-        .unwrap();
+    let client = proxy_client();
 
     // Whether anything has ever answered on the port. Until something has, a
     // daemon we spawned ourselves is presumed to be still starting; after it
@@ -906,11 +1005,8 @@ pub async fn start_mcp_proxy(origin: DaemonOrigin) -> io::Result<()> {
         // reports every tool as broken.
         let waiting_since = std::time::Instant::now();
         let response = loop {
-            let attempt = client
-                .post("http://127.0.0.1:34343/mcp")
-                .json(&request)
-                .send()
-                .await;
+            let attempt =
+                forward_mcp_request(&client, "http://127.0.0.1:34343/mcp", &request).await;
 
             let still_starting = should_wait_for_startup(
                 daemon_has_answered,
@@ -1192,9 +1288,28 @@ pub(crate) async fn embed_dedup_and_upsert(
                         .payload
                         .metadata
                         .get("extracted_from")
-                        .map(|v| !v.is_null())
+                        .and_then(|v| v.as_array())
+                        .map(|a| !a.is_empty())
                         .unwrap_or(false);
-                    if has_extracted {
+                    // An incoming memory that itself declares an extraction
+                    // (e.g. task_complete's inline lesson, or an add_memory
+                    // carrying extracted_from) is a link, not a duplicate: the
+                    // lesson still needs to land on the existing row. Blocking
+                    // it here would strand the task in Lock 2 (the task_complete
+                    // dedup trap). Only a bare content duplicate with no
+                    // extraction on either side is a true BlockedExact.
+                    let incoming_ids: Vec<String> = payload
+                        .metadata
+                        .get("extracted_from")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let incoming_has_extracted = !incoming_ids.is_empty();
+                    if has_extracted || incoming_has_extracted {
                         linked_existing_id = Some(ec.id.clone());
                         decision = DedupDecision::LinkedExisting;
                         // Update existing candidate's metadata idempotently:
@@ -1202,13 +1317,6 @@ pub(crate) async fn embed_dedup_and_upsert(
                         if let Ok(Some((existing_vec, mut existing_payload))) =
                             store.get(namespace, &ec.id).await
                         {
-                            // merge extracted_from from incoming
-                            let incoming_ids: Vec<String> = payload
-                                .metadata
-                                .get("extracted_from")
-                                .and_then(|v| v.as_array())
-                                .map(|arr| arr.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect())
-                                .unwrap_or_default();
                             let meta = existing_payload.metadata.as_object_mut();
                             if let Some(m) = meta {
                                 let arr = m
@@ -1229,6 +1337,12 @@ pub(crate) async fn embed_dedup_and_upsert(
                         }
                     } else {
                         decision = DedupDecision::BlockedExact;
+                        // Surface the candidate so callers (e.g. task_complete)
+                        // can fall back to link_memory_id instead of failing
+                        // opaquely on Lock 2.
+                        if linked_existing_id.is_none() {
+                            linked_existing_id = Some(ec.id.clone());
+                        }
                     }
                     // No new row for exact reuse / bare exact duplicate.
                     return Ok(MemoryWriteReport {
@@ -1346,8 +1460,8 @@ async fn handle_add_memory(
     let namespace = resolve_namespace(&store, namespace).await;
     let namespace = namespace.as_str();
 
-    if namespace.contains('/') || namespace.contains('\\') {
-        return "ERROR [NAMESPACE]: The namespace cannot be a file path. It must be the exact project name (e.g., 'NeuroStrata'). Do not use slashes.".to_string();
+    if let Err(e) = crate::domain::validate_namespace(namespace) {
+        return e;
     }
 
     if namespace != "global" {
@@ -1442,6 +1556,12 @@ async fn handle_add_memory(
         }
     }
     stamp_new_memory(&mut metadata);
+    // A procedure born on this node is locally authored: stamp it so the
+    // fire gate can tell authorship from import (Program Task 3). The
+    // stamp overwrites any caller-supplied trust value.
+    if memory_type == "procedure" {
+        crate::tools::procedure::stamp_local_trust(&mut metadata);
+    }
 
     // Honour an unambiguous Governs line in the prose (guinea-pig Option 2):
     // a declared pointer that is written but never honoured is the worst of
@@ -1569,6 +1689,17 @@ async fn handle_add_memory(
                         msg.push_str(&format!("\nRegistry warning: {}", warning));
                     }
                 }
+                // TASK NUDGE: advisory when a non-task/procedure memory's content
+                // carries task-shaped markers.
+                if memory_type != "task" && memory_type != "procedure" {
+                    let signals = crate::task::intent::detect_task_intents(content);
+                    if let Some(sig) = signals.first() {
+                        msg.push_str(&format!(
+                            "\nTASK NUDGE: content matched task-intent marker '{}' (\"{}\"). If this is tracked or follow-up work rather than a timeless rule/fact, record it via neurostrata_task_create (namespace: '{}').",
+                            sig.marker, sig.excerpt, namespace
+                        ));
+                    }
+                }
                 msg
             }
             Err(e) => e,
@@ -1636,7 +1767,7 @@ async fn handle_get_snapshot(
     let namespace = namespace.as_str();
 
     let mut all_memories = store
-        .list(namespace, None)
+        .list(namespace, None, None)
         .await
         .map_err(|_| "Failed to list memories or namespace does not exist.".to_string())?;
 
@@ -2500,7 +2631,7 @@ pub(crate) async fn resolve_namespace(store: &Arc<dyn VectorStore>, requested: &
                     let mut best_len = 0usize;
                     for candidate in &candidates {
                         let held = store
-                            .list(candidate, None)
+                            .list(candidate, None, None)
                             .await
                             .map(|m| m.len())
                             .unwrap_or(0);
@@ -2533,6 +2664,13 @@ pub(crate) enum MetadataOutcome {
     Ingested,
 }
 
+/// Secret scan over replacement metadata values, in the add_memory
+/// refusal shape. Setting metadata is a store write, so the values meet
+/// the same scanner before anything is read or written.
+fn scan_for_set_metadata(metadata: &serde_json::Value) -> Option<String> {
+    crate::secrets::scan_entry_point("", metadata, "set_metadata").map(|r| r.to_string())
+}
+
 /// Update metadata on an existing memory without changing its ID or content.
 ///
 /// This is the operator's surgical path for fixing metadata issues (like missing
@@ -2543,6 +2681,10 @@ pub(crate) async fn set_metadata(
     id: &str,
     new_metadata: serde_json::Value,
 ) -> anyhow::Result<MetadataOutcome> {
+    if let Some(rejection) = scan_for_set_metadata(&new_metadata) {
+        return Err(anyhow::anyhow!("{}", rejection));
+    }
+
     let (vector, mut payload) = match store.get(namespace, id).await? {
         Some(found) => found,
         None => return Ok(MetadataOutcome::NotFound),
@@ -2646,7 +2788,7 @@ fn render_anchor(anchor: &Value) -> String {
 
 /// One rendering of a memory, shared by search and get, so a record reads the
 /// same however the agent reached it.
-fn format_memory(id: &str, payload: &MemoryPayload) -> String {
+pub(crate) fn format_memory(id: &str, payload: &MemoryPayload) -> String {
     let mut out = format!("--- Memory ID: {} ---\nType: {}", id, payload.memory_type);
     if crate::attempt::is_failed_attempt(&payload.metadata) {
         let attempt = payload.metadata.get("attempt").unwrap();
@@ -2889,16 +3031,13 @@ async fn build_guard_validator(
         .get("namespace")
         .and_then(|v| v.as_str())
         .unwrap_or("global");
-    // Validate namespace shape the same way handle_get_memory does, so the
-    // guard surface inherits the same project-vs-path rejection contract.
-    if namespace.contains('/') || namespace.contains('\\') || namespace.is_empty() {
-        return Err(format!(
-            "ERROR [NAMESPACE]: '{}' is not a valid namespace for guard_{}. \
-             Namespaces are exact project names (e.g., 'NeuroStrata') or 'global'.",
-            namespace, what
-        ));
+    // Namespace shape is the shared validator's call (src/domain.rs, DR-1),
+    // so the guard surface inherits the same rejection contract as every
+    // other entry point.
+    if let Err(e) = crate::domain::validate_namespace(namespace) {
+        return Err(format!("{e} (guard_{what})"));
     }
-    let validator = GuardValidator::new(store, embedder, namespace);
+    let validator = GuardValidator::new(store, embedder, namespace).await;
     Ok((validator, namespace.to_string()))
 }
 
@@ -2925,10 +3064,51 @@ async fn handle_guard_validate(
         .unwrap_or(false);
 
     let (validator, namespace) =
-        match build_guard_validator(&arguments, store, embedder, "validate").await {
+        match build_guard_validator(&arguments, store.clone(), embedder, "validate").await {
             Ok(v) => v,
             Err(e) => return e,
         };
+
+    // Zero-Action Start (honest): in a task-enabled namespace, a mutating
+    // action requires at least one claimed (in_progress) task. Read-only
+    // actions and namespaces with no task rows at all are exempt.
+    let mutating = !matches!(
+        action_type.to_lowercase().as_str(),
+        "read" | "read_file" | "get" | "list" | "search" | "query" | "view" | "cat" | "inspect"
+    );
+    if mutating {
+        // Determine whether this namespace is task-enabled.
+        if let Ok(memories) = store.list(&namespace, None, None).await {
+            let has_any_task = memories.iter().any(|m| crate::task::gate::is_task(m));
+            if has_any_task {
+                let has_in_progress = memories
+                    .iter()
+                    .any(|m| crate::task::gate::is_task(m) && crate::task::gate::task_status(m) == crate::task::machine::Status::InProgress);
+                if !has_in_progress {
+                    let trace_id = format!(
+                        "guard-validate-{}-{}",
+                        std::process::id(),
+                        chrono::Utc::now().timestamp_millis()
+                    );
+                    let body = serde_json::json!({
+                        "trace_id": trace_id,
+                        "verdict": {
+                            "bucket": "DeterministicReject",
+                            "reasons": ["Zero-Action Start: no claimed (in_progress) task in this namespace. Claim or create a task before editing."],
+                            "constraints": []
+                        },
+                        "rule_ids_triggered": []
+                    });
+                    return format!(
+                        "namespace: {}\ntrace_id: {}\n{}",
+                        namespace,
+                        trace_id,
+                        serde_json::to_string_pretty(&body).unwrap_or_default()
+                    );
+                }
+            }
+        }
+    }
 
     let trace_id = format!(
         "guard-validate-{}-{}",
@@ -3074,8 +3254,8 @@ async fn handle_get_memory(arguments: Value, store: Arc<dyn VectorStore>) -> Str
     };
     let namespace = resolve_namespace(&store, namespace).await;
     let namespace = namespace.as_str();
-    if namespace.contains('/') || namespace.contains('\\') {
-        return "ERROR [NAMESPACE]: The namespace cannot be a file path. It must be the exact project name (e.g., 'NeuroStrata'). Do not use slashes.".to_string();
+    if let Err(e) = crate::domain::validate_namespace(namespace) {
+        return e;
     }
 
     match store.get(namespace, id).await {
@@ -3239,6 +3419,69 @@ mod tests {
     use super::*;
     use crate::events::{RecursionToken, ThalamicBus, ThalamicPulse};
     use crate::guard::testkit::MockStore;
+
+    /// Task 1 (F1/FM-2 regression): the stdio proxy's client must carry
+    /// the daemon bearer token, or every proxied MCP session is a 401
+    /// against the token-enforcing daemon -- the proxy is the product's
+    /// primary client surface. A recording stub stands in for the daemon
+    /// and captures the Authorization header of the forwarded request.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn proxy_forwards_the_daemon_bearer_token() {
+        use std::io::{BufRead, Read, Write};
+
+        // The token the daemon would have created and the proxy must read.
+        let expected = crate::daemon::load_or_create_daemon_token();
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let stub = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = std::io::BufReader::new(stream);
+            let mut auth = String::new();
+            let mut content_length = 0usize;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let trimmed = line.trim_end();
+                if trimmed.is_empty() {
+                    break;
+                }
+                let lower = trimmed.to_ascii_lowercase();
+                if lower.starts_with("authorization:") {
+                    // The value is compared exactly, so take it from the
+                    // original line -- only the name match is folded.
+                    auth = trimmed["authorization:".len()..].trim().to_string();
+                }
+                if let Some(v) = lower.strip_prefix("content-length:") {
+                    content_length = v.trim().parse().unwrap_or(0);
+                }
+            }
+            if content_length > 0 {
+                let mut body = vec![0u8; content_length];
+                reader.read_exact(&mut body).unwrap();
+            }
+            let response_body = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            );
+            reader.get_mut().write_all(response.as_bytes()).unwrap();
+            auth
+        });
+
+        let client = proxy_client();
+        let request = serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "ping"});
+        let url = format!("http://{addr}/mcp");
+        let resp = forward_mcp_request(&client, &url, &request).await.unwrap();
+        assert!(resp.status().is_success());
+        let auth = stub.join().unwrap();
+        assert_eq!(
+            auth,
+            format!("Bearer {expected}"),
+            "the proxy must forward the daemon bearer token"
+        );
+    }
 
     #[test]
     fn locations_preserve_opaque_source_context_without_interpreting_it() {
@@ -4374,7 +4617,7 @@ mod tests {
         assert!(added.starts_with("Successfully added memory"), "{}", added);
 
         let stored = store
-            .list("probe", None)
+            .list("probe", None, None)
             .await
             .expect("list")
             .into_iter()
@@ -4407,7 +4650,7 @@ mod tests {
         assert!(added.starts_with("Successfully added memory"), "{}", added);
 
         let stored = store
-            .list("probe", None)
+            .list("probe", None, None)
             .await
             .expect("list")
             .into_iter()
@@ -4438,7 +4681,7 @@ mod tests {
         assert!(added.starts_with("Successfully added memory"), "{}", added);
 
         let stored = store
-            .list("probe", None)
+            .list("probe", None, None)
             .await
             .expect("list")
             .into_iter()
@@ -4550,7 +4793,7 @@ mod tests {
         let boot = add_with_domain(&store, serde_json::json!("Auth"), None).await;
         assert!(boot.starts_with("Successfully added memory"), "{}", boot);
 
-        let before = store.list("probe", None).await.expect("list").len();
+        let before = store.list("probe", None, None).await.expect("list").len();
         let reply = add_with_domain(&store, serde_json::json!("storage"), None).await;
 
         assert!(reply.contains("ERROR [DOMAIN]"), "{}", reply);
@@ -4566,7 +4809,7 @@ mod tests {
         );
         assert!(reply.contains("register_domain: true"), "{}", reply);
 
-        let after = store.list("probe", None).await.expect("list");
+        let after = store.list("probe", None, None).await.expect("list");
         assert_eq!(after.len(), before, "a rejection writes nothing");
         assert!(
             after
@@ -4656,7 +4899,7 @@ mod tests {
         let store: Arc<dyn VectorStore> = Arc::new(MockStore::new());
         seed_row(&store, "probe", "the legacy rule").await;
 
-        let before = store.list("probe", None).await.expect("list").len();
+        let before = store.list("probe", None, None).await.expect("list").len();
         let reply = add_with_domain(&store, serde_json::json!(42), None).await;
 
         assert!(reply.contains("ERROR [DOMAIN]"), "{}", reply);
@@ -4671,7 +4914,7 @@ mod tests {
             reply
         );
         assert_eq!(
-            store.list("probe", None).await.expect("list").len(),
+            store.list("probe", None, None).await.expect("list").len(),
             before,
             "nothing is written"
         );
@@ -4686,7 +4929,7 @@ mod tests {
 
         assert!(reply.starts_with("Successfully added memory"), "{}", reply);
         let stored = store
-            .list("probe", None)
+            .list("probe", None, None)
             .await
             .expect("list")
             .into_iter()
@@ -5373,7 +5616,7 @@ mod tests {
         let (store, _) = store_with_one_rule("probe").await;
         let emb: Arc<dyn Embedder> = Arc::new(StubEmbedder);
 
-        let before = store.list("probe", None).await.unwrap().len();
+        let before = store.list("probe", None, None).await.unwrap().len();
 
         let reply = handle_add_memory(
             serde_json::json!({
@@ -5389,8 +5632,36 @@ mod tests {
         .await;
         assert!(reply.contains("ERROR [SECURITY]"), "got {}", reply);
 
-        let after = store.list("probe", None).await.unwrap().len();
+        let after = store.list("probe", None, None).await.unwrap().len();
         assert_eq!(before, after, "no memory should be stored after rejection");
+    }
+
+    // ── Secret rejection on set_metadata prevents the write (Task 6) ──
+
+    #[tokio::test]
+    async fn secret_in_set_metadata_is_refused() {
+        let (store, id) = store_with_one_rule("probe").await;
+        // Built at runtime so no secret-shaped literal sits in the source.
+        let secret = format!("ghp_{}", "Ab1".repeat(12));
+
+        let err = set_metadata(
+            &*store,
+            "probe",
+            &id,
+            serde_json::json!({ "note": format!("the token is {}", secret) }),
+        )
+        .await
+        .expect_err("a secret in replacement metadata must be refused");
+        let refused = err.to_string();
+        assert!(refused.contains("ERROR [SECURITY]"), "got {}", refused);
+        assert!(refused.contains("github_pat"), "got {}", refused);
+
+        let (_, payload) = store.get("probe", &id).await.unwrap().unwrap();
+        assert_eq!(
+            payload.metadata,
+            serde_json::json!({}),
+            "the refused write left the stored metadata untouched"
+        );
     }
 
     // ── Snapshot handler: fallible encoding (Task 2) ───────────────────
@@ -5716,7 +5987,7 @@ mod tests {
     /// Clients pin this list; a silent rename orphans their wiring.
     /// Keep in sync with the entries in `process_mcp_request` -> `"tools/list"`.
     #[tokio::test]
-    async fn tools_list_carries_all_twenty_seven_tools_in_a_stable_order() {
+    async fn tools_list_carries_all_thirty_tools_in_a_stable_order() {
         let (store, _) = store_with_one_rule("probe").await;
         let ingests = Arc::new(crate::ingest_jobs::IngestJobs::new());
         let request = JsonRpcRequest {
@@ -5759,6 +6030,9 @@ mod tests {
                 "neurostrata_guard_learn",
                 "neurostrata_guard_list_rules",
                 "neurostrata_archive_memory",
+                "neurostrata_task_intake",
+                "neurostrata_task_intake_list",
+                "neurostrata_task_intake_resolve",
                 // SynapticMesh: appended by `tools.extend(synaptic_mesh_tool
                 // _definitions())` — this order IS the append order, so it
                 // pins where the mesh module's list enters the surface.
@@ -5908,7 +6182,7 @@ mod tests {
         assert!(added.starts_with("Successfully added memory"), "{}", added);
 
         let stored = store
-            .list("probe", None)
+            .list("probe", None, None)
             .await
             .expect("list")
             .into_iter()
@@ -6098,7 +6372,7 @@ mod tests {
                 // The id is the store's, not a fresh uuid: the whole point of
                 // the pulse is that a subscriber can read that row back.
                 let stored: Vec<String> = store
-                    .list("probe", None)
+                    .list("probe", None, None)
                     .await
                     .expect("list")
                     .into_iter()
@@ -6109,6 +6383,97 @@ mod tests {
             }
             other => panic!("expected Created, got {:?}", other),
         }
+    }
+
+    /// Program Task 3 (a): a procedure created through add_memory is
+    /// stamped trust="local" at creation — a caller-supplied trust value
+    /// is overwritten, because local authorship is a fact about the
+    /// write path, not a claim the caller gets to make. The stamped row
+    /// fires through the gate; a non-procedure row gains no trust key.
+    #[tokio::test]
+    async fn locally_created_procedure_carries_local_stamp() {
+        let (store, _) = store_with_one_rule("probe").await;
+        let (bus, _seen) = recording_bus();
+
+        let reply = handle_add_memory(
+            serde_json::json!({
+                "content": "rehearse the release checklist",
+                "namespace": "probe",
+                "memory_type": "procedure",
+                "metadata": {
+                    "trust": "untrusted",
+                    "trigger": "session-start",
+                    "remaining_fires": 2
+                }
+            }),
+            Arc::new(StubEmbedder),
+            store.clone(),
+            None,
+            bus.clone(),
+        )
+        .await;
+        assert!(
+            reply.starts_with("Successfully added memory"),
+            "{reply}"
+        );
+
+        let rows = store.list("probe", None, None).await.expect("list");
+        let proc_row = rows
+            .iter()
+            .find(|r| r.payload.memory_type == "procedure")
+            .expect("the procedure row was stored");
+        assert_eq!(
+            proc_row.payload.metadata["trust"],
+            serde_json::json!("local"),
+            "creation stamps local authorship over the caller's claim: {:?}",
+            proc_row.payload.metadata
+        );
+
+        let root =
+            std::env::temp_dir().join(format!("ns-task3-local-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("scratch root");
+        let outcome_text = crate::tools::procedure::handle_procedure_perform(
+            serde_json::json!({
+                "id": proc_row.id,
+                "project_root": root.display().to_string()
+            }),
+            store.clone(),
+        )
+        .await;
+        let outcome: Value = serde_json::from_str(&outcome_text).expect("perform returns JSON");
+        assert_eq!(
+            outcome["performed"],
+            serde_json::json!(true),
+            "a locally created procedure fires: {outcome}"
+        );
+
+        let reply = handle_add_memory(
+            serde_json::json!({
+                "content": "a plain local rule about stamping",
+                "namespace": "probe",
+                "memory_type": "rule",
+                "metadata": {}
+            }),
+            Arc::new(StubEmbedder),
+            store.clone(),
+            None,
+            bus,
+        )
+        .await;
+        assert!(
+            reply.starts_with("Successfully added memory"),
+            "{reply}"
+        );
+        let rows = store.list("probe", None, None).await.expect("list");
+        let rule_row = rows
+            .iter()
+            .find(|r| r.payload.content == "a plain local rule about stamping")
+            .expect("the rule row was stored");
+        assert!(
+            rule_row.payload.metadata.get("trust").is_none(),
+            "non-procedure rows gain no trust stamp: {:?}",
+            rule_row.payload.metadata
+        );
     }
 
     /// Emit site 2: a correction is two rows moving, and the pulse has to name
@@ -7389,7 +7754,7 @@ mod tests {
         }
 
         let before: Vec<(String, i64)> = store
-            .list("probe", None)
+            .list("probe", None, None)
             .await
             .unwrap()
             .iter()
@@ -7409,7 +7774,7 @@ mod tests {
             .expect("snapshot");
 
         let after: Vec<(String, i64)> = store
-            .list("probe", None)
+            .list("probe", None, None)
             .await
             .unwrap()
             .iter()
@@ -7608,6 +7973,53 @@ mod tests {
             .as_u64()
             .unwrap();
         assert_eq!(after, before + 1);
+    }
+
+    // ── Task 8: the three server.rs namespace sites refuse illegal names ──
+    // Each test drives a namespace that is legal under the old hand-rolled
+    // checks (no '/', no '\\', non-empty) but illegal under DR-1 (it carries
+    // a space), so the refusal can only come from the shared validator.
+
+    #[tokio::test]
+    async fn site_refuses_illegal_namespace_add_memory() {
+        let (store, _) = store_with_one_rule("probe").await;
+        let reply = handle_add_memory(
+            serde_json::json!({ "content": "a fact", "namespace": "bad ns" }),
+            Arc::new(StubEmbedder),
+            store,
+            None,
+            quiet_bus(),
+        )
+        .await;
+        assert!(reply.contains("ERROR [NAMESPACE]"), "{}", reply);
+        assert!(reply.contains("bad ns"), "{}", reply);
+    }
+
+    #[tokio::test]
+    async fn site_refuses_illegal_namespace_guard() {
+        let (store, _) = store_with_one_rule("probe").await;
+        let result = build_guard_validator(
+            &serde_json::json!({ "namespace": "bad ns" }),
+            store,
+            Arc::new(StubEmbedder),
+            "validate",
+        )
+        .await;
+        match result {
+            Ok(_) => panic!("a namespace with a space must be refused"),
+            Err(e) => assert!(e.contains("ERROR [NAMESPACE]"), "{}", e),
+        }
+    }
+
+    #[tokio::test]
+    async fn site_refuses_illegal_namespace_get_memory() {
+        let (store, _) = store_with_one_rule("probe").await;
+        let reply = handle_get_memory(
+            serde_json::json!({ "id": "x", "namespace": "bad ns" }),
+            store,
+        )
+        .await;
+        assert!(reply.contains("ERROR [NAMESPACE]"), "{}", reply);
     }
 
 }

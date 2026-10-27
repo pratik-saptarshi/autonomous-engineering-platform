@@ -6,6 +6,34 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
+/// Trait for downcasting VectorStore to concrete implementations.
+pub trait AsAny {
+    fn as_any(&self) -> &dyn std::any::Any;
+}
+
+/// Namespace prefix reserved for unpublished ingestion generations.
+pub const INTERNAL_INGEST_STAGE_PREFIX: &str = "__neurostrata_ingest_stage__";
+
+/// Reject every user-selected ingest destination in the internal namespace,
+/// including malformed or partial generation names.
+pub fn is_reserved_ingest_destination(namespace: &str) -> bool {
+    namespace.starts_with(INTERNAL_INGEST_STAGE_PREFIX)
+}
+
+/// Recognizes only the current UUID-shaped internal stage identifier. Older
+/// names based only on a `-ingest-stage-` suffix are ambiguous with user-owned
+/// namespaces and must never authorize hiding or deletion.
+pub fn is_internal_ingest_stage_namespace(namespace: &str) -> bool {
+    namespace
+        .strip_prefix(INTERNAL_INGEST_STAGE_PREFIX)
+        .and_then(|generation| uuid::Uuid::parse_str(generation).ok())
+        .is_some_and(|generation| {
+            namespace
+                .strip_prefix(INTERNAL_INGEST_STAGE_PREFIX)
+                .is_some_and(|raw| generation.to_string() == raw)
+        })
+}
+
 /// The shipped vocabulary schema, embedded at compile time. v2 adds the
 /// `task` memory type and the EXTRACTED_FROM relation that carries the
 /// extraction edge behind the completion gate (Lock 2).
@@ -99,8 +127,7 @@ pub struct SearchEvidence {
 /// so they cannot drift.
 pub fn is_direct_match(evidence: &Option<Vec<SearchEvidence>>) -> bool {
     evidence.as_ref().map_or(false, |evs| {
-        evs.iter()
-            .any(|e| e.kind == EvidenceKind::DirectMatch)
+        evs.iter().any(|e| e.kind == EvidenceKind::DirectMatch)
     })
 }
 
@@ -119,6 +146,9 @@ pub enum DomainMatchMode {
 pub struct DomainSearchOutcome {
     pub results: Vec<SearchResult>,
     pub mode: DomainMatchMode,
+    /// Set true when the FETCH_MULTIPLIER budget was exhausted and more
+    /// candidates remain — callers must paginate to avoid losing matches.
+    pub incomplete: bool,
 }
 
 /// What an attempt to move a memory between namespaces found.
@@ -150,6 +180,19 @@ pub trait Embedder: Send + Sync {
     /// for test stubs; production embedders override with a real id.
     fn embedder_id(&self) -> &str {
         "unknown"
+    }
+
+    /// Lock-free snapshot of whether this embedder's local session is
+    /// currently loaded, for status surfaces: `Some(true)`/`Some(false)`
+    /// when that is readable without touching the session, `None` when
+    /// there is no local session state to report. Implementations must
+    /// never load, reload, or touch the session to answer, and must
+    /// never reset any idle clock -- read a snapshot field only (Spec
+    /// GT-7). Defaults to `None`; `RemoteEmbedder` no-ops by inheriting
+    /// the default, and local embedders with an unloadable session
+    /// override it.
+    fn session_loaded_snapshot(&self) -> Option<bool> {
+        None
     }
 }
 
@@ -208,9 +251,12 @@ pub struct RawDistanceQuery {
 /// By making this a trait, we can swap between Embedded Qdrant,
 /// Remote Qdrant, LadybugDB, or SQLite-VSS.
 #[async_trait]
-pub trait VectorStore: Send + Sync {
+pub trait VectorStore: Send + Sync + AsAny {
     /// Ensure the necessary collections/tables exist.
     async fn init(&self, namespace: &str) -> Result<()>;
+
+    /// Downcast support for store-specific capabilities (e.g., IntakeStore).
+    fn as_any(&self) -> &dyn std::any::Any;
 
     /// Insert or update a memory with its associated vector and metadata.
     async fn upsert(
@@ -265,6 +311,20 @@ pub trait VectorStore: Send + Sync {
     /// symbols and the directory/file nodes, which ingestion then rebuilds.
     async fn clear_ingested(&self, namespace: &str) -> Result<()>;
 
+    /// Start an unpublished generation and recover orphaned generations left
+    /// by prior interrupted ingests. The returned guard must be held until the
+    /// generation is either published or discarded.
+    async fn begin_ingest_stage(&self, _namespace: &str) -> Result<Box<dyn Send>> {
+        Ok(Box::new(()))
+    }
+
+    /// Atomically replace the namespace's ingested rows with a fully prepared
+    /// generation and restore all declared edges before it becomes visible.
+    /// Backends without transactional publication must reject the operation.
+    async fn publish_ingested(&self, _namespace: &str, _staged_namespace: &str) -> Result<usize> {
+        anyhow::bail!("this vector store does not support atomic ingest publication")
+    }
+
     /// Rebuilds the edges a namespace's memories declare, and reports how many
     /// were materialised.
     ///
@@ -275,8 +335,10 @@ pub trait VectorStore: Send + Sync {
     /// until something replays them (bead neurostrata-sij).
     async fn relink_edges(&self, namespace: &str) -> Result<usize>;
 
-    /// List all memories
-    async fn list(&self, namespace: &str, user_id: Option<&str>) -> Result<Vec<SearchResult>>;
+    /// List all memories, optionally filtered by user_id and/or memory_type.
+    /// Pushing filters into the query (rather than filtering in Rust) avoids
+    /// deserialising every row in large namespaces (R15).
+    async fn list(&self, namespace: &str, user_id: Option<&str>, memory_type: Option<&str>) -> Result<Vec<SearchResult>>;
 
     /// Get a specific memory by its ID, returning its vector and payload
     async fn get(&self, namespace: &str, id: &str) -> Result<Option<(Vec<f32>, MemoryPayload)>>;
@@ -326,6 +388,7 @@ pub trait VectorStore: Send + Sync {
         Ok(DomainSearchOutcome {
             results,
             mode: DomainMatchMode::Vector,
+            incomplete: false,
         })
     }
 
@@ -355,6 +418,49 @@ pub trait VectorStore: Send + Sync {
     }
 }
 
+/// Trait for durable task intake ledger operations (PQTH).
+/// Separate from VectorStore because intake uses operational tables, not memory rows.
+#[async_trait::async_trait]
+pub trait IntakeStore: Send + Sync {
+    /// Create intake receipt and candidate(s) atomically.
+    async fn create_receipt(
+        &self,
+        request: crate::task::intake::CreateReceiptRequest,
+    ) -> Result<crate::task::intake::CreateReceiptResult, String>;
+
+    /// List receipts with pagination.
+    async fn list_receipts(
+        &self,
+        request: crate::task::intake::ListReceiptsRequest,
+    ) -> Result<crate::task::intake::IntakeListResponse<crate::task::intake::IntakeReceipt>, String>;
+
+    /// List candidates with filters and pagination.
+    async fn list_candidates(
+        &self,
+        request: crate::task::intake::ListCandidatesRequest,
+    ) -> Result<crate::task::intake::IntakeListResponse<crate::task::intake::IntakeCandidate>, String>;
+
+    /// Resolve a candidate with CAS (atomic compare-and-swap).
+    async fn resolve_candidate(
+        &self,
+        request: crate::task::intake::ResolveCandidateRequest,
+    ) -> Result<crate::task::intake::ResolveCandidateResult, String>;
+
+    /// Get a single receipt by ID.
+    async fn get_receipt(
+        &self,
+        namespace: &str,
+        id: &str,
+    ) -> Result<Option<crate::task::intake::IntakeReceipt>, String>;
+
+    /// Get a single candidate by ID.
+    async fn get_candidate(
+        &self,
+        namespace: &str,
+        id: &str,
+    ) -> Result<Option<crate::task::intake::IntakeCandidate>, String>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -366,9 +472,9 @@ mod tests {
     /// keeps every relation as it was; v5 adds the fact `topology` field,
     /// which is a field and not a relation; v6 adds the fact `attempt` and `domain_registry` fields.
     #[test]
-    fn memory_vocabulary_v6_parses_and_has_exact_relations() {
+    fn memory_vocabulary_v7_parses_and_has_exact_relations() {
         let v = memory_vocabulary();
-        assert_eq!(v["vocabulary_version"], 6);
+        assert_eq!(v["vocabulary_version"], 7);
         let rels = v["relations"].as_object().unwrap();
         assert!(rels.contains_key("GOVERNS"));
         assert!(rels.contains_key("CONTAINS"));

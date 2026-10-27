@@ -18,7 +18,7 @@ use tokio::sync::watch;
 
 use crate::parser::ingest::IngestObserver;
 use crate::parser::schema::ParserSchema;
-use crate::traits::{Embedder, VectorStore};
+use crate::traits::{is_reserved_ingest_destination, Embedder, VectorStore};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -41,6 +41,11 @@ pub struct IngestProgress {
     pub symbols_ingested: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_file: Option<String>,
+    /// Documents the secret scanner refused during this walk, as
+    /// "path: reason" entries. A skipped document contributes nothing to
+    /// the store; the rest of the walk proceeds.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub skipped_files: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub relinked_edges: Option<usize>,
     pub started_unix: u64,
@@ -58,6 +63,7 @@ impl IngestProgress {
             files_ingested: 0,
             symbols_ingested: 0,
             last_file: None,
+            skipped_files: Vec::new(),
             relinked_edges: None,
             started_unix: now_unix(),
             finished_unix: None,
@@ -89,6 +95,12 @@ impl IngestObserver for ProgressReporter {
     fn relinked(&self, edges: usize) {
         self.tx
             .send_modify(|progress| progress.relinked_edges = Some(edges));
+    }
+
+    fn file_skipped(&self, path: &str, reason: &str) {
+        self.tx.send_modify(|progress| {
+            progress.skipped_files.push(format!("{}: {}", path, reason));
+        });
     }
 }
 
@@ -154,6 +166,9 @@ impl IngestJobs {
         embedder: Arc<dyn Embedder>,
         vector_store: Arc<dyn VectorStore>,
     ) -> anyhow::Result<IngestProgress> {
+        if is_reserved_ingest_destination(namespace) {
+            anyhow::bail!("ingest destination uses the reserved internal staging namespace");
+        }
         // Canonicalize the incoming root before acquiring the jobs registry
         // mutex. NFS mounts or slow filesystems would stall every other job
         // if this happened inside the critical section.
@@ -320,6 +335,34 @@ mod tests {
         assert_eq!(progress.relinked_edges, Some(20));
     }
 
+    /// A skipped document is part of the job result a caller reads, so the
+    /// reporter accumulates skips into the progress alongside the counts.
+    /// (Pin for the Task 6 plumbing: passes before the producer learns to
+    /// skip, and guards the reporting leg afterwards.)
+    #[test]
+    fn progress_records_skipped_files() {
+        let (tx, rx) = watch::channel(progress(IngestState::Running));
+        let reporter = ProgressReporter { tx };
+
+        reporter.file_skipped(
+            "src/evil.rs",
+            "ERROR [SECURITY]: Rejected ingest.content (github_pat). Do not store secrets.",
+        );
+
+        let progress = rx.borrow();
+        assert_eq!(progress.skipped_files.len(), 1);
+        assert!(
+            progress.skipped_files[0].starts_with("src/evil.rs"),
+            "{}",
+            progress.skipped_files[0]
+        );
+        assert!(
+            progress.skipped_files[0].contains("github_pat"),
+            "{}",
+            progress.skipped_files[0]
+        );
+    }
+
     #[tokio::test]
     async fn shutdown_waits_for_a_running_walk_but_not_past_its_limit() {
         let jobs = IngestJobs::new();
@@ -340,6 +383,28 @@ mod tests {
             "and is waited for until it finishes"
         );
         finish.await.expect("the walk reports its end");
+    }
+
+    #[tokio::test]
+    async fn reserved_destination_is_rejected_before_directory_or_job_registry_work() {
+        let jobs = Arc::new(IngestJobs::new());
+        let store: Arc<dyn VectorStore> = Arc::new(crate::guard::testkit::MockStore::new());
+        let embedder: Arc<dyn Embedder> = Arc::new(crate::guard::testkit::StubEmbedder);
+        let schema = ParserSchema::load(include_str!("schema.json")).unwrap();
+        let error = jobs
+            .run(
+                "__neurostrata_ingest_stage__malformed",
+                "/path/that/does/not/exist",
+                schema,
+                embedder,
+                store,
+            )
+            .await
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("reserved internal staging namespace"));
+        assert!(jobs.jobs.lock().unwrap().is_empty());
     }
 
     #[test]
