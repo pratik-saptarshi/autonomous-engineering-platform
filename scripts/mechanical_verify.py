@@ -772,38 +772,87 @@ def _is_real_file(path: Path) -> bool:
     return not path.is_symlink() and path.is_file()
 
 
+# pytest's inifile candidates, in the precedence order of
+# _pytest.config.findpaths.locate_config (pytest 9.0.3).
+_PYTEST_CONFIG_CANDIDATES = (
+    "pytest.toml",
+    ".pytest.toml",
+    "pytest.ini",
+    ".pytest.ini",
+    "pyproject.toml",
+    "tox.ini",
+    "setup.cfg",
+)
+
+# Candidates pytest treats as a config source on existence alone
+# (findpaths.load_config_dict_from_file): pytest.ini/.pytest.ini
+# are sources even when empty, and pytest.toml/.pytest.toml even
+# without a [pytest] table. The remaining candidates qualify
+# only with content: pyproject.toml needs a [tool.pytest] table
+# with keys of its own or a [tool.pytest.ini_options] table,
+# tox.ini a [pytest] section, setup.cfg a [tool:pytest] section.
+_PYTEST_CONFIG_ALWAYS = frozenset(
+    ("pytest.toml", ".pytest.toml", "pytest.ini", ".pytest.ini")
+)
+
+
+def _pyproject_config_qualifies(text: str) -> bool:
+    """Whether a pyproject.toml's text makes it pytest's inifile:
+    a [tool.pytest.ini_options] table, or a [tool.pytest] table
+    carrying at least one key of its own (an empty [tool.pytest]
+    table — no keys, no ini_options — does not qualify during
+    pytest's scan)."""
+    if "[tool.pytest.ini_options]" in text:
+        return True
+    in_table = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("["):
+            in_table = stripped.startswith("[tool.pytest]")
+            continue
+        if in_table and "=" in stripped and not stripped.startswith("#"):
+            return True
+    return False
+
+
 def _pytest_config_selected(root: Path) -> Path | None:
     """The config file pytest would read at *root*, following
-    pytest's inifile precedence — pytest.ini, then pyproject.toml
-    holding [tool.pytest.ini_options], then setup.cfg holding
-    [tool:pytest] — or None when no candidate qualifies. Only
-    real files are read: a symlink candidate is reported at its
-    precedence position without being read, because whether
-    pytest would honour it depends on the unbound target's
-    contents."""
-    pytest_ini = root / "pytest.ini"
-    if pytest_ini.is_file():
-        return pytest_ini
-    pyproject = root / "pyproject.toml"
-    if pyproject.is_file():
-        if pyproject.is_symlink():
-            return pyproject
+    the inifile precedence of
+    _pytest.config.findpaths.locate_config (pytest 9) —
+    pytest.toml, .pytest.toml, pytest.ini, .pytest.ini,
+    pyproject.toml, tox.ini, setup.cfg — with pytest's per-name
+    content conditions (see _PYTEST_CONFIG_ALWAYS,
+    _pyproject_config_qualifies; tox.ini needs a [pytest]
+    section, setup.cfg a [tool:pytest] section), or None when no
+    candidate qualifies. Only real files are read: a symlink
+    candidate is reported at its precedence position without
+    being read. That is deliberately conservative — whether
+    pytest would honour the link depends on the unbound target's
+    contents, so the walk treats the link as the selected config
+    and the leg is insulated (see _pytest_argv);
+    over-insulation is the safe direction. Among real files the
+    walk's selection matches pytest's."""
+    for name in _PYTEST_CONFIG_CANDIDATES:
+        candidate = root / name
+        if not candidate.is_file():
+            continue
+        if candidate.is_symlink():
+            return candidate
+        if name in _PYTEST_CONFIG_ALWAYS:
+            return candidate
         try:
-            text = pyproject.read_text(encoding="utf-8", errors="ignore")
+            text = candidate.read_text(encoding="utf-8", errors="ignore")
         except OSError:
-            return pyproject
-        if "[tool.pytest.ini_options]" in text:
-            return pyproject
-    setup_cfg = root / "setup.cfg"
-    if setup_cfg.is_file():
-        if setup_cfg.is_symlink():
-            return setup_cfg
-        try:
-            text = setup_cfg.read_text(encoding="utf-8", errors="ignore")
-        except OSError:
-            return setup_cfg
-        if "[tool:pytest]" in text:
-            return setup_cfg
+            return candidate
+        if name == "pyproject.toml":
+            if _pyproject_config_qualifies(text):
+                return candidate
+        elif name == "tox.ini":
+            if "[pytest]" in text:
+                return candidate
+        elif name == "setup.cfg":
+            if "[tool:pytest]" in text:
+                return candidate
     return None
 
 
@@ -830,6 +879,15 @@ def discover_verification_commands(root: Path) -> tuple[VerificationCommand, ...
     # trigger the bare pytest leg; and when that leg is scheduled
     # by other evidence, its argv pins an empty config if the
     # config pytest would read is a symlink (see _pytest_argv).
+    # The pytest config names are pytest's full inifile candidate
+    # set — pytest.toml, .pytest.toml, pytest.ini, .pytest.ini,
+    # pyproject.toml, tox.ini, setup.cfg (the precedence order
+    # and per-name content conditions of
+    # _pytest.config.findpaths in pytest 9; see
+    # _PYTEST_CONFIG_CANDIDATES and _pytest_config_selected,
+    # whose walk treats a symlink candidate as selected at its
+    # position without reading it — deliberately conservative,
+    # since over-insulation is the safe direction).
     # The caller-selected root itself may be a symlink — it is
     # the boundary the binding canonicalizes; every check below
     # applies to entries under it.
@@ -873,9 +931,10 @@ def discover_verification_commands(root: Path) -> tuple[VerificationCommand, ...
 
     # 4. Python markers.
     if (
-        _is_real_file(root / "pytest.ini")
-        or _is_real_file(root / "pyproject.toml")
-        or _is_real_file(root / "setup.cfg")
+        any(
+            _is_real_file(root / name)
+            for name in _PYTEST_CONFIG_CANDIDATES
+        )
         or (root / "tests").exists()
     ):
         add(

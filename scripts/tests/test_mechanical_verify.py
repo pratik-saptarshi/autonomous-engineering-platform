@@ -440,6 +440,265 @@ class DiscoveryTests(unittest.TestCase):
                 commands[0].argv, mechanical_verify.PYTEST_ARGV
             )
 
+    # Round 2 (#63, #64): the candidate set is pytest's FULL
+    # inifile list — pytest.toml, .pytest.toml, pytest.ini,
+    # .pytest.ini, pyproject.toml, tox.ini, setup.cfg, in the
+    # precedence order of _pytest.config.findpaths.locate_config
+    # (pytest 9). Round 1 covered only pytest.ini, pyproject.toml,
+    # setup.cfg; symlinked pytest.toml and tox.ini demonstrably
+    # steered a sealed run through the gap.
+
+    _ADDED_CONFIG_CONTENTS = {
+        "pytest.toml": "[pytest]\n",
+        ".pytest.toml": "[pytest]\n",
+        ".pytest.ini": "[pytest]\n",
+        "tox.ini": "[pytest]\n",
+    }
+
+    def test_symlinked_added_pytest_configs_discover_nothing(self):
+        for name, text in self._ADDED_CONFIG_CONTENTS.items():
+            with self.subTest(config=name):
+                with tempfile.TemporaryDirectory() as tmp:
+                    base = Path(tmp)
+                    root = base / "root"
+                    root.mkdir()
+                    external = write(base, f"external/{name}", text)
+                    os.symlink(external, root / name)
+                    ids = [
+                        c.id for c in discover_verification_commands(root)
+                    ]
+                    self.assertNotIn("pytest", ids)
+
+    def test_real_added_pytest_configs_trigger_the_leg(self):
+        for name, text in self._ADDED_CONFIG_CONTENTS.items():
+            with self.subTest(config=name):
+                with tempfile.TemporaryDirectory() as tmp:
+                    base = Path(tmp)
+                    root = base / "root"
+                    root.mkdir()
+                    write(root, name, text)
+                    ids = [
+                        c.id for c in discover_verification_commands(root)
+                    ]
+                    self.assertEqual(ids, ["pytest"])
+
+    def test_symlinked_added_pytest_configs_insulate_tests_dir_leg(
+        self,
+    ):
+        for name, text in self._ADDED_CONFIG_CONTENTS.items():
+            with self.subTest(config=name):
+                with tempfile.TemporaryDirectory() as tmp:
+                    base = Path(tmp)
+                    root = base / "root"
+                    (root / "tests").mkdir(parents=True)
+                    external = write(base, f"external/{name}", text)
+                    os.symlink(external, root / name)
+                    commands = discover_verification_commands(root)
+                    self.assertEqual([c.id for c in commands], ["pytest"])
+                    self.assertIn("-c", commands[0].argv)
+                    self.assertIn(os.devnull, commands[0].argv)
+
+    def test_real_added_pytest_configs_behave_as_before(self):
+        # Real files with qualifying content are the config pytest
+        # reads: the argv is the unmodified PYTEST_ARGV.
+        for name, text in self._ADDED_CONFIG_CONTENTS.items():
+            with self.subTest(config=name):
+                with tempfile.TemporaryDirectory() as tmp:
+                    base = Path(tmp)
+                    root = base / "root"
+                    (root / "tests").mkdir(parents=True)
+                    write(root, name, text)
+                    commands = discover_verification_commands(root)
+                    self.assertEqual([c.id for c in commands], ["pytest"])
+                    self.assertEqual(
+                        commands[0].argv, mechanical_verify.PYTEST_ARGV
+                    )
+
+    def test_real_pytest_toml_wins_over_symlinked_pytest_ini(self):
+        # pytest.toml outranks pytest.ini and is a config source
+        # even when empty; the real file is selected, so the
+        # symlinked pytest.ini is never read and the leg is NOT
+        # insulated.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            (root / "tests").mkdir(parents=True)
+            write(root, "pytest.toml", "")
+            external = write(base, "external/pytest.ini", "[pytest]\n")
+            os.symlink(external, root / "pytest.ini")
+            commands = discover_verification_commands(root)
+            self.assertEqual([c.id for c in commands], ["pytest"])
+            self.assertEqual(
+                commands[0].argv, mechanical_verify.PYTEST_ARGV
+            )
+
+    def test_real_tox_ini_wins_over_symlinked_setup_cfg(self):
+        # A real tox.ini holding [pytest] outranks setup.cfg; the
+        # symlinked setup.cfg is never read.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            (root / "tests").mkdir(parents=True)
+            write(root, "tox.ini", "[pytest]\n")
+            external = write(base, "external/setup.cfg", "[tool:pytest]\n")
+            os.symlink(external, root / "setup.cfg")
+            commands = discover_verification_commands(root)
+            self.assertEqual([c.id for c in commands], ["pytest"])
+            self.assertEqual(
+                commands[0].argv, mechanical_verify.PYTEST_ARGV
+            )
+
+    def test_sectionless_tox_ini_leaves_symlinked_setup_cfg_candidate(
+        self,
+    ):
+        # A tox.ini without a [pytest] section is not pytest's
+        # inifile (pytest 9 findpaths), so selection falls through
+        # to setup.cfg; that candidate is a symlink, so the leg is
+        # insulated.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            (root / "tests").mkdir(parents=True)
+            write(root, "tox.ini", "[tox]\n")
+            external = write(base, "external/setup.cfg", "[tool:pytest]\n")
+            os.symlink(external, root / "setup.cfg")
+            commands = discover_verification_commands(root)
+            self.assertEqual([c.id for c in commands], ["pytest"])
+            self.assertIn("-c", commands[0].argv)
+            self.assertIn(os.devnull, commands[0].argv)
+
+    def test_real_pyproject_tool_pytest_table_wins_over_symlinked_setup_cfg(
+        self,
+    ):
+        # A [tool.pytest] table with keys of its own qualifies
+        # pyproject.toml in TOML mode (pytest 9 findpaths), not
+        # only [tool.pytest.ini_options]: the real file is
+        # selected and the symlinked setup.cfg is never read.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            (root / "tests").mkdir(parents=True)
+            write(
+                root,
+                "pyproject.toml",
+                '[tool.pytest]\nminversion = "6.0"\n',
+            )
+            external = write(base, "external/setup.cfg", "[tool:pytest]\n")
+            os.symlink(external, root / "setup.cfg")
+            commands = discover_verification_commands(root)
+            self.assertEqual([c.id for c in commands], ["pytest"])
+            self.assertEqual(
+                commands[0].argv, mechanical_verify.PYTEST_ARGV
+            )
+
+    def test_empty_tool_pytest_table_falls_through_to_symlinked_setup_cfg(
+        self,
+    ):
+        # An empty [tool.pytest] table (no keys, no ini_options)
+        # does not qualify during pytest's scan, so selection
+        # falls through to the symlinked setup.cfg and the leg
+        # is insulated.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            (root / "tests").mkdir(parents=True)
+            write(root, "pyproject.toml", "[tool.pytest]\n")
+            external = write(base, "external/setup.cfg", "[tool:pytest]\n")
+            os.symlink(external, root / "setup.cfg")
+            commands = discover_verification_commands(root)
+            self.assertEqual([c.id for c in commands], ["pytest"])
+            self.assertIn("-c", commands[0].argv)
+            self.assertIn(os.devnull, commands[0].argv)
+
+    def test_pytest_config_selected_content_conditions(self):
+        # tox.ini counts only with a [pytest] section and
+        # setup.cfg only with a [tool:pytest] section (pytest 9
+        # findpaths); sectionless files are not pytest's inifile.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "tox.ini", "[tox]\n")
+            self.assertIsNone(
+                mechanical_verify._pytest_config_selected(root)
+            )
+            write(root, "tox.ini", "[pytest]\n")
+            self.assertEqual(
+                mechanical_verify._pytest_config_selected(root),
+                root / "tox.ini",
+            )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "setup.cfg", "[build]\n")
+            self.assertIsNone(
+                mechanical_verify._pytest_config_selected(root)
+            )
+            write(root, "setup.cfg", "[tool:pytest]\n")
+            self.assertEqual(
+                mechanical_verify._pytest_config_selected(root),
+                root / "setup.cfg",
+            )
+
+    @unittest.skipUnless(_pytest_on_path(), "no pytest on PATH")
+    def test_symlinked_pytest_toml_cannot_steer_collection(self):
+        # The reviewer's round-2 fixture: pytest.toml outranks
+        # every round-1 name, so a symlinked one steered the
+        # sealed run to a foreign suite. After the fix the leg
+        # (scheduled by the real tests/ directory) collects only
+        # the in-tree test.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            (root / "tests").mkdir(parents=True)
+            write(root, "tests/test_ok.py", "def test_ok():\n    assert True\n")
+            steered = base / "external" / "steered"
+            write(
+                steered,
+                "test_steered.py",
+                "def test_steered():\n    assert True\n",
+            )
+            write(
+                base,
+                "external/pytest.toml",
+                f'[pytest]\ntestpaths = ["{steered}"]\n',
+            )
+            os.symlink(base / "external" / "pytest.toml", root / "pytest.toml")
+            commands = discover_verification_commands(root)
+            self.assertEqual([c.id for c in commands], ["pytest"])
+            result = run_verification(root, commands[0])
+            self.assertEqual(result.exit_code, 0)
+            self.assertEqual(result.tests_collected, 1)
+            self.assertIn("test_ok", result.stdout)
+            self.assertNotIn("test_steered", result.stdout)
+
+    @unittest.skipUnless(_pytest_on_path(), "no pytest on PATH")
+    def test_symlinked_tox_ini_cannot_steer_collection(self):
+        # The reviewer's other round-2 fixture: a symlinked
+        # tox.ini holding [pytest] + testpaths steered the sealed
+        # run because the round-1 walk never considered the name.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            (root / "tests").mkdir(parents=True)
+            write(root, "tests/test_ok.py", "def test_ok():\n    assert True\n")
+            steered = base / "external" / "steered"
+            write(
+                steered,
+                "test_steered.py",
+                "def test_steered():\n    assert True\n",
+            )
+            write(
+                base,
+                "external/tox.ini",
+                f"[pytest]\ntestpaths = {steered}\n",
+            )
+            os.symlink(base / "external" / "tox.ini", root / "tox.ini")
+            commands = discover_verification_commands(root)
+            self.assertEqual([c.id for c in commands], ["pytest"])
+            result = run_verification(root, commands[0])
+            self.assertEqual(result.exit_code, 0)
+            self.assertEqual(result.tests_collected, 1)
+            self.assertIn("test_ok", result.stdout)
+            self.assertNotIn("test_steered", result.stdout)
+
     @unittest.skipUnless(shutil.which("make"), "no make on PATH")
     def test_symlinked_makefile_test_recipe_never_executes(self):
         with tempfile.TemporaryDirectory() as tmp:
