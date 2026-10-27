@@ -1303,9 +1303,12 @@ class DiscoveryTests(unittest.TestCase):
             self.assertEqual(ids, [])
 
     def test_symlinked_non_collectable_files_keep_bare_pytest(self):
-        # The file rule is name-scoped: symlinks pytest would
-        # never collect (a data file, a non-test module name) do
-        # not disqualify the leg.
+        # The file rule's boundary (restated in Task 11
+        # round 3): symlinks pytest would never import — a
+        # non-.py name that is not a collectable name either
+        # (a data file, a README) — do not disqualify the leg.
+        # A symlinked .py file under ANY name does; see
+        # test_symlinked_py_module_disqualifies_bare_pytest.
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             root = base / "root"
@@ -1317,11 +1320,67 @@ class DiscoveryTests(unittest.TestCase):
                 "def test_local():\n    assert True\n",
             )
             notes = write(base, "external/notes.txt", "data\n")
-            helper = write(base, "external/helper.py", "VALUE = 1\n")
+            blob = write(base, "external/blob.bin", "data\n")
             os.symlink(notes, root / "notes_link.txt")
-            os.symlink(helper, root / "helper_link.py")
+            os.symlink(blob, root / "blob_link.bin")
             ids = [c.id for c in discover_verification_commands(root)]
             self.assertEqual(ids, ["pytest"])
+
+    def test_symlinked_py_module_disqualifies_bare_pytest(self):
+        # Round 3 (Task 11 re-review §4): the scope walk's
+        # file rule extends to every symlinked .py file,
+        # whatever its name. Collection executes an aimed .py
+        # file under any name (the re-review's linktest.py),
+        # and a collected module imports a .py module by name
+        # from a sys.path directory — prepend import mode puts
+        # every collected test's directory there — so no .py
+        # name is provably outside the execution scope. The
+        # link is the policy object: an in-tree target
+        # disqualifies exactly like an external one.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            write(root, "pytest.ini", "[pytest]\n")
+            write(
+                root,
+                "tests/test_local.py",
+                "def test_local():\n    assert True\n",
+            )
+            helper = write(base, "external/helper.py", "VALUE = 1\n")
+            os.symlink(helper, root / "helper_link.py")
+            ids = [c.id for c in discover_verification_commands(root)]
+            self.assertEqual(ids, [])
+        # Nested, under a tools.py-style name.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            write(root, "pytest.ini", "[pytest]\n")
+            write(
+                root,
+                "tests/test_local.py",
+                "def test_local():\n    assert True\n",
+            )
+            helper = write(base, "external/tools.py", "VALUE = 1\n")
+            os.symlink(helper, root / "tests" / "tools_link.py")
+            ids = [c.id for c in discover_verification_commands(root)]
+            self.assertEqual(ids, [])
+        # In-tree target: still the link that disqualifies.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            write(root, "pytest.ini", "[pytest]\n")
+            write(
+                root,
+                "tests/test_local.py",
+                "def test_local():\n    assert True\n",
+            )
+            write(root, "real_module.py", "VALUE = 1\n")
+            os.symlink(root / "real_module.py", root / "module_link.py")
+            ids = [c.id for c in discover_verification_commands(root)]
+            self.assertEqual(ids, [])
 
     def test_bare_pytest_scope_clean_below_symlinked_root(self):
         # The caller-selected root itself may be a symlink (it is
@@ -1682,6 +1741,40 @@ class BarePytestSymlinkScopeTests(unittest.TestCase):
             self.assertIn("no verification commands discovered", output)
             self.assertFalse(receipts.exists())
 
+    @unittest.skipUnless(_pytest_on_path(), "no pytest on PATH")
+    def test_config_aim_at_symlinked_file_seals_no_pytest_pass(self):
+        # Round 3 (Task 11 re-review §4): the re-reviewer's
+        # fixture end to end. The tree's only test content is
+        # an outside file reached through a symlink whose name
+        # matches no test pattern; the bound config aims
+        # collection at it. Pre-fix the leg executed the
+        # external test under a seal (receipt: collected 1)
+        # and the audit kept blessing it after the target was
+        # mutated — neither the aim gate (the aim resolves
+        # textually inside the root) nor the scope walk (the
+        # name is outside its patterns) refused. Now the aim
+        # itself refuses the leg and nothing seals.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            receipts = base / "receipts.jsonl"
+            external = write(
+                base,
+                "outside/linked.py",
+                "def test_linked():\n    assert True\n",
+            )
+            os.symlink(external, root / "linktest.py")
+            write(
+                root,
+                "pytest.ini",
+                "[pytest]\ntestpaths = linktest.py\n",
+            )
+            rc, _, output = self._verify(root, receipts)
+            self.assertEqual(rc, 2, output)
+            self.assertIn("no verification commands discovered", output)
+            self.assertFalse(receipts.exists())
+
 
 class ResidueConfigAimTests(unittest.TestCase):
     """Task 11 (paperthin validation 2, probe B2): a bound config
@@ -1706,7 +1799,15 @@ class ResidueConfigAimTests(unittest.TestCase):
     aims too, and --pyargs retargets collection at installed
     packages. And an aim is refused on either boundary of the
     attested set: into a residue directory, or anywhere outside
-    the root, whose content the seal does not describe at all."""
+    the root, whose content the seal does not describe at all.
+
+    Round 3 (Task 11 re-review §4): an aim at — or through — a
+    symlink is refused on the same principle. The binding
+    records a link's target string, never its content, so an
+    aimed symlinked file executes unattested bytes whatever
+    its name; a non-pattern name (linktest.py) is collectable
+    precisely because the config aims at it, which is the
+    population this gate exists to judge."""
 
     def _verify(self, root: Path, receipts: Path):
         stdout = io.StringIO()
@@ -2067,6 +2168,126 @@ class ResidueConfigAimTests(unittest.TestCase):
                 "def test_ok():\n    assert True\n",
             )
             self.assertIn("pytest", self._ids(root))
+
+    def test_testpaths_aim_at_symlinked_file_disqualifies(self):
+        # Round 3: the aim's named path is itself a symlink.
+        # linktest.py matches no test-name pattern, so only the
+        # config's aim makes it collectable — and the content
+        # it would execute is the link target's, bound nowhere.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            external = write(
+                base,
+                "outside/linked.py",
+                "def test_linked():\n    assert True\n",
+            )
+            os.symlink(external, root / "linktest.py")
+            write(
+                root,
+                "pytest.ini",
+                "[pytest]\ntestpaths = linktest.py\n",
+            )
+            write(
+                root,
+                "test_ok.py",
+                "def test_ok():\n    assert True\n",
+            )
+            self.assertNotIn("pytest", self._ids(root))
+            # Control: the same aim at a REAL file under the
+            # same non-pattern name schedules the leg — an
+            # explicitly aimed file is collected whatever its
+            # name, and its content is bound.
+            (root / "linktest.py").unlink()
+            write(
+                root,
+                "linktest.py",
+                "def test_linked():\n    assert True\n",
+            )
+            self.assertIn("pytest", self._ids(root))
+
+    def test_addopts_aim_at_symlinked_file_disqualifies(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            external = write(
+                base,
+                "outside/linked.py",
+                "def test_linked():\n    assert True\n",
+            )
+            os.symlink(external, root / "linktest.py")
+            write(
+                root,
+                "pytest.ini",
+                "[pytest]\naddopts = linktest.py\n",
+            )
+            write(
+                root,
+                "test_ok.py",
+                "def test_ok():\n    assert True\n",
+            )
+            self.assertNotIn("pytest", self._ids(root))
+
+    def test_aim_at_symlink_to_in_tree_file_disqualifies(self):
+        # The link is the policy object, not its target: an
+        # aim at a symlink whose target is a real in-tree file
+        # is refused the same way (the posture of Tasks 6/7 —
+        # a symlinked test file contributes nothing, wherever
+        # it points).
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            write(
+                root,
+                "real/test_real.py",
+                "def test_real():\n    assert True\n",
+            )
+            os.symlink(
+                root / "real" / "test_real.py", root / "linktest.py"
+            )
+            write(
+                root,
+                "pytest.ini",
+                "[pytest]\ntestpaths = linktest.py\n",
+            )
+            write(
+                root,
+                "test_ok.py",
+                "def test_ok():\n    assert True\n",
+            )
+            self.assertNotIn("pytest", self._ids(root))
+
+    def test_aim_through_symlinked_component_disqualifies(self):
+        # A component check, not just the final name: the aim
+        # crosses a symlinked directory to reach a non-pattern
+        # file inside it. (The scope walk's directory rule
+        # refuses this tree too; this pins the composition —
+        # the leg is refused, by whichever gate fires.)
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            external = base / "outside"
+            write(
+                external,
+                "inner.py",
+                "def test_inner():\n    assert True\n",
+            )
+            os.symlink(external, root / "linkdir")
+            write(
+                root,
+                "pytest.ini",
+                "[pytest]\ntestpaths = linkdir/inner.py\n",
+            )
+            write(
+                root,
+                "test_ok.py",
+                "def test_ok():\n    assert True\n",
+            )
+            self.assertNotIn("pytest", self._ids(root))
 
     @unittest.skipUnless(_pytest_on_path(), "no pytest on PATH")
     def test_custom_collector_shape_aimed_via_addopts_is_refused(self):

@@ -1128,12 +1128,37 @@ def _addopts_aims(tokens: list[str]) -> tuple[list[str], bool]:
     return aims, pyargs
 
 
+def _path_crosses_symlink(root: Path, target: str) -> bool:
+    """Whether the normalized absolute *target* — inside
+    *root* — is reached through a symlink below the root:
+    the final component itself, or any directory component
+    above it, is a link. The binding records a link's target
+    string, never its content, so content an aim reaches
+    through a link is attested nowhere — whatever the aimed
+    file's name, and wherever the link points: the link is
+    the policy object, not its target (the posture of the
+    scope walk in _bare_pytest_scope_has_symlink). A
+    component that does not exist is not a link: an aim at
+    nothing collects nothing."""
+    relative = os.path.relpath(
+        target, os.path.normpath(str(root))
+    )
+    current = str(root)
+    for part in relative.split(os.sep):
+        if part in ("", "."):
+            continue
+        current = os.path.join(current, part)
+        if os.path.islink(current):
+            return True
+    return False
+
+
 def _entry_aims_unattested(root: Path, entry: str) -> bool:
     """Whether one aim *entry* — a testpaths or pythonpath
     entry, or a positional addopts token — steers the bare
     leg at content the seal does not attest: a path with a
-    residue-named component, or a path resolving outside
-    *root*.
+    residue-named component, a path resolving outside
+    *root*, or a path at or through a symlink.
 
     The path part of a nodeid (before "::") is judged.
     Residue is judged as written, so `.mypy_cache/collected`
@@ -1145,7 +1170,14 @@ def _entry_aims_unattested(root: Path, entry: str) -> bool:
     paths land outside the tree the seal describes, and
     content there is bound nowhere (Task 11 review, finding
     F3). A bare token naming no path (a test name) normalizes
-    to an in-tree path and passes."""
+    to an in-tree path and passes. The symlink judgement
+    (Task 11 re-review §4) closes the composition seam the
+    textual checks cannot see: an aim at a symlinked file
+    whose name falls outside the scope walk's patterns
+    resolves textually inside the root, yet executes the
+    link target's content — as does an aim through a
+    symlinked directory at a file the walk's name rule
+    would pass."""
     path_part = entry.split("::", 1)[0]
     if not path_part:
         return False
@@ -1161,9 +1193,11 @@ def _entry_aims_unattested(root: Path, entry: str) -> bool:
     else:
         target = os.path.normpath(os.path.join(root, path_part))
     root_norm = os.path.normpath(str(root))
-    return target != root_norm and not target.startswith(
+    if target != root_norm and not target.startswith(
         root_norm + os.sep
-    )
+    ):
+        return True
+    return _path_crosses_symlink(root, target)
 
 
 def _selected_config_aims_unattested(root: Path) -> bool:
@@ -1187,7 +1221,10 @@ def _selected_config_aims_unattested(root: Path) -> bool:
     carried by a key the two-key gate never read (Task 11
     review, finding F2), and an aim resolving outside the
     root collects or imports content the seal does not
-    describe at all (finding F3). A symlinked selected
+    describe at all (finding F3). An aim at or through a
+    symlink is refused on the same principle (Task 11
+    re-review §4): the binding attests a link's target
+    string, never its content. A symlinked selected
     config is never read here: _pytest_argv already pins it
     to an empty config, so its entries define nothing
     (issue #64)."""
@@ -1216,6 +1253,22 @@ def _pytest_collectable_file(name: str) -> bool:
     )
 
 
+def _pytest_scope_link_file(name: str) -> bool:
+    """Whether a symlinked file named *name* in the bare
+    leg's collection scope disqualifies the leg: any `.py`
+    name — collection executes an aimed .py file under any
+    name, and a collected module imports a .py module by
+    name from a sys.path directory the same way — or a
+    collectable name (see _pytest_collectable_file; every
+    such name ends in .py today, and the union keeps the
+    scope rule attached to the collection rule if that
+    ever changes). A non-.py, non-collectable name — a
+    data file, a README — is never imported by
+    collection, so a symlink under it disqualifies
+    nothing."""
+    return name.endswith(".py") or _pytest_collectable_file(name)
+
+
 def _bare_pytest_scope_has_symlink(root: Path) -> bool:
     """Whether the bare pytest leg's collection scope at *root*
     reaches content through a symlink (issue #62).
@@ -1234,11 +1287,18 @@ def _bare_pytest_scope_has_symlink(root: Path) -> bool:
       conservative form: config can widen collection
       (testpaths, norecursedirs overrides), so no directory
       below root is provably outside the scope; or
-    - any symlinked FILE pytest would collect, judged by name
-      (see _pytest_collectable_file). The file rule is
-      deliberately name-scoped: a symlinked data file or helper
-      module is never imported by collection, so it
-      disqualifies nothing.
+    - any symlinked FILE pytest would execute, judged by name
+      (see _pytest_scope_link_file): every `.py` name, plus
+      the collectable names. The .py rule is deliberately
+      wider than the name patterns collection uses by
+      default: a config aim executes a .py file under ANY
+      name (Task 11 re-review §4), and prepend import mode
+      puts every collected test's directory on sys.path,
+      where a .py module is importable by name — so no .py
+      name is provably outside the execution scope. The
+      boundary that remains is non-.py, non-collectable
+      names: a symlinked data file is never imported by
+      collection, so it disqualifies nothing.
 
     The walk prunes only .git — the VCS's own subtree, which
     the binding likewise never attests as project content. The
@@ -1262,7 +1322,7 @@ def _bare_pytest_scope_has_symlink(root: Path) -> bool:
             descend.append(name)
         dirnames[:] = descend
         for name in filenames:
-            if _pytest_collectable_file(name) and (
+            if _pytest_scope_link_file(name) and (
                 current / name
             ).is_symlink():
                 return True
@@ -1290,17 +1350,20 @@ def discover_verification_commands(root: Path) -> tuple[VerificationCommand, ...
     # position without reading it — deliberately conservative,
     # since over-insulation is the safe direction).
     # Issue #62: the bare pytest leg is additionally disqualified
-    # when its collection scope contains a symlink (see
-    # _bare_pytest_scope_has_symlink), or when the real config
+    # when its collection scope contains a symlink — a symlinked
+    # directory, a symlinked .py file of any name, or a
+    # symlinked collectable-named file (see
+    # _bare_pytest_scope_has_symlink) — or when the real config
     # pytest would read aims collection or sys.path at
     # unattested content over its full aiming surface —
     # testpaths, pythonpath, addopts positionals, --pyargs;
-    # targets: a residue directory or anywhere outside the
-    # root (see _selected_config_aims_unattested: files under
+    # targets: a residue directory, anywhere outside the
+    # root, or a path at or through a symlink (see
+    # _selected_config_aims_unattested: files under
     # residue names are largely bound in the tree digest, but
     # collection aimed there can execute shapes no extension
-    # set enumerates, and content outside the root is bound
-    # nowhere). Excluding links from
+    # set enumerates, and content outside the root — or behind
+    # a link — is bound nowhere). Excluding links from
     # discovery's own reads cannot help there — the leg runs
     # pytest over the whole tree, and pytest's own traversal is
     # what reaches the linked content — so the leg is not
