@@ -347,7 +347,16 @@ def _classify_test_module(
       class that is NOT resolved as a TestCase subclass (its test
       methods may be inherited from a local helper or written
       pytest-style, so its own body is not the evidence), OR the
-      module has no leg at all (default). A module whose only
+      module is OPEN beside a statically known TestCase-denoting
+      class — a `from X import *` star import makes the module's
+      binding set open (the names it binds are statically
+      unknowable and the classifier never executes imports), so
+      pytest-collectable test_* functions it brings in are
+      invisible to every name-based rule above; the pytest leg
+      it gains is speculative, routed through the same
+      uncertainty channel as an unresolved class base, and a
+      star import beside NO known test marker changes nothing —
+      OR the module has no leg at all (default). A module whose only
       collectable content is TestCase subclasses does NOT by itself
       trigger the pytest
       command (RC2 — pure-unittest trees keep byte-identical argv);
@@ -384,9 +393,10 @@ def _classify_test_module(
     classes: list[ast.ClassDef] = []
     triggers_pytest = False
     has_load_tests = False
+    has_star_import = False
 
     def visit(node: ast.AST, in_class: bool, in_func: bool) -> None:
-        nonlocal triggers_pytest, has_load_tests
+        nonlocal triggers_pytest, has_load_tests, has_star_import
         for child in ast.iter_child_nodes(node):
             if isinstance(child, ast.ClassDef):
                 if not in_class and not in_func:
@@ -411,6 +421,18 @@ def _classify_test_module(
             else:
                 if not in_class and not in_func:
                     if isinstance(child, ast.ImportFrom):
+                        if any(
+                            alias.name == "*" for alias in child.names
+                        ):
+                            # A star import makes the module's
+                            # binding set OPEN (issue #51): the
+                            # names it binds are statically
+                            # unknowable, so no name-based channel
+                            # below can see what it brings in.
+                            # Recorded here; judged after class
+                            # resolution, where the module's known
+                            # test markers are settled.
+                            has_star_import = True
                         if child.module == "unittest" or (
                             child.module is not None
                             and child.module.startswith("unittest.")
@@ -651,6 +673,32 @@ def _classify_test_module(
             # collect; a Test* name on a non-TestCase class is the
             # opposite of that evidence, so it keeps the leg.
             triggers_pytest = True
+    if (
+        has_star_import
+        and not triggers_pytest
+        and any(resolved.get(cls.name) for cls in classes)
+    ):
+        # Issue #51: an OPEN module (star import — see the
+        # ImportFrom branch) beside a statically known
+        # TestCase-denoting class must not classify as
+        # unittest-only. The star import may bring
+        # pytest-collectable test_* functions into the module
+        # namespace that no name-based channel can see, and
+        # the classifier never executes imports to find out.
+        # The module gains a SPECULATIVE pytest leg through
+        # the same uncertainty channel as an unresolved class
+        # base above: both legs are scheduled, and the count
+        # gate judges the legs together, so a speculative leg
+        # collecting nothing extra never vetoes a passing
+        # deterministic leg. FALSE-TRIGGER BOUND: the leg
+        # fires only when a TestCase-denoting class is
+        # statically known in the module — a star import
+        # beside no known test marker changes nothing, and a
+        # closed module (no star import) is completely
+        # unaffected — so a module that star-imports non-test
+        # helpers gains a leg only when it already carries
+        # unittest content of its own.
+        triggers_pytest = True
     if not has_unittest and not triggers_pytest:
         triggers_pytest = True  # no leg at all: the pytest default
     return has_unittest, triggers_pytest

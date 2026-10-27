@@ -3175,6 +3175,167 @@ class ClassifierUncertaintyTests(unittest.TestCase):
             commands = discover_verification_commands(root)
             self.assertEqual([c.id for c in commands], ["unittest"])
 
+    def test_star_import_beside_testcase_gains_pytest_leg(self):
+        # Issue #51: a star import makes the module's binding
+        # set OPEN — the names it binds are statically
+        # unknowable, so pytest-collectable test_* functions it
+        # brings in are invisible to every name-based channel.
+        # Beside a statically known TestCase class the module
+        # must not classify as unittest-only: it gains the
+        # speculative pytest leg through the same uncertainty
+        # channel as the imported-mixin case.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "shared.py", "def helper():\n    pass\n")
+            write(
+                root,
+                "test_star.py",
+                "import unittest\n"
+                "\n"
+                "from shared import *\n"
+                "\n"
+                "\n"
+                "class StarTests(unittest.TestCase):\n"
+                "    def test_ok(self):\n"
+                "        pass\n",
+            )
+            commands = discover_verification_commands(root)
+            self.assertEqual(
+                [c.id for c in commands], ["unittest", "pytest"]
+            )
+            self.assertIn("test_star", commands[0].argv)
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_star_imported_pytest_function_executes_and_fails(self):
+        # Issue #51, the harm itself: the module's only pytest
+        # content is a test_* function arriving via the star
+        # import, and it FAILS. Before the fix the module
+        # classified unittest-only, the passing TestCase sealed
+        # the run, and the failing function never executed.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "shared.py",
+                "def test_from_shared():\n"
+                "    assert False, 'star-imported test must run'\n",
+            )
+            write(
+                root,
+                "test_star.py",
+                "import unittest\n"
+                "\n"
+                "from shared import *\n"
+                "\n"
+                "\n"
+                "class StarTests(unittest.TestCase):\n"
+                "    def test_ok(self):\n"
+                "        pass\n",
+            )
+            commands, results, rc, _ = self.run_fixture(root)
+            self.assertEqual(
+                [c.id for c in commands], ["unittest", "pytest"]
+            )
+            self.assertEqual(rc, 1)
+            pytest_results = [
+                r for r in results if r.command.id == "pytest"
+            ]
+            self.assertEqual(len(pytest_results), 1)
+            self.assertFalse(pytest_results[0].passed)
+            # The TestCase test (re-collected by pytest) plus
+            # the star-imported function.
+            self.assertEqual(pytest_results[0].tests_collected, 2)
+
+    def test_star_import_without_test_marker_changes_nothing(self):
+        # Issue #51 bound: an open module with NO statically
+        # known test marker classifies exactly as a closed one
+        # — a star import of non-test helpers beside no test
+        # content gains no unittest leg and keeps only the
+        # no-leg pytest default.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "shared.py", "def helper():\n    pass\n")
+            write(
+                root,
+                "test_plain.py",
+                "from shared import *\n"
+                "\n"
+                "\n"
+                "class Helper:\n"
+                "    pass\n"
+                "\n"
+                "\n"
+                "def helper_fn():\n"
+                "    pass\n",
+            )
+            commands = discover_verification_commands(root)
+            self.assertEqual([c.id for c in commands], ["pytest"])
+
+    def test_star_import_with_visible_test_function_behaves_as_today(
+        self,
+    ):
+        # Issue #51 guard: a visible test_* function triggers
+        # the pytest leg deterministically, star import or not —
+        # the openness rule must not change this shape.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "shared.py", "def helper():\n    pass\n")
+            write(
+                root,
+                "test_star.py",
+                "import unittest\n"
+                "\n"
+                "from shared import *\n"
+                "\n"
+                "\n"
+                "def test_visible():\n"
+                "    pass\n"
+                "\n"
+                "\n"
+                "class StarTests(unittest.TestCase):\n"
+                "    def test_ok(self):\n"
+                "        pass\n",
+            )
+            commands = discover_verification_commands(root)
+            self.assertEqual(
+                [c.id for c in commands], ["unittest", "pytest"]
+            )
+            self.assertIn("test_star", commands[0].argv)
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_star_import_speculative_leg_does_not_veto_unittest(self):
+        # Issue #51, the non-veto invariant for this shape —
+        # the mirror of the imported-mixin test above. The star
+        # import here brings NO pytest content (shared exports
+        # only a helper), so the speculative pytest leg's
+        # marginal collection is zero; it must not veto the
+        # passing deterministic unittest leg. (pytest still
+        # re-collects the module's TestCase test under its own
+        # collection semantics — the counts pin that.)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "shared.py", "def helper():\n    pass\n")
+            write(
+                root,
+                "test_star.py",
+                "import unittest\n"
+                "\n"
+                "from shared import *\n"
+                "\n"
+                "\n"
+                "class StarTests(unittest.TestCase):\n"
+                "    def test_ok(self):\n"
+                "        pass\n",
+            )
+            commands, results, rc, _ = self.run_fixture(root)
+            self.assertEqual(
+                [c.id for c in commands], ["unittest", "pytest"]
+            )
+            self.assertEqual(rc, 0)
+            self.assertEqual(len(results), 2)
+            self.assertEqual(results[0].tests_collected, 1)
+            self.assertEqual(results[1].tests_collected, 1)
+
     def test_deselected_is_not_counted_as_collected(self):
         # Judge rider (correctness P2-B): deselected tests were
         # FILTERED OUT by the runner; counting them inflates the
