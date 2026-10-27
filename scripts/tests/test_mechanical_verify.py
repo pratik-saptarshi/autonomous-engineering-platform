@@ -317,6 +317,148 @@ class DiscoveryTests(unittest.TestCase):
             os.symlink(foreign, tests_dir / "test_sample.py")
             self.assertEqual(discover_verification_commands(root), ())
 
+    def test_scripts_symlink_discovers_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            external = base / "external"
+            write(external, "tests/test_real.py", "import unittest\n")
+            root.mkdir()
+            os.symlink(external, root / "scripts")
+            self.assertEqual(discover_verification_commands(root), ())
+
+    def test_scripts_symlink_to_inside_root_discovers_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            write(root, "elsewhere/tests/test_real.py", "import unittest\n")
+            os.symlink(root / "elsewhere", root / "scripts")
+            self.assertEqual(discover_verification_commands(root), ())
+
+    def test_scripts_tests_mixed_real_and_symlinked_test_file_discovers_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            foreign = write(
+                base / "external", "test_foreign.py", "import unittest\n"
+            )
+            tests_dir = root / "scripts" / "tests"
+            write(root, "scripts/tests/test_sample.py", "import unittest\n")
+            os.symlink(foreign, tests_dir / "test_foreign.py")
+            self.assertEqual(discover_verification_commands(root), ())
+
+    def test_scripts_tests_symlinked_package_dir_discovers_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            external_pkg = base / "external" / "pkg"
+            write(external_pkg, "__init__.py", "")
+            write(external_pkg, "test_external.py", "import unittest\n")
+            write(root, "scripts/tests/test_sample.py", "import unittest\n")
+            os.symlink(
+                external_pkg, root / "scripts" / "tests" / "pkg"
+            )
+            self.assertEqual(discover_verification_commands(root), ())
+
+    def test_scripts_tests_symlinked_nested_subpackage_discovers_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            external_sub = base / "external" / "sub"
+            write(external_sub, "__init__.py", "")
+            write(external_sub, "test_external.py", "import unittest\n")
+            write(root, "scripts/tests/test_sample.py", "import unittest\n")
+            write(root, "scripts/tests/pkg/__init__.py", "")
+            os.symlink(
+                external_sub, root / "scripts" / "tests" / "pkg" / "sub"
+            )
+            self.assertEqual(discover_verification_commands(root), ())
+
+    def test_scripts_tests_symlinked_descendant_test_file_discovers_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            foreign = write(
+                base / "external", "test_external.py", "import unittest\n"
+            )
+            write(root, "scripts/tests/test_sample.py", "import unittest\n")
+            write(root, "scripts/tests/pkg/__init__.py", "")
+            os.symlink(
+                foreign, root / "scripts" / "tests" / "pkg" / "test_external.py"
+            )
+            self.assertEqual(discover_verification_commands(root), ())
+
+    def test_scripts_tests_symlinked_init_discovers_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            foreign_init = write(base / "external", "__init__.py", "")
+            write(root, "scripts/tests/test_sample.py", "import unittest\n")
+            write(root, "scripts/tests/pkg/test_local.py", "import unittest\n")
+            os.symlink(
+                foreign_init, root / "scripts" / "tests" / "pkg" / "__init__.py"
+            )
+            self.assertEqual(discover_verification_commands(root), ())
+
+    def test_scripts_tests_symlinked_helper_discovers_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            foreign_helper = write(
+                base / "external", "helper.py", "VALUE = 1\n"
+            )
+            write(
+                root,
+                "scripts/tests/test_sample.py",
+                "import unittest\nimport helper\n",
+            )
+            os.symlink(
+                foreign_helper, root / "scripts" / "tests" / "helper.py"
+            )
+            self.assertEqual(discover_verification_commands(root), ())
+
+    @unittest.skipIf(
+        os.geteuid() == 0, "root bypasses directory permission checks"
+    )
+    def test_scripts_tests_unlistable_subtree_discovers_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            foreign_helper = write(
+                base / "external", "helper.py", "VALUE = 99\n"
+            )
+            write(root, "scripts/tests/test_sample.py", "import unittest\n")
+            write(root, "scripts/tests/zzz_pkg/__init__.py", "")
+            pkg = root / "scripts" / "tests" / "zzz_pkg"
+            os.symlink(foreign_helper, pkg / "helper.py")
+            pkg.chmod(0o111)
+            try:
+                self.assertEqual(discover_verification_commands(root), ())
+            finally:
+                pkg.chmod(0o755)
+
+    def test_root_symlink_discovers_scripts_unittest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            write(root, "scripts/tests/test_sample.py", "import unittest\n")
+            root_link = base / "root_link"
+            os.symlink(root, root_link)
+            commands = discover_verification_commands(root_link)
+            self.assertEqual([c.id for c in commands], ["scripts-unittest"])
+            self.assertEqual(
+                commands[0].argv,
+                (
+                    "python3",
+                    "-m",
+                    "unittest",
+                    "discover",
+                    "-s",
+                    "scripts/tests",
+                    "-v",
+                ),
+            )
+
     def test_no_scripts_directory_discovers_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
