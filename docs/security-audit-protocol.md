@@ -315,9 +315,13 @@ no structural validator can detect them, because — as Q2 itself
 showed — validator success proves format and consistency only.
 
 No other differences from the vendored schema exist. In particular,
-the profile does not relax any requirement of the other two branches:
-an `audit:needs_validation` record still requires `blockers`, and an
-`audit:rejected` record still requires `reason`.
+the profile does not relax any branch-required field of the other two
+branches: an `audit:needs_validation` record still requires
+`blockers`, and an `audit:rejected` record still requires `reason`.
+The one structural extension that does reach those branches is P3:
+the trace `kind` enum admits `composition` in all three schema
+branches — the confirmed branch and the `audit:needs_validation` and
+`audit:rejected` branches alike — not only in the confirmed branch.
 
 ### 5.3 The profile validation route
 
@@ -781,24 +785,35 @@ SDD already runs on, now made auditable instead of invisible.
 ### 9.6 Validation of this section (Task A3, first use)
 
 The checker suite was written first and failed for the checker's
-absence (10 tests, 0 pass, module not found), then passed against the
+absence (19 tests, 0 pass, module not found), then passed against the
 implementation:
 
 ```text
 $ node --test scripts/audit/test/check_verifier_distinctness.test.cjs
-tests 10, pass 10, fail 0   (exit 0)
+tests 19, pass 19, fail 0   (exit 0)
 ```
 
-The suite's fixtures: (a) hunter == verifier fails naming the
-fingerprint; (b) a missing hunter anchor fails; (c) a material
-strengthening (superseded `needs_validation` → `confirmed`) with only
-two distinct agents fails; (d) a clean two-candidate run passes; (e) a
-record with no sidecar entry fails; (f) an `example-*` ID in a run
-directory not under `examples/` fails; (g) a static-basis confirmed
-record without `static_rewalk: "agreed"` fails; (h) a quick-profile
-run with `phase3 == phase5` and a distinct hunter passes; (i) a
-freshness-hash mismatch fails; (j) a verifier dispatched before the
-hunter for the same fingerprint fails.
+The suite's 19 fixtures (a–q, including b2 and c2): (a) hunter ==
+verifier fails naming the fingerprint; (b) a missing hunter anchor
+fails; (b2) a unit-owner-only hunter match does not anchor the hunter;
+(c) a material strengthening (superseded `needs_validation` →
+`confirmed`) with only two distinct agents fails; (c2) a material
+strengthening with `replacement_verifier_agent_id` null fails; (d) a
+clean two-candidate run passes; (e) a record with no sidecar entry
+fails; (f) an `example-*` ID in a run directory not under `examples/`
+fails; (g) a static-basis confirmed record without
+`static_rewalk: "agreed"` fails; (h) a quick-profile run with
+`phase3 == phase5` and a distinct hunter passes; (i) a freshness-hash
+mismatch fails; (j) a verifier dispatched before the hunter for the
+same fingerprint fails; (k) a run-dir `--profile` cannot override the
+run's recorded standard profile; (l) a run-dir with missing
+`run-metadata.json` fails closed; (m) a run-dir with profile-less
+`run-metadata.json` fails closed; (n) the four-file form with no
+profile from `--profile` or metadata fails closed; (o) a sidecar
+entry missing a contract field fails naming the fingerprint; (p) a
+sidecar entry with an unknown extra field fails naming the
+fingerprint; (q) a sidecar entry with an unknown `superseded_verdict`
+rank fails.
 
 **Three-gate integration.** One fixture run (findings + ledger +
 sidecar + dispatch log, built under `/tmp`, never committed) was run
