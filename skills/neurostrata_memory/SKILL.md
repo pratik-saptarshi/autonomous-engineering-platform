@@ -52,6 +52,6 @@ Distilled from NeuroStrata, a long-term memory system for AI agents. Its core in
 
 - A local NeuroStrata MCP server is registered as the `custom.neurostrata` connector: vector + full-text search over namespaced memories, with add, search, fetch, supersede, and archive operations. Its connector doc holds the exact commands.
 
-- Keep user facts and preferences in the file system (`~/MEMORY.md`, daily notes). Use the MCP backend for project-scoped architectural rules, patterns, and anything worth retrieving by semantic search.
+- **NeuroStrata is the primary memory system for this entire runtime (Pratik's standing instruction, 2026-10-25).** Learnings, patterns, decisions, and project memory across ALL lanes are inscribed into the lane's NeuroStrata namespace as the work closes; retrieval starts from NeuroStrata when a session picks up a lane. User facts and preferences still surface in `~/MEMORY.md` (the harness loads it), but as the pointer/summary layer — the substantive learning is inscribed in NeuroStrata with a pointer back to its source.
 
-- The two stores do not sync on their own. When you inscribe something important in one, decide whether it belongs in the other too.
+- The two stores do not sync on their own. Inscription into NeuroStrata is the default, not the exception: if a learning is worth a file entry, it is worth a NeuroStrata entry first.
