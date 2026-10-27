@@ -766,7 +766,73 @@ def _classify_module(
     )
 
 
+def _is_real_file(path: Path) -> bool:
+    """True for a regular file that is not a symlink. See the
+    symlink policy at discover_verification_commands."""
+    return not path.is_symlink() and path.is_file()
+
+
+def _pytest_config_selected(root: Path) -> Path | None:
+    """The config file pytest would read at *root*, following
+    pytest's inifile precedence — pytest.ini, then pyproject.toml
+    holding [tool.pytest.ini_options], then setup.cfg holding
+    [tool:pytest] — or None when no candidate qualifies. Only
+    real files are read: a symlink candidate is reported at its
+    precedence position without being read, because whether
+    pytest would honour it depends on the unbound target's
+    contents."""
+    pytest_ini = root / "pytest.ini"
+    if pytest_ini.is_file():
+        return pytest_ini
+    pyproject = root / "pyproject.toml"
+    if pyproject.is_file():
+        if pyproject.is_symlink():
+            return pyproject
+        try:
+            text = pyproject.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            return pyproject
+        if "[tool.pytest.ini_options]" in text:
+            return pyproject
+    setup_cfg = root / "setup.cfg"
+    if setup_cfg.is_file():
+        if setup_cfg.is_symlink():
+            return setup_cfg
+        try:
+            text = setup_cfg.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            return setup_cfg
+        if "[tool:pytest]" in text:
+            return setup_cfg
+    return None
+
+
+def _pytest_argv(root: Path) -> tuple[str, ...]:
+    """The bare-pytest command for *root*. When the config pytest
+    would read is a symlink, the argv pins an empty config
+    (-c os.devnull) so collection follows only in-tree defaults
+    and the unbound file's addopts/testpaths define nothing
+    (issue #64)."""
+    selected = _pytest_config_selected(root)
+    if selected is not None and selected.is_symlink():
+        return PYTEST_ARGV + ("-c", os.devnull)
+    return PYTEST_ARGV
+
+
 def discover_verification_commands(root: Path) -> tuple[VerificationCommand, ...]:
+    # Symlink policy (issues #63, #64): a symlinked marker or
+    # config file does not schedule, gate, or steer its leg. The
+    # tree binding records a symlink's target *string* (git blob /
+    # fs readlink), never the target's contents, so content
+    # reached through a link is unbound: a symlinked go.mod,
+    # Cargo.toml, package.json, Makefile, or .markdownlint.yaml
+    # is treated as absent; a symlinked pytest config cannot
+    # trigger the bare pytest leg; and when that leg is scheduled
+    # by other evidence, its argv pins an empty config if the
+    # config pytest would read is a symlink (see _pytest_argv).
+    # The caller-selected root itself may be a symlink — it is
+    # the boundary the binding canonicalizes; every check below
+    # applies to entries under it.
     commands: list[VerificationCommand] = []
     seen: set[str] = set()
 
@@ -776,16 +842,16 @@ def discover_verification_commands(root: Path) -> tuple[VerificationCommand, ...
             commands.append(command)
 
     # 1. Go (AEP addition).
-    if (root / "go.mod").is_file():
+    if _is_real_file(root / "go.mod"):
         add(VerificationCommand("go-test", "Go tests", ("go", "test", "./...")))
 
     # 2. Rust.
-    if (root / "Cargo.toml").is_file():
+    if _is_real_file(root / "Cargo.toml"):
         add(VerificationCommand("cargo-test", "Rust tests", ("cargo", "test")))
 
     # 3. Node — only with a real scripts.test string.
     package_json = root / "package.json"
-    if package_json.is_file():
+    if _is_real_file(package_json):
         try:
             data = json.loads(package_json.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
@@ -807,13 +873,13 @@ def discover_verification_commands(root: Path) -> tuple[VerificationCommand, ...
 
     # 4. Python markers.
     if (
-        (root / "pytest.ini").is_file()
-        or (root / "pyproject.toml").is_file()
-        or (root / "setup.cfg").is_file()
+        _is_real_file(root / "pytest.ini")
+        or _is_real_file(root / "pyproject.toml")
+        or _is_real_file(root / "setup.cfg")
         or (root / "tests").exists()
     ):
         add(
-            VerificationCommand("pytest", "Python tests", PYTEST_ARGV)
+            VerificationCommand("pytest", "Python tests", _pytest_argv(root))
         )
 
     # 5. Root-level python test files, partitioned by runner
@@ -877,14 +943,14 @@ def discover_verification_commands(root: Path) -> tuple[VerificationCommand, ...
                 VerificationCommand(
                     "pytest",
                     "Python tests",
-                    PYTEST_ARGV,
+                    _pytest_argv(root),
                     speculative=pytest_speculative,
                 )
             )
 
     # 6. Make (AEP addition).
     makefile = root / "Makefile"
-    if makefile.is_file():
+    if _is_real_file(makefile):
         try:
             text = makefile.read_text(encoding="utf-8", errors="ignore")
         except OSError:
@@ -893,7 +959,7 @@ def discover_verification_commands(root: Path) -> tuple[VerificationCommand, ...
             add(VerificationCommand("make-test", "Make tests", ("make", "test")))
 
     # 7. Markdown lint (AEP addition) — binary called directly, never npx.
-    if (root / ".markdownlint.yaml").is_file() and (
+    if _is_real_file(root / ".markdownlint.yaml") and (
         shutil.which("markdownlint-cli2") is not None
     ):
         add(
@@ -2723,7 +2789,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
     commands = discover_verification_commands(root)
-    markdownlint_skipped = (root / ".markdownlint.yaml").is_file() and all(
+    markdownlint_skipped = _is_real_file(root / ".markdownlint.yaml") and all(
         c.id != "markdownlint" for c in commands
     )
     if not commands:

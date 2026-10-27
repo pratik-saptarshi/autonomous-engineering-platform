@@ -34,6 +34,21 @@ def write(root: Path, name: str, content: str = "") -> Path:
     return path
 
 
+def _pytest_on_path() -> bool:
+    # Local twin of _path_pytest_available (defined later in the
+    # file) for the early DiscoveryTests class: the verifier's
+    # pytest command is literal `python3 -m pytest`.
+    try:
+        proc = subprocess.run(
+            ["python3", "-m", "pytest", "--version"],
+            capture_output=True,
+            timeout=30,
+        )
+    except OSError:
+        return False
+    return proc.returncode == 0
+
+
 class DiscoveryTests(unittest.TestCase):
     def test_discovers_go_test_from_go_mod(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -266,6 +281,232 @@ class DiscoveryTests(unittest.TestCase):
                     "!skills/archify/**/*.md",
                 ),
             )
+
+    # Issues #63/#64: a symlinked marker or pytest config does not
+    # schedule, gate, or steer its leg — the tree binding records
+    # only the link's target string, never the target's contents,
+    # so external content must never constitute a verification leg.
+
+    def test_symlinked_go_mod_discovers_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            external = write(base, "external/go.mod", "module x\n")
+            os.symlink(external, root / "go.mod")
+            self.assertEqual(discover_verification_commands(root), ())
+
+    def test_symlinked_cargo_toml_discovers_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            external = write(base, "external/Cargo.toml", "[package]\n")
+            os.symlink(external, root / "Cargo.toml")
+            self.assertEqual(discover_verification_commands(root), ())
+
+    def test_symlinked_package_json_discovers_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            external = write(
+                base,
+                "external/package.json",
+                json.dumps({"scripts": {"test": "node --test"}}),
+            )
+            os.symlink(external, root / "package.json")
+            self.assertEqual(discover_verification_commands(root), ())
+
+    def test_symlinked_makefile_discovers_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            external = write(base, "external/Makefile", "test:\n\ttrue\n")
+            os.symlink(external, root / "Makefile")
+            self.assertEqual(discover_verification_commands(root), ())
+
+    def test_symlinked_markdownlint_config_discovers_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            external = write(base, "external/.markdownlint.yaml", "default: true\n")
+            os.symlink(external, root / ".markdownlint.yaml")
+            bin_dir = base / "bin"
+            bin_dir.mkdir()
+            stub = bin_dir / "markdownlint-cli2"
+            stub.write_text("#!/bin/sh\nexit 0\n")
+            stub.chmod(0o755)
+            env_path = str(bin_dir) + os.pathsep + os.environ.get("PATH", "")
+            with mock.patch.dict(os.environ, {"PATH": env_path}):
+                commands = discover_verification_commands(root)
+            self.assertEqual(commands, ())
+
+    def test_symlinked_pytest_configs_discover_nothing(self):
+        for name in ("pytest.ini", "pyproject.toml", "setup.cfg"):
+            with self.subTest(config=name):
+                with tempfile.TemporaryDirectory() as tmp:
+                    base = Path(tmp)
+                    root = base / "root"
+                    root.mkdir()
+                    external = write(base, f"external/{name}", "[pytest]\n")
+                    os.symlink(external, root / name)
+                    ids = [
+                        c.id for c in discover_verification_commands(root)
+                    ]
+                    self.assertNotIn("pytest", ids)
+
+    def test_marker_policy_applies_below_a_symlinked_root(self):
+        # The caller-selected root may itself be a symlink (it is
+        # the boundary the binding canonicalizes); the policy
+        # applies to entries below it, so a real marker inside a
+        # root reached through a link still schedules its leg.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            write(root, "go.mod", "module x\n")
+            root_link = base / "root_link"
+            os.symlink(root, root_link)
+            ids = [c.id for c in discover_verification_commands(root_link)]
+            self.assertEqual(ids, ["go-test"])
+
+    def test_symlinked_pytest_config_insulates_tests_dir_leg(self):
+        # The leg is scheduled by the real tests/ directory, but the
+        # config pytest would read is a symlink: the command must
+        # pin an empty config so the unbound file cannot steer.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            (root / "tests").mkdir(parents=True)
+            external = write(base, "external/pytest.ini", "[pytest]\n")
+            os.symlink(external, root / "pytest.ini")
+            commands = discover_verification_commands(root)
+            self.assertEqual([c.id for c in commands], ["pytest"])
+            self.assertIn("-c", commands[0].argv)
+            self.assertIn(os.devnull, commands[0].argv)
+
+    def test_real_pytest_ini_wins_over_symlinked_setup_cfg(self):
+        # pytest selects the real pytest.ini; the symlinked
+        # setup.cfg is never read, so the leg is NOT insulated and
+        # the real config behaves exactly as before.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            (root / "tests").mkdir(parents=True)
+            write(root, "pytest.ini", "[pytest]\n")
+            external = write(base, "external/setup.cfg", "[tool:pytest]\n")
+            os.symlink(external, root / "setup.cfg")
+            commands = discover_verification_commands(root)
+            self.assertEqual([c.id for c in commands], ["pytest"])
+            self.assertEqual(
+                commands[0].argv, mechanical_verify.PYTEST_ARGV
+            )
+
+    def test_unselected_real_pyproject_leaves_symlinked_setup_cfg_candidate(
+        self,
+    ):
+        # A real pyproject.toml without [tool.pytest.ini_options]
+        # is not pytest's inifile, so selection falls to setup.cfg;
+        # that candidate is a symlink, so the leg is insulated.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            (root / "tests").mkdir(parents=True)
+            write(root, "pyproject.toml", "[project]\nname = 'x'\n")
+            external = write(base, "external/setup.cfg", "[tool:pytest]\n")
+            os.symlink(external, root / "setup.cfg")
+            commands = discover_verification_commands(root)
+            self.assertEqual([c.id for c in commands], ["pytest"])
+            self.assertIn("-c", commands[0].argv)
+
+    def test_selected_real_pyproject_wins_over_symlinked_setup_cfg(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            (root / "tests").mkdir(parents=True)
+            write(
+                root,
+                "pyproject.toml",
+                "[tool.pytest.ini_options]\n",
+            )
+            external = write(base, "external/setup.cfg", "[tool:pytest]\n")
+            os.symlink(external, root / "setup.cfg")
+            commands = discover_verification_commands(root)
+            self.assertEqual([c.id for c in commands], ["pytest"])
+            self.assertEqual(
+                commands[0].argv, mechanical_verify.PYTEST_ARGV
+            )
+
+    @unittest.skipUnless(shutil.which("make"), "no make on PATH")
+    def test_symlinked_makefile_test_recipe_never_executes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            marker = base / "make-ran.marker"
+            external = write(
+                base, "external/Makefile", f"test:\n\ttouch {marker}\n"
+            )
+            os.symlink(external, root / "Makefile")
+            commands = discover_verification_commands(root)
+            self.assertEqual([c.id for c in commands], [])
+            if commands:
+                run_all(root, commands, mem_available_kb=lambda: 10**9)
+            self.assertFalse(marker.exists())
+
+    @unittest.skipUnless(shutil.which("npm"), "no npm on PATH")
+    def test_symlinked_package_json_test_script_never_executes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            marker = base / "npm-ran.marker"
+            external = write(
+                base,
+                "external/package.json",
+                json.dumps({"scripts": {"test": f"touch {marker}"}}),
+            )
+            os.symlink(external, root / "package.json")
+            commands = discover_verification_commands(root)
+            self.assertEqual([c.id for c in commands], [])
+            if commands:
+                run_all(root, commands, mem_available_kb=lambda: 10**9)
+            self.assertFalse(marker.exists())
+
+    @unittest.skipUnless(_pytest_on_path(), "no pytest on PATH")
+    def test_symlinked_pytest_config_cannot_steer_collection(self):
+        # The external config redirects collection to a foreign
+        # suite via testpaths. Before the fix the sealed run
+        # collects the foreign test; after, the leg (scheduled by
+        # the real tests/ directory) collects only the in-tree
+        # test — the unbound config defines nothing.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            (root / "tests").mkdir(parents=True)
+            write(root, "tests/test_ok.py", "def test_ok():\n    assert True\n")
+            steered = base / "external" / "steered"
+            write(
+                steered,
+                "test_steered.py",
+                "def test_steered():\n    assert True\n",
+            )
+            write(
+                base,
+                "external/pytest.ini",
+                f"[pytest]\ntestpaths = {steered}\n",
+            )
+            os.symlink(base / "external" / "pytest.ini", root / "pytest.ini")
+            commands = discover_verification_commands(root)
+            self.assertEqual([c.id for c in commands], ["pytest"])
+            result = run_verification(root, commands[0])
+            self.assertEqual(result.exit_code, 0)
+            self.assertEqual(result.tests_collected, 1)
+            self.assertIn("test_ok", result.stdout)
+            self.assertNotIn("test_steered", result.stdout)
 
     def test_discovers_scripts_unittest_from_scripts_tests(self):
         with tempfile.TemporaryDirectory() as tmp:
