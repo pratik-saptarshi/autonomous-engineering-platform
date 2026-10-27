@@ -2119,7 +2119,7 @@ class ObjectStoreIntegrityTests(unittest.TestCase):
             self.assertEqual(len(sha), 64)
             self.assertTrue(
                 mechanical_verify._tracked_content_matches_head(
-                    root, root
+                    root
                 )
             )
             evil = b'VALUE = "evil"\n'
@@ -2127,7 +2127,7 @@ class ObjectStoreIntegrityTests(unittest.TestCase):
             # Honest store: the modification is caught.
             self.assertFalse(
                 mechanical_verify._tracked_content_matches_head(
-                    root, root
+                    root
                 )
             )
             # Poisoned store: the same comparison believed the
@@ -2138,7 +2138,7 @@ class ObjectStoreIntegrityTests(unittest.TestCase):
             )
             self.assertFalse(
                 mechanical_verify._tracked_content_matches_head(
-                    root, root
+                    root
                 )
             )
             detail = mechanical_verify._object_store_failure_detail()
@@ -2371,6 +2371,92 @@ class ObjectStoreStallTests(unittest.TestCase):
             self.assertIsNone(reader.read_line())
         finally:
             os.close(rfd)
+
+
+class SubdirectoryRootTests(unittest.TestCase):
+    """Task 21 (Codex P2 on PR #75): for a subdirectory root,
+    `ls-tree` answers subtree-scoped with paths relative to
+    the invocation directory, but the content-exact pass
+    resolved them against the repository toplevel — a clean
+    nested project failed tree_clean reading paths that do
+    not exist. The instruments' scopes, probed with the
+    verifier's own argv: status is whole-tree with
+    toplevel-relative paths (it still contaminates a nested
+    verdict from outside, unchanged); ls-files and ls-tree
+    are subtree-scoped with root-relative paths. The pass now
+    resolves ls-tree's paths against the root it invoked
+    ls-tree from, matching the mask-bit check's scope and the
+    binding digest's — the status half keeps its whole-tree
+    judgement on top."""
+
+    def _repo(self, tmp: str) -> tuple[Path, Path]:
+        root = Path(tmp) / "repo"
+        root.mkdir()
+        init_git_repo(root)
+        commit_file(root, "top.py", 'VALUE = "top"\n', "add top")
+        sub = root / "sub"
+        write(sub, "Makefile", "test:\n\ttrue\n")
+        write(sub, "test_x.py", "def test_x():\n    assert True\n")
+        git(root, "add", "sub/Makefile", "sub/test_x.py")
+        git(
+            root,
+            "-c", "user.name=Fixture",
+            "-c", "user.email=fixture@example.invalid",
+            "commit",
+            "-q",
+            "-m", "add sub",
+        )
+        return root, sub
+
+    def test_clean_subdirectory_root_is_clean(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, sub = self._repo(tmp)
+            self.assertTrue(
+                mechanical_verify._tracked_content_matches_head(sub)
+            )
+            receipts = sub / "r.jsonl"
+            self.assertTrue(mechanical_verify.tree_clean(sub, receipts))
+
+    def test_subdirectory_root_seals_and_audits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, sub = self._repo(tmp)
+            receipts = sub / "r.jsonl"
+            proc = verify(sub, "1", receipts)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            proc = check(receipts, "1")
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("RECEIPTS: PASS", proc.stdout)
+
+    def test_modified_inside_subdirectory_root_is_dirty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, sub = self._repo(tmp)
+            write(sub, "test_x.py", 'VALUE = "evil"\n')
+            receipts = sub / "r.jsonl"
+            self.assertFalse(mechanical_verify.tree_clean(sub, receipts))
+            proc = verify(sub, "1", receipts)
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("tree not clean at HEAD", proc.stdout)
+
+    def test_outside_modification_contaminates_via_status_not_pass(self):
+        # The pre-existing contract, pinned: the status half
+        # judges the whole tree, so an outside modification
+        # fails a nested root's tree_clean — but the content
+        # pass itself scopes to the subtree it was invoked on
+        # and still matches HEAD there.
+        with tempfile.TemporaryDirectory() as tmp:
+            root, sub = self._repo(tmp)
+            write(root, "top.py", 'VALUE = "evil"\n')
+            self.assertTrue(
+                mechanical_verify._tracked_content_matches_head(sub)
+            )
+            receipts = sub / "r.jsonl"
+            self.assertFalse(mechanical_verify.tree_clean(sub, receipts))
+
+    def test_toplevel_root_of_nested_fixture_still_clean(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, sub = self._repo(tmp)
+            receipts = root / "r.jsonl"
+            self.assertTrue(mechanical_verify.tree_clean(root, receipts))
 
 
 class PromisorRefusalTests(unittest.TestCase):

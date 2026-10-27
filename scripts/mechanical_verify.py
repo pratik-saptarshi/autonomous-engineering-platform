@@ -3942,7 +3942,7 @@ class _BatchReader:
         return out
 
 
-def _tracked_content_matches_head(root: Path, toplevel: Path) -> bool:
+def _tracked_content_matches_head(root: Path) -> bool:
     """Content-exact tracked cleanliness: for every blob entry
     of `git ls-tree -r HEAD`, the worktree entry at the same
     path carries the same git mode and bytes identical to the
@@ -4000,6 +4000,20 @@ def _tracked_content_matches_head(root: Path, toplevel: Path) -> bool:
     naming the blob it stalled on, and the batch is killed:
     the failure is named, never silent.
 
+    Paths resolve against *root*: ls-tree is invoked from
+    *root* and answers for the subtree under it, with paths
+    relative to it — the same scope the ls-files mask-bit
+    check in tree_clean applies — so the worktree entry for a
+    listed path is *root* / rel, never the worktree toplevel
+    (Codex P2 on PR #75: a nested root's entries were
+    resolved at the toplevel, and a clean nested project read
+    as not clean). The status half of tree_clean judges the
+    whole tree in toplevel-relative paths and runs first, so
+    this pass's narrower scope hides no outside modification
+    from the gate; and it attests no more than the binding
+    digest records, that digest being ls-tree from *root*
+    as well.
+
     The price, stated as git mode's limit in the docs: the
     comparison is byte-exact, so a tree whose checked-out bytes
     legitimately differ from its blob bytes — attribute-driven
@@ -4048,7 +4062,7 @@ def _tracked_content_matches_head(root: Path, toplevel: Path) -> bool:
         assert batch.stdin is not None and batch.stdout is not None
         reader = _BatchReader(batch.stdout.fileno())
         for mode, sha, rel in blobs:
-            target = toplevel / rel
+            target = root / rel
             try:
                 st = os.lstat(target)
             except OSError:
@@ -4527,7 +4541,7 @@ def tree_clean(root: Path, receipts_path: Path | None = None) -> bool:
     # Content-exact tracked half: the stat cache status just
     # consulted is delivered state and forgeable (see the
     # docstring); compare the bytes themselves.
-    return _tracked_content_matches_head(resolved, toplevel)
+    return _tracked_content_matches_head(resolved)
 
 
 def binding_excursion(
