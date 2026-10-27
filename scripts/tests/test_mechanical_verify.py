@@ -2353,6 +2353,431 @@ class ResidueConfigAimTests(unittest.TestCase):
             self.assertEqual(pytest_receipts[0]["exit_code"], 0)
 
 
+class TraversalGateTests(unittest.TestCase):
+    """Task 12 (paperthin validation 3, breach B-NEW): a bound
+    config's `norecursedirs` REPLACES pytest's default traversal
+    exclusion list, so a list that drops `.*` lets the DEFAULT
+    collection walk enter `.git` — no aim, no testpaths — and a
+    bound conftest's custom collector executes a planted file
+    the bindings cannot see there (check_a.txt sits outside the
+    .git bind set). Validation 3 sealed that shape with the
+    planted item in the count and check_receipts kept blessing
+    it after a post-seal mutation, in fs AND git modes. The
+    aim gate now judges the effective norecursedirs, and the
+    scope walk judges symlinked files by the EFFECTIVE
+    collection patterns (the config's python_files and the
+    doctest globs) — which also closes a pre-existing hole in
+    the walk itself: a symlinked test*.txt executes as a
+    doctest textfile under a fully default run, and the walk's
+    hardcoded default collectable set never named it."""
+
+    COLLECTOR = (
+        "import pytest\n\n\n"
+        "class TxtFile(pytest.File):\n"
+        "    def collect(self):\n"
+        "        yield TxtItem.from_parent(self, name='planted')\n\n\n"
+        "class TxtItem(pytest.Item):\n"
+        "    def runtest(self):\n"
+        "        namespace = {}\n"
+        "        exec(self.path.read_text(), namespace)\n"
+        "        namespace['test_planted']()\n\n\n"
+        "def pytest_collect_file(file_path, parent):\n"
+        "    if file_path.suffix == '.txt' and "
+        "file_path.name.startswith('check_'):\n"
+        "        return TxtFile.from_parent(parent, path=file_path)\n"
+    )
+
+    def _verify(self, root: Path, receipts: Path):
+        stdout = io.StringIO()
+        with mock.patch.object(
+            mechanical_verify, "available_memory_kb", return_value=10**9
+        ):
+            with contextlib.redirect_stdout(stdout):
+                rc = mechanical_verify.main(
+                    [
+                        "verify",
+                        "--root",
+                        str(root),
+                        "--task",
+                        "t",
+                        "--receipts",
+                        str(receipts),
+                    ]
+                )
+        records = []
+        if receipts.exists():
+            records = [
+                json.loads(line)
+                for line in receipts.read_text().splitlines()
+            ]
+        return rc, records, stdout.getvalue()
+
+    def _ids(self, root: Path) -> list[str]:
+        return [c.id for c in discover_verification_commands(root)]
+
+    def _n7a_tree(self, root: Path, ini_body: str) -> None:
+        write(root, "pytest.ini", f"[pytest]\n{ini_body}")
+        write(root, "conftest.py", self.COLLECTOR)
+        write(
+            root,
+            ".git/collected/check_a.txt",
+            "def test_planted():\n    assert True\n",
+        )
+        write(root, "test_ok.py", "def test_ok():\n    assert True\n")
+
+    def test_norecursedirs_judgement_matches_pytest_semantics(self):
+        # fnmatch_ex, as _pytest.main applies it: a slash-free
+        # pattern judges the basename; a pattern with a
+        # separator judges the path, so it covers a name only
+        # when it matches at every depth the walk could meet it.
+        excludes = mechanical_verify._norecursedirs_excludes
+        self.assertTrue(excludes(["*.egg", ".*"], ".git"))
+        self.assertTrue(excludes([".*"], ".pytest_cache"))
+        self.assertTrue(excludes([".*"], ".mypy_cache"))
+        self.assertFalse(excludes(["*.egg"], ".git"))
+        self.assertFalse(excludes(["build", "dist"], ".git"))
+        self.assertFalse(excludes([], ".git"))
+        self.assertTrue(excludes([".git"], ".git"))
+        self.assertFalse(excludes([".git"], ".pytest_cache"))
+        self.assertTrue(excludes(["*/.git"], ".git"))
+        self.assertFalse(excludes(["sub/.git"], ".git"))
+        self.assertTrue(excludes(["**"], ".git"))
+
+    @unittest.skipUnless(_pytest_on_path(), "no pytest on PATH")
+    def test_installed_pytest_default_norecursedirs_covers_residue(self):
+        # The pin the breach demands: when the selected config
+        # does not set norecursedirs, the gate relies on
+        # pytest's default list excluding the residue names.
+        # Judge the INSTALLED pytest's registered default: a
+        # future pytest whose default stops excluding one of
+        # them fails here loudly instead of silently opening
+        # the traversal route.
+        from _pytest.config import get_config
+
+        _help, _type, default = get_config()._parser._inidict[
+            "norecursedirs"
+        ]
+        excludes = mechanical_verify._norecursedirs_excludes
+        for name in (".git", ".pytest_cache", ".mypy_cache"):
+            self.assertTrue(
+                excludes(list(default), name),
+                f"installed default {default!r} no longer "
+                f"excludes {name}",
+            )
+
+    @unittest.skipUnless(_pytest_on_path(), "no pytest on PATH")
+    def test_pytest_ground_truth_traversal_rules(self):
+        # Two facts of pytest 9 the gate is built on, proven
+        # against the installed pytest itself: an ini-set
+        # norecursedirs is operative (it replaces the default,
+        # so traversal enters .git), and __pycache__ is pruned
+        # by a hardcoded check in pytest_ignore_collect that no
+        # config value can reopen (so the gate never requires
+        # the list to cover it).
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "pytest.ini", "[pytest]\nnorecursedirs = *.egg\n")
+            write(root, "conftest.py", self.COLLECTOR)
+            write(
+                root,
+                ".git/collected/check_a.txt",
+                "def test_planted():\n    assert True\n",
+            )
+            write(
+                root,
+                "__pycache__/collected/check_b.txt",
+                "def test_planted():\n    assert False\n",
+            )
+            write(
+                root,
+                "test_ok.py",
+                "def test_ok():\n    assert True\n",
+            )
+            proc = subprocess.run(
+                ["python3", "-m", "pytest", "--collect-only", "-q"],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("check_a.txt", proc.stdout)
+            self.assertNotIn("check_b.txt", proc.stdout)
+
+    def test_norecursedirs_dropping_dotstar_disqualifies(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "pytest.ini",
+                "[pytest]\nnorecursedirs = *.egg\n",
+            )
+            write(
+                root,
+                "test_ok.py",
+                "def test_ok():\n    assert True\n",
+            )
+            self.assertNotIn("pytest", self._ids(root))
+
+    def test_norecursedirs_covering_every_residue_name_keeps_leg(self):
+        cases = {
+            "keeps dotstar": "*.egg .* build",
+            "names each one": ".git .pytest_cache .mypy_cache *.egg",
+            "separated catch-all": "*/.git .pytest_cache .mypy_cache",
+            "multi-line value": "\n    *.egg\n    .*",
+        }
+        for label, value in cases.items():
+            with self.subTest(label=label):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    write(
+                        root,
+                        "pytest.ini",
+                        f"[pytest]\nnorecursedirs = {value}\n",
+                    )
+                    write(
+                        root,
+                        "test_ok.py",
+                        "def test_ok():\n    assert True\n",
+                    )
+                    self.assertIn("pytest", self._ids(root))
+
+    def test_norecursedirs_partial_coverage_disqualifies(self):
+        cases = {
+            "only .git named": ".git",
+            "empty value": "",
+            "scoped separator": "sub/.git .pytest_cache .mypy_cache",
+        }
+        for label, value in cases.items():
+            with self.subTest(label=label):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    write(
+                        root,
+                        "pytest.ini",
+                        f"[pytest]\nnorecursedirs = {value}\n",
+                    )
+                    write(
+                        root,
+                        "test_ok.py",
+                        "def test_ok():\n    assert True\n",
+                    )
+                    self.assertNotIn("pytest", self._ids(root))
+
+    def test_norecursedirs_toml_list_disqualifies(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "pyproject.toml",
+                "[tool.pytest.ini_options]\n"
+                'norecursedirs = ["*.egg"]\n',
+            )
+            write(
+                root,
+                "test_ok.py",
+                "def test_ok():\n    assert True\n",
+            )
+            self.assertNotIn("pytest", self._ids(root))
+
+    def test_symlinked_config_traversal_widening_stays_insulated(self):
+        # The gate never reads through a link: a symlinked
+        # config is neutralized by the -c pin (issue #64), so a
+        # widened norecursedirs inside it defines nothing and
+        # the leg is scheduled, pinned — not disqualified.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            external = base / "external.ini"
+            external.write_text("[pytest]\nnorecursedirs = *.egg\n")
+            os.symlink(external, root / "pytest.ini")
+            write(
+                root,
+                "test_ok.py",
+                "def test_ok():\n    assert True\n",
+            )
+            commands = discover_verification_commands(root)
+            pytest_commands = [c for c in commands if c.id == "pytest"]
+            self.assertEqual(len(pytest_commands), 1)
+            self.assertIn("-c", pytest_commands[0].argv)
+
+    @unittest.skipUnless(_pytest_on_path(), "no pytest on PATH")
+    def test_n7a_fixture_refused_in_fs_mode(self):
+        # Validation 3's breach fixture end to end: pre-fix
+        # this sealed with tests_collected 2 and check_receipts
+        # kept passing after the planted file was mutated.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            receipts = base / "receipts.jsonl"
+            self._n7a_tree(root, "norecursedirs = *.egg\n")
+            rc, _, output = self._verify(root, receipts)
+            self.assertEqual(rc, 2, output)
+            self.assertIn("no verification commands discovered", output)
+            self.assertFalse(receipts.exists())
+
+    @unittest.skipUnless(_pytest_on_path(), "no pytest on PATH")
+    def test_n7a_fixture_with_covering_list_seals_collected_one(self):
+        # The same fixture with a norecursedirs that still
+        # excludes every residue name: the leg runs, traversal
+        # stays out of .git, and only the real test collects.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            receipts = base / "receipts.jsonl"
+            self._n7a_tree(root, "norecursedirs = *.egg .*\n")
+            rc, records, output = self._verify(root, receipts)
+            self.assertEqual(rc, 0, output)
+            pytest_receipts = [
+                r for r in records if r.get("command_id") == "pytest"
+            ]
+            self.assertEqual(len(pytest_receipts), 1)
+            self.assertEqual(pytest_receipts[0]["exit_code"], 0)
+            self.assertEqual(pytest_receipts[0]["tests_collected"], 1)
+
+    @unittest.skipUnless(_pytest_on_path(), "no pytest on PATH")
+    def test_addopts_override_ini_does_not_widen_traversal(self):
+        # Ground-truth pin: pytest applies -o overrides once,
+        # before addopts are prepended, so an `-o` assignment
+        # inside addopts never reaches the ini store — the
+        # effective norecursedirs stays the default and the
+        # breach fixture steered this way collects only the
+        # real test. The gate therefore judges the ini key,
+        # not addopts text.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            receipts = base / "receipts.jsonl"
+            self._n7a_tree(root, "addopts = -o norecursedirs=*.egg\n")
+            rc, records, output = self._verify(root, receipts)
+            self.assertEqual(rc, 0, output)
+            pytest_receipts = [
+                r for r in records if r.get("command_id") == "pytest"
+            ]
+            self.assertEqual(len(pytest_receipts), 1)
+            self.assertEqual(pytest_receipts[0]["tests_collected"], 1)
+
+    def test_symlinked_default_doctest_textfile_disqualifies(self):
+        # The walk's own pre-existing hole: under pytest's
+        # DEFAULT doctest glob (test*.txt) a symlinked textfile
+        # is collected and its doctests execute through the
+        # link, under a fully default run with no config at
+        # all. The effective-patterns rule closes it.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            outside = write(
+                base,
+                "outside.txt",
+                ">>> 1 + 1\n2\n",
+            )
+            write(
+                root,
+                "test_ok.py",
+                "def test_ok():\n    assert True\n",
+            )
+            os.symlink(outside, root / "test_notes.txt")
+            self.assertNotIn("pytest", self._ids(root))
+
+    def test_symlinked_txt_with_widened_doctest_glob_disqualifies(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            outside = write(base, "outside.txt", "payload\n")
+            write(
+                root,
+                "pytest.ini",
+                "[pytest]\naddopts = --doctest-glob=*.txt\n",
+            )
+            write(
+                root,
+                "test_ok.py",
+                "def test_ok():\n    assert True\n",
+            )
+            os.symlink(outside, root / "data.txt")
+            self.assertNotIn("pytest", self._ids(root))
+
+    def test_symlinked_txt_matching_no_glob_stays(self):
+        # Boundary pin: a symlinked .txt matching neither the
+        # default doctest glob nor any configured pattern is
+        # not executed by pytest's own machinery, so the leg
+        # stays (a bound conftest executing it by choice is the
+        # disclosed in-tree family, not this gate's).
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            outside = write(base, "outside.txt", "payload\n")
+            write(root, "pytest.ini", "[pytest]\n")
+            write(
+                root,
+                "test_ok.py",
+                "def test_ok():\n    assert True\n",
+            )
+            os.symlink(outside, root / "data.txt")
+            self.assertIn("pytest", self._ids(root))
+
+    def test_real_doctest_textfile_stays(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "test_notes.txt",
+                ">>> 1 + 1\n2\n",
+            )
+            write(
+                root,
+                "test_ok.py",
+                "def test_ok():\n    assert True\n",
+            )
+            self.assertIn("pytest", self._ids(root))
+
+    def test_widened_python_files_symlink_disqualifies(self):
+        # The brief's shape: the selected config widens
+        # python_files to *.txt; a symlinked file the widened
+        # pattern names disqualifies exactly like a
+        # default-pattern collectable.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            outside = write(base, "outside.txt", "payload\n")
+            write(
+                root,
+                "pytest.ini",
+                "[pytest]\npython_files = *.txt\n",
+            )
+            write(
+                root,
+                "test_ok.py",
+                "def test_ok():\n    assert True\n",
+            )
+            os.symlink(outside, root / "check_data.txt")
+            self.assertNotIn("pytest", self._ids(root))
+
+    def test_widened_python_files_real_file_stays(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "pytest.ini",
+                "[pytest]\npython_files = *.txt\n",
+            )
+            write(root, "check_data.txt", "payload\n")
+            write(
+                root,
+                "test_ok.py",
+                "def test_ok():\n    assert True\n",
+            )
+            self.assertIn("pytest", self._ids(root))
+
+
 def _pid_dead(pid: int) -> bool:
     """Gone entirely, or a zombie (dead, awaiting reaping by init)."""
     try:

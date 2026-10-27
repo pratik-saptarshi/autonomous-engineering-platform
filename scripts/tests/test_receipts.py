@@ -2119,5 +2119,143 @@ class PlacementAndStrictTypeTests(unittest.TestCase):
             self.assertIn("RECEIPTS: PASS", proc.stdout)
 
 
+class TraversalGateBindingTests(unittest.TestCase):
+    """Task 12 (paperthin validation 3, breach B-NEW), git-mode
+    instance: the planted file lives inside the repository's
+    real .git directory, where git status never looks and the
+    git-mode binding's enumerated .git set (code files, module
+    archives, hooks) does not reach a .txt data file. Pre-fix
+    the tree sealed with the planted item in the count and
+    check-receipts kept passing after it was mutated; the
+    traversal gate refuses the leg at discovery, so nothing
+    seals. The fs-mode instance and the gate's unit matrix are
+    in test_mechanical_verify.py (TraversalGateTests)."""
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_n7a_fixture_refused_in_git_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "pytest.ini",
+                "[pytest]\nnorecursedirs = *.egg\n",
+            )
+            write(
+                root,
+                "conftest.py",
+                "import pytest\n\n\n"
+                "class TxtFile(pytest.File):\n"
+                "    def collect(self):\n"
+                "        yield TxtItem.from_parent(self, name='planted')\n\n\n"
+                "class TxtItem(pytest.Item):\n"
+                "    def runtest(self):\n"
+                "        namespace = {}\n"
+                "        exec(self.path.read_text(), namespace)\n"
+                "        namespace['test_planted']()\n\n\n"
+                "def pytest_collect_file(file_path, parent):\n"
+                "    if file_path.suffix == '.txt' and "
+                "file_path.name.startswith('check_'):\n"
+                "        return TxtFile.from_parent(parent, path=file_path)\n",
+            )
+            write(
+                root,
+                "test_ok.py",
+                "def test_ok():\n    assert True\n",
+            )
+            git(root, "init", "-q", "-b", "main")
+            git(root, "add", "pytest.ini", "conftest.py", "test_ok.py")
+            git(
+                root,
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "-q",
+                "-m",
+                "fixture",
+            )
+            # Planted inside the real .git: invisible to git
+            # status, outside the enumerated bind set there.
+            write(
+                root,
+                ".git/collected/check_a.txt",
+                "def test_planted():\n    assert True\n",
+            )
+            receipts = root / "r.jsonl"
+            proc = verify(root, "1", receipts)
+            self.assertEqual(
+                proc.returncode, 2, proc.stdout + proc.stderr
+            )
+            self.assertIn(
+                "no verification commands discovered", proc.stdout
+            )
+            self.assertFalse(receipts.exists())
+
+
+class NonRegularFileBindingTests(unittest.TestCase):
+    """Task 12 (paperthin validation 3, note N4): the fs digest
+    content-read every non-symlink file, so a FIFO in the tree
+    blocked verify — and check_receipts, which recomputes the
+    digest — forever. Only regular files are content-read now;
+    any other non-directory, non-symlink entry (FIFO, socket,
+    device) contributes its (path, mode) entry without being
+    opened: presence and type stay bound, no read can hang.
+    Git mode never opens working-tree files (its digest comes
+    from git object metadata), so it was always immune."""
+
+    def test_fs_digest_binds_fifo_by_presence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "a.txt", "one\n")
+            before = mechanical_verify.tree_binding(root)["tree_digest"]
+            os.mkfifo(root / "pipe")
+            bound = mechanical_verify.tree_binding(root)["tree_digest"]
+            self.assertNotEqual(before, bound)
+            # Recomputing neither hangs nor drifts.
+            self.assertEqual(
+                bound,
+                mechanical_verify.tree_binding(root)["tree_digest"],
+            )
+            # A type change at the same path moves the digest.
+            (root / "pipe").unlink()
+            write(root, "pipe", "payload\n")
+            self.assertNotEqual(
+                bound,
+                mechanical_verify.tree_binding(root)["tree_digest"],
+            )
+
+    def test_fifo_under_cache_name_binds_by_presence(self):
+        # The residue walk has the same read site: under a
+        # cache name a FIFO is not tool state, so it binds —
+        # by presence, without being opened.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "a.txt", "one\n")
+            write(root, ".pytest_cache/v/cache/nodeids", "[]\n")
+            before = mechanical_verify.tree_binding(root)["tree_digest"]
+            os.mkfifo(root / ".pytest_cache" / "pipe")
+            self.assertNotEqual(
+                before,
+                mechanical_verify.tree_binding(root)["tree_digest"],
+            )
+
+    def test_fifo_tree_verifies_and_audits_to_completion(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            two_command_fixture(root)
+            os.mkfifo(root / "pipe")
+            receipts = root / "r.jsonl"
+            proc = verify(root, "1", receipts)
+            self.assertEqual(
+                proc.returncode, 0, proc.stdout + proc.stderr
+            )
+            proc = check(receipts, "1")
+            self.assertEqual(
+                proc.returncode, 0, proc.stdout + proc.stderr
+            )
+            self.assertIn("RECEIPTS: PASS", proc.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

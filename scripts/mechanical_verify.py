@@ -15,6 +15,7 @@ import builtins
 import configparser
 import ctypes
 import fcntl
+import fnmatch
 import hashlib
 import json
 import os
@@ -1128,6 +1129,187 @@ def _addopts_aims(tokens: list[str]) -> tuple[list[str], bool]:
     return aims, pyargs
 
 
+def _pytest_config_key_entries(
+    config: Path, key: str
+) -> list[str] | None:
+    """The effective entries of one "args"-typed ini key
+    (*key*: norecursedirs, python_files) in a REAL pytest
+    config, or None when the config does not set the key.
+    pytest's _getini coerces an "args" value with
+    shlex.split; a TOML list stands as its items. The raw
+    reader can yield several values for one key (pyproject's
+    [tool.pytest] table and its ini_options table); the LAST
+    non-None value wins, matching the reader's precedence.
+    A single value still applies when its list is empty: an
+    explicitly emptied key is a set key."""
+    values = [
+        value
+        for value in _pytest_config_raw_values(config, (key,))
+        if value is not None
+    ]
+    if not values:
+        return None
+    value = values[-1]
+    if isinstance(value, str):
+        try:
+            return shlex.split(value)
+        except ValueError:
+            return value.split()
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, str)]
+    return []
+
+
+def _fnmatch_ex(pattern: str, path: str) -> bool:
+    """pytest's fnmatch_ex (_pytest.pathlib), ported: a
+    pattern containing no path separator is matched against
+    the path's basename; a pattern with one is matched
+    against the whole path, with "*<sep>" prepended when the
+    path is absolute and the pattern is not."""
+    if os.sep not in pattern:
+        name = Path(path).name
+    else:
+        name = path
+        if os.path.isabs(path) and not os.path.isabs(pattern):
+            pattern = "*" + os.sep + pattern
+    return fnmatch.fnmatch(name, pattern)
+
+
+# The residue names pytest's traversal must be kept out of.
+# __pycache__ is NOT among them: _pytest.main's
+# pytest_ignore_collect returns True for a directory of that
+# name unconditionally, before the norecursedirs check, so
+# no config value can reopen it (pinned behaviourally in
+# TraversalGateTests). The other three are excluded only by
+# pytest's default norecursedirs — ["*.egg", ".*", "_darcs",
+# "build", "CVS", "dist", "node_modules", "venv", "{arch}"]
+# (registered in _pytest.main's pytest_addoption, pytest
+# 9.0.3) — whose `.*` entry the gate's pin test re-judges
+# against the installed pytest on every run.
+_TRAVERSAL_RESIDUE_NAMES = (".git", ".pytest_cache", ".mypy_cache")
+
+
+def _norecursedirs_excludes(patterns: list[str], name: str) -> bool:
+    """Whether pytest traversal under norecursedirs
+    *patterns* is kept out of a directory named *name*,
+    judged the way _pytest.main's pytest_ignore_collect
+    judges it: fnmatch_ex per pattern, on the directory's
+    path. A slash-free pattern fnmatches the basename and so
+    covers the name at every depth. A pattern with a
+    separator is credited only when it matches the name at
+    EVERY depth probed (one, two, and three components below
+    a placeholder root): `*/.git` covers `.git` wherever it
+    sits, while `sub/.git` covers exactly one location and
+    leaves every other `.git` enterable — not coverage."""
+    for pattern in patterns:
+        if os.sep not in pattern:
+            if fnmatch.fnmatch(name, pattern):
+                return True
+        else:
+            probes = (
+                f"/probe/{name}",
+                f"/probe/sub/{name}",
+                f"/probe/sub/deep/{name}",
+            )
+            if all(_fnmatch_ex(pattern, probe) for probe in probes):
+                return True
+    return False
+
+
+def _selected_config_traversal_enters_residue(root: Path) -> bool:
+    """Whether the REAL config pytest would read at *root*
+    sets a norecursedirs under which collection traversal
+    can enter a residue directory (paperthin validation 3,
+    breach B-NEW).
+
+    norecursedirs REPLACES pytest's default list: a bound
+    config setting `norecursedirs = *.egg` drops the
+    default's `.*`, and the default traversal — no aim, no
+    testpaths — then descends into .git, where a bound
+    conftest's custom collector can execute a planted file
+    outside the .git bind set. The judgement is scoped to
+    what traversal alone reaches: the residue directories
+    themselves (aims INTO them, and below them, are the aim
+    gate's). When the config does not set the key, pytest's
+    default applies and excludes all three names — the pin
+    test re-judges the installed pytest's registered default
+    so a future pytest changing it fails loudly. A symlinked
+    selected config is never read: _pytest_argv pins it to
+    an empty config (issue #64)."""
+    selected = _pytest_config_selected(root)
+    if selected is None or selected.is_symlink():
+        return False
+    patterns = _pytest_config_key_entries(selected, "norecursedirs")
+    if patterns is None:
+        return False
+    return any(
+        not _norecursedirs_excludes(patterns, name)
+        for name in _TRAVERSAL_RESIDUE_NAMES
+    )
+
+
+_PYTEST_DEFAULT_PYTHON_FILES = ("test_*.py", "*_test.py")
+_PYTEST_DEFAULT_DOCTEST_GLOBS = ("test*.txt",)
+
+
+def _addopts_doctest_globs(tokens: list[str]) -> list[str]:
+    """The --doctest-glob values among addopts *tokens*.
+
+    --doctest-glob is the doctest plugin's append option:
+    when a run carries any, they REPLACE its built-in
+    default (test*.txt) as the fnmatch_ex globs
+    _pytest.doctest applies to non-.py files. The scan
+    consumes known value-taking options' values the way
+    _addopts_aims does, so a glob-looking token swallowed
+    as another option's value is not misread as one."""
+    globs: list[str] = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        index += 1
+        if token == "--":
+            break
+        if token.startswith("--doctest-glob="):
+            globs.append(token.split("=", 1)[1])
+            continue
+        if token.startswith("-") and token != "-":
+            name = token.split("=", 1)[0]
+            if "=" not in token and name in _PYTEST_VALUE_OPTIONS:
+                if name == "--doctest-glob" and index < len(tokens):
+                    globs.append(tokens[index])
+                index += 1
+            continue
+    return globs
+
+
+def _pytest_collection_patterns(
+    root: Path,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """The (python_files patterns, doctest globs) the bare
+    run at *root* collects under — the EFFECTIVE patterns
+    the scope walk judges symlinked files by.
+
+    The defaults when no config is selected, and when the
+    selected config is a symlink: the pinned run reads an
+    empty config (issue #64), so no config value can widen
+    anything, and the walk pins that interaction by judging
+    exactly what the pinned run would use. Otherwise the
+    selected real config's python_files when it sets the
+    key, and the --doctest-glob values of its addopts when
+    it carries any; each unset piece stays at its default."""
+    selected = _pytest_config_selected(root)
+    if selected is None or selected.is_symlink():
+        return _PYTEST_DEFAULT_PYTHON_FILES, _PYTEST_DEFAULT_DOCTEST_GLOBS
+    python_files = _pytest_config_key_entries(selected, "python_files")
+    globs = _addopts_doctest_globs(_pytest_config_addopts(selected))
+    return (
+        tuple(python_files)
+        if python_files is not None
+        else _PYTEST_DEFAULT_PYTHON_FILES,
+        tuple(globs) if globs else _PYTEST_DEFAULT_DOCTEST_GLOBS,
+    )
+
+
 def _path_crosses_symlink(root: Path, target: str) -> bool:
     """Whether the normalized absolute *target* — inside
     *root* — is reached through a symlink below the root:
@@ -1202,10 +1384,13 @@ def _entry_aims_unattested(root: Path, entry: str) -> bool:
 
 def _selected_config_aims_unattested(root: Path) -> bool:
     """Whether the REAL config pytest would read at *root*
-    aims the bare leg at unattested content, over the
-    config's full aiming surface: its testpaths and
+    steers the bare leg at unattested content, over the
+    config's full steering surface: its testpaths and
     pythonpath entries, the positional tokens of its
-    addopts, and --pyargs.
+    addopts, --pyargs, and its norecursedirs — judged for
+    whether default collection traversal can still enter a
+    residue directory (see
+    _selected_config_traversal_enters_residue).
 
     The collected .py files under a residue name are bound
     in the tree digest (see _fs_residue_entries), so a
@@ -1224,13 +1409,18 @@ def _selected_config_aims_unattested(root: Path) -> bool:
     describe at all (finding F3). An aim at or through a
     symlink is refused on the same principle (Task 11
     re-review §4): the binding attests a link's target
-    string, never its content. A symlinked selected
+    string, never its content. The traversal key is the one
+    steering surface that is not an aim at all: it widens
+    where the DEFAULT walk descends (paperthin validation
+    3, breach B-NEW). A symlinked selected
     config is never read here: _pytest_argv already pins it
     to an empty config, so its entries define nothing
     (issue #64)."""
     selected = _pytest_config_selected(root)
     if selected is None or selected.is_symlink():
         return False
+    if _selected_config_traversal_enters_residue(root):
+        return True
     aims, pyargs = _addopts_aims(_pytest_config_addopts(selected))
     if pyargs:
         return True
@@ -1240,33 +1430,56 @@ def _selected_config_aims_unattested(root: Path) -> bool:
     )
 
 
-def _pytest_collectable_file(name: str) -> bool:
-    """Whether pytest collection imports the file *name*:
-    its default test-module patterns (python_files =
-    test_*.py *_test.py), plus conftest.py, which pytest
+def _pytest_collectable_file(
+    path: Path,
+    python_files: tuple[str, ...],
+    doctest_globs: tuple[str, ...],
+) -> bool:
+    """Whether pytest's own collection machinery executes
+    the file at *path*, under the EFFECTIVE patterns (see
+    _pytest_collection_patterns): conftest.py, which pytest
     imports from every directory it collects in and whose
-    hooks can steer collection."""
-    return (
-        name == "conftest.py"
-        or (name.startswith("test_") and name.endswith(".py"))
-        or name.endswith("_test.py")
+    hooks can steer collection; a name matching an effective
+    python_files pattern — core collection imports only .py
+    files, but a pattern naming another suffix is the
+    config's own declaration of what it treats as a test
+    module, and the gate does not prove a negative about
+    the hooks and plugins that declaration steers; or a
+    name matching an effective doctest glob — the doctest
+    plugin collects textfiles under its globs and executes
+    their doctests, under the default test*.txt no less
+    than under a widened --doctest-glob (the default-glob
+    route is the one the pre-Task-12 default-pattern set
+    missed entirely)."""
+    name = path.name
+    if name == "conftest.py":
+        return True
+    return any(
+        _fnmatch_ex(pattern, str(path))
+        for pattern in (*python_files, *doctest_globs)
     )
 
 
-def _pytest_scope_link_file(name: str) -> bool:
-    """Whether a symlinked file named *name* in the bare
+def _pytest_scope_link_file(
+    path: Path,
+    python_files: tuple[str, ...],
+    doctest_globs: tuple[str, ...],
+) -> bool:
+    """Whether a symlinked file at *path* in the bare
     leg's collection scope disqualifies the leg: any `.py`
     name — collection executes an aimed .py file under any
     name, and a collected module imports a .py module by
     name from a sys.path directory the same way — or a
-    collectable name (see _pytest_collectable_file; every
-    such name ends in .py today, and the union keeps the
-    scope rule attached to the collection rule if that
-    ever changes). A non-.py, non-collectable name — a
-    data file, a README — is never imported by
-    collection, so a symlink under it disqualifies
-    nothing."""
-    return name.endswith(".py") or _pytest_collectable_file(name)
+    name pytest's own machinery executes under the
+    effective patterns (see _pytest_collectable_file). A
+    name matching no pattern — a data file, a README — is
+    never executed by collection itself, so a symlink
+    under it disqualifies nothing; a bound conftest
+    choosing to execute it is bound code acting in-tree,
+    the disclosed family, not this gate's."""
+    return path.name.endswith(".py") or _pytest_collectable_file(
+        path, python_files, doctest_globs
+    )
 
 
 def _bare_pytest_scope_has_symlink(root: Path) -> bool:
@@ -1287,18 +1500,22 @@ def _bare_pytest_scope_has_symlink(root: Path) -> bool:
       conservative form: config can widen collection
       (testpaths, norecursedirs overrides), so no directory
       below root is provably outside the scope; or
-    - any symlinked FILE pytest would execute, judged by name
-      (see _pytest_scope_link_file): every `.py` name, plus
-      the collectable names. The .py rule is deliberately
+    - any symlinked FILE pytest would execute, judged
+      against the EFFECTIVE collection patterns (see
+      _pytest_scope_link_file and
+      _pytest_collection_patterns): every `.py` name, plus
+      the names the effective python_files patterns and
+      doctest globs name. The .py rule is deliberately
       wider than the name patterns collection uses by
       default: a config aim executes a .py file under ANY
       name (Task 11 re-review §4), and prepend import mode
       puts every collected test's directory on sys.path,
       where a .py module is importable by name — so no .py
       name is provably outside the execution scope. The
-      boundary that remains is non-.py, non-collectable
-      names: a symlinked data file is never imported by
-      collection, so it disqualifies nothing.
+      boundary that remains is a non-.py name no effective
+      pattern names: a symlinked data file is never
+      executed by collection itself, so it disqualifies
+      nothing.
 
     The walk prunes only .git — the VCS's own subtree, which
     the binding likewise never attests as project content. The
@@ -1308,6 +1525,7 @@ def _bare_pytest_scope_has_symlink(root: Path) -> bool:
     error disqualifies the leg (fail closed): a scope that
     cannot be inventoried cannot be attested symlink-free.
     """
+    python_files, doctest_globs = _pytest_collection_patterns(root)
     errors: list[OSError] = []
     for dirpath, dirnames, filenames in os.walk(
         root, followlinks=False, onerror=errors.append
@@ -1322,9 +1540,9 @@ def _bare_pytest_scope_has_symlink(root: Path) -> bool:
             descend.append(name)
         dirnames[:] = descend
         for name in filenames:
-            if _pytest_scope_link_file(name) and (
-                current / name
-            ).is_symlink():
+            if _pytest_scope_link_file(
+                current / name, python_files, doctest_globs
+            ) and (current / name).is_symlink():
                 return True
     return bool(errors)
 
@@ -1352,11 +1570,13 @@ def discover_verification_commands(root: Path) -> tuple[VerificationCommand, ...
     # Issue #62: the bare pytest leg is additionally disqualified
     # when its collection scope contains a symlink — a symlinked
     # directory, a symlinked .py file of any name, or a
-    # symlinked collectable-named file (see
-    # _bare_pytest_scope_has_symlink) — or when the real config
-    # pytest would read aims collection or sys.path at
-    # unattested content over its full aiming surface —
-    # testpaths, pythonpath, addopts positionals, --pyargs;
+    # symlinked file the effective collection patterns name
+    # (see _bare_pytest_scope_has_symlink) — or when the real
+    # config pytest would read steers collection or sys.path at
+    # unattested content over its full steering surface —
+    # testpaths, pythonpath, addopts positionals, --pyargs,
+    # and norecursedirs judged for whether default traversal
+    # can still enter a residue directory;
     # targets: a residue directory, anywhere outside the
     # root, or a path at or through a symlink (see
     # _selected_config_aims_unattested: files under
@@ -2924,6 +3144,28 @@ def _fs_entry_mode(path: Path) -> str:
     return format(stat.S_IFMT(st.st_mode), "06o")
 
 
+_NON_REGULAR_CONTENT = "non-regular"
+
+
+def _fs_entry_content(path: Path) -> str:
+    """The content component of one fs-digest entry: a
+    regular file's sha256 hex; a symlink's target string
+    (never followed); for any other entry type — FIFO,
+    socket, device — a fixed marker, so the entry binds the
+    file's presence and type (its mode string, see
+    _fs_entry_mode) WITHOUT opening it: opening a FIFO
+    blocks until a writer appears, so a tree containing one
+    hung verify and check_receipts, which recomputes the
+    digest, forever (paperthin validation 3, note N4). Git
+    mode needs no such rule: its digest comes from git
+    object metadata and never opens a working-tree file."""
+    if path.is_symlink():
+        return os.readlink(path)
+    if stat.S_ISREG(os.lstat(path).st_mode):
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    return _NON_REGULAR_CONTENT
+
+
 def _fs_residue_entries(
     residue_root: Path,
     resolved: Path,
@@ -2936,15 +3178,16 @@ def _fs_residue_entries(
     _residue_file_binds: under the three cache names, every
     file except the owning tool's own state; under .git, the
     enumerated bind set (code files, module archives, hooks).
-    Bound files digest by content hash, and symlinks by target
-    string — exactly as the main walk binds them everywhere
-    else. The excluded remainder — cache indexes, bytecode,
-    git's other internals — contributes nothing, so the run's
-    own cache generation cannot change the digest mid-run and
-    abort the seal. Planted content is not tool state: what a
-    runtime can load by name binds wherever it sits, so
-    content a sealed run imports or collects from a residue
-    directory is content the seal attests (paperthin
+    Bound files digest by content hash, symlinks by target
+    string, and non-regular files by presence (see
+    _fs_entry_content) — exactly as the main walk binds them
+    everywhere else. The excluded remainder — cache indexes,
+    bytecode, git's other internals — contributes nothing, so
+    the run's own cache generation cannot change the digest
+    mid-run and abort the seal. Planted content is not tool
+    state: what a runtime can load by name binds wherever it
+    sits, so content a sealed run imports or collects from a
+    residue directory is content the seal attests (paperthin
     validation 2, probes B1a/B1b/B1c; Task 11 review, finding
     F1).
     """
@@ -2989,9 +3232,7 @@ def _fs_residue_entries(
                         (
                             rel,
                             _fs_entry_mode(path),
-                            hashlib.sha256(
-                                path.read_bytes()
-                            ).hexdigest(),
+                            _fs_entry_content(path),
                         )
                     )
     return entries
@@ -3002,7 +3243,9 @@ def _fs_tree_digest(root: Path, receipts_path: Path | None = None) -> str:
     `relpath + "\\0" + mode + "\\0" + content + "\\0"`, where mode is
     the entry's git-style mode string (file type + executable bit —
     see `_fs_entry_mode`) and content is the file's sha256 hex
-    (symlinks: the target string, never followed). The receipts
+    (symlinks: the target string, never followed; non-regular
+    files: a presence marker, never opened — see
+    _fs_entry_content). The receipts
     file itself is excluded. A directory named in
     FS_RESIDUE_DIRS contributes the files _residue_file_binds
     selects and its symlinks (see _fs_residue_entries); the
@@ -3057,18 +3300,9 @@ def _fs_tree_digest(root: Path, receipts_path: Path | None = None) -> str:
             ):
                 continue
             rel = path.relative_to(resolved).as_posix()
-            if path.is_symlink():
-                entries.append(
-                    (rel, _fs_entry_mode(path), os.readlink(path))
-                )
-            else:
-                entries.append(
-                    (
-                        rel,
-                        _fs_entry_mode(path),
-                        hashlib.sha256(path.read_bytes()).hexdigest(),
-                    )
-                )
+            entries.append(
+                (rel, _fs_entry_mode(path), _fs_entry_content(path))
+            )
     entries.sort()
     digest = hashlib.sha256()
     for rel, mode, content in entries:
