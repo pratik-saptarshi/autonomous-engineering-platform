@@ -3504,12 +3504,19 @@ def _path_binds_under_residue(parts: list[str]) -> bool | None:
 #   restated at the _git level so every status invocation
 #   enumerates untracked files individually.
 #
-# Two setup-level keys a -c pin cannot retake, adjudicated
-# rather than pinned: core.bare makes every worktree command
-# fail, so a checkout carrying it fails closed; core.worktree IS
+# Two setup-level keys a -c pin cannot retake. core.worktree IS
 # honoured from the file over the argv (setup consumes it before
 # -c applies), so _git overrides it with --work-tree derived
 # from the filesystem layout instead (see _filesystem_worktree_top).
+# core.bare is REFUSED, not pinned: the restated argv
+# (--git-dir/--work-tree) overrides bareness exactly as it
+# overrides core.worktree, so a checkout declaring core.bare=true
+# would otherwise be judged as an ordinary worktree (Task 16
+# review, finding F1 — the original adjudication here claimed
+# the opposite). A bare declaration in a delivered worktree
+# checkout is anomalous, so tree_clean refuses it outright via
+# _repo_local_config_refusal, which also refuses repo-local
+# filter drivers (program-naming config of the fsmonitor kind).
 _GIT_CONFIG_PINS = (
     "core.fsmonitor=false",
     "core.untrackedCache=false",
@@ -3565,6 +3572,20 @@ def _layout_git_dir(top: Path) -> str | None:
     return None
 
 
+def _git_env() -> dict:
+    """Environment for the verifier's git invocations: the
+    caller's, plus GIT_NO_REPLACE_OBJECTS=1. Replace refs
+    (.git/refs/replace/<sha>) are delivered checkout state like
+    .git/config: a planted ref makes ls-tree, cat-file, and
+    status read substituted objects, so a seal could attest a
+    tree that is not HEAD's (Task 16 review, finding F2's
+    family). The env opt-out applies to every invocation
+    uniformly, with no argv-ordering constraint."""
+    env = dict(os.environ)
+    env["GIT_NO_REPLACE_OBJECTS"] = "1"
+    return env
+
+
 def _absolute_git_dir(root: Path) -> str | None:
     """Fallback for exotic layouts: ask git where the git dir
     is. The answer is a path derivation repo-local config was
@@ -3574,13 +3595,14 @@ def _absolute_git_dir(root: Path) -> str | None:
         ["git", "-C", str(root), "rev-parse", "--absolute-git-dir"],
         capture_output=True,
         timeout=60,
+        env=_git_env(),
     )
     if proc.returncode != 0:
         return None
     return proc.stdout.decode("utf-8", errors="replace").strip() or None
 
 
-def _git(root: Path, *args: str) -> subprocess.CompletedProcess:
+def _git_argv(root: Path, *args: str) -> list[str]:
     argv = ["git", "-C", str(root)]
     top = _filesystem_worktree_top(root)
     if top is not None:
@@ -3596,7 +3618,16 @@ def _git(root: Path, *args: str) -> subprocess.CompletedProcess:
     for pin in _GIT_CONFIG_PINS:
         argv += ["-c", pin]
     argv += list(args)
-    return subprocess.run(argv, capture_output=True, timeout=60)
+    return argv
+
+
+def _git(root: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        _git_argv(root, *args),
+        capture_output=True,
+        timeout=60,
+        env=_git_env(),
+    )
 
 
 def _git_head(root: Path) -> str | None:
@@ -3628,6 +3659,204 @@ def _git_tree_digest(root: Path, head: str) -> str | None:
             return None
         digest.update(parts[0] + b" " + parts[2] + b" " + path + b"\n")
     return digest.hexdigest()
+
+
+_FILTER_DRIVER_KEY = re.compile(r"^filter\..+\.(clean|smudge|process)$")
+
+_DELIVERED_CONFIG_SCOPES = ("local", "worktree")
+
+
+def _config_bool(value: str | None) -> bool:
+    """Git's boolean reading of one config value: a valueless
+    key is true, the empty string is false, and the named and
+    numeric forms follow git's own rules."""
+    if value is None:
+        return True
+    text = value.strip().lower()
+    if text in ("true", "yes", "on"):
+        return True
+    if text in ("false", "no", "off", ""):
+        return False
+    try:
+        return int(text) != 0
+    except ValueError:
+        return False
+
+
+def _repo_local_config_refusal(root: Path) -> str | None:
+    """Why git mode refuses this checkout's own configuration,
+    or None. Only the DELIVERED scopes are judged — `local`
+    (.git/config, including anything its include.path chain
+    pulls in, which git reports under the including scope) and
+    `worktree` (config.worktree under extensions.worktreeConfig)
+    — never the operator's system/global config, which is
+    operator environment, nor the verifier's own -c pins
+    (command scope). Two refusals:
+
+    - Any filter.*.clean / .smudge / .process key: filter
+      drivers are program-naming config delivered with the
+      checkout, the fsmonitor kind. Content-exact cleanliness
+      (see _tracked_content_matches_head) compares raw bytes
+      precisely so that no repo-named program stands between
+      the worktree and the blob; a checkout carrying the keys
+      is refused whether or not an attribute selects a driver.
+    - core.bare=true (the effective delivered value, last in
+      precedence order): the verifier's restated argv overrides
+      bareness, so the flag would otherwise be silently
+      neutralized while the checkout declares itself not a
+      worktree at all. The declaration is anomalous in a
+      delivered worktree checkout; refusing costs nothing
+      legitimate (Task 16 review, finding F1).
+    """
+    names = _git(root, "config", "--name-only", "--list", "--show-scope")
+    if names.returncode != 0:
+        return "repo-local git config is not readable"
+    for line in names.stdout.decode("utf-8", errors="replace").splitlines():
+        scope, sep, key = line.partition("\t")
+        if not sep or scope not in _DELIVERED_CONFIG_SCOPES:
+            continue
+        if _FILTER_DRIVER_KEY.match(key.strip().lower()):
+            return (
+                "repo-local git config defines a filter driver "
+                f"({key.strip()}); filter drivers are programs the "
+                "checkout names, and git mode refuses them"
+            )
+    values = _git(root, "config", "--list", "--show-scope")
+    if values.returncode != 0:
+        return "repo-local git config is not readable"
+    bare_seen = False
+    bare_value: str | None = None
+    for line in values.stdout.decode("utf-8", errors="replace").splitlines():
+        scope, sep, rest = line.partition("\t")
+        if not sep or scope not in _DELIVERED_CONFIG_SCOPES:
+            continue
+        key, eq, value = rest.partition("=")
+        if key.strip().lower() != "core.bare":
+            continue
+        bare_seen = True
+        bare_value = value if eq else None
+    if bare_seen and _config_bool(bare_value):
+        return (
+            "repo-local git config sets core.bare=true; a "
+            "delivered worktree checkout declaring itself bare "
+            "is refused rather than silently overridden"
+        )
+    return None
+
+
+def _tracked_content_matches_head(root: Path, toplevel: Path) -> bool:
+    """Content-exact tracked cleanliness: for every blob entry
+    of `git ls-tree -r HEAD`, the worktree entry at the same
+    path carries the same git mode and bytes identical to the
+    blob's. Gitlink (submodule) entries are skipped — their
+    state is the submodule's own HEAD, which the status half
+    of tree_clean judges.
+
+    This replaces the index's stat cache as the tracked half's
+    authority. `git status` believes an index entry whose stat
+    fields match the worktree file WITHOUT reading content —
+    the cache working as designed — and the index travels with
+    a filesystem-delivered checkout exactly as .git/config
+    does: a byte-forged entry (HEAD's blob SHA over the
+    modified file's genuine stat, trailer checksum recomputed)
+    makes a modified tracked file invisible to status and to
+    every -c pin, because no pin governs the cache (Task 16
+    review, finding F2). Comparing bytes directly consults no
+    cache and executes no program: blob bytes come from one
+    `git cat-file --batch` over the object store (replace
+    objects disabled, see _git_env), worktree bytes are read
+    raw. `git hash-object` was probed and rejected as the
+    per-file instrument: it EXECUTES the entry's clean filter
+    (a sentinel-writing driver ran), standing a repo-named
+    program inside the verifier's own call — the hooks class
+    the pins exist to exclude.
+
+    The price, stated as git mode's limit in the docs: the
+    comparison is byte-exact, so a tree whose checked-out bytes
+    legitimately differ from its blob bytes — attribute-driven
+    EOL/text conversion, a clean/smudge filter, Git LFS —
+    cannot seal in git mode. No normalization is applied,
+    because every normalization available is either git's own
+    borrowed answer or a repo-named program.
+    """
+    proc = _git(root, "ls-tree", "-r", "-z", "HEAD")
+    if proc.returncode != 0:
+        return False
+    blobs: list[tuple[str, str, str]] = []
+    for entry in proc.stdout.split(b"\0"):
+        if not entry:
+            continue
+        meta, _, raw_path = entry.partition(b"\t")
+        parts = meta.split(b" ")
+        if len(parts) != 3:
+            return False
+        if parts[1] != b"blob":
+            continue
+        blobs.append(
+            (
+                parts[0].decode("ascii", errors="replace"),
+                parts[2].decode("ascii", errors="replace"),
+                raw_path.decode("utf-8", errors="surrogateescape"),
+            )
+        )
+    if not blobs:
+        return True
+    try:
+        batch = subprocess.Popen(
+            _git_argv(root, "cat-file", "--batch"),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            env=_git_env(),
+        )
+    except OSError:
+        return False
+    try:
+        assert batch.stdin is not None and batch.stdout is not None
+        for mode, sha, rel in blobs:
+            target = toplevel / rel
+            try:
+                st = os.lstat(target)
+            except OSError:
+                return False
+            if _fs_entry_mode(target) != mode:
+                return False
+            batch.stdin.write((sha + "\n").encode("ascii"))
+            batch.stdin.flush()
+            header = (
+                batch.stdout.readline().decode("ascii", errors="replace")
+            ).split()
+            if len(header) != 3 or header[1] != "blob":
+                return False
+            try:
+                size = int(header[2])
+            except ValueError:
+                return False
+            content = batch.stdout.read(size)
+            if len(content) != size or batch.stdout.read(1) != b"\n":
+                return False
+            if stat.S_ISLNK(st.st_mode):
+                actual = os.readlink(target).encode(
+                    "utf-8", errors="surrogateescape"
+                )
+                if actual != content:
+                    return False
+            elif _fs_entry_content(target) != hashlib.sha256(
+                content
+            ).hexdigest():
+                return False
+        return True
+    except (OSError, ValueError):
+        return False
+    finally:
+        try:
+            if batch.stdin is not None:
+                batch.stdin.close()
+        except OSError:
+            pass
+        try:
+            batch.wait(timeout=10)
+        except Exception:
+            batch.kill()
 
 
 def _fs_entry_mode(path: Path) -> str:
@@ -3924,12 +4153,28 @@ def tree_clean(root: Path, receipts_path: Path | None = None) -> bool:
     with the checkout, and an unpinned `git status` asks the
     checkout's own configuration whether the checkout is clean
     (a primed core.fsmonitor helper answers for it wholesale;
-    paperthin validation 6, breach B-A). And the index itself
+    paperthin validation 6, breach B-A). Replace objects are
+    disabled on every invocation (see _git_env): a planted
+    replace ref would substitute the objects themselves.
+    The checkout's own configuration is also REFUSED, not
+    merely pinned, in two cases (see _repo_local_config_refusal):
+    a filter driver definition (program-naming config of the
+    fsmonitor kind), and core.bare=true. And the index itself
     is judged after status: a tracked file carrying the
     skip-worktree or assume-unchanged bit is one status has
     been told not to look at — it reports the file clean BY
     DESIGN while its bytes differ from HEAD — so a tree
     carrying either bit on any tracked file is not clean here.
+    Finally, the tracked half of the contract is content-exact
+    (see _tracked_content_matches_head): status consults the
+    index's stat cache, which a byte-forged index entry defeats
+    wholesale — HEAD's blob SHA over the modified file's
+    genuine stat is believed without a content read, and no
+    -c pin governs the cache — so worktree bytes for every
+    tracked path are compared against HEAD's blob bytes
+    directly. The status loop above still judges the untracked
+    half, staged/index divergence, and mode state; the content
+    comparison is the tracked half's authority.
     """
     resolved = root.resolve()
     top = _git(resolved, "rev-parse", "--show-toplevel")
@@ -3938,6 +4183,8 @@ def tree_clean(root: Path, receipts_path: Path | None = None) -> bool:
     toplevel = Path(
         top.stdout.decode("utf-8", errors="replace").strip()
     ).resolve()
+    if _repo_local_config_refusal(resolved) is not None:
+        return False
     receipts_rel: str | None = None
     if receipts_path is not None:
         try:
@@ -3994,7 +4241,10 @@ def tree_clean(root: Path, receipts_path: Path | None = None) -> bool:
     for entry in proc.stdout.split(b"\0"):
         if entry and (entry[:1].islower() or entry[:1] == b"S"):
             return False
-    return True
+    # Content-exact tracked half: the stat cache status just
+    # consulted is delivered state and forgeable (see the
+    # docstring); compare the bytes themselves.
+    return _tracked_content_matches_head(resolved, toplevel)
 
 
 def binding_excursion(
@@ -4490,9 +4740,11 @@ def check_receipts(
                 )
                 return 1
             if not tree_clean(resolved_root, receipts_path):
+                refusal = _repo_local_config_refusal(resolved_root)
+                detail = f" ({refusal})" if refusal else ""
                 print(
                     f"RECEIPTS: DIRTY task {task}: "
-                    "working tree is not clean"
+                    f"working tree is not clean{detail}"
                 )
                 return 1
     else:
@@ -4659,9 +4911,11 @@ def main(argv: list[str] | None = None) -> int:
             env=run_env_mode(_policy_path()),
         )
         if binding["mode"] == "git" and not tree_clean(root, receipts_path):
+            refusal = _repo_local_config_refusal(root)
+            detail = f" ({refusal})" if refusal else ""
             print(
                 "VERIFY: FAIL tree not clean at HEAD "
-                "— commit or stash before verifying"
+                f"— commit or stash before verifying{detail}"
             )
             return 1
 

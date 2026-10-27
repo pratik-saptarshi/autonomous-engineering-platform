@@ -127,6 +127,69 @@ def commit_file(root: Path, name: str, content: str, message: str) -> None:
     )
 
 
+def forge_index_entry(root: Path, name: str, blob_sha_hex: str) -> None:
+    """Rewrite the index entry for `name` in place at the byte
+    level (Task 16 review, finding F2): the entry keeps its name
+    and mode but carries `blob_sha_hex` as its blob and the
+    worktree file's GENUINE stat (ctime/mtime to the nanosecond,
+    dev, ino, uid, gid, size), extensions stripped, trailer
+    checksum recomputed — the strongest lie `git status`'s stat
+    cache can be told, indistinguishable from a genuine entry
+    without a content read. Index versions 2/3 only (the fixture
+    repos' default)."""
+    import struct
+
+    index_path = root / ".git" / "index"
+    data = index_path.read_bytes()
+    assert data[:4] == b"DIRC", data[:4]
+    version, count = struct.unpack(">II", data[4:12])
+    assert version in (2, 3), version
+    st = os.stat(root / name)
+    stat_fields = [
+        st.st_ctime_ns // 1_000_000_000,
+        st.st_ctime_ns % 1_000_000_000,
+        st.st_mtime_ns // 1_000_000_000,
+        st.st_mtime_ns % 1_000_000_000,
+        st.st_dev & 0xFFFFFFFF,
+        st.st_ino & 0xFFFFFFFF,
+        None,  # mode: keep the entry's own
+        st.st_uid & 0xFFFFFFFF,
+        st.st_gid & 0xFFFFFFFF,
+        st.st_size & 0xFFFFFFFF,
+    ]
+    out = bytearray(data[:12])
+    pos = 12
+    replaced = False
+    for _ in range(count):
+        start = pos
+        fixed = data[pos : pos + 62]
+        fields = list(struct.unpack(">10I", fixed[:40]))
+        flags = struct.unpack(">H", fixed[60:62])[0]
+        fixed_len = 62
+        if flags & 0x4000:  # extended flags word (v3, or v2 bit set)
+            fixed_len = 64
+        name_len = flags & 0x0FFF
+        raw_name = data[pos + fixed_len : pos + fixed_len + 4096]
+        if name_len < 0xFFF:
+            entry_name = raw_name[:name_len]
+        else:
+            entry_name = raw_name.split(b"\0", 1)[0]
+        entry_total = (fixed_len + len(entry_name) + 8) // 8 * 8
+        entry = bytearray(data[start : start + entry_total])
+        if entry_name.decode("utf-8", "surrogateescape") == name:
+            for i, value in enumerate(stat_fields):
+                if value is None:
+                    value = fields[i]
+                struct.pack_into(">I", entry, i * 4, value)
+            entry[40:60] = bytes.fromhex(blob_sha_hex)
+            replaced = True
+        out += entry
+        pos = start + entry_total
+    assert replaced, f"no index entry for {name}"
+    out += hashlib.sha1(bytes(out)).digest()
+    index_path.write_bytes(bytes(out))
+
+
 def read_receipts(receipts: Path) -> list[dict]:
     return [
         json.loads(line)
@@ -1604,6 +1667,207 @@ class GitInstrumentPinTests(unittest.TestCase):
             }
             <= pins
         )
+
+    def test_git_invocations_disable_replace_objects(self):
+        # Task 17 (Task 16 review, finding F2's family): replace
+        # refs are delivered .git state too — a planted
+        # refs/replace/<sha> makes ls-tree/cat-file/status read
+        # substituted objects, so the seal could attest a tree
+        # that is not HEAD's. Every _git invocation carries the
+        # opt-out in its environment.
+        captured: dict = {}
+
+        def fake_run(argv, **kwargs):
+            captured["argv"] = argv
+            captured["env"] = kwargs.get("env")
+            return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+        with mock.patch.object(mechanical_verify.subprocess, "run", fake_run):
+            mechanical_verify._git(
+                Path("/nonexistent-root"), "status", "--porcelain"
+            )
+        env = captured["env"] or {}
+        self.assertEqual(env.get("GIT_NO_REPLACE_OBJECTS"), "1")
+
+    def test_forged_index_stat_cache_counts_as_dirty(self):
+        # Task 17 (Task 16 review, finding F2): `git status`
+        # trusts its index stat cache — an entry whose stat
+        # matches the worktree file is believed without a
+        # content read. A byte-forged entry (HEAD's blob SHA
+        # over the modified file's genuine stat) therefore
+        # makes a modified tracked file invisible to every pin
+        # Task 16 set: there is no -c key for "distrust the
+        # stat cache". Git-mode tracked cleanliness is
+        # content-exact instead: worktree bytes are compared
+        # against HEAD's blob bytes directly.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_git_repo(root)
+            commit_file(root, "tracked.py", 'VALUE = "good"\n', "add tracked")
+            git(root, "status", "--porcelain")  # prime a genuine index
+            head_blob = git(root, "rev-parse", "HEAD:tracked.py").stdout.strip()
+            write(root, "tracked.py", 'VALUE = "evil"\n')
+            # Age the mtime well behind the index's own write
+            # time: an entry whose recorded mtime reaches the
+            # index file's mtime is racy and git content-checks
+            # it regardless of the stat cache, which would make
+            # the forge below fail for a timing reason, not a
+            # mechanism reason. (ctime cannot be aged; the forge
+            # copies it genuinely from stat after this utime.)
+            aged = 1_700_000_000_000_000_000
+            os.utime(root / "tracked.py", ns=(aged, aged))
+            forge_index_entry(root, "tracked.py", head_blob)
+            # The lie holds against plain git: status is empty.
+            self.assertEqual(git(root, "status", "--porcelain").stdout, "")
+            receipts = root / "r.jsonl"
+            self.assertFalse(mechanical_verify.tree_clean(root, receipts))
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("tree not clean at HEAD", proc.stdout)
+
+    def test_primed_genuine_index_seals_and_audits(self):
+        # The content-exact check must not false-dirty ordinary
+        # checkouts: a genuine index (stat cache written by git
+        # itself), an executable file, a tracked symlink, and a
+        # file in a subdirectory all seal and audit clean.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_git_repo(root)
+            commit_file(root, "tracked.py", 'VALUE = "good"\n', "add tracked")
+            commit_file(root, "sub/inner.py", 'VALUE = "in"\n', "add inner")
+            script = write(root, "run.sh", "#!/bin/sh\ntrue\n")
+            script.chmod(0o755)
+            git(root, "add", "run.sh")
+            (root / "link.py").symlink_to("tracked.py")
+            git(root, "add", "link.py")
+            git(
+                root,
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "-q",
+                "-m",
+                "add script and link",
+            )
+            git(root, "status", "--porcelain")  # prime the genuine index
+            receipts = root / "r.jsonl"
+            self.assertTrue(mechanical_verify.tree_clean(root, receipts))
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            proc = check(receipts, "1")
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("RECEIPTS: PASS", proc.stdout)
+
+    def test_core_bare_checkout_is_refused(self):
+        # Task 17 (Task 16 review, finding F1): the Task 16
+        # report adjudicated core.bare as "fails closed" — but
+        # the verifier's restated argv (--git-dir/--work-tree)
+        # neutralizes bareness, so an honest checkout carrying
+        # core.bare=true sealed. The behaviour now matches the
+        # claim by refusal instead: a bare declaration in a
+        # delivered worktree checkout is anomalous, and git
+        # mode refuses it with the reason surfaced, in both the
+        # honest and the modified arm.
+        for modified in (False, True):
+            with self.subTest(modified=modified), \
+                    tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                init_git_repo(root)
+                commit_file(
+                    root, "tracked.py", 'VALUE = "good"\n', "add tracked"
+                )
+                git(root, "config", "core.bare", "true")
+                if modified:
+                    write(root, "tracked.py", 'VALUE = "evil"\n')
+                reason = mechanical_verify._repo_local_config_refusal(root)
+                self.assertIsNotNone(reason)
+                self.assertIn("core.bare", reason)
+                receipts = root / "r.jsonl"
+                self.assertFalse(
+                    mechanical_verify.tree_clean(root, receipts)
+                )
+                proc = verify(root, "1", receipts)
+                self.assertEqual(
+                    proc.returncode, 1, proc.stdout + proc.stderr
+                )
+                self.assertIn("core.bare", proc.stdout)
+
+    def test_repo_local_filter_driver_config_is_refused(self):
+        # Task 17 (finding F2's closure condition): filter
+        # drivers are program-naming config delivered with the
+        # checkout — the fsmonitor kind. A checkout whose
+        # repo-local (or worktree) config defines any
+        # filter.*.clean/smudge/process key is refused in git
+        # mode even when no attribute selects the driver and
+        # the tree is otherwise honest: content-exact
+        # cleanliness compares raw bytes precisely because no
+        # repo-named program may stand between the worktree
+        # and the blob.
+        for scope in ("local", "worktree"):
+            with self.subTest(scope=scope), \
+                    tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                init_git_repo(root)
+                commit_file(
+                    root, "tracked.py", 'VALUE = "good"\n', "add tracked"
+                )
+                if scope == "worktree":
+                    git(root, "config", "extensions.worktreeConfig", "true")
+                    git(
+                        root, "config", "--worktree",
+                        "filter.wt.smudge", "cat",
+                    )
+                else:
+                    git(root, "config", "filter.mask.clean", "cat")
+                reason = mechanical_verify._repo_local_config_refusal(root)
+                self.assertIsNotNone(reason)
+                self.assertIn("filter.", reason)
+                receipts = root / "r.jsonl"
+                self.assertFalse(
+                    mechanical_verify.tree_clean(root, receipts)
+                )
+                proc = verify(root, "1", receipts)
+                self.assertEqual(
+                    proc.returncode, 1, proc.stdout + proc.stderr
+                )
+                self.assertIn("filter.", proc.stdout)
+
+    def test_replace_ref_cannot_steer_binding_or_cleanliness(self):
+        # Task 17 (finding F2's family): a planted replace ref
+        # substitutes objects for every unpinned reader. With
+        # replace objects disabled on the verifier's git calls,
+        # the binding and the cleanliness answer describe the
+        # real HEAD while the ref sits in the checkout.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_git_repo(root)
+            commit_file(root, "tracked.py", 'VALUE = "good"\n', "add good")
+            commit_a = git(root, "rev-parse", "HEAD").stdout.strip()
+            commit_file(root, "tracked.py", 'VALUE = "evil"\n', "add evil")
+            commit_b = git(root, "rev-parse", "HEAD").stdout.strip()
+            evil_blob = git(
+                root, "rev-parse", f"{commit_b}:tracked.py"
+            ).stdout.strip()
+            git(root, "reset", "-q", "--hard", commit_a)
+            digest_before = mechanical_verify.tree_binding(root)[
+                "tree_digest"
+            ]
+            git(root, "replace", commit_a, commit_b)
+            # Sanity: plain git is steered by the plant.
+            self.assertIn(evil_blob, git(root, "ls-tree", "HEAD").stdout)
+            self.assertEqual(
+                mechanical_verify.tree_binding(root)["tree_digest"],
+                digest_before,
+            )
+            receipts = root / "r.jsonl"
+            self.assertTrue(mechanical_verify.tree_clean(root, receipts))
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            proc = check(receipts, "1")
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("RECEIPTS: PASS", proc.stdout)
 
 
 class ResidueCodeBindingTests(unittest.TestCase):
