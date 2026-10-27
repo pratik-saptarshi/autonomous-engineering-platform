@@ -3876,6 +3876,12 @@ class _BatchStalled(Exception):
     complete (Task 18 review, finding F1)."""
 
 
+class _BatchShortFrame(Exception):
+    """EOF cut a batch frame short inside read_chunks: the
+    generator form of the short-frame failure read_exactly
+    reports as None."""
+
+
 class _BatchReader:
     """Buffered reader over the batch pipe, bounded by
     inactivity.
@@ -3940,6 +3946,28 @@ class _BatchReader:
         out = bytes(self._buf[:size])
         del self._buf[:size]
         return out
+
+    def read_chunks(self, size: int) -> Iterator[bytes]:
+        """Yield the next *size* bytes in chunks of at most
+        _BATCH_CHUNK_BYTES, so a payload of any size is
+        consumed without ever being buffered whole. Raises
+        _BatchStalled on inactivity (as every read here) and
+        _BatchShortFrame when EOF cuts the frame short — a
+        generator cannot return the None read_exactly uses
+        for the same event. A negative size is the same
+        framing lie read_exactly judges: a short frame."""
+        if size < 0:
+            raise _BatchShortFrame
+        remaining = size
+        while remaining > 0:
+            if not self._buf:
+                if not self._fill():
+                    raise _BatchShortFrame
+            take = min(remaining, len(self._buf), _BATCH_CHUNK_BYTES)
+            chunk = bytes(self._buf[:take])
+            del self._buf[:take]
+            remaining -= take
+            yield chunk
 
 
 def _tracked_content_matches_head(root: Path) -> bool:
@@ -4014,6 +4042,20 @@ def _tracked_content_matches_head(root: Path) -> bool:
     digest records, that digest being ls-tree from *root*
     as well.
 
+    Nothing here buffers a whole object (Codex P2 on
+    PR #75: a clean tree carrying one 48 MiB blob died with
+    an uncaught MemoryError under a 160 MiB address-space
+    cap). Payloads stream off the batch reader in bounded
+    chunks; the framing hash and the payload's comparison
+    hash are fed chunk by chunk, a symlink's target string
+    is compared chunk by chunk, and the worktree side hashes
+    in chunks too (see _fs_entry_content). The verdict order
+    is unchanged — framing, then the hash, then the
+    comparison — because the hashes are only consulted once
+    the frame has been fully consumed. Peak memory is a
+    small constant multiple of _BATCH_CHUNK_BYTES,
+    independent of blob size.
+
     The price, stated as git mode's limit in the docs: the
     comparison is byte-exact, so a tree whose checked-out bytes
     legitimately differ from its blob bytes — attribute-driven
@@ -4085,21 +4127,42 @@ def _tracked_content_matches_head(root: Path) -> bool:
                 return False
             if size < 0:
                 return False
-            content = reader.read_exactly(size)
-            if content is None or reader.read_exactly(1) != b"\n":
-                return False
-            # The payload is verified against its claimed SHA
-            # before it is compared (see the docstring): the
-            # store's word for which bytes a SHA names is the
-            # one thing this pass may not borrow.
+            # The payload streams (see the docstring): the
+            # framing hash, the comparison hash, and a
+            # symlink's target comparison are all fed chunk by
+            # chunk, and none is consulted until the frame —
+            # payload plus its trailing newline — has been
+            # fully consumed.
             hasher = (
                 hashlib.sha1()
                 if object_format == "sha1"
                 else hashlib.sha256()
             )
-            hasher.update(
-                b"blob " + str(size).encode("ascii") + b"\x00" + content
-            )
+            hasher.update(b"blob " + str(size).encode("ascii") + b"\x00")
+            payload_hash = hashlib.sha256()
+            link_target: bytes | None = None
+            link_seen = 0
+            link_matches = True
+            if stat.S_ISLNK(st.st_mode):
+                link_target = os.readlink(target).encode(
+                    "utf-8", errors="surrogateescape"
+                )
+            for chunk in reader.read_chunks(size):
+                hasher.update(chunk)
+                payload_hash.update(chunk)
+                if link_target is not None:
+                    if (
+                        link_target[link_seen : link_seen + len(chunk)]
+                        != chunk
+                    ):
+                        link_matches = False
+                    link_seen += len(chunk)
+            if reader.read_exactly(1) != b"\n":
+                return False
+            # The payload is verified against its claimed SHA
+            # before it is compared (see the docstring): the
+            # store's word for which bytes a SHA names is the
+            # one thing this pass may not borrow.
             if hasher.hexdigest() != sha:
                 _OBJECT_STORE_FAILURE = (
                     "object store integrity failure: the payload "
@@ -4110,15 +4173,10 @@ def _tracked_content_matches_head(root: Path) -> bool:
                     "serves are not HEAD's"
                 )
                 return False
-            if stat.S_ISLNK(st.st_mode):
-                actual = os.readlink(target).encode(
-                    "utf-8", errors="surrogateescape"
-                )
-                if actual != content:
+            if link_target is not None:
+                if not link_matches or link_seen != len(link_target):
                     return False
-            elif _fs_entry_content(target) != hashlib.sha256(
-                content
-            ).hexdigest():
+            elif _fs_entry_content(target) != payload_hash.hexdigest():
                 return False
         return True
     except _BatchStalled:
@@ -4136,6 +4194,10 @@ def _tracked_content_matches_head(root: Path) -> bool:
             "not HEAD's"
         )
         batch.kill()
+        return False
+    except _BatchShortFrame:
+        # EOF cut a batch frame short: the framing failure
+        # read_exactly would have reported as None.
         return False
     except (OSError, ValueError):
         return False
@@ -4183,11 +4245,21 @@ def _fs_entry_content(path: Path) -> str:
     hung verify and check_receipts, which recomputes the
     digest, forever (paperthin validation 3, note N4). Git
     mode needs no such rule: its digest comes from git
-    object metadata and never opens a working-tree file."""
+    object metadata and never opens a working-tree file.
+    A regular file is hashed in _BATCH_CHUNK_BYTES chunks,
+    not read whole: this helper is also the content pass's
+    worktree-side read, and a whole-file buffer is the
+    MemoryError class Task 21 removed from the pass (Codex
+    P2 on PR #75) — a large file must cost a chunk of
+    memory, not its own size, wherever it is hashed."""
     if path.is_symlink():
         return os.readlink(path)
     if stat.S_ISREG(os.lstat(path).st_mode):
-        return hashlib.sha256(path.read_bytes()).hexdigest()
+        hasher = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(_BATCH_CHUNK_BYTES), b""):
+                hasher.update(chunk)
+        return hasher.hexdigest()
     return _NON_REGULAR_CONTENT
 
 

@@ -2459,6 +2459,203 @@ class SubdirectoryRootTests(unittest.TestCase):
             self.assertTrue(mechanical_verify.tree_clean(root, receipts))
 
 
+class StreamingContentPassTests(unittest.TestCase):
+    """Task 21 (Codex P2 on PR #75): the content pass buffered
+    every blob whole — the batch payload, its bytes copy, and
+    the worktree file's read_bytes — so a clean tree carrying
+    one 48 MiB blob died with an uncaught MemoryError under a
+    160 MiB address-space cap that satisfies the 512 MiB
+    preflight's intent. Payload verification now streams:
+    the framed hash and the comparison hash are fed chunk by
+    chunk off the batch reader, and the worktree side hashes
+    in chunks too, so the pass's peak memory is a small
+    constant multiple of the 64 KiB chunk, independent of
+    blob size. The capped arms run in a child process under
+    RLIMIT_AS because the failure they guard against is the
+    pass dying, not returning a verdict."""
+
+    CAP_BYTES = 160 * 1024 * 1024
+    BLOB_BYTES = 48 * 1024 * 1024
+    GOOD = bytes(range(256)) * (BLOB_BYTES // 256)
+    EVIL = bytes(range(255, -1, -1)) * (BLOB_BYTES // 256)
+    AGED_NS = 1_700_000_000_000_000_000
+
+    def _repo_with_big_blob(self, tmp: str) -> tuple[Path, str]:
+        root = Path(tmp) / "repo"
+        root.mkdir()
+        init_git_repo(root)
+        (root / "big.bin").write_bytes(self.GOOD)
+        git(root, "add", "big.bin")
+        git(
+            root,
+            "-c", "user.name=Fixture",
+            "-c", "user.email=fixture@example.invalid",
+            "commit",
+            "-q",
+            "-m", "add big blob",
+        )
+        sha = git(root, "rev-parse", "HEAD:big.bin").stdout.strip()
+        return root, sha
+
+    def _capped_pass(self, root: Path) -> subprocess.CompletedProcess:
+        script = (
+            "import resource, sys\n"
+            "from pathlib import Path\n"
+            f"resource.setrlimit(resource.RLIMIT_AS, "
+            f"({self.CAP_BYTES}, {self.CAP_BYTES}))\n"
+            f"sys.path.insert(0, {str(SCRIPT.parent)!r})\n"
+            "import mechanical_verify\n"
+            "root = Path(sys.argv[1])\n"
+            "clean = mechanical_verify.tree_clean(root, root / 'r.jsonl')\n"
+            "print('clean:', clean)\n"
+            "print('detail:', "
+            "mechanical_verify._object_store_failure_detail())\n"
+        )
+        return subprocess.run(
+            [sys.executable, "-c", script, str(root)],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+
+    def test_clean_large_blob_passes_under_address_space_cap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _ = self._repo_with_big_blob(tmp)
+            proc = self._capped_pass(root)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("clean: True", proc.stdout)
+            self.assertIn("detail: None", proc.stdout)
+
+    def test_poisoned_large_blob_refused_under_address_space_cap(self):
+        # Streaming must verify, not stream past: the poisoned
+        # store (Task 18's plant at 48 MiB) still records the
+        # named integrity failure under the same cap.
+        with tempfile.TemporaryDirectory() as tmp:
+            root, sha = self._repo_with_big_blob(tmp)
+            poison_loose_object(root, sha, self.EVIL)
+            (root / "big.bin").write_bytes(self.EVIL)
+            os.utime(
+                root / "big.bin", ns=(self.AGED_NS, self.AGED_NS)
+            )
+            forge_index_entry(root, "big.bin", sha)
+            status = git(root, "status", "--porcelain").stdout
+            tracked = [
+                line for line in status.splitlines()
+                if not line.startswith("??")
+            ]
+            self.assertEqual(tracked, [])
+            proc = self._capped_pass(root)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("clean: False", proc.stdout)
+            self.assertIn("object store integrity failure", proc.stdout)
+
+    def test_chunk_boundary_payloads_compare_exactly(self):
+        # Payloads straddling the 64 KiB chunk boundary compare
+        # exactly: clean matches; a flipped byte in the first
+        # or last chunk, a truncated file, and an extended file
+        # all read dirty to a direct pass.
+        size = 3 * 65536 + 123
+        payload = bytes(range(256)) * (size // 256) + bytes(
+            range(size % 256)
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            root.mkdir()
+            init_git_repo(root)
+            (root / "blob.bin").write_bytes(payload)
+            git(root, "add", "blob.bin")
+            git(
+                root,
+                "-c", "user.name=Fixture",
+                "-c", "user.email=fixture@example.invalid",
+                "commit",
+                "-q",
+                "-m", "add blob",
+            )
+            self.assertTrue(
+                mechanical_verify._tracked_content_matches_head(root)
+            )
+            flipped_first = bytes([payload[0] ^ 0xFF]) + payload[1:]
+            flipped_last = payload[:-1] + bytes([payload[-1] ^ 0xFF])
+            for variant in (
+                flipped_first,
+                flipped_last,
+                payload[:-1],
+                payload + b"x",
+            ):
+                (root / "blob.bin").write_bytes(variant)
+                self.assertFalse(
+                    mechanical_verify._tracked_content_matches_head(
+                        root
+                    )
+                )
+            (root / "blob.bin").write_bytes(payload)
+            self.assertTrue(
+                mechanical_verify._tracked_content_matches_head(root)
+            )
+
+    def test_batch_reader_read_chunks_bounds_and_joins(self):
+        payload = bytes(range(256)) * 800  # 204800 bytes
+        rfd, wfd = os.pipe()
+
+        def writer() -> None:
+            view = memoryview(payload)
+            while view:
+                view = view[os.write(wfd, view):]
+            os.close(wfd)
+
+        thread = threading.Thread(target=writer)
+        thread.start()
+        try:
+            reader = mechanical_verify._BatchReader(rfd)
+            chunks = list(reader.read_chunks(len(payload)))
+            self.assertEqual(b"".join(chunks), payload)
+            self.assertTrue(
+                all(
+                    len(c) <= mechanical_verify._BATCH_CHUNK_BYTES
+                    for c in chunks
+                )
+            )
+            self.assertGreater(len(chunks), 1)
+        finally:
+            thread.join(timeout=10)
+            os.close(rfd)
+
+    def test_batch_reader_read_chunks_eof_is_short_frame(self):
+        rfd, wfd = os.pipe()
+        os.write(wfd, b"ab")
+        os.close(wfd)
+        try:
+            reader = mechanical_verify._BatchReader(rfd)
+            with self.assertRaises(
+                mechanical_verify._BatchShortFrame
+            ):
+                list(reader.read_chunks(5))
+        finally:
+            os.close(rfd)
+
+    def test_batch_reader_read_chunks_stall_raises(self):
+        rfd, wfd = os.pipe()
+
+        def writer() -> None:
+            os.write(wfd, b"ab")
+            time.sleep(2.0)
+            os.close(wfd)
+
+        thread = threading.Thread(target=writer)
+        thread.start()
+        try:
+            reader = mechanical_verify._BatchReader(rfd)
+            with mock.patch.object(
+                mechanical_verify, "_BATCH_STALL_SECONDS", 0.5
+            ):
+                with self.assertRaises(mechanical_verify._BatchStalled):
+                    list(reader.read_chunks(5))
+        finally:
+            thread.join(timeout=10)
+            os.close(rfd)
+
+
 class PromisorRefusalTests(unittest.TestCase):
     """Task 18 (paperthin validation 7, breach B-B): a
     delivered partial-clone config makes the verifier's own
