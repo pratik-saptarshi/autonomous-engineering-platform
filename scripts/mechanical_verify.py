@@ -19,6 +19,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import stat
@@ -959,16 +960,16 @@ def _pytest_argv(root: Path) -> tuple[str, ...]:
     return PYTEST_ARGV
 
 
-def _pytest_config_path_entries(config: Path) -> list[str]:
-    """The `testpaths` and `pythonpath` entries of a REAL pytest
-    config file, read with the same parsers the qualification
-    walk uses — tomllib for the .toml family (pytest.toml's
-    [pytest] table; pyproject.toml's [tool.pytest] keys and its
+def _pytest_config_raw_values(
+    config: Path, keys: tuple[str, ...]
+) -> list[object]:
+    """The raw values of *keys* in a REAL pytest config file,
+    read with the same parsers the qualification walk uses —
+    tomllib for the .toml family (pytest.toml's [pytest]
+    table; pyproject.toml's [tool.pytest] keys and its
     [tool.pytest.ini_options] table), configparser for the .ini
-    names ([pytest], or [tool:pytest] for setup.cfg). Values in
-    TOML may be a list or a single string; INI values are
-    whitespace-separated, as pytest's own ini types split them.
-    An unreadable or unparseable file yields no entries: real
+    names ([pytest], or [tool:pytest] for setup.cfg). An
+    unreadable or unparseable file yields no values: real
     pytest aborts on such a config, so its aims never steer a
     run that could seal."""
     name = config.name
@@ -988,18 +989,18 @@ def _pytest_config_path_entries(config: Path) -> list[str]:
             )
             if not isinstance(table, dict):
                 return []
-            values += [table.get("testpaths"), table.get("pythonpath")]
+            for key in keys:
+                values.append(table.get(key))
             ini_options = table.get("ini_options")
             if isinstance(ini_options, dict):
-                values += [
-                    ini_options.get("testpaths"),
-                    ini_options.get("pythonpath"),
-                ]
+                for key in keys:
+                    values.append(ini_options.get(key))
         else:
             table = parsed.get("pytest")
             if not isinstance(table, dict):
                 return []
-            values += [table.get("testpaths"), table.get("pythonpath")]
+            for key in keys:
+                values.append(table.get(key))
     else:
         section = "tool:pytest" if name == "setup.cfg" else "pytest"
         parser = configparser.ConfigParser(
@@ -1011,11 +1012,21 @@ def _pytest_config_path_entries(config: Path) -> list[str]:
             return []
         if not parser.has_section(section):
             return []
-        for key in ("testpaths", "pythonpath"):
+        for key in keys:
             if parser.has_option(section, key):
                 values.append(parser.get(section, key))
+    return values
+
+
+def _pytest_config_path_entries(config: Path) -> list[str]:
+    """The `testpaths` and `pythonpath` entries of a REAL pytest
+    config file. Values in TOML may be a list or a single
+    string; INI values are whitespace-separated, as pytest's
+    own ini types split them."""
     entries: list[str] = []
-    for value in values:
+    for value in _pytest_config_raw_values(
+        config, ("testpaths", "pythonpath")
+    ):
         if isinstance(value, str):
             entries.extend(value.split())
         elif isinstance(value, list):
@@ -1025,46 +1036,170 @@ def _pytest_config_path_entries(config: Path) -> list[str]:
     return entries
 
 
-def _entry_aims_into_residue(root: Path, entry: str) -> bool:
-    """Whether one testpaths/pythonpath *entry* names a path
-    with a residue-named component — judged as written, so
-    `.mypy_cache/collected` and `pkg/.pytest_cache/x` are
-    caught, and again after normalization against *root*, so
-    `pkg/../.mypy_cache/x` is caught too."""
-    for candidate in (entry, os.path.join(root, entry)):
+def _pytest_config_addopts(config: Path) -> list[str]:
+    """The `addopts` tokens of a REAL pytest config file.
+    pytest prepends addopts to its argv, so the tokens are
+    read with the same parsers as the path entries and split
+    the way pytest splits them (shlex). A TOML list contributes
+    its items, each item shlex-split like a string; an
+    unparseable addopts yields no tokens — real pytest aborts
+    on it the same way, so nothing it names can steer a run
+    that could seal."""
+    tokens: list[str] = []
+    for value in _pytest_config_raw_values(config, ("addopts",)):
+        if isinstance(value, str):
+            items = [value]
+        elif isinstance(value, list):
+            items = [item for item in value if isinstance(item, str)]
+        else:
+            continue
+        for item in items:
+            try:
+                tokens.extend(shlex.split(item))
+            except ValueError:
+                continue
+    return tokens
+
+
+# Options of pytest 9's core parser that consume the FOLLOWING
+# token as their value — introspected from _pytest.config's
+# parser (every registered option whose action is store/append
+# or whose nargs is a count), so an addopts value (a -k
+# expression, a --basetemp directory, a --junit-xml report
+# path) is never mistaken for a positional collection aim.
+# --cache-show is the one core exception: its value is
+# optional (nargs="?"), so a following token is not reliably
+# its value and is judged as an aim instead — the fail-closed
+# direction. Plugin-registered options are unknowable here; a
+# plugin option's space-separated value, when it names a path,
+# is judged as an aim like any bare token — over-refusal of
+# the leg, in the fail-closed direction, never a missed aim of
+# pytest's own surface.
+_PYTEST_VALUE_OPTIONS = frozenset(
+    {
+        "-W", "-c", "-k", "-m", "-o", "-p", "-r",
+        "--assert", "--basetemp", "--capture", "--code-highlight",
+        "--color", "--confcutdir", "--config-file", "--debug",
+        "--deselect", "--doctest-glob", "--doctest-report",
+        "--durations", "--durations-min", "--ignore",
+        "--ignore-glob", "--import-mode", "--junit-prefix",
+        "--junit-xml", "--junitprefix", "--junitxml",
+        "--last-failed-no-failures", "--lfnf", "--log-auto-indent",
+        "--log-cli-date-format", "--log-cli-format",
+        "--log-cli-level", "--log-date-format", "--log-disable",
+        "--log-file", "--log-file-date-format", "--log-file-format",
+        "--log-file-level", "--log-file-mode", "--log-format",
+        "--log-level", "--maxfail", "--override-ini", "--pastebin",
+        "--pdbcls", "--pythonwarnings", "--rootdir",
+        "--show-capture", "--tb", "--verbosity",
+    }
+)
+
+
+def _addopts_aims(tokens: list[str]) -> tuple[list[str], bool]:
+    """(positional aims, uses_pyargs) in addopts *tokens*.
+
+    addopts entries are prepended argv: a bare token is a
+    positional collection aim (a path or nodeid pytest will
+    collect), an option token is not, and the token consumed
+    as a known value-taking option's value is not. `--`
+    ends option processing: everything after it is
+    positional. --pyargs is reported separately rather than
+    returned as an aim: it retargets collection at installed
+    packages, outside the bound set by construction."""
+    aims: list[str] = []
+    pyargs = False
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        index += 1
+        if token == "--":
+            aims.extend(tokens[index:])
+            break
+        if token == "--pyargs":
+            pyargs = True
+            continue
+        if token.startswith("-") and token != "-":
+            name = token.split("=", 1)[0]
+            if "=" not in token and name in _PYTEST_VALUE_OPTIONS:
+                index += 1  # the option's value is not an aim
+            continue
+        aims.append(token)
+    return aims, pyargs
+
+
+def _entry_aims_unattested(root: Path, entry: str) -> bool:
+    """Whether one aim *entry* — a testpaths or pythonpath
+    entry, or a positional addopts token — steers the bare
+    leg at content the seal does not attest: a path with a
+    residue-named component, or a path resolving outside
+    *root*.
+
+    The path part of a nodeid (before "::") is judged.
+    Residue is judged as written, so `.mypy_cache/collected`
+    and `pkg/.pytest_cache/x` are caught, and again after
+    normalization against *root*, so `pkg/../.mypy_cache/x`
+    is caught too — while `.mypy_cache/../tests`, which
+    normalizes to bound content, is not. Outside-the-root is
+    judged on the normalized join: `../outside` and absolute
+    paths land outside the tree the seal describes, and
+    content there is bound nowhere (Task 11 review, finding
+    F3). A bare token naming no path (a test name) normalizes
+    to an in-tree path and passes."""
+    path_part = entry.split("::", 1)[0]
+    if not path_part:
+        return False
+    for candidate in (path_part, os.path.join(root, path_part)):
         normalized = os.path.normpath(candidate)
         if any(
             part in FS_RESIDUE_DIRS
             for part in normalized.split(os.sep)
         ):
             return True
-    return False
+    if os.path.isabs(path_part):
+        target = os.path.normpath(path_part)
+    else:
+        target = os.path.normpath(os.path.join(root, path_part))
+    root_norm = os.path.normpath(str(root))
+    return target != root_norm and not target.startswith(
+        root_norm + os.sep
+    )
 
 
-def _selected_config_aims_into_residue(root: Path) -> bool:
-    """Whether the REAL config pytest would read at *root* aims
-    the bare leg into a residue directory — a `testpaths` or
-    `pythonpath` entry with a residue-named component.
+def _selected_config_aims_unattested(root: Path) -> bool:
+    """Whether the REAL config pytest would read at *root*
+    aims the bare leg at unattested content, over the
+    config's full aiming surface: its testpaths and
+    pythonpath entries, the positional tokens of its
+    addopts, and --pyargs.
 
-    The collected .py files under a residue name are bound in
-    the tree digest (see _fs_residue_entries), so the aim is
-    not an audit hole for them; it is refused anyway, in the
-    fail-closed posture of _bare_pytest_scope_has_symlink,
-    because collection aimed into a residue directory can
-    execute shapes no extension set enumerates — a bound
-    conftest registering a custom pytest_collect_file hook
-    executes non-.py files from there (paperthin validation
-    2, probe B2's family) — and a pythonpath entry makes the
-    directory the import machinery's home. A symlinked
-    selected config is never read here: _pytest_argv already
-    pins it to an empty config, so its entries define nothing
+    The collected .py files under a residue name are bound
+    in the tree digest (see _fs_residue_entries), so a
+    residue aim is not an audit hole for them; it is refused
+    anyway, in the fail-closed posture of
+    _bare_pytest_scope_has_symlink, because collection aimed
+    into a residue directory can execute shapes no extension
+    set enumerates — a bound conftest registering a custom
+    pytest_collect_file hook executes non-.py files from
+    there (paperthin validation 2, probe B2's family) — and
+    a pythonpath entry makes the directory the import
+    machinery's home. addopts positionals are the same aims
+    carried by a key the two-key gate never read (Task 11
+    review, finding F2), and an aim resolving outside the
+    root collects or imports content the seal does not
+    describe at all (finding F3). A symlinked selected
+    config is never read here: _pytest_argv already pins it
+    to an empty config, so its entries define nothing
     (issue #64)."""
     selected = _pytest_config_selected(root)
     if selected is None or selected.is_symlink():
         return False
+    aims, pyargs = _addopts_aims(_pytest_config_addopts(selected))
+    if pyargs:
+        return True
     return any(
-        _entry_aims_into_residue(root, entry)
-        for entry in _pytest_config_path_entries(selected)
+        _entry_aims_unattested(root, entry)
+        for entry in (*_pytest_config_path_entries(selected), *aims)
     )
 
 
@@ -1157,11 +1292,15 @@ def discover_verification_commands(root: Path) -> tuple[VerificationCommand, ...
     # Issue #62: the bare pytest leg is additionally disqualified
     # when its collection scope contains a symlink (see
     # _bare_pytest_scope_has_symlink), or when the real config
-    # pytest would read aims testpaths or pythonpath into a
-    # residue directory (see _selected_config_aims_into_residue:
-    # code files under residue names are bound in the tree
-    # digest, but collection aimed there can execute shapes no
-    # extension set enumerates). Excluding links from
+    # pytest would read aims collection or sys.path at
+    # unattested content over its full aiming surface —
+    # testpaths, pythonpath, addopts positionals, --pyargs;
+    # targets: a residue directory or anywhere outside the
+    # root (see _selected_config_aims_unattested: files under
+    # residue names are largely bound in the tree digest, but
+    # collection aimed there can execute shapes no extension
+    # set enumerates, and content outside the root is bound
+    # nowhere). Excluding links from
     # discovery's own reads cannot help there — the leg runs
     # pytest over the whole tree, and pytest's own traversal is
     # what reaches the linked content — so the leg is not
@@ -1185,7 +1324,7 @@ def discover_verification_commands(root: Path) -> tuple[VerificationCommand, ...
         if not scope_check:
             scope_check.append(
                 _bare_pytest_scope_has_symlink(root)
-                or _selected_config_aims_into_residue(root)
+                or _selected_config_aims_unattested(root)
             )
         return scope_check[0]
 
@@ -2486,18 +2625,25 @@ def _commands_digest(command_ids) -> str:
 # the run itself (a pytest leg creates .pytest_cache and
 # __pycache__ from cold; git updates .git on every status), so
 # binding it would make the run's own residue abort every
-# seal. Code files under these names bind like code anywhere
-# (see _fs_residue_entries), an untracked one blocks git-mode
-# sealing like untracked code anywhere (see tree_clean), and
-# config aiming collection or sys.path into them refuses the
-# bare pytest leg (see _selected_config_aims_into_residue).
-# What remains unbound under a residue name is non-code
-# content — data a bound run reads or loads by explicit path,
-# which has effect only through bound code that chooses to
-# load it — and the one residual that needs no planted
-# aiming: a bytecode-cache entry actively forged to match
-# its source's recorded stat. See the Tree binding section
-# of docs/deepcode-mechanisms.md for the exact bound set.
+# seal. The binding under a residue name therefore excludes
+# exactly the owning tool's state files and nothing else —
+# under the three cache names every other file binds (see
+# _residue_file_binds), an untracked file that would bind
+# blocks git-mode sealing like untracked content anywhere
+# (see tree_clean), and config aiming collection or sys.path
+# into a residue directory — or anywhere outside the root —
+# refuses the bare pytest leg (see
+# _selected_config_aims_unattested). What remains unbound
+# under a residue name is the tools' own state files
+# themselves (bytes planted under those exact names take
+# effect only through the tool, or through bound code that
+# chooses to load them — the explicit-path family), the
+# files under .git outside its enumerated bind set (an
+# archive under an arbitrary name among them), and the one
+# residual that needs no planted aiming: a bytecode-cache
+# entry actively forged to match its source's recorded
+# stat. See the Tree binding section of
+# docs/deepcode-mechanisms.md for the exact bound set.
 FS_RESIDUE_DIRS = frozenset(
     {
         ".git",
@@ -2512,15 +2658,24 @@ FS_RESIDUE_DIRS = frozenset(
 # .pyd — the suffixes importlib accepts for extension modules;
 # versioned names like .cpython-312-x86_64-linux-gnu.so still
 # END in .so, so an exact-suffix test catches them). Judged on
-# the name's final suffix, case-sensitively: on the platforms
-# this verifier runs, the interpreter loads nothing else by
-# name. Bytecode (.pyc) is deliberately NOT in the set — it is
-# the tool state the residue exclusion exists for (the run
-# regenerates it), and its residual is the disclosed one (a
-# cache entry actively forged to match its source's recorded
-# stat; see FS_RESIDUE_DIRS above and the Tree binding section
-# of docs/deepcode-mechanisms.md).
+# the name's final suffix, case-sensitively. Bytecode (.pyc)
+# is deliberately NOT in the set — it is the tool state the
+# residue exclusion exists for (the run regenerates it), and
+# its residual is the disclosed one (a cache entry actively
+# forged to match its source's recorded stat; see
+# FS_RESIDUE_DIRS above and the Tree binding section of
+# docs/deepcode-mechanisms.md). The suffix test decides
+# binding only under .git (see _residue_file_binds): under
+# the three cache names the rule is inverted and no suffix
+# test decides anything, because a runtime also loads
+# modules by name from ARCHIVES — and zipimport accepts an
+# archive under any filename (Task 11 review, finding F1).
 _FS_CODE_SUFFIXES = (".py", ".so", ".pyd")
+
+# The archive suffixes importlib loads modules from by name
+# (zipimport and the loaders registered for these formats).
+# Part of the bind set under .git only, for the reason above.
+_FS_ARCHIVE_SUFFIXES = (".zip", ".egg", ".whl")
 
 
 def _is_code_file(name: str) -> bool:
@@ -2529,6 +2684,124 @@ def _is_code_file(name: str) -> bool:
     in git mode, what counts as dirty — under a residue
     directory, where tool state and planted code share a tree."""
     return name.endswith(_FS_CODE_SUFFIXES)
+
+
+# The tool-state files of the cache residue directories: the
+# files the owning tool itself writes there, enumerated from
+# the tools' real output — pytest 9's cache (its top-level
+# CACHEDIR.TAG / README.md / .gitignore and the data files of
+# v/cache/, the shape of an actual .pytest_cache in this
+# repo), mypy's cache (its JSON data — every *.json, which
+# covers .data.json and .meta.json — its cache databases, and
+# its own .gitignore / CACHEDIR.TAG / missing_stubs marker),
+# and CPython's bytecode cache (the *.pyc the interpreter
+# writes). The run regenerates exactly these files mid-run,
+# so excluding them — and only them — is what keeps the
+# run's own residue from aborting the seal under the inverted
+# rule of _residue_file_binds.
+_PYTEST_CACHE_TOP_FILES = frozenset(
+    (".gitignore", "CACHEDIR.TAG", "README.md")
+)
+_PYTEST_CACHE_DATA_FILES = frozenset(
+    ("lastfailed", "nodeids", "stepwise")
+)
+_MYPY_CACHE_STATE_FILES = frozenset(
+    (".gitignore", "CACHEDIR.TAG", "missing_stubs")
+)
+_MYPY_CACHE_STATE_SUFFIXES = (".json", ".db", ".sqlite", ".sqlite3")
+
+
+def _is_tool_state_file(
+    residue_name: str, inside: tuple[str, ...]
+) -> bool:
+    """Whether the file at *inside* — the path below a residue
+    directory named *residue_name*, filename last — is that
+    tool's own state (see the enumeration above). Never true
+    for .git: git's state is not a file set that can be
+    enumerated this way, so .git files are judged by the bind
+    set in _residue_file_binds instead."""
+    base = inside[-1]
+    if residue_name == "__pycache__":
+        return base.endswith(".pyc")
+    if residue_name == ".pytest_cache":
+        if len(inside) == 1:
+            return base in _PYTEST_CACHE_TOP_FILES
+        return (
+            inside[:2] == ("v", "cache")
+            and base in _PYTEST_CACHE_DATA_FILES
+        )
+    if residue_name == ".mypy_cache":
+        return base in _MYPY_CACHE_STATE_FILES or base.endswith(
+            _MYPY_CACHE_STATE_SUFFIXES
+        )
+    return False
+
+
+def _residue_file_binds(
+    active: str, inside: tuple[str, ...]
+) -> bool:
+    """Whether a file inside a residue directory binds in the
+    tree digest. *active* is the innermost residue name
+    containing the file; *inside* is the path below that
+    directory, filename last.
+
+    Under the three cache names the rule is inverted: every
+    file binds except the owning tool's own state (see
+    _is_tool_state_file). A planted archive of any filename,
+    an extensionless script, a collectable data file — all are
+    content a sealed run can load by name, so all are content
+    the seal attests (Task 11 review, finding F1). Under .git
+    the rule cannot invert — git rewrites its control files
+    under ordinary operations between seal and audit — so the
+    bind set is enumerated instead: code files, module
+    archives (see _FS_ARCHIVE_SUFFIXES), and everything under
+    hooks/ (git's own hook scripts — code the tree's operator
+    runs by name). A file under .git outside that set, an
+    archive under an arbitrary name among them, is unbound;
+    it has effect only through bound code loading it by
+    explicit path, the disclosed explicit-path family."""
+    if active == ".git":
+        return (
+            inside[0] == "hooks"
+            or _is_code_file(inside[-1])
+            or inside[-1].endswith(_FS_ARCHIVE_SUFFIXES)
+        )
+    return not _is_tool_state_file(active, inside)
+
+
+def _residue_context(
+    parts: tuple[str, ...], root_name: str
+) -> tuple[str, tuple[str, ...]]:
+    """(active residue name, path inside it) for a file whose
+    path below a residue directory named *root_name* is
+    *parts*: a nested residue name restarts the context, so a
+    __pycache__ inside a planted .pytest_cache subtree is
+    judged by the bytecode rule, not the cache rule."""
+    active = root_name
+    start = 0
+    for index, part in enumerate(parts[:-1]):
+        if part in FS_RESIDUE_DIRS:
+            active = part
+            start = index + 1
+    return active, parts[start:]
+
+
+def _path_binds_under_residue(parts: list[str]) -> bool | None:
+    """Whether a repo-relative path (*parts*, filename last)
+    would bind in the fs digest by virtue of sitting under a
+    residue directory — None when it sits under none. The
+    git-mode cleanliness gate uses this for parity: an
+    untracked file the fs binding would cover must block
+    sealing in git mode too (see tree_clean)."""
+    active: str | None = None
+    start = 0
+    for index, part in enumerate(parts[:-1]):
+        if part in FS_RESIDUE_DIRS:
+            active = part
+            start = index + 1
+    if active is None:
+        return None
+    return _residue_file_binds(active, tuple(parts[start:]))
 
 
 def _git(root: Path, *args: str) -> subprocess.CompletedProcess:
@@ -2596,18 +2869,21 @@ def _fs_residue_entries(
     """Digest entries from inside one residue directory.
 
     The walk descends (never following symlinks) and binds the
-    two things whose post-seal mutation must move the digest:
-    code files (see _is_code_file) by content hash, and
-    symlinks by target string — exactly as the main walk binds
-    them everywhere else. Everything else under the residue
-    name — the tool state the exclusion exists for (bytecode,
-    cache indexes, git internals) — contributes nothing, so
-    the run's own cache generation cannot change the digest
-    mid-run and abort the seal. Planted source is not tool
-    state: a file a runtime can load binds wherever it sits,
-    so content a sealed run imports from a residue directory
-    is content the seal attests (paperthin validation 2,
-    probes B1a/B1b/B1c).
+    files whose post-seal mutation must move the digest, per
+    _residue_file_binds: under the three cache names, every
+    file except the owning tool's own state; under .git, the
+    enumerated bind set (code files, module archives, hooks).
+    Bound files digest by content hash, and symlinks by target
+    string — exactly as the main walk binds them everywhere
+    else. The excluded remainder — cache indexes, bytecode,
+    git's other internals — contributes nothing, so the run's
+    own cache generation cannot change the digest mid-run and
+    abort the seal. Planted content is not tool state: what a
+    runtime can load by name binds wherever it sits, so
+    content a sealed run imports or collects from a residue
+    directory is content the seal attests (paperthin
+    validation 2, probes B1a/B1b/B1c; Task 11 review, finding
+    F1).
     """
     entries: list[tuple[str, str, str]] = []
     for dirpath, dirnames, filenames in os.walk(
@@ -2640,14 +2916,21 @@ def _fs_residue_entries(
                 entries.append(
                     (rel, _fs_entry_mode(path), os.readlink(path))
                 )
-            elif _is_code_file(name):
-                entries.append(
-                    (
-                        rel,
-                        _fs_entry_mode(path),
-                        hashlib.sha256(path.read_bytes()).hexdigest(),
-                    )
+            else:
+                active, inside = _residue_context(
+                    path.relative_to(residue_root).parts,
+                    residue_root.name,
                 )
+                if _residue_file_binds(active, inside):
+                    entries.append(
+                        (
+                            rel,
+                            _fs_entry_mode(path),
+                            hashlib.sha256(
+                                path.read_bytes()
+                            ).hexdigest(),
+                        )
+                    )
     return entries
 
 
@@ -2658,11 +2941,13 @@ def _fs_tree_digest(root: Path, receipts_path: Path | None = None) -> str:
     see `_fs_entry_mode`) and content is the file's sha256 hex
     (symlinks: the target string, never followed). The receipts
     file itself is excluded. A directory named in
-    FS_RESIDUE_DIRS contributes only its code files and
-    symlinks (see _fs_residue_entries); its tool state is not
-    bound. Every other directory — dependency, virtualenv, and
-    build-output trees included — is bound in full: content a
-    run can execute from them is content the seal attests.
+    FS_RESIDUE_DIRS contributes the files _residue_file_binds
+    selects and its symlinks (see _fs_residue_entries); the
+    tools' own state files under the cache names, and git's
+    other control files, are not bound. Every other directory
+    — dependency, virtualenv, and build-output trees included
+    — is bound in full: content a run can execute from them
+    is content the seal attests.
     """
     resolved = root.resolve()
     receipts_resolved = (
@@ -2775,13 +3060,17 @@ def tree_clean(root: Path, receipts_path: Path | None = None) -> bool:
     receipts file itself and UNTRACKED entries under `.superpowers/`
     (the workflow's own bookkeeping — a TRACKED `.superpowers/` entry
     that is modified or staged counts as dirty like any other
-    tracked change) and (ii) untracked non-code entries whose path
-    has a component in FS_RESIDUE_DIRS (tool state the run itself
-    creates). An untracked CODE file under a residue name counts
-    as dirty like untracked code anywhere else — the fs binding
-    binds such files (see _fs_residue_entries), and git mode's
-    parity is to refuse the seal until the file is committed
-    (which binds it via ls-tree) or removed. Untracked content
+    tracked change) and (ii) untracked entries under a residue
+    name that the fs binding would NOT cover (see
+    _path_binds_under_residue: the cache tools' own state
+    files, and files under .git outside its bind set). An
+    untracked file under a residue name that the fs binding
+    WOULD cover counts as dirty like untracked content
+    anywhere else — under the cache names that is everything
+    but the tools' own state, planted archives included —
+    and git mode's parity is to refuse the seal until the
+    file is committed (which binds it via ls-tree) or
+    removed. Untracked content
     under any other directory name —
     a dependency, virtualenv, or build-output tree included —
     counts as dirty like untracked content anywhere else: git
@@ -2834,12 +3123,8 @@ def tree_clean(root: Path, receipts_path: Path | None = None) -> bool:
             path == ".superpowers" or path.startswith(".superpowers/")
         ):
             continue
-        if (
-            status == b"??"
-            and any(
-                part in FS_RESIDUE_DIRS for part in path.split("/")
-            )
-            and not _is_code_file(path.rsplit("/", 1)[-1])
+        if status == b"??" and (
+            _path_binds_under_residue(path.split("/")) is False
         ):
             continue
         return False

@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -629,7 +630,7 @@ class BindingTests(unittest.TestCase):
             root = Path(tmp)
             write(root, "a.txt", "one\n")
             write(root, "sub/b.txt", "two\n")
-            write(root, "__pycache__/c.txt", "cache\n")
+            write(root, "__pycache__/c.cpython-312.pyc", "cache\n")
             receipts = write(root, "r.jsonl", "")
             (root / "link.txt").symlink_to("a.txt")
             binding = mechanical_verify.tree_binding(
@@ -637,8 +638,9 @@ class BindingTests(unittest.TestCase):
             )
             self.assertEqual(binding["mode"], "fs")
             self.assertIsNone(binding["head"])
-            # Excluded content never moves the digest.
-            write(root, "__pycache__/c.txt", "changed\n")
+            # Excluded content (tool state: a bytecode file under
+            # __pycache__) never moves the digest.
+            write(root, "__pycache__/c.cpython-312.pyc", "changed\n")
             write(root, "r.jsonl", "appended\n")
             self.assertEqual(
                 mechanical_verify.tree_binding(
@@ -1042,7 +1044,10 @@ class ContentBindingTests(unittest.TestCase):
 
     (Task 11 narrows that last sentence: the exclusion covers
     tool state only — code files under the four names bind now;
-    see ResidueCodeBindingTests.)"""
+    see ResidueCodeBindingTests. Its round 2 narrows it once
+    more: under the three cache names EVERY non-tool-state file
+    binds, so the loop below asserts a plain payload binds
+    there too; only .git keeps a payload unbound.)"""
 
     CONTENT_DIRS = [
         "node_modules",
@@ -1086,12 +1091,20 @@ class ContentBindingTests(unittest.TestCase):
                         "tree_digest"
                     ]
                     write(root, f"{name}/payload.txt", "payload\n")
-                    self.assertEqual(
-                        before,
-                        mechanical_verify.tree_binding(root)[
-                            "tree_digest"
-                        ],
-                    )
+                    after = mechanical_verify.tree_binding(root)[
+                        "tree_digest"
+                    ]
+                    if name == ".git":
+                        # .git's bind set is enumerated (code,
+                        # archives, hooks); a plain payload is
+                        # outside it and stays unbound.
+                        self.assertEqual(before, after)
+                    else:
+                        # Task 11 round 2 (finding F1): under a
+                        # cache name the rule inverts — a plain
+                        # payload is not the tool's own state, so
+                        # it binds like content anywhere.
+                        self.assertNotEqual(before, after)
 
     def _seal_import_fixture(self, root: Path, helper_rel: str) -> Path:
         """A pytest suite whose only test imports a helper from
@@ -1378,9 +1391,30 @@ class ResidueCodeBindingTests(unittest.TestCase):
     unbound, which is what keeps mid-run cache generation from
     aborting a seal. The B2 collection shape is additionally
     refused at discovery (see ResidueConfigAimTests in
-    test_mechanical_verify.py)."""
+    test_mechanical_verify.py).
+
+    Round 2 (Task 11 review, findings F1–F3): under the three
+    cache names the rule inverts — everything except the owning
+    tool's own state files binds, because zipimport loads a
+    module by name from an archive of ANY filename and no suffix
+    list can enumerate what a runtime loads. Under .git the bind
+    set stays enumerated (code files, module archives, hooks):
+    git rewrites its other control files under ordinary
+    operations, so inverting there would abort seals on git's
+    own bookkeeping."""
 
     RESIDUE_DIRS = [".git", "__pycache__", ".pytest_cache", ".mypy_cache"]
+
+    # One file per residue name that its owning tool itself
+    # writes — the enumerated tool state of
+    # mechanical_verify._is_tool_state_file (git's entry is one
+    # of its own control files, unbound under the .git rule).
+    TOOL_STATE = {
+        ".pytest_cache": "v/cache/nodeids",
+        ".mypy_cache": "3.12/mod.data.json",
+        "__pycache__": "mod.cpython-312.pyc",
+        ".git": "config",
+    }
 
     def test_fs_digest_binds_code_but_not_tool_state_under_residue(self):
         for name in self.RESIDUE_DIRS:
@@ -1391,11 +1425,14 @@ class ResidueCodeBindingTests(unittest.TestCase):
                     before = mechanical_verify.tree_binding(root)[
                         "tree_digest"
                     ]
-                    # Tool state — bytecode and cache data — is
-                    # what the run itself regenerates; it stays
-                    # unbound so a seal cannot abort on it.
-                    write(root, f"{name}/planted/state.pyc", "cache\n")
-                    write(root, f"{name}/v/cache/data.json", "{}\n")
+                    # Tool state is what the run itself
+                    # regenerates; it stays unbound so a seal
+                    # cannot abort on it.
+                    write(
+                        root,
+                        f"{name}/{self.TOOL_STATE[name]}",
+                        "state\n",
+                    )
                     self.assertEqual(
                         before,
                         mechanical_verify.tree_binding(root)[
@@ -1416,6 +1453,86 @@ class ResidueCodeBindingTests(unittest.TestCase):
                             "tree_digest"
                         ],
                     )
+
+    def test_fs_digest_binds_any_non_tool_state_under_cache_names(self):
+        # Round 2, finding F1: under a cache name, a planted file
+        # of ANY shape — a module archive under a .zip name or an
+        # arbitrary one, an extensionless script, a collectable
+        # data file — is content a sealed run can load by name,
+        # so it binds; only the tool's own state stays unbound.
+        for name in (".pytest_cache", ".mypy_cache", "__pycache__"):
+            for rel in (
+                "planted/pkg.zip",
+                "planted/bundle",
+                "planted/tool",
+                "planted/check_data.txt",
+            ):
+                with self.subTest(name=name, rel=rel):
+                    with tempfile.TemporaryDirectory() as tmp:
+                        root = Path(tmp)
+                        write(root, "a.txt", "one\n")
+                        before = mechanical_verify.tree_binding(root)[
+                            "tree_digest"
+                        ]
+                        write(root, f"{name}/{rel}", "payload\n")
+                        bound = mechanical_verify.tree_binding(root)[
+                            "tree_digest"
+                        ]
+                        self.assertNotEqual(before, bound)
+                        write(root, f"{name}/{rel}", "changed\n")
+                        self.assertNotEqual(
+                            bound,
+                            mechanical_verify.tree_binding(root)[
+                                "tree_digest"
+                            ],
+                        )
+
+    def test_fs_digest_binds_archive_and_hooks_under_dotgit(self):
+        # Round 2: under .git the enumerated bind set gains the
+        # archive suffixes importlib loads by name (.zip here)
+        # and everything under hooks/ (git's own hook scripts).
+        # An archive under an ARBITRARY name stays unbound there
+        # — the scoped remainder the docs state.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "a.txt", "one\n")
+            before = mechanical_verify.tree_binding(root)["tree_digest"]
+            write(root, ".git/hooks/pre-commit", "#!/bin/sh\ntrue\n")
+            self.assertNotEqual(
+                before, mechanical_verify.tree_binding(root)["tree_digest"]
+            )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "a.txt", "one\n")
+            before = mechanical_verify.tree_binding(root)["tree_digest"]
+            write(root, ".git/planted/pkg.zip", "payload\n")
+            self.assertNotEqual(
+                before, mechanical_verify.tree_binding(root)["tree_digest"]
+            )
+            write(root, ".git/planted/bundle", "payload\n")
+            after = mechanical_verify.tree_binding(root)["tree_digest"]
+            write(root, ".git/planted/bundle", "changed\n")
+            self.assertEqual(
+                after, mechanical_verify.tree_binding(root)["tree_digest"]
+            )
+
+    def test_fs_tool_state_mutation_does_not_move_digest(self):
+        # Lifecycle guard for the inverted rule: post-seal, the
+        # tools' own state files may be (re)written freely — a
+        # warm-cache rerun rewrites exactly these — without the
+        # digest moving.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "a.txt", "one\n")
+            before = mechanical_verify.tree_binding(root)["tree_digest"]
+            write(root, ".pytest_cache/v/cache/nodeids", "[]\n")
+            write(root, ".pytest_cache/v/cache/lastfailed", "{}\n")
+            write(root, ".pytest_cache/CACHEDIR.TAG", "tag\n")
+            write(root, ".mypy_cache/3.12/mod.meta.json", "{}\n")
+            write(root, "__pycache__/mod.cpython-312.pyc", "cache\n")
+            self.assertEqual(
+                before, mechanical_verify.tree_binding(root)["tree_digest"]
+            )
 
     def test_fs_digest_binds_native_extension_under_residue(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1553,6 +1670,90 @@ class ResidueCodeBindingTests(unittest.TestCase):
             proc = check(receipts, "1")
             self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
             self.assertIn("RECEIPTS: PASS", proc.stdout)
+
+    def _seal_zipimport_fixture(
+        self, root: Path, archive_name: str
+    ) -> Path:
+        """A pytest suite whose only test imports a module from
+        a zip archive planted in .pytest_cache (review finding
+        F1's shape, driven through the real CLI)."""
+        archive = root / ".pytest_cache" / "planted" / archive_name
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(archive, "w") as zf:
+            zf.writestr("zmod.py", 'VALUE = "ok"\n')
+        write(
+            root,
+            "test_app.py",
+            "import sys\n"
+            "from pathlib import Path\n"
+            "sys.path.insert(0, str(Path(__file__).parent"
+            f" / '.pytest_cache' / 'planted' / {archive_name!r}))\n"
+            "import zmod\n\n\n"
+            "def test_zmod_value():\n"
+            "    assert zmod.VALUE == 'ok'\n",
+        )
+        receipts = root / "r.jsonl"
+        proc = verify(root, "1", receipts)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        proc = check(receipts, "1")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("RECEIPTS: PASS", proc.stdout)
+        return receipts
+
+    @unittest.skipUnless(
+        _path_pytest_available(), "python3 on PATH has no pytest module"
+    )
+    def test_fs_zipimport_from_pytest_cache_goes_stale(self):
+        # Review finding F1: zipimport loads the module by name
+        # from the planted archive; rebuilding the archive with a
+        # flipped value must flip the audit to STALE. The
+        # arbitrary-filename case (zipimport accepts any name) is
+        # the one a suffix list can never close.
+        for archive_name in ("pkg.zip", "bundle"):
+            with self.subTest(archive_name=archive_name):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    receipts = self._seal_zipimport_fixture(
+                        root, archive_name
+                    )
+                    archive = (
+                        root
+                        / ".pytest_cache"
+                        / "planted"
+                        / archive_name
+                    )
+                    with zipfile.ZipFile(archive, "w") as zf:
+                        zf.writestr("zmod.py", 'VALUE = "broken"\n')
+                    proc = check(receipts, "1")
+                    self.assertEqual(
+                        proc.returncode, 1, proc.stdout + proc.stderr
+                    )
+                    self.assertIn("RECEIPTS: STALE", proc.stdout)
+                    proc = verify(root, "1", receipts)
+                    self.assertEqual(
+                        proc.returncode, 1, proc.stdout + proc.stderr
+                    )
+
+    def test_git_untracked_non_state_under_residue_blocks_sealing(self):
+        # Git-mode parity for the inverted rule: an untracked
+        # file the fs binding would cover under a residue name —
+        # an archive, an arbitrary data file — counts as dirty;
+        # the tools' own state stays ignored.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_git_repo(root)
+            receipts = root / "r.jsonl"
+            write(root, ".pytest_cache/v/cache/nodeids", "[]\n")
+            write(root, ".mypy_cache/3.12/mod.data.json", "{}\n")
+            self.assertTrue(mechanical_verify.tree_clean(root, receipts))
+            write(root, ".pytest_cache/planted/pkg.zip", "payload\n")
+            self.assertFalse(mechanical_verify.tree_clean(root, receipts))
+            (root / ".pytest_cache/planted/pkg.zip").unlink()
+            write(root, ".mypy_cache/planted/blob", "payload\n")
+            self.assertFalse(mechanical_verify.tree_clean(root, receipts))
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("tree not clean at HEAD", proc.stdout)
 
     def test_git_untracked_code_under_residue_blocks_sealing(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -1698,7 +1698,15 @@ class ResidueConfigAimTests(unittest.TestCase):
     aim itself disqualifies the leg, in the fail-closed posture
     of issue #62. A symlinked config is NOT read for this check:
     it is already insulated by the -c pin (issue #64), and its
-    options define nothing."""
+    options define nothing.
+
+    Round 2 (Task 11 review, findings F2/F3): the gate reads the
+    config's FULL aiming surface, not two keys — addopts entries
+    are prepended argv, so their positional tokens are collection
+    aims too, and --pyargs retargets collection at installed
+    packages. And an aim is refused on either boundary of the
+    attested set: into a residue directory, or anywhere outside
+    the root, whose content the seal does not describe at all."""
 
     def _verify(self, root: Path, receipts: Path):
         stdout = io.StringIO()
@@ -1889,6 +1897,191 @@ class ResidueConfigAimTests(unittest.TestCase):
                 root,
                 "pytest.ini",
                 "[pytest]\ntestpaths = .mypy_cache/collected\n",
+            )
+            write(
+                root,
+                "conftest.py",
+                "import pytest\n\n\n"
+                "class TxtFile(pytest.File):\n"
+                "    def collect(self):\n"
+                "        yield TxtItem.from_parent(self, name='planted')\n\n\n"
+                "class TxtItem(pytest.Item):\n"
+                "    def runtest(self):\n"
+                "        namespace = {}\n"
+                "        exec(self.path.read_text(), namespace)\n"
+                "        namespace['test_planted']()\n\n\n"
+                "def pytest_collect_file(file_path, parent):\n"
+                "    if file_path.suffix == '.txt' and "
+                "file_path.name.startswith('check_'):\n"
+                "        return TxtFile.from_parent(parent, path=file_path)\n",
+            )
+            write(
+                root,
+                ".mypy_cache/collected/check_planted.txt",
+                "def test_planted():\n    assert True\n",
+            )
+            rc, _, output = self._verify(root, receipts)
+            self.assertEqual(rc, 2, output)
+            self.assertIn("no verification commands discovered", output)
+            self.assertFalse(receipts.exists())
+
+    def test_addopts_positional_into_residue_disqualifies(self):
+        # Finding F2: addopts entries are prepended argv — a bare
+        # positional there is a collection aim the two-key gate
+        # never read.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "pytest.ini",
+                "[pytest]\naddopts = .mypy_cache/collected\n",
+            )
+            write(
+                root,
+                ".mypy_cache/collected/test_planted.py",
+                "def test_planted():\n    assert True\n",
+            )
+            write(
+                root,
+                "test_ok.py",
+                "def test_ok():\n    assert True\n",
+            )
+            self.assertNotIn("pytest", self._ids(root))
+
+    def test_addopts_pyargs_disqualifies(self):
+        # --pyargs retargets collection at installed packages —
+        # outside the bound set by construction.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "pytest.ini", "[pytest]\naddopts = --pyargs\n")
+            write(
+                root,
+                "test_ok.py",
+                "def test_ok():\n    assert True\n",
+            )
+            self.assertNotIn("pytest", self._ids(root))
+
+    def test_aims_outside_root_disqualify(self):
+        # Finding F3: an aim that resolves outside the root
+        # collects or imports content the seal does not describe.
+        cases = [
+            ("[pytest]\ntestpaths = ../outside\n", None),
+            ("[pytest]\naddopts = ../outside\n", None),
+            (None, "[tool.pytest.ini_options]\n"
+             'pythonpath = ["../outside"]\n'),
+        ]
+        for ini, toml in cases:
+            with self.subTest(ini=ini, toml=toml):
+                with tempfile.TemporaryDirectory() as tmp:
+                    base = Path(tmp)
+                    root = base / "root"
+                    root.mkdir()
+                    if ini is not None:
+                        write(root, "pytest.ini", ini)
+                    if toml is not None:
+                        write(root, "pyproject.toml", toml)
+                    write(
+                        root,
+                        "test_ok.py",
+                        "def test_ok():\n    assert True\n",
+                    )
+                    self.assertNotIn("pytest", self._ids(root))
+        # Absolute form.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            outside = base / "outside"
+            write(
+                root,
+                "pytest.ini",
+                f"[pytest]\ntestpaths = {outside}\n",
+            )
+            write(
+                root,
+                "test_ok.py",
+                "def test_ok():\n    assert True\n",
+            )
+            self.assertNotIn("pytest", self._ids(root))
+
+    def test_toml_addopts_into_residue_disqualifies(self):
+        for addopts in (
+            'addopts = ".mypy_cache/collected"\n',
+            'addopts = [".mypy_cache/collected"]\n',
+        ):
+            with self.subTest(addopts=addopts):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    write(
+                        root,
+                        "pyproject.toml",
+                        "[tool.pytest.ini_options]\n" + addopts,
+                    )
+                    write(
+                        root,
+                        "test_ok.py",
+                        "def test_ok():\n    assert True\n",
+                    )
+                    self.assertNotIn("pytest", self._ids(root))
+
+    def test_addopts_controls_still_schedule(self):
+        # Ordinary addopts define no unattested aim: flags,
+        # =-form options, the consumed values of value-taking
+        # options (even values outside the root — a basetemp or
+        # report path is not a collection aim), and an in-tree
+        # positional all leave the leg scheduled.
+        for addopts in (
+            "-q --tb=short -k smoke",
+            "tests",
+            "--basetemp /tmp/aep-verifier-basetemp -q",
+            "--junit-xml /tmp/aep-report.xml",
+        ):
+            with self.subTest(addopts=addopts):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    write(
+                        root,
+                        "pytest.ini",
+                        f"[pytest]\naddopts = {addopts}\n",
+                    )
+                    write(
+                        root,
+                        "tests/test_ok.py",
+                        "def test_ok():\n    assert True\n",
+                    )
+                    self.assertIn("pytest", self._ids(root))
+
+    def test_testpaths_through_residue_to_bound_dir_still_schedules(self):
+        # Positive control (round-1 review): the aim normalizes
+        # to bound content, so the leg is scheduled.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "pytest.ini",
+                "[pytest]\ntestpaths = .mypy_cache/../tests\n",
+            )
+            write(
+                root,
+                "tests/test_ok.py",
+                "def test_ok():\n    assert True\n",
+            )
+            self.assertIn("pytest", self._ids(root))
+
+    @unittest.skipUnless(_pytest_on_path(), "no pytest on PATH")
+    def test_custom_collector_shape_aimed_via_addopts_is_refused(self):
+        # Finding F2 end to end: B2's custom-collector shape with
+        # the aim carried by an addopts positional instead of
+        # testpaths. Pre-fix the leg sealed over the planted .txt.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            receipts = base / "receipts.jsonl"
+            write(
+                root,
+                "pytest.ini",
+                "[pytest]\naddopts = .mypy_cache/collected\n",
             )
             write(
                 root,
