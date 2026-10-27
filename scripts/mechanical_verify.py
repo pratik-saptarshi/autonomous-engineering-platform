@@ -3461,12 +3461,142 @@ def _path_binds_under_residue(parts: list[str]) -> bool | None:
     return _residue_file_binds(active, tuple(parts[start:]))
 
 
-def _git(root: Path, *args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["git", "-C", str(root), *args],
+# Command-line configuration pinned on every git invocation the
+# verifier makes. Repo-local git configuration is unbound state
+# delivered WITH a filesystem-copied checkout (an archive, an
+# rsync, a prebuilt worktree image), not operator environment, yet
+# it steers the answers the verifier borrows from git — above all
+# `git status`, whose cleanliness judgement the git-mode binding
+# rests on. A `-c` assignment on the argv is applied after ALL
+# file config — the system and global files, the repo file, any
+# include.path / includeIf chain it names, and the
+# extensions.worktreeConfig file — so one pin covers the whole
+# chain wherever the setting actually lives (paperthin
+# validation 6, breach B-A). Each pin restores the instrument's
+# platform-default judgement against a repo-local claim:
+#
+# - core.fsmonitor / core.untrackedCache: off. Both delegate or
+#   accelerate status's answer with state the checkout supplies —
+#   fsmonitor wholesale, to a helper PROGRAM the config names,
+#   whose primed token lineage makes a modified tracked file
+#   invisible (the breach); the untracked cache is the same
+#   borrowed answer for the untracked half.
+# - core.hooksPath: the null device, so no hook (a
+#   post-index-change hook fires when status refreshes the
+#   index) executes a repo-named program during a verifier call.
+# - core.attributesFile / core.excludesFile: the null device, so
+#   a repo-local pointer cannot move the attributes or excludes
+#   git honours to files outside the tree — an outside
+#   attributes file selecting a constant clean filter masks a
+#   tracked modification outright; an outside excludes file
+#   hides untracked code. (The in-tree .gitignore and
+#   .git/info/exclude are untouched: ignored content is git
+#   mode's stated limit, not this pin's subject.)
+# - core.fileMode / core.checkStat / core.trustctime /
+#   core.ignoreCase / core.symlinks / core.autocrlf: the
+#   comparison's width and the filesystem's real properties,
+#   restored — a repo-local fileMode=false masks a mode change,
+#   a narrowed checkStat / distrusted ctime thins the stat
+#   comparison a forged timestamp must survive, and conversion
+#   is not the repo's to enable against a binding made of raw
+#   blob bytes.
+# - status.showUntrackedFiles: all, the call site's flag
+#   restated at the _git level so every status invocation
+#   enumerates untracked files individually.
+#
+# Two setup-level keys a -c pin cannot retake, adjudicated
+# rather than pinned: core.bare makes every worktree command
+# fail, so a checkout carrying it fails closed; core.worktree IS
+# honoured from the file over the argv (setup consumes it before
+# -c applies), so _git overrides it with --work-tree derived
+# from the filesystem layout instead (see _filesystem_worktree_top).
+_GIT_CONFIG_PINS = (
+    "core.fsmonitor=false",
+    "core.untrackedCache=false",
+    "core.hooksPath=" + os.devnull,
+    "core.attributesFile=" + os.devnull,
+    "core.excludesFile=" + os.devnull,
+    "core.fileMode=true",
+    "core.checkStat=default",
+    "core.trustctime=true",
+    "core.ignoreCase=false",
+    "core.symlinks=true",
+    "core.autocrlf=false",
+    "status.showUntrackedFiles=all",
+)
+
+
+def _filesystem_worktree_top(root: Path) -> Path | None:
+    """The worktree top for *root* by filesystem layout alone:
+    the nearest ancestor (root itself first) carrying a `.git`
+    entry — git's own discovery rule, re-derived without asking
+    git, because the answer git gives is one repo-local config
+    (core.worktree) can redirect to a different tree entirely.
+    None when no ancestor carries one (a bare repo directory, a
+    separate-git-dir layout): the plain invocation stands."""
+    try:
+        start = root.resolve()
+    except OSError:
+        return None
+    for candidate in (start, *start.parents):
+        if (candidate / ".git").exists():
+            return candidate
+    return None
+
+
+def _layout_git_dir(top: Path) -> str | None:
+    """The git dir a `.git` entry at *top* names: the directory
+    itself, or the target of a `.git` file's `gitdir:` line
+    (linked worktrees, submodules), resolved against *top*.
+    None when the entry cannot be read in either form."""
+    dot = top / ".git"
+    try:
+        if dot.is_dir():
+            return str(dot)
+        text = dot.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        if line.startswith("gitdir:"):
+            target = Path(line[len("gitdir:"):].strip())
+            if not target.is_absolute():
+                target = top / target
+            return str(target.resolve())
+    return None
+
+
+def _absolute_git_dir(root: Path) -> str | None:
+    """Fallback for exotic layouts: ask git where the git dir
+    is. The answer is a path derivation repo-local config was
+    probed not to steer (core.worktree redirects
+    --show-toplevel, never --absolute-git-dir)."""
+    proc = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "--absolute-git-dir"],
         capture_output=True,
         timeout=60,
     )
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.decode("utf-8", errors="replace").strip() or None
+
+
+def _git(root: Path, *args: str) -> subprocess.CompletedProcess:
+    argv = ["git", "-C", str(root)]
+    top = _filesystem_worktree_top(root)
+    if top is not None:
+        git_dir = _layout_git_dir(top) or _absolute_git_dir(root)
+        if git_dir is not None:
+            # --work-tree/--git-dir on the argv are the only
+            # override core.worktree honours: setup consumes the
+            # file value before -c config applies (probed), so
+            # the worktree is restated from the filesystem
+            # layout and the borrowed answers describe the tree
+            # under attestation, not a tree config names.
+            argv += ["--git-dir", git_dir, "--work-tree", str(top)]
+    for pin in _GIT_CONFIG_PINS:
+        argv += ["-c", pin]
+    argv += list(args)
+    return subprocess.run(argv, capture_output=True, timeout=60)
 
 
 def _git_head(root: Path) -> str | None:
@@ -3787,6 +3917,19 @@ def tree_clean(root: Path, receipts_path: Path | None = None) -> bool:
     could execute must be committed or removed before the tree
     can seal. Modified or staged tracked entries always count
     as dirty; the exclusions never hide a tracked change.
+    That contract rests on pinned instruments (see
+    _GIT_CONFIG_PINS): every git invocation carries command-line
+    pins for the repo-local keys that could steer its answer —
+    repo-local git configuration is unbound state delivered
+    with the checkout, and an unpinned `git status` asks the
+    checkout's own configuration whether the checkout is clean
+    (a primed core.fsmonitor helper answers for it wholesale;
+    paperthin validation 6, breach B-A). And the index itself
+    is judged after status: a tracked file carrying the
+    skip-worktree or assume-unchanged bit is one status has
+    been told not to look at — it reports the file clean BY
+    DESIGN while its bytes differ from HEAD — so a tree
+    carrying either bit on any tracked file is not clean here.
     """
     resolved = root.resolve()
     top = _git(resolved, "rev-parse", "--show-toplevel")
@@ -3838,6 +3981,19 @@ def tree_clean(root: Path, receipts_path: Path | None = None) -> bool:
         ) and not _entry_is_symlink(toplevel, path):
             continue
         return False
+    # Index mask bits: `git ls-files -v` exposes them in the
+    # entry tag — lowercase for assume-unchanged, S for
+    # skip-worktree. Either bit means the pinned status above
+    # was instructed not to compare that file's worktree bytes
+    # against the index at all, so its silence about the file is
+    # not evidence; the bits have no legitimate place in a
+    # checkout whose cleanliness is being attested.
+    proc = _git(resolved, "ls-files", "-v", "-z")
+    if proc.returncode != 0:
+        return False
+    for entry in proc.stdout.split(b"\0"):
+        if entry and (entry[:1].islower() or entry[:1] == b"S"):
+            return False
     return True
 
 

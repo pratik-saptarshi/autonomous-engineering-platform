@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 import zipfile
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -1404,6 +1405,205 @@ class ContentBindingTests(unittest.TestCase):
             receipts = root / "r.jsonl"
             write(root, "sub/node_modules/helper.py", 'VALUE = "ok"\n')
             self.assertTrue(mechanical_verify.tree_clean(root, receipts))
+
+
+class GitInstrumentPinTests(unittest.TestCase):
+    """Task 16 (paperthin validation 6, breach B-A): the verifier's
+    git calls are borrowed instruments, and repo-local git config
+    travels with a filesystem-delivered checkout — it is unbound
+    state delivered with the artifact under test, not operator
+    environment. A primed core.fsmonitor helper answers git
+    status's fsmonitor query with a steady token and an empty
+    change list, so a modified tracked file is invisible to
+    tree_clean and the seal attests HEAD's tree while the
+    worktree's file executes. The same file steers the answer
+    through sibling keys (an outside core.worktree redirects
+    status to another tree entirely; an outside
+    core.attributesFile selecting a constant clean filter masks
+    a same-size modification; core.excludesFile hides untracked
+    code; core.fileMode=false masks a mode change), and the
+    index itself carries mask bits (skip-worktree,
+    assume-unchanged) that make status report modified files as
+    clean BY DESIGN. _git therefore carries command-line pins —
+    applied after every config file, include chains and the
+    worktree config included — and tree_clean treats a tree
+    carrying either index mask bit as not clean.
+    """
+
+    def _fsmonitor_repo(self, tmp: str) -> tuple[Path, Path]:
+        root = Path(tmp) / "repo"
+        root.mkdir()
+        init_git_repo(root)
+        commit_file(root, "tracked.py", 'VALUE = "good"\n', "add tracked")
+        helper = write(
+            root, ".git/fsm-helper", "#!/bin/sh\nprintf 'tok-steady\\0'\n"
+        )
+        helper.chmod(0o755)
+        return root, helper
+
+    def _prime_fsmonitor(self, root: Path) -> None:
+        # Two ordinary git invocations on the clean tree, as a
+        # real checkout's life supplies: the first records the
+        # helper's token in the index, the second round-trips it.
+        git(root, "status", "--porcelain")
+        git(root, "status", "--porcelain")
+
+    def test_fsmonitor_helper_cannot_mask_tracked_modification(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, helper = self._fsmonitor_repo(tmp)
+            git(root, "config", "core.fsmonitor", str(helper))
+            self._prime_fsmonitor(root)
+            write(root, "tracked.py", 'VALUE = "evil"\n')
+            receipts = root / "r.jsonl"
+            self.assertFalse(mechanical_verify.tree_clean(root, receipts))
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("tree not clean at HEAD", proc.stdout)
+
+    def test_fsmonitor_via_include_chain_is_pinned(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, helper = self._fsmonitor_repo(tmp)
+            outside = write(
+                Path(tmp),
+                "included-config",
+                f"[core]\n\tfsmonitor = {helper}\n",
+            )
+            git(root, "config", "include.path", str(outside))
+            self._prime_fsmonitor(root)
+            write(root, "tracked.py", 'VALUE = "evil"\n')
+            receipts = root / "r.jsonl"
+            self.assertFalse(mechanical_verify.tree_clean(root, receipts))
+
+    def test_index_mask_bits_count_as_dirty(self):
+        for flag in ("--skip-worktree", "--assume-unchanged"):
+            with self.subTest(flag=flag), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                init_git_repo(root)
+                commit_file(
+                    root, "tracked.py", 'VALUE = "good"\n', "add tracked"
+                )
+                git(root, "update-index", flag, "tracked.py")
+                receipts = root / "r.jsonl"
+                # The bit alone disqualifies: it asks git not to
+                # look at this file's worktree state at all.
+                self.assertFalse(mechanical_verify.tree_clean(root, receipts))
+                write(root, "tracked.py", 'VALUE = "evil"\n')
+                self.assertFalse(mechanical_verify.tree_clean(root, receipts))
+
+    def test_core_worktree_cannot_redirect_the_cleanliness_answer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            root.mkdir()
+            init_git_repo(root)
+            commit_file(root, "tracked.py", 'VALUE = "good"\n', "add tracked")
+            elsewhere = Path(tmp) / "elsewhere"
+            elsewhere.mkdir()
+            write(elsewhere, "Makefile", "test:\n\ttrue\n")
+            write(elsewhere, "tracked.py", 'VALUE = "good"\n')
+            git(root, "config", "core.worktree", str(elsewhere))
+            write(root, "tracked.py", 'VALUE = "evil"\n')
+            receipts = root / "r.jsonl"
+            self.assertFalse(mechanical_verify.tree_clean(root, receipts))
+
+    def test_repo_local_excludes_file_cannot_hide_untracked_code(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            root.mkdir()
+            init_git_repo(root)
+            outside = write(Path(tmp), "outside-excludes", "helper.py\n")
+            git(root, "config", "core.excludesFile", str(outside))
+            write(root, "helper.py", 'VALUE = "ok"\n')
+            receipts = root / "r.jsonl"
+            self.assertFalse(mechanical_verify.tree_clean(root, receipts))
+
+    def test_repo_local_attributes_file_cannot_mask_tracked_modification(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            root.mkdir()
+            init_git_repo(root)
+            commit_file(root, "tracked.txt", "good\n", "add tracked")
+            outside = write(
+                Path(tmp), "outside-attrs", "tracked.txt filter=mask\n"
+            )
+            git(root, "config", "core.attributesFile", str(outside))
+            git(root, "config", "filter.mask.clean", "printf 'good\\n'")
+            git(root, "config", "filter.mask.smudge", "cat")
+            write(root, "tracked.txt", "evil\n")
+            receipts = root / "r.jsonl"
+            self.assertFalse(mechanical_verify.tree_clean(root, receipts))
+
+    def test_repo_local_filemode_off_cannot_mask_mode_change(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_git_repo(root)
+            commit_file(root, "run.sh", "#!/bin/sh\ntrue\n", "add script")
+            git(root, "config", "core.fileMode", "false")
+            (root / "run.sh").chmod(0o755)
+            receipts = root / "r.jsonl"
+            self.assertFalse(mechanical_verify.tree_clean(root, receipts))
+
+    def test_untracked_cache_does_not_hide_untracked_code(self):
+        # Adjudication pin (validation 6 §1): the untracked cache
+        # accelerates the untracked half of status's answer and
+        # is pinned off like fsmonitor; with it enabled and
+        # primed, an untracked code file still counts as dirty.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_git_repo(root)
+            git(root, "config", "core.untrackedCache", "true")
+            git(root, "update-index", "--untracked-cache")
+            git(root, "status", "--porcelain")
+            write(root, "helper.py", 'VALUE = "ok"\n')
+            receipts = root / "r.jsonl"
+            self.assertFalse(mechanical_verify.tree_clean(root, receipts))
+
+    def test_same_size_modification_with_forged_stat_is_dirty(self):
+        # Adjudication pin (validation 6, Task 16 brief): a
+        # same-size edit whose mtime is forged back to the index's
+        # recorded value is still caught — git's racy-stat
+        # handling falls back to a content comparison, under the
+        # default checkStat the pin restores.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_git_repo(root)
+            commit_file(root, "tracked.py", "good\n", "add tracked")
+            path = root / "tracked.py"
+            st = os.stat(path)
+            write(root, "tracked.py", "evil\n")
+            os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
+            receipts = root / "r.jsonl"
+            self.assertFalse(mechanical_verify.tree_clean(root, receipts))
+
+    def test_git_invocations_carry_config_pins(self):
+        captured: dict = {}
+
+        def fake_run(argv, **kwargs):
+            captured["argv"] = argv
+            return subprocess.CompletedProcess(argv, 0, b"", b"")
+
+        with mock.patch.object(mechanical_verify.subprocess, "run", fake_run):
+            mechanical_verify._git(
+                Path("/nonexistent-root"), "status", "--porcelain"
+            )
+        argv = captured["argv"]
+        self.assertLess(argv.index("-c"), argv.index("status"))
+        pins = {
+            argv[i + 1] for i, a in enumerate(argv[:-1]) if a == "-c"
+        }
+        self.assertTrue(
+            {
+                "core.fsmonitor=false",
+                "core.untrackedCache=false",
+                "core.hooksPath=" + os.devnull,
+                "core.attributesFile=" + os.devnull,
+                "core.excludesFile=" + os.devnull,
+                "core.fileMode=true",
+                "status.showUntrackedFiles=all",
+            }
+            <= pins
+        )
 
 
 class ResidueCodeBindingTests(unittest.TestCase):
