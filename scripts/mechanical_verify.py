@@ -24,10 +24,12 @@ import signal
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import tomllib
 import uuid
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -47,14 +49,17 @@ MARKDOWNLINT_ARGV = (
 )
 
 # pytest verbosity is an additive counter across the project's
-# addopts and the command line, and the count parser reads the
-# terminal summary — so the discovered invocation must guarantee
-# that summary is emitted. The old -q spent one quiet level here,
-# and a project with `addopts = -q` stacked to -qq, which
-# suppresses the summary entirely: a passing run printed only
-# `. [100%]`, parsed to zero collected, and was rejected (Codex
-# P2, round 5). -v nets +1, so project addopts down to -qq still
-# leave the summary alive.
+# addopts and the command line. The old -q spent one quiet level
+# here, and a project with `addopts = -q` stacked to -qq, which
+# suppresses the terminal summary entirely: a passing run printed
+# only `. [100%]`, parsed to zero collected, and was rejected
+# (Codex P2, round 5). -v nets +1, so project addopts down to -qq
+# still leave the summary alive. The collected count no longer
+# depends on that summary alone (issue #53): run_verification
+# takes it from the run's junitxml report — written outside the
+# tree, independent of verbosity — and the summary remains as the
+# cross-check the report is judged against whenever verbosity
+# left one (see _pytest_collected_count).
 PYTEST_ARGV = ("python3", "-m", "pytest", "-v")
 
 
@@ -1418,6 +1423,42 @@ _PYTEST_SUMMARY_TAIL_RE = re.compile(r" in \d+(?:\.\d+)?s\b")
 _PYTEST_COLLECTED_RE = re.compile(r"collected (\d+) items?\b")
 
 
+def _pytest_summary_count(stdout: str, stderr: str) -> int | None:
+    """The collected count the transcript's terminal summary
+    states, or None when the transcript carries no summary line
+    at all (verbosity stacked it away — issue #53).
+
+    The count is the sum of the outcome groups in the summary
+    line (passed+failed+skipped+errors+xfailed+xpassed)
+    EXCLUDING `deselected` — deselected tests were filtered OUT
+    by the runner and never collected for execution (panel
+    correctness P2-B). Zero collection is recognized only from
+    the runner's final summary line itself (`no tests ran
+    in …s`): the same phrase in test output (exposed by e.g.
+    `addopts = -s`) is a diagnostic, not the summary, and must
+    not override it (Codex P2, round 4).
+    """
+    total: int | None = None
+    for line in (stdout + "\n" + stderr).splitlines():
+        if not _PYTEST_SUMMARY_TAIL_RE.search(line):
+            continue
+        groups = _PYTEST_COUNT_RE.findall(line)
+        if groups:
+            total = sum(
+                int(count)
+                for count, label in groups
+                if label != "deselected"
+            )
+        elif "no tests ran" in line:
+            # The summary line itself reports zero collection.
+            # The phrase anywhere else (a test's printed
+            # diagnostic) never reaches this branch: it is
+            # either not summary-shaped or superseded by the
+            # real summary, which pytest prints last.
+            total = 0
+    return total
+
+
 def _count_collected(
     command_id: str, stdout: str, stderr: str
 ) -> int | None:
@@ -1429,21 +1470,18 @@ def _count_collected(
     (rule 8's scripts/tests discovery) is a unittest-discover run
     and is counted by the same rule — without it the leg sealed
     receipts with no collected count and the gate never judged it.
-    pytest: the collected count is
-    the sum of the outcome groups in the summary line
-    (passed+failed+skipped+errors+xfailed+xpassed) EXCLUDING
-    `deselected` — deselected tests were filtered OUT by the runner
-    and never collected for execution (panel correctness P2-B).
-    Zero collection is recognized only from the runner's final
-    summary line itself (`no tests ran in …s`): the same phrase in
-    test output (exposed by e.g. `addopts = -s`) is a diagnostic,
-    not the summary, and must not override it (Codex P2, round 4).
-    The summary itself is guaranteed by the invocation: PYTEST_ARGV
-    nets positive verbosity, so project addopts cannot stack quiet
-    levels into suppressing it (Codex P2, round 5). A transcript
-    with no summary line at all (dots only) still parses to 0 —
-    verbosity-independent evidence was deliberately NOT taken from
-    e.g. the progress dots, which are not a count.
+    pytest: the transcript channel — the terminal summary, parsed
+    by _pytest_summary_count. This is no longer the count of
+    record for a real run: run_verification composes it with the
+    run's junitxml report (see _pytest_collected_count), and this
+    channel is what the composition falls back to when the
+    report channel abstains, and the cross-check a present
+    report is judged against. A transcript with no summary line
+    at all (dots only, or quiet levels stacked past what
+    PYTEST_ARGV's net verbosity preserves — Codex P2, round 5)
+    parses to 0 here: verbosity-independent evidence was
+    deliberately NOT taken from e.g. the progress dots, which
+    are not a count.
     An unparseable count is 0 — a Python command
     that cannot prove it collected anything fails the count gate in
     VerificationResult.passed. Skips count as collected (deliberate
@@ -1455,27 +1493,94 @@ def _count_collected(
         match = _UNITTEST_RAN_RE.search(stdout + "\n" + stderr)
         return int(match.group(1)) if match is not None else 0
     if command_id == "pytest":
-        combined = stdout + "\n" + stderr
-        total: int | None = None
-        for line in combined.splitlines():
-            if not _PYTEST_SUMMARY_TAIL_RE.search(line):
-                continue
-            groups = _PYTEST_COUNT_RE.findall(line)
-            if groups:
-                total = sum(
-                    int(count)
-                    for count, label in groups
-                    if label != "deselected"
-                )
-            elif "no tests ran" in line:
-                # The summary line itself reports zero collection.
-                # The phrase anywhere else (a test's printed
-                # diagnostic) never reaches this branch: it is
-                # either not summary-shaped or superseded by the
-                # real summary, which pytest prints last.
-                total = 0
+        total = _pytest_summary_count(stdout, stderr)
         return total if total is not None else 0
     return None
+
+
+# The report channel's read cap: a genuine report is proportional
+# to the suite it describes; anything larger is not evidence the
+# composition will weigh (it abstains, like an unparseable file).
+_JUNITXML_MAX_BYTES = 64 * 1024 * 1024
+
+
+def _junitxml_count(report_path: Path) -> int | None:
+    """The collected count in the junitxml report at
+    *report_path*: the number of <testcase> elements it carries,
+    or None when the channel abstains (file missing, empty,
+    oversized, unparseable, or not a junit report at all).
+
+    Element count, not the testsuite `tests` attributes: the
+    elements are the report's items themselves. Collection
+    errors appear as a testcase bearing <error>, so the count
+    matches the transcript parser's error-group counting on the
+    same run. Both report shapes occur (a <testsuites> root, or
+    a bare <testsuite> under junit_family=xunit1); anything else
+    is not a report. ElementTree never resolves external
+    entities, and the byte cap bounds what a run can make the
+    verifier parse.
+    """
+    try:
+        if report_path.stat().st_size > _JUNITXML_MAX_BYTES:
+            return None
+        data = report_path.read_bytes()
+    except OSError:
+        return None
+    if not data:
+        return None
+    try:
+        root = ET.fromstring(data)
+    except ET.ParseError:
+        return None
+    if root.tag not in ("testsuites", "testsuite"):
+        return None
+    return len(root.findall(".//testcase"))
+
+
+def _pytest_collected_count(
+    report_count: int | None, stdout: str, stderr: str
+) -> int:
+    """The pytest leg's collected count of record (issue #53),
+    composed from the run's two evidence channels:
+
+    - the junitxml report the same run wrote to a tempfile
+      outside the tree (*report_count*, None when the report
+      channel abstains — the plugin was blocked, the path was
+      redirected, or the file is not a parseable report), and
+    - the transcript summary (_pytest_summary_count, None when
+      verbosity suppressed it).
+
+    A present report is the count — verbosity cannot stack it
+    away, and passive project config cannot redirect or inflate
+    it (the verifier's --junitxml is a command-line option: it
+    beats the same option in addopts, which are prepended). When
+    a summary survived verbosity it must AGREE with the report:
+    the two channels describe the same run, and a contradiction
+    means at least one was written by something other than the
+    runner's own accounting, so the count is 0 and the leg fails
+    closed. The report stands alone only when no summary exists
+    — exactly the stacked-quiet case whose absence of evidence
+    was the defect. With no report at all, the transcript
+    channel decides exactly as _count_collected always has.
+
+    Trust level, stated plainly: both channels are produced
+    inside the runner process, and a tree-supplied hook running
+    there (a conftest session-finish overwrite of the report
+    file; a fake summary written to fd 2 at terminal-summary
+    time) can forge either one ALONE — that is the transcript's
+    long-standing trust level (issue #54's family: in-process
+    hooks and reporter plugins are trusted like the interpreter
+    itself, and the forging code is digest-bound in the sealed
+    tree). The composition raises the bar to forging both
+    channels consistently in the same run; it does not claim a
+    same-run channel can do more.
+    """
+    summary = _pytest_summary_count(stdout, stderr)
+    if report_count is None:
+        return summary if summary is not None else 0
+    if summary is not None and summary != report_count:
+        return 0
+    return report_count
 
 
 # CPython ≥3.12's unittest CLI exit code for a run that collected
@@ -1765,6 +1870,29 @@ def run_verification(
     env = build_run_env(_policy_path())
     env["CI"] = "1"
     env["PYTHONUNBUFFERED"] = "1"
+    # Issue #53: the pytest leg's collected count is read from a
+    # junitxml report the same run writes — never from inside the
+    # verified tree, where the artifact would collide with the
+    # binding and tree-clean checks (the round-5 objection), but
+    # to a tempfile in the system temp dir. The executed command
+    # carries the flag, so the result — and therefore the sealed
+    # receipt — records the argv that actually ran, evidence
+    # channel included. The tempfile is consumed and removed
+    # below, on every return path.
+    executed = command
+    report_path: Path | None = None
+    if command.id == "pytest":
+        fd, report_name = tempfile.mkstemp(
+            prefix="mechanical-verify-junitxml-", suffix=".xml"
+        )
+        os.close(fd)
+        report_path = Path(report_name)
+        executed = VerificationCommand(
+            command.id,
+            command.label,
+            command.argv + (f"--junitxml={report_path}",),
+            command.speculative,
+        )
     started = time.monotonic()
     # Snapshot this process's children immediately before the spawn:
     # the post-run sweep kills only children that appear after this
@@ -1773,7 +1901,7 @@ def run_verification(
     snapshot = _children_start_times()
     try:
         proc = subprocess.Popen(
-            list(command.argv),
+            list(executed.argv),
             cwd=str(root),
             env=env,
             stdout=subprocess.PIPE,
@@ -1781,8 +1909,10 @@ def run_verification(
             start_new_session=True,
         )
     except OSError as exc:
+        if report_path is not None:
+            report_path.unlink(missing_ok=True)
         return VerificationResult(
-            command=command,
+            command=executed,
             exit_code=None,
             timed_out=False,
             duration_ms=int((time.monotonic() - started) * 1000),
@@ -1841,8 +1971,18 @@ def run_verification(
 
     stdout_text = stdout_buf.text()
     stderr_text = stderr_buf.text()
+    tests_collected = _count_collected(
+        command.id, stdout_text, stderr_text
+    )
+    if report_path is not None:
+        # Read only now — after the leader was waited on and the
+        # survivor sweep ran, no writer of the report remains.
+        tests_collected = _pytest_collected_count(
+            _junitxml_count(report_path), stdout_text, stderr_text
+        )
+        report_path.unlink(missing_ok=True)
     return VerificationResult(
-        command=command,
+        command=executed,
         exit_code=proc.returncode,
         timed_out=timed_out,
         duration_ms=int((time.monotonic() - started) * 1000),
@@ -1853,9 +1993,7 @@ def run_verification(
         output_truncated=stdout_buf.truncated or stderr_buf.truncated,
         survivors_killed=survivors_killed,
         survivors_remaining=survivors_remaining,
-        tests_collected=_count_collected(
-            command.id, stdout_text, stderr_text
-        ),
+        tests_collected=tests_collected,
     )
 
 

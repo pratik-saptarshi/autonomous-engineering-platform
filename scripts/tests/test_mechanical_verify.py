@@ -2772,6 +2772,311 @@ class CollectedCountTests(unittest.TestCase):
             self.assertTrue(result.passed)
 
 
+class PytestJunitXmlCountTests(unittest.TestCase):
+    """Issue #53: the pytest leg's collected count must not depend
+    on terminal verbosity. The count comes from the junitxml report
+    the same run writes to a tempfile outside the tree, cross-checked
+    against the transcript summary whenever verbosity left one: the
+    two channels of the same run must agree, or the count is 0
+    (fail closed). A missing/unparseable report degrades to the
+    transcript channel exactly as before."""
+
+    PASS3 = (
+        "def test_a():\n    pass\n\n\n"
+        "def test_b():\n    pass\n\n\n"
+        "def test_c():\n    pass\n"
+    )
+
+    def run_fixture(self, root: Path):
+        commands = discover_verification_commands(root)
+        results = []
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            rc = run_all(
+                root,
+                commands,
+                mem_available_kb=lambda: 10**9,
+                on_result=results.append,
+            )
+        return commands, results, rc, stdout.getvalue()
+
+    # -- the composition rule, unit level --------------------------
+
+    def test_count_composition_rule(self):
+        count = mechanical_verify._pytest_collected_count
+        summary3 = "===== 3 passed in 0.01s =====\n"
+        summary999 = "===== 999 passed in 0.01s =====\n"
+        no_summary = ". [100%]\n"
+        # Report and summary agree: the count stands.
+        self.assertEqual(count(3, summary3, ""), 3)
+        self.assertEqual(count(0, "==== no tests ran in 0.00s ====\n", ""), 0)
+        # Verbosity suppressed the summary: the report stands alone.
+        self.assertEqual(count(3, no_summary, ""), 3)
+        self.assertEqual(count(0, no_summary, ""), 0)
+        # The channels of the same run disagree: the run proves
+        # nothing and the count fails closed — in both directions.
+        self.assertEqual(count(999, summary3, ""), 0)
+        self.assertEqual(count(3, "", summary999), 0)
+        # No report (channel suppressed): the transcript decides,
+        # exactly as the count parser always has.
+        self.assertEqual(count(None, "2 passed in 0.01s\n", ""), 2)
+        self.assertEqual(count(None, no_summary, ""), 0)
+
+    def test_junitxml_count_parses_reports(self):
+        parse = mechanical_verify._junitxml_count
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+
+            def report(name, text):
+                path = base / name
+                path.write_text(text)
+                return path
+
+            xunit2 = report(
+                "x2.xml",
+                "<testsuites><testsuite tests='2'>"
+                "<testcase classname='a' name='t1'/>"
+                "<testcase classname='a' name='t2'><skipped/>"
+                "</testcase></testsuite></testsuites>",
+            )
+            self.assertEqual(parse(xunit2), 2)
+            xunit1 = report(
+                "x1.xml",
+                "<testsuite tests='1'>"
+                "<testcase classname='a' name='t1'/></testsuite>",
+            )
+            self.assertEqual(parse(xunit1), 1)
+            empty = report("empty.xml", "<testsuites></testsuites>")
+            self.assertEqual(parse(empty), 0)
+            self.assertIsNone(parse(report("junk.xml", "not xml <")))
+            self.assertIsNone(
+                parse(report("wrong.xml", "<html><testcase/></html>"))
+            )
+            self.assertIsNone(parse(report("blank.xml", "")))
+            self.assertIsNone(parse(base / "absent.xml"))
+
+    # -- the defect: stacked quiet levels --------------------------
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_addopts_stacked_quiet_levels_still_collect_count_and_pass(self):
+        # The #53 acceptance fixture: addopts stack three quiet
+        # levels, suppressing the terminal summary outright. The
+        # suite passes and must seal its true collected count.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "pytest.ini", "[pytest]\naddopts = -qqq\n")
+            write(root, "test_ok.py", self.PASS3)
+            commands, results, rc, _ = self.run_fixture(root)
+            self.assertEqual([c.id for c in commands], ["pytest"])
+            self.assertEqual(rc, 0)
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0].tests_collected, 3)
+            receipts = root / "r.jsonl"
+            mechanical_verify.append_receipt(receipts, "t", results[0])
+            record = json.loads(receipts.read_text().splitlines()[0])
+            self.assertEqual(record["tests_collected"], 3)
+            self.assertTrue(
+                record["argv"][-1].startswith("--junitxml=")
+            )
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_addopts_stacked_quiet_levels_failing_suite_is_counted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "pytest.ini", "[pytest]\naddopts = -qqq\n")
+            write(
+                root,
+                "test_ok.py",
+                self.PASS3.replace(
+                    "def test_c():\n    pass",
+                    "def test_c():\n    assert False",
+                ),
+            )
+            commands, results, rc, _ = self.run_fixture(root)
+            self.assertEqual([c.id for c in commands], ["pytest"])
+            self.assertEqual(rc, 1)
+            self.assertEqual(results[0].tests_collected, 3)
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_zero_collection_with_quiet_addopts_fails_closed(self):
+        # A genuinely empty suite under -qqq: the report is written
+        # with zero testcases, the count is a proven 0, and the run
+        # still fails closed.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "pytest.ini", "[pytest]\naddopts = -qqq\n")
+            commands, results, rc, _ = self.run_fixture(root)
+            self.assertEqual([c.id for c in commands], ["pytest"])
+            self.assertEqual(rc, 1)
+            self.assertEqual(results[0].exit_code, 5)
+            self.assertEqual(results[0].tests_collected, 0)
+
+    # -- channel placement and hygiene ----------------------------
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_pytest_leg_records_executed_argv_and_leaves_tree_unchanged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "test_ok.py", "def test_a():\n    pass\n")
+            commands = discover_verification_commands(root)
+            self.assertEqual([c.id for c in commands], ["pytest"])
+            before = mechanical_verify._fs_tree_digest(root)
+            result = run_verification(root, commands[0])
+            after = mechanical_verify._fs_tree_digest(root)
+            # The evidence artifact never lands inside the tree:
+            # the fs digest (which excludes only tool caches) is
+            # identical across the run.
+            self.assertEqual(before, after)
+            self.assertEqual(result.tests_collected, 1)
+            flag = result.command.argv[-1]
+            self.assertTrue(flag.startswith("--junitxml="))
+            report = Path(flag.split("=", 1)[1])
+            self.assertFalse(report.is_relative_to(root))
+            # The tempfile is consumed and removed by the run.
+            self.assertFalse(report.exists())
+
+    # -- adversarial fixtures --------------------------------------
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_forged_report_disagreeing_with_summary_fails_closed(self):
+        # A conftest hook overwrites the report file at session
+        # finish with 999 fabricated testcases. The transcript
+        # summary of the same run says 3 — the channels disagree,
+        # so the count is 0 and the leg fails closed rather than
+        # sealing the forged number.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "conftest.py",
+                "import pytest\n\n"
+                "FAKE = '<?xml version=\"1.0\"?>"
+                "<testsuites><testsuite tests=\"999\">'\n"
+                "FAKE += '<testcase classname=\"x\" name=\"y\"/>'"
+                " * 999\n"
+                "FAKE += '</testsuite></testsuites>'\n\n\n"
+                "@pytest.hookimpl(trylast=True)\n"
+                "def pytest_sessionfinish(session, exitstatus):\n"
+                "    path = session.config.option.xmlpath\n"
+                "    if path:\n"
+                "        with open(path, 'w') as fh:\n"
+                "            fh.write(FAKE)\n",
+            )
+            write(root, "test_ok.py", self.PASS3)
+            commands, results, rc, _ = self.run_fixture(root)
+            self.assertEqual([c.id for c in commands], ["pytest"])
+            self.assertEqual(results[0].tests_collected, 0)
+            self.assertEqual(rc, 1)
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_forged_summary_disagreeing_with_report_fails_closed(self):
+        # The mirror forgery against the transcript channel: a
+        # terminal-summary hook writes a fake '999 passed' line to
+        # fd 2, after the real summary. The report of the same run
+        # says 3 — disagreement, count 0, fail closed. (The
+        # transcript-only parser seals 999 here today.)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "conftest.py",
+                "import os\nimport pytest\n\n\n"
+                "@pytest.hookimpl(trylast=True)\n"
+                "def pytest_terminal_summary(terminalreporter,"
+                " exitstatus, config):\n"
+                "    os.write(2, b'======= 999 passed in 0.01s"
+                " =======\\n')\n",
+            )
+            write(root, "test_ok.py", self.PASS3)
+            commands, results, rc, _ = self.run_fixture(root)
+            self.assertEqual([c.id for c in commands], ["pytest"])
+            self.assertEqual(results[0].tests_collected, 0)
+            self.assertEqual(rc, 1)
+
+    # -- channel suppression degrades, never inflates --------------
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_blocked_junitxml_plugin_degrades_to_transcript_count(self):
+        # addopts blocks the junitxml plugin: no report is written,
+        # and the count falls back to the transcript channel — the
+        # true count, reached exactly as before this task.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root, "pytest.ini", "[pytest]\naddopts = -p no:junitxml\n"
+            )
+            write(root, "test_ok.py", self.PASS3)
+            commands, results, rc, _ = self.run_fixture(root)
+            self.assertEqual([c.id for c in commands], ["pytest"])
+            self.assertEqual(rc, 0)
+            self.assertEqual(results[0].tests_collected, 3)
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_addopts_cannot_redirect_the_report(self):
+        # A project addopts --junitxml loses to the verifier's
+        # command-line flag (addopts are prepended; the later
+        # option wins), so passive config cannot steer the report
+        # away from the verifier's tempfile.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "tree"
+            root.mkdir()
+            evil = base / "evil.xml"
+            write(
+                root,
+                "pytest.ini",
+                f"[pytest]\naddopts = --junitxml={evil}\n",
+            )
+            write(root, "test_ok.py", self.PASS3)
+            commands, results, rc, _ = self.run_fixture(root)
+            self.assertEqual([c.id for c in commands], ["pytest"])
+            self.assertEqual(rc, 0)
+            self.assertEqual(results[0].tests_collected, 3)
+            self.assertFalse(evil.exists())
+
+    # -- equivalence with the summary channel on ordinary shapes ---
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_deselected_tests_are_not_counted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "pytest.ini",
+                "[pytest]\naddopts = --deselect test_ok.py::test_c\n",
+            )
+            write(root, "test_ok.py", self.PASS3)
+            commands, results, rc, _ = self.run_fixture(root)
+            self.assertEqual([c.id for c in commands], ["pytest"])
+            self.assertEqual(rc, 0)
+            self.assertEqual(results[0].tests_collected, 2)
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_collection_error_count_is_the_sessions_reported_items(self):
+        # Count semantics on collection error, pinned: the session
+        # reports exactly one item — the erroring module, as a
+        # testcase bearing <error> — identical to the transcript
+        # parser's error-group counting. The leg fails on its
+        # exit code; the count is evidence either way.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "test_boom.py",
+                "raise RuntimeError('import-time failure')\n\n\n"
+                "def test_never():\n    pass\n",
+            )
+            write(
+                root,
+                "test_ok.py",
+                "def test_a():\n    pass\n\n\ndef test_b():\n    pass\n",
+            )
+            commands, results, rc, _ = self.run_fixture(root)
+            self.assertEqual([c.id for c in commands], ["pytest"])
+            self.assertEqual(rc, 1)
+            self.assertEqual(results[0].tests_collected, 1)
+
+
 class DeferredZeroReceiptTests(unittest.TestCase):
     # Issue #56, audit side: run_all defers a clean-zero unittest
     # leg (exit 5 on CPython ≥3.12) and seals its receipt with
