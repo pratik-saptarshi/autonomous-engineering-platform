@@ -1016,10 +1016,16 @@ def discover_verification_commands(root: Path) -> tuple[VerificationCommand, ...
     # collects plain test functions the unittest runner never would.
     # A mixed suite therefore runs BOTH runners; a single-style
     # suite runs exactly the one command it ran before.
+    # Issue #61: the partition applies the symlink policy to the
+    # test files themselves — entry acceptance is _is_real_file,
+    # not is_file, so a symlinked root-level test file is neither
+    # classified (its contents are never read here) nor scheduled
+    # by either leg: the binding records only the link's target
+    # string, so the target's contents are bound nowhere.
     test_files: list[Path] = []
     if root.is_dir():
         for entry in sorted(root.iterdir()):
-            if not entry.is_file() or not entry.name.endswith(".py"):
+            if not _is_real_file(entry) or not entry.name.endswith(".py"):
                 continue
             if entry.name.startswith("test_") or entry.name.endswith("_test.py"):
                 test_files.append(entry)

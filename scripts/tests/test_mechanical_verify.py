@@ -244,6 +244,131 @@ class DiscoveryTests(unittest.TestCase):
                 ("python3", "-m", "unittest", "-v", "ok_test"),
             )
 
+    # Issue #61: a symlinked root-level test file is not
+    # classified or scheduled by either runner leg — the tree
+    # binding records only the link's target string, never the
+    # target's contents, so external content must never be read
+    # for classification or named to a runner.
+
+    def test_symlinked_test_file_with_unittest_content_discovers_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            external = write(
+                base,
+                "external/test_ext.py",
+                "import unittest\n\n\n"
+                "class Ext(unittest.TestCase):\n"
+                "    def test_ext(self):\n"
+                "        pass\n",
+            )
+            os.symlink(external, root / "test_ext.py")
+            self.assertEqual(discover_verification_commands(root), ())
+
+    def test_symlinked_suffix_test_file_with_unittest_content_discovers_nothing(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            external = write(
+                base,
+                "external/ext.py",
+                "from unittest import TestCase\n\n\n"
+                "class Ext(TestCase):\n"
+                "    def test_ext(self):\n"
+                "        pass\n",
+            )
+            os.symlink(external, root / "ext_test.py")
+            self.assertEqual(discover_verification_commands(root), ())
+
+    def test_symlinked_test_file_with_pytest_content_discovers_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            external = write(
+                base, "external/test_ext.py", "def test_a():\n    assert True\n"
+            )
+            os.symlink(external, root / "test_ext.py")
+            self.assertEqual(discover_verification_commands(root), ())
+
+    def test_symlinked_suffix_test_file_with_pytest_content_discovers_nothing(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            external = write(
+                base, "external/plain.py", "def test_plain():\n    assert True\n"
+            )
+            os.symlink(external, root / "plain_test.py")
+            self.assertEqual(discover_verification_commands(root), ())
+
+    def test_symlinked_test_file_does_not_steer_mixed_partition(self):
+        # A real module's routing is unchanged by a symlinked
+        # sibling: the link contributes no classification of its
+        # own in either direction.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            write(
+                root,
+                "test_ok.py",
+                "import unittest\n\n\n"
+                "class Ok(unittest.TestCase):\n"
+                "    def test_ok(self):\n"
+                "        pass\n",
+            )
+            external = write(
+                base, "external/test_ext.py", "def test_a():\n    assert True\n"
+            )
+            os.symlink(external, root / "test_ext.py")
+            commands = discover_verification_commands(root)
+            self.assertEqual([c.id for c in commands], ["unittest"])
+            self.assertEqual(
+                commands[0].argv,
+                ("python3", "-m", "unittest", "-v", "test_ok"),
+            )
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            write(root, "test_ok.py", "def test_ok():\n    assert True\n")
+            external = write(
+                base,
+                "external/ext.py",
+                "import unittest\n\n\n"
+                "class Ext(unittest.TestCase):\n"
+                "    def test_ext(self):\n"
+                "        pass\n",
+            )
+            os.symlink(external, root / "ext_test.py")
+            commands = discover_verification_commands(root)
+            self.assertEqual([c.id for c in commands], ["pytest"])
+
+    def test_symlinked_test_file_with_in_tree_target_discovers_nothing(self):
+        # The rule is on the entry, not the target's location: a
+        # link to a real file inside the tree is still a link,
+        # and the target does not classify under the link's name
+        # (it does not match a test pattern under its own name).
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "helper_mod.py",
+                "import unittest\n\n\n"
+                "class Helper(unittest.TestCase):\n"
+                "    def test_helper(self):\n"
+                "        pass\n",
+            )
+            os.symlink(root / "helper_mod.py", root / "test_link.py")
+            self.assertEqual(discover_verification_commands(root), ())
+
     def test_discovers_make_test_from_makefile_target(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
