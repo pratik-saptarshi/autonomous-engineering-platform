@@ -2352,20 +2352,30 @@ def _commands_digest(command_ids) -> str:
 # tree it describes, so a sealed PASS can be re-validated against that
 # tree later — never against whatever the working tree holds then.
 
-FS_EXCLUDED_DIRS = frozenset(
+# The only directory names the tree binding does not cover, at any
+# depth. PR #42 excluded twelve names here; the paperthin validation
+# of this batch (probes P-01..P-05) showed that eight of them are
+# content directories — dependency, virtualenv, and build-output
+# trees (node_modules, .venv, .tox, target, build, dist, coverage,
+# htmlcov) whose code a sealed run can import or collect while the
+# binding saw nothing, the #62 stale-PASS class through the digest's
+# exclusion door. Those eight are bound like any other directory
+# now. The four names below stay excluded because they are residue,
+# not content: the verifier's own legs regenerate them during the
+# run itself (a pytest leg creates .pytest_cache and __pycache__
+# from cold; git updates .git on every status), so binding them
+# would make the run's own residue abort every seal. What lives
+# there is cache, validated by its tool against the bound sources
+# it describes — see the Tree binding section of
+# docs/deepcode-mechanisms.md for the exact bound set and the
+# residual that remains (a cache entry actively forged to match
+# its source's recorded stat).
+FS_RESIDUE_DIRS = frozenset(
     {
         ".git",
         "__pycache__",
         ".pytest_cache",
         ".mypy_cache",
-        "target",
-        "node_modules",
-        "coverage",
-        "htmlcov",
-        "dist",
-        "build",
-        ".tox",
-        ".venv",
     }
 )
 
@@ -2433,8 +2443,10 @@ def _fs_tree_digest(root: Path, receipts_path: Path | None = None) -> str:
     the entry's git-style mode string (file type + executable bit —
     see `_fs_entry_mode`) and content is the file's sha256 hex
     (symlinks: the target string, never followed). Paths with a
-    component in FS_EXCLUDED_DIRS and the receipts file itself are
-    excluded.
+    component in FS_RESIDUE_DIRS and the receipts file itself are
+    excluded. Every other directory — dependency, virtualenv, and
+    build-output trees included — is bound: content a run can
+    execute from them is content the seal attests.
     """
     resolved = root.resolve()
     receipts_resolved = (
@@ -2445,7 +2457,7 @@ def _fs_tree_digest(root: Path, receipts_path: Path | None = None) -> str:
         current = Path(dirpath)
         descend: list[str] = []
         for name in dirnames:
-            if name in FS_EXCLUDED_DIRS:
+            if name in FS_RESIDUE_DIRS:
                 continue
             path = current / name
             if path.is_symlink():
@@ -2534,9 +2546,14 @@ def tree_clean(root: Path, receipts_path: Path | None = None) -> bool:
     (the workflow's own bookkeeping — a TRACKED `.superpowers/` entry
     that is modified or staged counts as dirty like any other
     tracked change) and (ii) untracked entries whose path has a
-    component in FS_EXCLUDED_DIRS (tool caches the run itself
-    creates). Modified or staged tracked entries always count as
-    dirty; the exclusions never hide a tracked change.
+    component in FS_RESIDUE_DIRS (tool caches the run itself
+    creates). Untracked content under any other directory name —
+    a dependency, virtualenv, or build-output tree included —
+    counts as dirty like untracked content anywhere else: git
+    mode binds committed content, and an untracked file a run
+    could execute must be committed or removed before the tree
+    can seal. Modified or staged tracked entries always count
+    as dirty; the exclusions never hide a tracked change.
     """
     resolved = root.resolve()
     top = _git(resolved, "rev-parse", "--show-toplevel")
@@ -2583,7 +2600,7 @@ def tree_clean(root: Path, receipts_path: Path | None = None) -> bool:
         ):
             continue
         if status == b"??" and any(
-            part in FS_EXCLUDED_DIRS for part in path.split("/")
+            part in FS_RESIDUE_DIRS for part in path.split("/")
         ):
             continue
         return False

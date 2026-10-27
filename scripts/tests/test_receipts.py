@@ -1024,6 +1024,343 @@ class BindingTests(unittest.TestCase):
         self.assertIn("--historical", proc.stdout)
 
 
+class ContentBindingTests(unittest.TestCase):
+    """Task 10 (paperthin-validation remediation): the tree binding
+    must cover the content a sealed run can execute. PR #42 excluded
+    twelve directory names from the fs digest and from tree_clean's
+    untracked check; code a run executes from eight of them
+    (dependency, venv, and build-output directories) was bound
+    nowhere — seal, mutate only that content, and check-receipts
+    still blessed the run while a fresh verify failed (validator
+    probes P-01..P-05: the #62 stale-PASS class through the digest's
+    exclusion door). The eight content-bearing names are bound now.
+    The four residue names (.git, __pycache__, .pytest_cache,
+    .mypy_cache) stay excluded: the verifier's own legs regenerate
+    them during the run itself (a pytest leg creates .pytest_cache
+    and __pycache__ from cold), so binding them would make the
+    run's own residue abort every seal of a Python tree."""
+
+    CONTENT_DIRS = [
+        "node_modules",
+        "target",
+        "coverage",
+        "htmlcov",
+        "dist",
+        "build",
+        ".tox",
+        ".venv",
+    ]
+    RESIDUE_DIRS = [".git", "__pycache__", ".pytest_cache", ".mypy_cache"]
+
+    def test_fs_digest_binds_content_dirs_but_not_residue(self):
+        for name in self.CONTENT_DIRS:
+            with self.subTest(name=name, kind="content"):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    write(root, "a.txt", "one\n")
+                    before = mechanical_verify.tree_binding(root)[
+                        "tree_digest"
+                    ]
+                    write(root, f"{name}/payload.txt", "payload\n")
+                    after = mechanical_verify.tree_binding(root)[
+                        "tree_digest"
+                    ]
+                    self.assertNotEqual(before, after)
+                    write(root, f"{name}/payload.txt", "changed\n")
+                    self.assertNotEqual(
+                        after,
+                        mechanical_verify.tree_binding(root)[
+                            "tree_digest"
+                        ],
+                    )
+        for name in self.RESIDUE_DIRS:
+            with self.subTest(name=name, kind="residue"):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    write(root, "a.txt", "one\n")
+                    before = mechanical_verify.tree_binding(root)[
+                        "tree_digest"
+                    ]
+                    write(root, f"{name}/payload.txt", "payload\n")
+                    self.assertEqual(
+                        before,
+                        mechanical_verify.tree_binding(root)[
+                            "tree_digest"
+                        ],
+                    )
+
+    def _seal_import_fixture(self, root: Path, helper_rel: str) -> Path:
+        """A pytest suite whose only test imports a helper from
+        *helper_rel*'s directory (validator P-01/P-03 shape)."""
+        helper_dir = str(Path(helper_rel).parent)
+        write(root, helper_rel, 'VALUE = "ok"\n')
+        write(
+            root,
+            "test_app.py",
+            "import sys\n"
+            "from pathlib import Path\n"
+            f"sys.path.insert(0, str(Path(__file__).parent / {helper_dir!r}))\n"
+            "import helper\n\n\n"
+            "def test_helper_value():\n"
+            "    assert helper.VALUE == 'ok'\n",
+        )
+        receipts = root / "r.jsonl"
+        proc = verify(root, "1", receipts)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        proc = check(receipts, "1")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("RECEIPTS: PASS", proc.stdout)
+        return receipts
+
+    @unittest.skipUnless(
+        _path_pytest_available(), "python3 on PATH has no pytest module"
+    )
+    def test_fs_node_modules_helper_mutation_goes_stale(self):
+        # Validator P-01: pre-fix this sealed, the mutation left the
+        # audit at PASS, and only a fresh verify noticed.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            receipts = self._seal_import_fixture(
+                root, "node_modules/helper.py"
+            )
+            write(root, "node_modules/helper.py", 'VALUE = "broken"\n')
+            proc = check(receipts, "1")
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("RECEIPTS: STALE", proc.stdout)
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+
+    @unittest.skipUnless(
+        _path_pytest_available(), "python3 on PATH has no pytest module"
+    )
+    def test_fs_venv_helper_mutation_goes_stale(self):
+        # Validator P-03: same shape through .venv.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            receipts = self._seal_import_fixture(
+                root, ".venv/lib/helper.py"
+            )
+            write(root, ".venv/lib/helper.py", 'VALUE = "broken"\n')
+            proc = check(receipts, "1")
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("RECEIPTS: STALE", proc.stdout)
+
+    @unittest.skipUnless(
+        _path_pytest_available(), "python3 on PATH has no pytest module"
+    )
+    def test_fs_build_testpaths_mutation_goes_stale(self):
+        # Validator P-02: a bound config aims collection into build/;
+        # the collected file is the test itself.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "pytest.ini", "[pytest]\ntestpaths = build\n")
+            write(
+                root,
+                "build/test_inside.py",
+                "def test_inside():\n    assert True\n",
+            )
+            receipts = root / "r.jsonl"
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            proc = check(receipts, "1")
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("RECEIPTS: PASS", proc.stdout)
+            write(
+                root,
+                "build/test_inside.py",
+                "def test_inside():\n    assert False\n",
+            )
+            proc = check(receipts, "1")
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("RECEIPTS: STALE", proc.stdout)
+
+    @unittest.skipUnless(
+        _path_pytest_available(), "python3 on PATH has no pytest module"
+    )
+    def test_fs_unimported_content_dir_is_bound_anyway(self):
+        # The new contract is unconditional: content directories
+        # bind whether or not this run reached into them, so a later
+        # mutation is STALE even when nothing imported the file.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "test_ok.py",
+                "def test_ok():\n    assert True\n",
+            )
+            write(root, "node_modules/unused.py", "X = 1\n")
+            receipts = root / "r.jsonl"
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            proc = check(receipts, "1")
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            write(root, "node_modules/unused.py", "X = 2\n")
+            proc = check(receipts, "1")
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("RECEIPTS: STALE", proc.stdout)
+
+    @unittest.skipUnless(
+        _path_pytest_available(), "python3 on PATH has no pytest module"
+    )
+    def test_fs_residue_churn_does_not_self_stale(self):
+        # The run's own residue (__pycache__, .pytest_cache — absent
+        # at bind time, created by the run) must not break the seal,
+        # on the first run or on a warm-cache rerun.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "test_ok.py",
+                "def test_ok():\n    assert True\n",
+            )
+            receipts = root / "r.jsonl"
+            for _ in range(2):
+                proc = verify(root, "1", receipts)
+                self.assertEqual(
+                    proc.returncode, 0, proc.stdout + proc.stderr
+                )
+                proc = check(receipts, "1")
+                self.assertEqual(
+                    proc.returncode, 0, proc.stdout + proc.stderr
+                )
+                self.assertIn("RECEIPTS: PASS", proc.stdout)
+            self.assertTrue((root / "__pycache__").is_dir())
+            self.assertTrue((root / ".pytest_cache").is_dir())
+
+    def test_git_untracked_content_dir_blocks_sealing(self):
+        # Validator P-04: an untracked helper under node_modules was
+        # dropped from the cleanliness check, so the run sealed over
+        # content the binding (HEAD) never saw.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_git_repo(root)
+            commit_file(
+                root,
+                "main_app.py",
+                "import helper\n\nVALUE = helper.VALUE\n",
+                "add app",
+            )
+            write(root, "node_modules/helper.py", 'VALUE = "ok"\n')
+            receipts = root / "r.jsonl"
+            self.assertFalse(mechanical_verify.tree_clean(root, receipts))
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("tree not clean at HEAD", proc.stdout)
+            # Committing the helper binds it (ls-tree) and unblocks.
+            commit_file(
+                root, "node_modules/helper.py", 'VALUE = "ok"\n', "add helper"
+            )
+            self.assertTrue(mechanical_verify.tree_clean(root, receipts))
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            proc = check(receipts, "1")
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("RECEIPTS: PASS", proc.stdout)
+
+    def test_git_tree_clean_ignores_residue_but_not_content(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_git_repo(root)
+            receipts = root / "r.jsonl"
+            write(root, "__pycache__/mod.cpython-312.pyc", "cache\n")
+            write(root, ".pytest_cache/v/cache/nodeids", "[]\n")
+            self.assertTrue(mechanical_verify.tree_clean(root, receipts))
+            write(root, "build/out.txt", "artifact\n")
+            self.assertFalse(mechanical_verify.tree_clean(root, receipts))
+
+    def test_git_run_creating_content_dir_cannot_seal(self):
+        # A run that creates a content directory mid-run has changed
+        # the tree it attests: no completion record (pre-fix the
+        # created build/ was dropped from the cleanliness check and
+        # the run sealed).
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_git_repo(
+                root,
+                makefile="test:\n\tmkdir -p build && touch build/out.txt\n",
+            )
+            receipts = root / "r.jsonl"
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("without a completion record", proc.stdout)
+            proc = check(receipts, "1")
+            self.assertNotEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+
+    def _submodule_super(self, tmp: str) -> Path:
+        base = Path(tmp)
+        src = base / "src"
+        src.mkdir()
+        git(src, "init", "-q", "-b", "main")
+        write(src, "f.txt", "x\n")
+        git(src, "add", "f.txt")
+        git(
+            src,
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-q",
+            "-m",
+            "src",
+        )
+        root = base / "super"
+        root.mkdir()
+        init_git_repo(root)
+        git(
+            root,
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "-q",
+            str(src),
+            "sub",
+        )
+        git(
+            root,
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-q",
+            "-m",
+            "add submodule",
+        )
+        return root
+
+    def test_git_submodule_untracked_content_counts_dirty_by_default(self):
+        # Validator P-05, control direction: under git's default
+        # submodule handling, untracked content inside a submodule
+        # surfaces as the submodule's own dirtiness — a tracked
+        # entry tree_clean never drops — whatever directory name
+        # the file sits under inside the submodule.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._submodule_super(tmp)
+            receipts = root / "r.jsonl"
+            self.assertTrue(mechanical_verify.tree_clean(root, receipts))
+            write(root, "sub/node_modules/helper.py", 'VALUE = "ok"\n')
+            self.assertFalse(mechanical_verify.tree_clean(root, receipts))
+
+    def test_git_submodule_ignore_untracked_is_the_stated_limit(self):
+        # With submodule.<name>.ignore=untracked — the setting a
+        # submodule tree currently needs to seal at all (the run's
+        # own cache churn inside the submodule otherwise dirties it
+        # between the two cleanliness checks) — untracked content
+        # inside the submodule is invisible to the superproject's
+        # status and therefore outside the binding. Tracked content
+        # inside the submodule stays bound by the gitlink. This
+        # pins the documented limit so closing it later is a
+        # deliberate test change.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._submodule_super(tmp)
+            git(root, "config", "submodule.sub.ignore", "untracked")
+            receipts = root / "r.jsonl"
+            write(root, "sub/node_modules/helper.py", 'VALUE = "ok"\n')
+            self.assertTrue(mechanical_verify.tree_clean(root, receipts))
+
+
 SWAP_MAKEFILE_H1 = "test:\n\tgit reset --hard HEAD~1\n\ttrue\n"
 
 
