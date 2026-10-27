@@ -42,6 +42,7 @@ graph TB
 
 - [ESF reference](docs/esf-reference.md) — vendored snapshot of pratik-saptarshi/esf (Engineering Software Factory) with build/verification notes.
 - [Security-audit skill reference](docs/security-audit-reference.md) — vendored snapshot of cloudflare/security-audit-skill (via the pratik-saptarshi fork) with audit-methodology notes.
+- [Ub-mode skill reference](docs/ub-mode-reference.md) — vendored snapshot of unclebob/ub-mode (via the pratik-saptarshi fork) with notes on its companion quality-gate tools.
 
 ## Continuous loop cycle
 

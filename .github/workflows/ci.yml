@@ -15,7 +15,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - run: npx --yes markdownlint-cli2@0.24.0 "**/*.md" "!reference/esf/**/*.md" "!reference/neurostrata/**/*.md" "!reference/neurostrata-ops/**/*.md" "!reference/harness2/**/*.md" "!reference/security-audit-skill/**/*.md" "!skills/archify/**/*.md"
+      - run: npx --yes markdownlint-cli2@0.24.0 "**/*.md" "!reference/esf/**/*.md" "!reference/neurostrata/**/*.md" "!reference/neurostrata-ops/**/*.md" "!reference/harness2/**/*.md" "!reference/security-audit-skill/**/*.md" "!reference/ub-mode/**/*.md" "!skills/archify/**/*.md"
 
   shell-lint:
     runs-on: ubuntu-latest
@@ -100,4 +100,9 @@ jobs:
           cd reference/security-audit-skill
           sha256sum -c ../../.github/vendor-security-audit-skill.sha256
           comm -23 <(find . -type f | sort) <(cut -d' ' -f3- ../../.github/vendor-security-audit-skill.sha256 | sed 's|^\./|./|' | sort) | grep -q . && { echo "ERROR: unlisted files"; exit 1; } || true
+          find . -type l | while read -r link; do test -e "$link" || { echo "ERROR: broken symlink $link"; exit 1; }; done
+      - run: |
+          cd reference/ub-mode
+          sha256sum -c ../../.github/vendor-ub-mode.sha256
+          comm -23 <(find . -type f | sort) <(cut -d' ' -f3- ../../.github/vendor-ub-mode.sha256 | sed 's|^\./|./|' | sort) | grep -q . && { echo "ERROR: unlisted files"; exit 1; } || true
           find . -type l | while read -r link; do test -e "$link" || { echo "ERROR: broken symlink $link"; exit 1; }; done
