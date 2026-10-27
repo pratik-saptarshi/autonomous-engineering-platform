@@ -894,8 +894,8 @@ def _pytest_config_qualifies(name: str, text: str) -> bool:
 
 
 def _pytest_config_selected(root: Path) -> Path | None:
-    """The config file pytest would read at *root*, following
-    the inifile precedence of
+    """The config file the bare pytest leg reads at *root*,
+    following the inifile precedence of
     _pytest.config.findpaths.locate_config (pytest 9) —
     pytest.toml, .pytest.toml, pytest.ini, .pytest.ini,
     pyproject.toml, tox.ini, setup.cfg — with pytest's per-name
@@ -909,28 +909,32 @@ def _pytest_config_selected(root: Path) -> Path | None:
     leg is insulated (see _pytest_argv); over-insulation is
     the safe direction.
 
-    Among real files the walk's selection matches pytest's,
-    with two known benign divergences. (1) When nothing
-    qualifies anywhere, pytest's found_pyproject_toml fallback
-    selects a non-qualifying pyproject.toml as an EMPTY
-    config; the walk returns None. The fallback config carries
-    no options and the file is real and in-tree, and the argv
-    is identical either way, so nothing can steer through it.
-    (2) The walk's parsers and pytest's do not judge every
-    candidate alike. An unparseable candidate makes real
-    pytest abort with UsageError rather than skip the file;
-    the walk treats it as non-qualifying and continues. And
-    configparser (strict=False) qualifies a few files
-    iniconfig rejects — duplicate sections or keys, a section
-    header with trailing junk — where the walk stops at a
-    candidate pytest would have aborted on. Both directions
-    resolve to pytest's own outcome, never to unbound
-    steering: a later selection the abort would have
-    pre-empted is still safe (a real file is bound content,
-    a symlink is insulated), a walk-selected candidate that
-    pytest rejects aborts the unpinned run the same way, and
-    when nothing later qualifies the unpinned run meets the
-    same abort."""
+    The judgement is root-scoped, and since Task 15 (paperthin
+    validation 5) it is true of the run BY CONSTRUCTION: left
+    to itself, pytest's search does not stop at the root — an
+    ancestor's inifile becomes the run's config, an ancestor's
+    non-qualifying pyproject.toml anchors rootdir by fallback,
+    and ancestor conftest.py files execute. The leg's argv
+    therefore pins -c to this walk's selection (or os.devnull)
+    and rootdir/confcutdir to the root itself (see
+    _pytest_argv), so pytest never performs its own search and
+    no ancestor file can be selected, anchor, or load. The
+    two divergences the walk once carried against pytest's
+    search are inert under the pin: (1) pytest's
+    found_pyproject_toml fallback, which selects a
+    non-qualifying pyproject.toml as an EMPTY config, never
+    engages — with -c pinned, pytest reads only the named
+    file, and when the walk selects nothing the named file is
+    os.devnull, so the fallback cannot anchor rootdir at an
+    ancestor's pyproject either. (2) The walk's parsers and
+    pytest's do not judge every candidate alike (an
+    unparseable candidate makes real pytest abort with
+    UsageError rather than skip it; configparser strict=False
+    qualifies a few files iniconfig rejects) — under the pin
+    those candidates are never pytest's to judge: a
+    walk-selected candidate pytest rejects aborts the run
+    honestly, exactly as its own search would have, and a
+    candidate the walk skipped is never read at all."""
     for name in _PYTEST_CONFIG_CANDIDATES:
         candidate = root / name
         if not candidate.is_file():
@@ -951,15 +955,48 @@ def _pytest_config_selected(root: Path) -> Path | None:
 
 
 def _pytest_argv(root: Path) -> tuple[str, ...]:
-    """The bare-pytest command for *root*. When the config pytest
-    would read is a symlink, the argv pins an empty config
-    (-c os.devnull) so collection follows only in-tree defaults
-    and the unbound file's addopts/testpaths define nothing
-    (issue #64)."""
+    """The bare-pytest command for *root*, pinned so the run's
+    resolution is a function of the root alone (Task 15,
+    paperthin validation 5). Unpinned, pytest resolves ACROSS
+    the root: with no qualifying inifile inside, its search
+    ascends and an ancestor's config steers the run, an
+    ancestor's pyproject.toml anchors rootdir by fallback, and
+    ancestor conftest.py files execute — content no binding
+    attests. The pin has three elements, each load-bearing
+    against the installed pytest (9.0.3, probed):
+
+    - -c names the config the gates judged — the selected
+      real in-tree file (see _pytest_config_selected) — or
+      os.devnull when there is none or it is a symlink, so the
+      unbound file's addopts/testpaths define nothing (issue
+      #64) and no ancestor inifile can be selected instead.
+    - --rootdir names the root itself: rootdir otherwise
+      derives from the -c file's directory — /dev for
+      os.devnull — and confcutdir follows rootdir, so the
+      config pin alone leaves conftest collection unbounded
+      (a /dev rootdir let collection wander the filesystem).
+    - --confcutdir names the root itself: conftest ascent
+      stops at the attested boundary even if rootdir's
+      derivation ever changes under it.
+
+    Defence in depth lives in run_verification: a run whose
+    transcript names a rootdir other than this root has its
+    collected count treated as unproven (see
+    _pytest_rootdir_escapes)."""
+    resolved = root.resolve()
     selected = _pytest_config_selected(root)
-    if selected is not None and selected.is_symlink():
-        return PYTEST_ARGV + ("-c", os.devnull)
-    return PYTEST_ARGV
+    if selected is not None and not selected.is_symlink():
+        config = str(resolved / selected.name)
+    else:
+        config = os.devnull
+    return PYTEST_ARGV + (
+        "-c",
+        config,
+        "--rootdir",
+        str(resolved),
+        "--confcutdir",
+        str(resolved),
+    )
 
 
 def _pytest_config_raw_values(
@@ -1602,8 +1639,11 @@ def _bare_pytest_scope_has_symlink(root: Path) -> bool:
     reaches content through a symlink (issue #62).
 
     The bare leg runs pytest with no path arguments, so
-    collection walks the tree below root (steered only by the
-    project's config, which is itself in-tree evidence).
+    collection walks the tree below root, steered only by the
+    config the leg's pinned argv selects — the in-tree config
+    the gates judged, or the empty config — with rootdir and
+    confcutdir pinned to the root itself (see _pytest_argv),
+    so no ancestor config or conftest can steer it either.
     Collection traverses symlinked directories and executes
     symlinked collectable files, while the tree binding records
     only a link's target *string* — content reached through a
@@ -1662,6 +1702,133 @@ def _bare_pytest_scope_has_symlink(root: Path) -> bool:
     return bool(errors)
 
 
+def _ancestor_dirs(root: Path) -> tuple[Path, ...]:
+    """The directories a runner's upward resolution can reach
+    from *root*: its ancestors, nearest first, up to the
+    filesystem root. The binding attests the root's interior
+    only, so anything found in these directories is unbound
+    by construction (Task 15, paperthin validation 5)."""
+    return tuple(root.resolve().parents)
+
+
+def _ancestor_node_modules(root: Path) -> Path | None:
+    """The nearest ancestor of *root* carrying a node_modules
+    directory, else None. Node's module resolution climbs
+    parent directories for every unsatisfied require, at any
+    depth below the root, and no flag switches the climb
+    off — while such an ancestor exists, which code a sealed
+    npm run executes is partly a function of unbound
+    content, so the leg is disqualified (see
+    discover_verification_commands)."""
+    for parent in _ancestor_dirs(root):
+        if (parent / "node_modules").is_dir():
+            return parent
+    return None
+
+
+def _cargo_exclude_matches(pattern: str, rel: str) -> bool:
+    """Whether a workspace `exclude` *pattern* covers the
+    crate's path *rel* (POSIX separators) below the workspace
+    root: an exact path, or a glob judged with fnmatch, whose
+    * crosses separators the way cargo's own glob matching
+    does. The match is only ever used to ALLOW a leg, on the
+    strength of cargo's probed exclude semantics; a missed
+    match disqualifies instead (fail closed)."""
+    return pattern == rel or fnmatch.fnmatchcase(rel, pattern)
+
+
+def _cargo_manifest_tables(path: Path) -> dict | None:
+    """The parsed tables of the Cargo manifest at *path*, or
+    None when it cannot be read or does not parse. Cargo
+    aborts on a manifest it cannot parse wherever it must
+    read one, so a None here can only ever cost a refusal —
+    it cannot hide steering cargo itself would have honoured."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    try:
+        parsed = tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _cargo_ancestor_steers(root: Path) -> bool:
+    """Whether state in *root*'s ancestors can steer the
+    cargo leg's run across the attested root (Task 15,
+    paperthin validation 5) — cargo's two upward channels,
+    both probed against the installed cargo:
+
+    - .cargo config discovery: cargo merges
+      .cargo/config.toml (or the extensionless .cargo/config)
+      from every ancestor into the build's configuration; a
+      rustc-wrapper named there EXECUTES during the root's
+      build, and the discovery does not stop at the workspace
+      boundary — it fires under a self-anchored root. Any
+      ancestor carrying either file disqualifies,
+      unconditionally.
+    - workspace membership: a crate whose manifest carries
+      no [workspace] table of its own is claimed by the
+      nearest ancestor manifest that carries one, and the
+      workspace root's manifest then governs the build (its
+      [workspace.dependencies] paths and [patch] table can
+      select code from outside the root — probed: mutating
+      the ancestor's library flips the member crate's test).
+      The claim ends where that manifest's exclude covers
+      the crate's relative path (probed standalone) or at
+      the crate's own [workspace] table (the self-anchor,
+      probed). Membership cannot be settled from the
+      members list alone — cargo errors on a plain
+      non-member inside a workspace directory, but a path
+      dependency of a member auto-enrolls a crate the list
+      never names — so ANY ancestor workspace that does not
+      exclude the crate disqualifies. A root manifest
+      declaring package.workspace names an outside workspace
+      as its governor in bound text and disqualifies on its
+      own."""
+    resolved = root.resolve()
+    own = _cargo_manifest_tables(root / "Cargo.toml")
+    own_tables = own if isinstance(own, dict) else {}
+    package = own_tables.get("package")
+    if isinstance(package, dict) and "workspace" in package:
+        return True
+    self_anchored = isinstance(own_tables.get("workspace"), dict)
+    ancestors = _ancestor_dirs(root)
+    for parent in ancestors:
+        cargo_dir = parent / ".cargo"
+        if (cargo_dir / "config.toml").is_file() or (
+            cargo_dir / "config"
+        ).is_file():
+            return True
+    if self_anchored:
+        return False
+    for parent in ancestors:
+        manifest = parent / "Cargo.toml"
+        if not manifest.is_file():
+            continue
+        tables = _cargo_manifest_tables(manifest)
+        if not isinstance(tables, dict):
+            continue
+        workspace = tables.get("workspace")
+        if not isinstance(workspace, dict):
+            continue
+        # The nearest workspace-bearing ancestor is the one
+        # cargo's ascent judges membership against; parent is
+        # an ancestor of resolved by construction, so the
+        # relative path always exists.
+        rel = resolved.relative_to(parent).as_posix()
+        exclude = workspace.get("exclude")
+        if isinstance(exclude, list) and any(
+            isinstance(entry, str)
+            and _cargo_exclude_matches(entry, rel)
+            for entry in exclude
+        ):
+            return False
+        return True
+    return False
+
+
 def discover_verification_commands(root: Path) -> tuple[VerificationCommand, ...]:
     # Symlink policy (issues #63, #64): a symlinked marker or
     # config file does not schedule, gate, or steer its leg. The
@@ -1670,9 +1837,15 @@ def discover_verification_commands(root: Path) -> tuple[VerificationCommand, ...
     # reached through a link is unbound: a symlinked go.mod,
     # Cargo.toml, package.json, Makefile, or .markdownlint.yaml
     # is treated as absent; a symlinked pytest config cannot
-    # trigger the bare pytest leg; and when that leg is scheduled
-    # by other evidence, its argv pins an empty config if the
-    # config pytest would read is a symlink (see _pytest_argv).
+    # trigger the bare pytest leg; and the leg's argv always
+    # pins the config the gates judged (or the empty config
+    # when that config is a symlink or there is none), its
+    # rootdir, and its confcutdir to the root itself, so no
+    # ancestor config or conftest can steer the run either
+    # (see _pytest_argv; Task 15 — the runners' upward
+    # resolution is the same unbound-content shape one
+    # directory up, and the cargo and npm legs below are
+    # disqualified on their own ancestor channels).
     # The pytest config names are pytest's full inifile candidate
     # set — pytest.toml, .pytest.toml, pytest.ini, .pytest.ini,
     # pyproject.toml, tox.ini, setup.cfg (the precedence order
@@ -1727,17 +1900,27 @@ def discover_verification_commands(root: Path) -> tuple[VerificationCommand, ...
             )
         return scope_check[0]
 
-    # 1. Go (AEP addition).
+    # 1. Go (AEP addition). The leg runs with GOWORK=off
+    # forced in run_verification, so an ancestor go.work can
+    # never put the run in workspace mode (Task 15).
     if _is_real_file(root / "go.mod"):
         add(VerificationCommand("go-test", "Go tests", ("go", "test", "./...")))
 
-    # 2. Rust.
-    if _is_real_file(root / "Cargo.toml"):
+    # 2. Rust. Disqualified when ancestor state — a .cargo
+    # config, or a workspace that would claim the crate —
+    # can steer the build across the root (Task 15; see
+    # _cargo_ancestor_steers).
+    if _is_real_file(root / "Cargo.toml") and not _cargo_ancestor_steers(
+        root
+    ):
         add(VerificationCommand("cargo-test", "Rust tests", ("cargo", "test")))
 
-    # 3. Node — only with a real scripts.test string.
+    # 3. Node — only with a real scripts.test string, and
+    # only when no ancestor carries a node_modules directory
+    # node's upward resolution could climb into (Task 15; see
+    # _ancestor_node_modules).
     package_json = root / "package.json"
-    if _is_real_file(package_json):
+    if _is_real_file(package_json) and _ancestor_node_modules(root) is None:
         try:
             data = json.loads(package_json.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
@@ -2088,6 +2271,36 @@ def _set_child_subreaper() -> bool:
 
 
 _UNITTEST_RAN_RE = re.compile(r"^Ran (\d+) tests?\b", re.MULTILINE)
+_PYTEST_ROOTDIR_RE = re.compile(r"^rootdir:\s*(.+?)\s*$", re.MULTILINE)
+
+
+def _pytest_transcript_rootdir(stdout: str) -> str | None:
+    """The rootdir named in a pytest transcript's header, or
+    None when the header names none (suppressed verbosity, or
+    a transcript whose head the capped capture did not
+    retain). The header prints the path absolute; pre-8
+    pytest appended ", inifile: ..." to the same line, which
+    is not part of the path."""
+    match = _PYTEST_ROOTDIR_RE.search(stdout)
+    if match is None:
+        return None
+    value = match.group(1).split(", inifile:", 1)[0].strip()
+    return value or None
+
+
+def _pytest_rootdir_escapes(stdout: str, root: Path) -> bool:
+    """Whether the transcript's header names a rootdir other
+    than *root* — positive evidence the run attested a
+    different tree than the binding covers (Task 15). A
+    transcript naming no rootdir makes no claim and never
+    fires this: the argv pin (see _pytest_argv) is the
+    primary confinement; this is its tripwire."""
+    named = _pytest_transcript_rootdir(stdout)
+    if named is None:
+        return False
+    return Path(named).resolve() != root.resolve()
+
+
 _PYTEST_COUNT_RE = re.compile(
     r"(\d+)\s+(passed|failed|skipped|deselected|errors?|xfailed|xpassed)\b"
 )
@@ -2584,6 +2797,22 @@ def run_verification(
     env = build_run_env(_policy_path())
     env["CI"] = "1"
     env["PYTHONUNBUFFERED"] = "1"
+    if command.id == "go-test":
+        # Task 15 (paperthin validation 5): the go leg runs in
+        # module mode, always. An ancestor go.work would
+        # otherwise put the run in workspace mode and resolve
+        # the root module's imports from modules outside the
+        # attested root. GOFLAGS cannot carry workspace mode
+        # (probed), but a caller-supplied GOWORK could
+        # re-enable it, so the value is assigned here — after
+        # build_run_env has composed the caller's environment —
+        # where nothing later overrides it (the posture of CI
+        # above, holding under AEP_VERIFY_FULL_ENV for the
+        # same reason). An in-tree go.work does not govern the
+        # leg either: the leg attests the root module in
+        # module mode, and a tree that needs its workspace
+        # fails honestly rather than sealing a workspace run.
+        env["GOWORK"] = "off"
     # Issue #53: the pytest leg's collected count is read from a
     # junitxml report the same run writes — never from inside the
     # verified tree, where the artifact would collide with the
@@ -2694,6 +2923,19 @@ def run_verification(
         tests_collected = _pytest_collected_count(
             _junitxml_count(report_path), stdout_text, stderr_text
         )
+        if _pytest_rootdir_escapes(stdout_text, root):
+            # Defence in depth behind the argv pin (Task 15):
+            # the run's own header names a rootdir other than
+            # the attested root, so whatever it collected, it
+            # attested a different tree — its count is unproven
+            # and the leg fails the count gate (see
+            # VerificationResult.passed). The header sits at
+            # the start of the transcript and the capture is a
+            # capped tail, so a transcript too long to retain
+            # it makes no claim either way; the pin is the
+            # confinement, this fires only on positive evidence
+            # of escape.
+            tests_collected = None
         report_path.unlink(missing_ok=True)
     return VerificationResult(
         command=executed,

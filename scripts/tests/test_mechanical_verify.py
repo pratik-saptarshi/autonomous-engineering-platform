@@ -258,8 +258,18 @@ class DiscoveryTests(unittest.TestCase):
                 commands[0].argv,
                 ("python3", "-m", "unittest", "-v", "test_ok"),
             )
+            resolved = str(root.resolve())
             self.assertEqual(
-                commands[1].argv, ("python3", "-m", "pytest", "-v")
+                commands[1].argv,
+                ("python3", "-m", "pytest", "-v")
+                + (
+                    "-c",
+                    os.devnull,
+                    "--rootdir",
+                    resolved,
+                    "--confcutdir",
+                    resolved,
+                ),
             )
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -556,8 +566,9 @@ class DiscoveryTests(unittest.TestCase):
 
     def test_real_pytest_ini_wins_over_symlinked_setup_cfg(self):
         # pytest selects the real pytest.ini; the symlinked
-        # setup.cfg is never read, so the leg is NOT insulated and
-        # the real config behaves exactly as before.
+        # setup.cfg is never read. The leg is not insulated
+        # against the real config: the pinned argv names it, so
+        # it steers exactly as the gates judged it (Task 15).
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             root = base / "root"
@@ -567,9 +578,15 @@ class DiscoveryTests(unittest.TestCase):
             os.symlink(external, root / "setup.cfg")
             commands = discover_verification_commands(root)
             self.assertEqual([c.id for c in commands], ["pytest"])
+            # The pin names the selected real config (Task 15's
+            # literal argv shape is pinned in RootBoundaryTests);
+            # the leg is insulated only against the symlink.
+            argv = commands[0].argv
             self.assertEqual(
-                commands[0].argv, mechanical_verify.PYTEST_ARGV
+                argv[argv.index("-c") + 1],
+                str((root / "pytest.ini").resolve()),
             )
+            self.assertNotIn(os.devnull, argv)
 
     def test_unselected_real_pyproject_leaves_symlinked_setup_cfg_candidate(
         self,
@@ -602,9 +619,12 @@ class DiscoveryTests(unittest.TestCase):
             os.symlink(external, root / "setup.cfg")
             commands = discover_verification_commands(root)
             self.assertEqual([c.id for c in commands], ["pytest"])
+            argv = commands[0].argv
             self.assertEqual(
-                commands[0].argv, mechanical_verify.PYTEST_ARGV
+                argv[argv.index("-c") + 1],
+                str((root / "pyproject.toml").resolve()),
             )
+            self.assertNotIn(os.devnull, argv)
 
     # Round 2 (#63, #64): the candidate set is pytest's FULL
     # inifile list — pytest.toml, .pytest.toml, pytest.ini,
@@ -665,8 +685,10 @@ class DiscoveryTests(unittest.TestCase):
                     self.assertIn(os.devnull, commands[0].argv)
 
     def test_real_added_pytest_configs_behave_as_before(self):
-        # Real files with qualifying content are the config pytest
-        # reads: the argv is the unmodified PYTEST_ARGV.
+        # Real files with qualifying content are the config the
+        # leg reads: the pinned argv names the file itself
+        # (Task 15), so its steering is exactly what the gates
+        # judged — the leg is insulated against nothing here.
         for name, text in self._ADDED_CONFIG_CONTENTS.items():
             with self.subTest(config=name):
                 with tempfile.TemporaryDirectory() as tmp:
@@ -676,9 +698,12 @@ class DiscoveryTests(unittest.TestCase):
                     write(root, name, text)
                     commands = discover_verification_commands(root)
                     self.assertEqual([c.id for c in commands], ["pytest"])
+                    argv = commands[0].argv
                     self.assertEqual(
-                        commands[0].argv, mechanical_verify.PYTEST_ARGV
+                        argv[argv.index("-c") + 1],
+                        str((root / name).resolve()),
                     )
+                    self.assertNotIn(os.devnull, argv)
 
     def test_real_pytest_toml_wins_over_symlinked_pytest_ini(self):
         # pytest.toml outranks pytest.ini and is a config source
@@ -694,9 +719,12 @@ class DiscoveryTests(unittest.TestCase):
             os.symlink(external, root / "pytest.ini")
             commands = discover_verification_commands(root)
             self.assertEqual([c.id for c in commands], ["pytest"])
+            argv = commands[0].argv
             self.assertEqual(
-                commands[0].argv, mechanical_verify.PYTEST_ARGV
+                argv[argv.index("-c") + 1],
+                str((root / "pytest.toml").resolve()),
             )
+            self.assertNotIn(os.devnull, argv)
 
     def test_real_tox_ini_wins_over_symlinked_setup_cfg(self):
         # A real tox.ini holding [pytest] outranks setup.cfg; the
@@ -710,9 +738,12 @@ class DiscoveryTests(unittest.TestCase):
             os.symlink(external, root / "setup.cfg")
             commands = discover_verification_commands(root)
             self.assertEqual([c.id for c in commands], ["pytest"])
+            argv = commands[0].argv
             self.assertEqual(
-                commands[0].argv, mechanical_verify.PYTEST_ARGV
+                argv[argv.index("-c") + 1],
+                str((root / "tox.ini").resolve()),
             )
+            self.assertNotIn(os.devnull, argv)
 
     def test_sectionless_tox_ini_leaves_symlinked_setup_cfg_candidate(
         self,
@@ -753,9 +784,12 @@ class DiscoveryTests(unittest.TestCase):
             os.symlink(external, root / "setup.cfg")
             commands = discover_verification_commands(root)
             self.assertEqual([c.id for c in commands], ["pytest"])
+            argv = commands[0].argv
             self.assertEqual(
-                commands[0].argv, mechanical_verify.PYTEST_ARGV
+                argv[argv.index("-c") + 1],
+                str((root / "pyproject.toml").resolve()),
             )
+            self.assertNotIn(os.devnull, argv)
 
     def test_empty_tool_pytest_table_falls_through_to_symlinked_setup_cfg(
         self,
@@ -3356,6 +3390,697 @@ def _pid_dead(pid: int) -> bool:
     return state == "Z"
 
 
+class RootBoundaryTests(unittest.TestCase):
+    """Task 15 (paperthin validation 5, breach B-A): every
+    binding is scoped to the verify root, but the runners
+    resolve ACROSS it. When the root carries no qualifying
+    pytest inifile, pytest's search ascends: an ancestor's
+    pytest.ini becomes the run's config, an ancestor's
+    conftest.py executes (rootdir/confcutdir move up), and an
+    ancestor's non-qualifying pyproject.toml still anchors
+    rootdir. A parent go.work puts a sealed go run in
+    workspace mode; a parent node_modules supplies a sealed
+    npm run's module; cargo ascends for workspace membership
+    and for .cargo config alike. In every instance the
+    skeleton is the batch's own: seal rc 0, mutate only the
+    outside content, audit PASS, fresh verify FAIL.
+
+    Closures, each pinned below and each derived from live
+    probes against the installed tools (pytest 9.0.3,
+    go 1.27.2, node 24, cargo 1.75 — the cargo semantics
+    exercised are the long-stable discovery rules):
+
+    - pytest: the leg's argv pins the selection to the root
+      in ALL cases — -c names the selected in-tree config
+      (or os.devnull when there is none or it is a symlink),
+      --rootdir and --confcutdir name the root itself. Each
+      element is load-bearing: -c alone derives rootdir from
+      the config file's directory (/dev for os.devnull, an
+      unbounded confcutdir), --confcutdir alone leaves the
+      config search ascending. Defence in depth: a run whose
+      transcript names a rootdir other than the attested
+      root attested a different tree, so its collected count
+      is unproven and the leg fails the count gate.
+    - go: the leg's environment forces GOWORK=off, assigned
+      after the caller's environment is composed, so neither
+      an ancestor go.work nor a caller-supplied GOWORK can
+      put the run in workspace mode; GOFLAGS cannot carry
+      workspace mode (probed).
+    - node: no flag confines node's upward resolution, so
+      the npm leg is disqualified when ANY ancestor of the
+      root carries a node_modules directory.
+    - cargo: the cargo leg is disqualified when an
+      ancestor's .cargo/config.toml or .cargo/config could
+      steer the build (a rustc-wrapper fires even under a
+      self-anchored root — config discovery does not stop at
+      the workspace boundary), when an ancestor workspace
+      would claim the crate (members covering it, or the
+      membership question the members list cannot settle —
+      a non-member under a workspace directory errors in
+      cargo, but a path dependency of a member auto-enrolls
+      a crate the members list never names, so any
+      non-excluding ancestor workspace disqualifies), or
+      when the root manifest declares an outside workspace
+      (package.workspace). A root whose own manifest carries
+      a [workspace] table self-anchors against the workspace
+      axis, and an ancestor workspace that excludes the
+      crate's relative path leaves it standalone (probed).
+    - make reads no parent file (probed: a parent Makefile's
+      test target never fires), and the unittest legs read
+      no configuration at all; a root-level sitecustomize.py
+      does NOT execute at either Python leg's startup under
+      the verifier's -m argv shapes (probed — it fires only
+      through PYTHONPATH, the disclosed caller-environment
+      channel, or an explicit import by bound code), and it
+      is bound as ordinary root content regardless (pinned
+      in test_receipts.py).
+    """
+
+    def _verify(self, root: Path, receipts: Path):
+        stdout = io.StringIO()
+        with mock.patch.object(
+            mechanical_verify, "available_memory_kb", return_value=10**9
+        ):
+            with contextlib.redirect_stdout(stdout):
+                rc = mechanical_verify.main(
+                    [
+                        "verify",
+                        "--root",
+                        str(root),
+                        "--task",
+                        "t",
+                        "--receipts",
+                        str(receipts),
+                    ]
+                )
+        records = []
+        if receipts.exists():
+            records = [
+                json.loads(line)
+                for line in receipts.read_text().splitlines()
+            ]
+        return rc, records, stdout.getvalue()
+
+    def _check(self, receipts: Path, root: Path):
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            rc = mechanical_verify.check_receipts(receipts, "t", root)
+        return rc, stdout.getvalue()
+
+    def _ids(self, root: Path) -> list[str]:
+        return [c.id for c in discover_verification_commands(root)]
+
+    def _pinned(self, root: Path, config: str):
+        resolved = str(root.resolve())
+        return mechanical_verify.PYTEST_ARGV + (
+            "-c",
+            config,
+            "--rootdir",
+            resolved,
+            "--confcutdir",
+            resolved,
+        )
+
+    def _hostile_parent(self, ancestor: Path, with_cache_plant: bool):
+        write(ancestor, "pytest.ini", "[pytest]\naddopts = --last-failed\n")
+        write(
+            ancestor,
+            "conftest.py",
+            "from pathlib import Path\n\n\n"
+            "def pytest_collection_modifyitems(config, items):\n"
+            "    Path(config.rootpath, 'sentinel.txt')"
+            ".write_text('ancestor conftest ran')\n"
+            "    items[:] = [i for i in items"
+            " if 'test_bad' not in i.nodeid]\n",
+        )
+        if with_cache_plant:
+            write(
+                ancestor,
+                ".pytest_cache/v/cache/lastfailed",
+                '{"tree/test_ok.py::test_ok": true}',
+            )
+
+    # -- the pytest argv pin ------------------------------------
+
+    def test_pytest_argv_pins_root_and_devnull_without_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "tests").mkdir()
+            commands = discover_verification_commands(root)
+            self.assertEqual([c.id for c in commands], ["pytest"])
+            self.assertEqual(
+                commands[0].argv, self._pinned(root, os.devnull)
+            )
+
+    def test_pytest_argv_pins_the_selected_real_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "pytest.ini", "[pytest]\n")
+            commands = discover_verification_commands(root)
+            self.assertEqual([c.id for c in commands], ["pytest"])
+            self.assertEqual(
+                commands[0].argv,
+                self._pinned(root, str((root / "pytest.ini").resolve())),
+            )
+
+    def test_pytest_argv_symlink_config_pins_devnull_and_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            (root / "tests").mkdir(parents=True)
+            external = write(base, "external/pytest.ini", "[pytest]\n")
+            os.symlink(external, root / "pytest.ini")
+            commands = discover_verification_commands(root)
+            self.assertEqual([c.id for c in commands], ["pytest"])
+            self.assertEqual(
+                commands[0].argv, self._pinned(root, os.devnull)
+            )
+
+    # -- pytest: the validator's instances flip -----------------
+
+    @unittest.skipUnless(_pytest_on_path(), "pytest not available")
+    def test_ancestor_config_cache_and_conftest_cannot_steer(self):
+        # Validation 5, B-A1: the ancestor's pytest.ini arms
+        # --last-failed against its own planted cache, and its
+        # conftest deselects the failing test. Unpinned, the
+        # bare tree seals a subset PASS; pinned, the full
+        # in-tree set runs and the failing test fails the run.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            ancestor = base / "ancestor"
+            root = ancestor / "tree"
+            root.mkdir(parents=True)
+            self._hostile_parent(ancestor, with_cache_plant=True)
+            write(root, "test_ok.py", "def test_ok():\n    assert True\n")
+            write(root, "test_bad.py", "def test_bad():\n    assert False\n")
+            receipts = base / "receipts.jsonl"
+            rc, _records, output = self._verify(root, receipts)
+            self.assertEqual(rc, 1, output)
+            self.assertFalse((ancestor / "sentinel.txt").exists())
+
+    @unittest.skipUnless(_pytest_on_path(), "pytest not available")
+    def test_passing_tree_under_hostile_parent_seals_full_set(self):
+        # The ancestor's config is benign text; its conftest
+        # alone would deselect a passing test and shrink the
+        # sealed count. Pinned, the seal attests the FULL
+        # in-tree set and the ancestor conftest never runs.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            ancestor = base / "ancestor"
+            root = ancestor / "tree"
+            root.mkdir(parents=True)
+            write(ancestor, "pytest.ini", "[pytest]\n")
+            write(
+                ancestor,
+                "conftest.py",
+                "from pathlib import Path\n\n\n"
+                "def pytest_collection_modifyitems(config, items):\n"
+                "    Path(config.rootpath, 'sentinel.txt')"
+                ".write_text('ancestor conftest ran')\n"
+                "    items[:] = [i for i in items"
+                " if 'test_more' not in i.nodeid]\n",
+            )
+            write(root, "test_ok.py", "def test_ok():\n    assert True\n")
+            write(root, "test_more.py", "def test_more():\n    assert True\n")
+            receipts = base / "receipts.jsonl"
+            rc, records, output = self._verify(root, receipts)
+            self.assertEqual(rc, 0, output)
+            pytest_records = [
+                r for r in records if r.get("command_id") == "pytest"
+            ]
+            self.assertEqual(len(pytest_records), 1)
+            self.assertEqual(pytest_records[0]["tests_collected"], 2)
+            self.assertFalse((ancestor / "sentinel.txt").exists())
+
+    @unittest.skipUnless(_pytest_on_path(), "pytest not available")
+    def test_ancestor_pyproject_fallback_cannot_anchor_rootdir(self):
+        # Validation 5, B-A3: a non-qualifying ancestor
+        # pyproject.toml anchors rootdir by fallback, admitting
+        # the ancestor's conftest. Pinned, the run never sees
+        # either.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            ancestor = base / "ancestor"
+            root = ancestor / "tree"
+            root.mkdir(parents=True)
+            write(
+                ancestor,
+                "pyproject.toml",
+                '[build-system]\nrequires = ["setuptools"]\n',
+            )
+            write(
+                ancestor,
+                "conftest.py",
+                "def pytest_collection_modifyitems(config, items):\n"
+                "    items[:] = [i for i in items"
+                " if 'test_bad' not in i.nodeid]\n",
+            )
+            write(root, "test_ok.py", "def test_ok():\n    assert True\n")
+            write(root, "test_bad.py", "def test_bad():\n    assert False\n")
+            receipts = base / "receipts.jsonl"
+            rc, _records, output = self._verify(root, receipts)
+            self.assertEqual(rc, 1, output)
+
+    @unittest.skipUnless(_pytest_on_path(), "pytest not available")
+    def test_in_tree_nonqualifying_pyproject_does_not_anchor(self):
+        # The precedence pair, first half (validation 5): the
+        # tree's own NON-qualifying pyproject.toml does not
+        # anchor rootdir against the parent's pytest.ini — the
+        # parent inifile won and steered. Pinned, the walk's
+        # no-config judgement is what runs: the parent's
+        # --last-failed and conftest never engage and the
+        # failing test fails the run.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            ancestor = base / "ancestor"
+            root = ancestor / "tree"
+            root.mkdir(parents=True)
+            self._hostile_parent(ancestor, with_cache_plant=True)
+            write(
+                root,
+                "pyproject.toml",
+                '[build-system]\nrequires = ["setuptools"]\n',
+            )
+            write(root, "test_ok.py", "def test_ok():\n    assert True\n")
+            write(root, "test_bad.py", "def test_bad():\n    assert False\n")
+            receipts = base / "receipts.jsonl"
+            rc, _records, output = self._verify(root, receipts)
+            self.assertEqual(rc, 1, output)
+            self.assertFalse((ancestor / "sentinel.txt").exists())
+
+    @unittest.skipUnless(_pytest_on_path(), "pytest not available")
+    def test_in_tree_config_keeps_hostile_parent_inert(self):
+        # The precedence pair, second half: a tree carrying
+        # its own qualifying config was already safe — the
+        # parent's deselect of a passing test changed nothing
+        # — and the pin keeps it so, with the run's rootdir on
+        # the tree.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            ancestor = base / "ancestor"
+            root = ancestor / "tree"
+            root.mkdir(parents=True)
+            write(
+                ancestor,
+                "pytest.ini",
+                "[pytest]\naddopts = --deselect test_ok.py::test_ok\n",
+            )
+            write(
+                ancestor,
+                "conftest.py",
+                "def pytest_collection_modifyitems(config, items):\n"
+                "    items[:] = [i for i in items"
+                " if 'test_ok' not in i.nodeid]\n",
+            )
+            write(root, "pytest.ini", "[pytest]\n")
+            write(root, "test_ok.py", "def test_ok():\n    assert True\n")
+            write(root, "test_more.py", "def test_more():\n    assert True\n")
+            receipts = base / "receipts.jsonl"
+            rc, records, output = self._verify(root, receipts)
+            self.assertEqual(rc, 0, output)
+            pytest_records = [
+                r for r in records if r.get("command_id") == "pytest"
+            ]
+            self.assertEqual(pytest_records[0]["tests_collected"], 2)
+
+    @unittest.skipUnless(_pytest_on_path(), "pytest not available")
+    @unittest.skipUnless(shutil.which("git"), "git not available")
+    def test_git_mode_ancestor_config_cannot_steer(self):
+        # Validation 5, B-A2: the tree as its own committed
+        # worktree under the hostile parent — ls-tree and
+        # tree_clean see only the clean worktree, but the
+        # unpinned run still resolves into the parent.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            ancestor = base / "ancestor"
+            root = ancestor / "tree"
+            root.mkdir(parents=True)
+            self._hostile_parent(ancestor, with_cache_plant=True)
+            write(root, "test_ok.py", "def test_ok():\n    assert True\n")
+            write(root, "test_bad.py", "def test_bad():\n    assert False\n")
+
+            def git(*args):
+                return subprocess.run(
+                    ["git", "-C", str(root), *args],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    timeout=60,
+                )
+
+            git("init", "-q", "-b", "main")
+            git("add", "test_ok.py", "test_bad.py")
+            git(
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "-q",
+                "-m",
+                "fixture",
+            )
+            receipts = base / "receipts.jsonl"
+            rc, _records, output = self._verify(root, receipts)
+            self.assertEqual(rc, 1, output)
+            self.assertFalse((ancestor / "sentinel.txt").exists())
+
+    # -- defence in depth: the transcript's rootdir -------------
+
+    def test_transcript_rootdir_parsing(self):
+        parse = mechanical_verify._pytest_transcript_rootdir
+        self.assertEqual(parse("rootdir: /a/b\nconfigfile: x\n"), "/a/b")
+        # The pre-8 header carried the inifile on the same line.
+        self.assertEqual(parse("rootdir: /a/b, inifile: y\n"), "/a/b")
+        self.assertIsNone(parse("platform linux\n"))
+        self.assertIsNone(parse(""))
+
+    def test_foreign_rootdir_transcript_makes_count_unproven(self):
+        # A run whose header names another rootdir attested a
+        # different tree than the one the binding covers: its
+        # count — however consistent its two channels are —
+        # proves nothing about this root.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            command = _fake_pytest_command(
+                "rootdir: /elsewhere/entirely\n2 passed in 0.01s", 2
+            )
+            result = run_verification(root, command)
+            self.assertIsNone(result.tests_collected)
+            self.assertFalse(result.passed)
+
+    def test_matching_rootdir_transcript_keeps_the_count(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            command = _fake_pytest_command(
+                f"rootdir: {root.resolve()}\n2 passed in 0.01s", 2
+            )
+            result = run_verification(root, command)
+            self.assertEqual(result.tests_collected, 2)
+            self.assertTrue(result.passed)
+
+    # -- go: GOWORK forced off in the leg's environment ---------
+
+    def _gowork_probe(self, wanted: str) -> VerificationCommand:
+        code = (
+            "import os, sys; "
+            f"sys.exit(0 if os.environ.get('GOWORK') == {wanted!r} else 1)"
+        )
+        return VerificationCommand(
+            "go-test", "Go tests", (sys.executable, "-c", code)
+        )
+
+    def test_go_leg_forces_gowork_off_over_the_caller_env(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch.dict(
+                os.environ, {"GOWORK": "/somewhere/else/go.work"}
+            ):
+                result = run_verification(root, self._gowork_probe("off"))
+            self.assertEqual(result.exit_code, 0)
+
+    def test_non_go_leg_leaves_the_caller_gowork_alone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            probe = self._gowork_probe("/somewhere/else/go.work")
+            probe = VerificationCommand("make-test", probe.label, probe.argv)
+            with mock.patch.dict(
+                os.environ, {"GOWORK": "/somewhere/else/go.work"}
+            ):
+                result = run_verification(root, probe)
+            self.assertEqual(result.exit_code, 0)
+
+    @unittest.skipUnless(shutil.which("go"), "go not available")
+    def test_go_ancestor_workspace_cannot_supply_code(self):
+        # Validation 5, §1.2: the parent go.work puts the run
+        # in workspace mode and the outside module executes.
+        # With GOWORK forced off, the import cannot resolve in
+        # module mode and the leg fails honestly.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            write(base, "go.work", "go 1.27\n\nuse (\n\t./lib\n\t./tree\n)\n")
+            write(base, "lib/go.mod", "module example.com/lib\n\ngo 1.27\n")
+            write(
+                base,
+                "lib/pkg/pkg.go",
+                "package pkg\n\nfunc Value() int { return 1 }\n",
+            )
+            root = base / "tree"
+            write(root, "go.mod", "module example.com/tree\n\ngo 1.27\n")
+            write(
+                root,
+                "main_test.go",
+                "package main\n\nimport (\n\t\"testing\"\n\n"
+                "\t\"example.com/lib/pkg\"\n)\n\n"
+                "func TestValue(t *testing.T) {\n"
+                "\tif pkg.Value() != 1 {\n"
+                "\t\tt.Fatal(\"wrong value\")\n\t}\n}\n",
+            )
+            receipts = base / "receipts.jsonl"
+            rc, _records, output = self._verify(root, receipts)
+            self.assertEqual(rc, 1, output)
+
+    # -- node: ancestor node_modules disqualifies ---------------
+
+    def _node_tree(self, root: Path):
+        write(
+            root,
+            "package.json",
+            '{"name": "tree", "scripts": {"test": "node test.js"}}\n',
+        )
+        write(root, "test.js", "console.log('fine');\n")
+
+    def test_npm_leg_disqualified_by_ancestor_node_modules(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            (base / "node_modules").mkdir()
+            root = base / "tree"
+            root.mkdir()
+            self._node_tree(root)
+            self.assertNotIn("npm-test", self._ids(root))
+
+    def test_npm_leg_disqualified_by_grandparent_node_modules(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            (base / "node_modules").mkdir()
+            root = base / "mid" / "tree"
+            root.mkdir(parents=True)
+            self._node_tree(root)
+            self.assertNotIn("npm-test", self._ids(root))
+
+    def test_npm_leg_with_clean_ancestors_schedules(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "tree"
+            root.mkdir()
+            self._node_tree(root)
+            write(root, "node_modules/leftpad/package.json", "{}\n")
+            self.assertIn("npm-test", self._ids(root))
+
+    @unittest.skipUnless(shutil.which("npm"), "npm not available")
+    def test_npm_ancestor_instance_leaves_no_commands(self):
+        # Validation 5, §1.3 end-to-end: the parent module
+        # supplied the sealed run's require. Disqualified, the
+        # tree schedules nothing at all.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            ancestor = base / "ancestor"
+            root = ancestor / "tree"
+            root.mkdir(parents=True)
+            write(
+                ancestor,
+                "node_modules/leftpad/package.json",
+                '{"name": "leftpad", "main": "index.js"}\n',
+            )
+            write(
+                ancestor,
+                "node_modules/leftpad/index.js",
+                'module.exports = () => "ok";\n',
+            )
+            write(
+                root,
+                "package.json",
+                '{"name": "tree", "scripts": {"test": "node test.js"}}\n',
+            )
+            write(
+                root,
+                "test.js",
+                'const lp = require("leftpad");\n'
+                'if (lp() !== "ok") { process.exit(1); }\n',
+            )
+            receipts = base / "receipts.jsonl"
+            rc, _records, output = self._verify(root, receipts)
+            self.assertEqual(rc, 2, output)
+
+    @unittest.skipUnless(shutil.which("npm"), "npm not available")
+    def test_npm_in_tree_node_modules_seals_and_binds(self):
+        # The negative: in-tree node_modules with clean
+        # ancestors seals, and mutating the in-tree module
+        # stales the audit — the content was inside the root
+        # all along.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "tree"
+            root.mkdir()
+            write(
+                root,
+                "package.json",
+                '{"name": "tree", "scripts": {"test": "node test.js"}}\n',
+            )
+            write(
+                root,
+                "test.js",
+                'const lp = require("leftpad");\n'
+                'if (lp() !== "ok") { process.exit(1); }\n',
+            )
+            write(
+                root,
+                "node_modules/leftpad/package.json",
+                '{"name": "leftpad", "main": "index.js"}\n',
+            )
+            index = write(
+                root,
+                "node_modules/leftpad/index.js",
+                'module.exports = () => "ok";\n',
+            )
+            receipts = root / "receipts.jsonl"
+            rc, _records, output = self._verify(root, receipts)
+            self.assertEqual(rc, 0, output)
+            rc, output = self._check(receipts, root)
+            self.assertEqual(rc, 0, output)
+            index.write_text('module.exports = () => "evil";\n')
+            rc, output = self._check(receipts, root)
+            self.assertEqual(rc, 1, output)
+            self.assertIn("STALE", output)
+
+    # -- cargo: ancestor state disqualifies ---------------------
+
+    _ROOT_MANIFEST = '[package]\nname = "tree"\nversion = "0.1.0"\n'
+
+    def _cargo_ids(self, root: Path) -> list[str]:
+        return self._ids(root)
+
+    def test_cargo_leg_disqualified_by_covering_ancestor_workspace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            write(
+                base,
+                "Cargo.toml",
+                '[workspace]\nmembers = ["tree"]\n',
+            )
+            root = base / "tree"
+            root.mkdir()
+            write(root, "Cargo.toml", self._ROOT_MANIFEST)
+            self.assertNotIn("cargo-test", self._cargo_ids(root))
+
+    def test_cargo_leg_disqualified_by_unlisted_ancestor_workspace(self):
+        # The members list does not name the crate: cargo
+        # errors for the plain shape, but a path dependency of
+        # a member auto-enrolls a crate the list never names —
+        # membership cannot be settled from the list alone, so
+        # a non-excluding ancestor workspace disqualifies.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            write(
+                base,
+                "Cargo.toml",
+                '[workspace]\nmembers = ["other"]\n',
+            )
+            root = base / "tree"
+            root.mkdir()
+            write(root, "Cargo.toml", self._ROOT_MANIFEST)
+            self.assertNotIn("cargo-test", self._cargo_ids(root))
+
+    def test_cargo_leg_allowed_when_ancestor_workspace_excludes_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            write(
+                base,
+                "Cargo.toml",
+                '[workspace]\nmembers = ["other"]\nexclude = ["tree"]\n',
+            )
+            root = base / "tree"
+            root.mkdir()
+            write(root, "Cargo.toml", self._ROOT_MANIFEST)
+            self.assertIn("cargo-test", self._cargo_ids(root))
+
+    def test_cargo_leg_allowed_when_root_self_anchors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            write(
+                base,
+                "Cargo.toml",
+                '[workspace]\nmembers = ["tree"]\n',
+            )
+            root = base / "tree"
+            root.mkdir()
+            write(
+                root,
+                "Cargo.toml",
+                self._ROOT_MANIFEST + "\n[workspace]\n",
+            )
+            self.assertIn("cargo-test", self._cargo_ids(root))
+
+    def test_cargo_leg_disqualified_by_declared_outside_workspace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "tree"
+            root.mkdir()
+            write(
+                root,
+                "Cargo.toml",
+                '[package]\nname = "tree"\nversion = "0.1.0"\n'
+                'workspace = ".."\n',
+            )
+            self.assertNotIn("cargo-test", self._cargo_ids(root))
+
+    def test_cargo_leg_disqualified_by_ancestor_cargo_config(self):
+        # Config discovery does not stop at the workspace
+        # boundary: the root self-anchors and the ancestor
+        # config still steers (a rustc-wrapper fires).
+        for name in ("config.toml", "config"):
+            with self.subTest(name=name):
+                with tempfile.TemporaryDirectory() as tmp:
+                    base = Path(tmp)
+                    write(base, f".cargo/{name}", "[build]\n")
+                    root = base / "tree"
+                    root.mkdir()
+                    write(
+                        root,
+                        "Cargo.toml",
+                        self._ROOT_MANIFEST + "\n[workspace]\n",
+                    )
+                    self.assertNotIn("cargo-test", self._cargo_ids(root))
+
+    def test_cargo_leg_with_plain_ancestor_manifest_schedules(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            write(base, "Cargo.toml", self._ROOT_MANIFEST)
+            root = base / "tree"
+            root.mkdir()
+            write(root, "Cargo.toml", self._ROOT_MANIFEST)
+            self.assertIn("cargo-test", self._cargo_ids(root))
+
+    # -- interpreter startup surface ----------------------------
+
+    @unittest.skipUnless(_pytest_on_path(), "pytest not available")
+    def test_sitecustomize_does_not_execute_at_leg_startup(self):
+        # Probed adjudication (see the class docstring): a
+        # root-level sitecustomize.py raising at import would
+        # crash the leg if the interpreter executed it at
+        # startup; under the verifier's argv it never runs.
+        # The file is bound content regardless — its mutation
+        # stales the seal (pinned in test_receipts.py).
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "tree"
+            root.mkdir()
+            write(root, "sitecustomize.py", "raise RuntimeError('startup')\n")
+            write(root, "test_ok.py", "def test_ok():\n    assert True\n")
+            receipts = base / "receipts.jsonl"
+            rc, _records, output = self._verify(root, receipts)
+            self.assertEqual(rc, 0, output)
+
+
 class RunVerificationTests(unittest.TestCase):
     def test_run_captures_pass_and_exit_code(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -4386,14 +5111,26 @@ class CollectedCountTests(unittest.TestCase):
         # terminal summary the count parser reads — a passing suite
         # recorded zero collected and was rejected. The discovered
         # argv must net positive verbosity so the summary survives
-        # project addopts down to -qq.
+        # project addopts down to -qq. (The argv also carries
+        # Task 15's root pin; the -v element is what this test
+        # pins.)
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write(root, "pytest.ini", "[pytest]\naddopts = -q\n")
             commands = discover_verification_commands(root)
             self.assertEqual([c.id for c in commands], ["pytest"])
+            resolved = str(root.resolve())
             self.assertEqual(
-                commands[0].argv, ("python3", "-m", "pytest", "-v")
+                commands[0].argv,
+                ("python3", "-m", "pytest", "-v")
+                + (
+                    "-c",
+                    str((root / "pytest.ini").resolve()),
+                    "--rootdir",
+                    resolved,
+                    "--confcutdir",
+                    resolved,
+                ),
             )
 
     @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")

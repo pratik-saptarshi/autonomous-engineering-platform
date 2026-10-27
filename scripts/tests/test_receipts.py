@@ -975,6 +975,34 @@ class BindingTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
             self.assertIn("RECEIPTS: STALE", proc.stdout)
 
+    def test_fs_mode_sitecustomize_mutation_is_stale(self):
+        # Task 15 (validation 5's truncated section 3 left this
+        # surface unrecorded; probed for the remediation): a
+        # root-level sitecustomize.py does not execute at the
+        # Python legs' startup under the verifier's -m argv
+        # shapes — site imports it only from sys.path entries
+        # present at interpreter init, which the caller's
+        # PYTHONPATH controls (the disclosed caller-environment
+        # channel) — but executed or not, the file is ordinary
+        # root content and the fs binding covers it: mutating
+        # it under a standing seal is STALE like any other
+        # root file's mutation.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "Makefile", "test:\n\ttrue\n")
+            write(root, "sitecustomize.py", "# operator notes\n")
+            receipts = Path(tmp) / "outside" / "r.jsonl"
+            receipts.parent.mkdir()
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            proc = check_bound(receipts, "1", root)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("RECEIPTS: PASS", proc.stdout)
+            write(root, "sitecustomize.py", "# edited after the seal\n")
+            proc = check_bound(receipts, "1", root)
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("RECEIPTS: STALE", proc.stdout)
+
     def test_fs_mode_exec_bit_removal_is_stale(self):
         # Codex's exact reproduction: verify an fs root whose
         # Makefile invokes ./check.sh, seal, then remove the
