@@ -72,7 +72,7 @@ Coverage ledger (vendored validator):
 node reference/security-audit-skill/skills/security-audit/validate-coverage-ledger.cjs <run-root>/coverage-ledger.json
 ```
 
-Findings (vendored validator):
+Findings (vendored validator — for verbatim-shaped artifacts and divergence checks only; the profile route below is the standing route for profile-shaped findings, per protocol §5.3):
 
 ```text
 node reference/security-audit-skill/skills/security-audit/validate-findings.cjs <run-root>/findings.json
