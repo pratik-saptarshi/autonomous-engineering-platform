@@ -2469,24 +2469,35 @@ def _commands_digest(command_ids) -> str:
 # tree it describes, so a sealed PASS can be re-validated against that
 # tree later — never against whatever the working tree holds then.
 
-# The only directory names the tree binding does not cover, at any
-# depth. PR #42 excluded twelve names here; the paperthin validation
-# of this batch (probes P-01..P-05) showed that eight of them are
-# content directories — dependency, virtualenv, and build-output
-# trees (node_modules, .venv, .tox, target, build, dist, coverage,
-# htmlcov) whose code a sealed run can import or collect while the
-# binding saw nothing, the #62 stale-PASS class through the digest's
-# exclusion door. Those eight are bound like any other directory
-# now. The four names below stay excluded because they are residue,
-# not content: the verifier's own legs regenerate them during the
-# run itself (a pytest leg creates .pytest_cache and __pycache__
-# from cold; git updates .git on every status), so binding them
-# would make the run's own residue abort every seal. What lives
-# there is cache, validated by its tool against the bound sources
-# it describes — see the Tree binding section of
-# docs/deepcode-mechanisms.md for the exact bound set and the
-# residual that remains (a cache entry actively forged to match
-# its source's recorded stat).
+# The only directory names whose TOOL STATE the tree binding
+# does not cover, at any depth. PR #42 excluded twelve names
+# here; the paperthin validation of this batch (probes
+# P-01..P-05) showed that eight of them are content directories
+# — dependency, virtualenv, and build-output trees
+# (node_modules, .venv, .tox, target, build, dist, coverage,
+# htmlcov) whose code a sealed run can import or collect while
+# the binding saw nothing, the #62 stale-PASS class through
+# the digest's exclusion door. Those eight are bound like any
+# other directory now. The second validation then found plain
+# SOURCE under the four remaining names equally invisible
+# (probes B1a/B1b/B1c, B2): the exclusion the four names carry
+# is of their tool state, not of anything planted in them.
+# The verifier's own legs regenerate that tool state during
+# the run itself (a pytest leg creates .pytest_cache and
+# __pycache__ from cold; git updates .git on every status), so
+# binding it would make the run's own residue abort every
+# seal. Code files under these names bind like code anywhere
+# (see _fs_residue_entries), an untracked one blocks git-mode
+# sealing like untracked code anywhere (see tree_clean), and
+# config aiming collection or sys.path into them refuses the
+# bare pytest leg (see _selected_config_aims_into_residue).
+# What remains unbound under a residue name is non-code
+# content — data a bound run reads or loads by explicit path,
+# which has effect only through bound code that chooses to
+# load it — and the one residual that needs no planted
+# aiming: a bytecode-cache entry actively forged to match
+# its source's recorded stat. See the Tree binding section
+# of docs/deepcode-mechanisms.md for the exact bound set.
 FS_RESIDUE_DIRS = frozenset(
     {
         ".git",
