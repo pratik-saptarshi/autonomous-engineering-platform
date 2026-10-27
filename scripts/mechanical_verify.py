@@ -1129,6 +1129,73 @@ def _addopts_aims(tokens: list[str]) -> tuple[list[str], bool]:
     return aims, pyargs
 
 
+# The cache-SELECTION flags of pytest 9's cacheprovider and
+# stepwise plugins — enumerated from their registrations
+# (_pytest/cacheprovider.py: --lf/--last-failed;
+# _pytest/stepwise.py: --sw/--stepwise and --sw-skip/
+# --stepwise-skip), not from memory. Each makes the executed
+# set of a run a function of the cache tools' state files
+# (v/cache/lastfailed, v/cache/stepwise) — state the binding
+# deliberately excludes (see FS_RESIDUE_DIRS), so a bound
+# config arming one lets unbound bytes choose which tests an
+# attested run executes: a subset PASS for a tree whose full
+# suite fails (paperthin validation 4, breach B-B). The
+# flags are CLI/addopts-only — cacheprovider registers
+# exactly one ini key (cache_dir) and stepwise registers
+# none — so addopts is the whole surface to scan. Adjudicated
+# NOT selection, from the plugins' source and from probes
+# against the installed pytest, and therefore absent here:
+# --ff/--failed-first (reorders only — LFPlugin concatenates
+# its previously-failed and previously-passed partitions, so
+# every collected test still runs, and with -x the run still
+# stops ON a failure, never before one; its one narrowing
+# combination, --ff with --last-failed-no-failures=none on
+# an empty cache, deselects everything and exits 5, never a
+# PASS); --lfnf/--last-failed-no-failures (a modifier of
+# --lf's empty-cache behaviour, inert unless --lf or --ff is
+# armed); --sw-reset/--stepwise-reset (DISCARDS the stepwise
+# state before selection, so a PASS under it is a full-set
+# PASS); --nf/--new-first (reorders by cache/nodeids, selects
+# nothing); --cache-clear (clears the state — the write
+# side); --cache-show (performs no run at all, so the
+# collected-count gates refuse it like any zero-test leg).
+_PYTEST_CACHE_SELECTION_OPTIONS = frozenset(
+    {
+        "--lf",
+        "--last-failed",
+        "--sw",
+        "--stepwise",
+        "--sw-skip",
+        "--stepwise-skip",
+    }
+)
+
+
+def _addopts_cache_selection(tokens: list[str]) -> bool:
+    """Whether addopts *tokens* arm a cache-selection flag
+    (see _PYTEST_CACHE_SELECTION_OPTIONS). Tokenized the way
+    _addopts_aims tokenizes: `--` ends option processing (a
+    selection spelling after it is a positional aim, judged
+    as one), and a token consumed as a known value-taking
+    option's value is not an option. A spelling carried as
+    `--flag=value` is judged by its name — real pytest
+    rejects that form for these store-true flags, so judging
+    it armed is the fail-closed direction."""
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        index += 1
+        if token == "--":
+            return False
+        if token.startswith("-") and token != "-":
+            name = token.split("=", 1)[0]
+            if name in _PYTEST_CACHE_SELECTION_OPTIONS:
+                return True
+            if "=" not in token and name in _PYTEST_VALUE_OPTIONS:
+                index += 1  # the option's value is not an option
+    return False
+
+
 def _pytest_config_key_entries(
     config: Path, key: str
 ) -> list[str] | None:
@@ -1387,9 +1454,9 @@ def _selected_config_aims_unattested(root: Path) -> bool:
     steers the bare leg at unattested content, over the
     config's full steering surface: its testpaths and
     pythonpath entries, the positional tokens of its
-    addopts, --pyargs, and its norecursedirs — judged for
-    whether default collection traversal can still enter a
-    residue directory (see
+    addopts, --pyargs, its cache-selection flags, and its
+    norecursedirs — judged for whether default collection
+    traversal can still enter a residue directory (see
     _selected_config_traversal_enters_residue).
 
     The collected .py files under a residue name are bound
@@ -1406,7 +1473,12 @@ def _selected_config_aims_unattested(root: Path) -> bool:
     carried by a key the two-key gate never read (Task 11
     review, finding F2), and an aim resolving outside the
     root collects or imports content the seal does not
-    describe at all (finding F3). An aim at or through a
+    describe at all (finding F3). A cache-selection flag in
+    addopts is refused on the same principle one level down:
+    it aims collection at no place — it lets the cache
+    tools' unbound state files choose which collected tests
+    execute (see _addopts_cache_selection; paperthin
+    validation 4, breach B-B). An aim at or through a
     symlink is refused on the same principle (Task 11
     re-review §4): the binding attests a link's target
     string, never its content. The traversal key is the one
@@ -1421,7 +1493,10 @@ def _selected_config_aims_unattested(root: Path) -> bool:
         return False
     if _selected_config_traversal_enters_residue(root):
         return True
-    aims, pyargs = _addopts_aims(_pytest_config_addopts(selected))
+    addopts = _pytest_config_addopts(selected)
+    if _addopts_cache_selection(addopts):
+        return True
+    aims, pyargs = _addopts_aims(addopts)
     if pyargs:
         return True
     return any(
@@ -1575,8 +1650,9 @@ def discover_verification_commands(root: Path) -> tuple[VerificationCommand, ...
     # config pytest would read steers collection or sys.path at
     # unattested content over its full steering surface —
     # testpaths, pythonpath, addopts positionals, --pyargs,
-    # and norecursedirs judged for whether default traversal
-    # can still enter a residue directory;
+    # cache-selection flags, and norecursedirs judged for
+    # whether default traversal can still enter a residue
+    # directory;
     # targets: a residue directory, anywhere outside the
     # root, or a path at or through a symlink (see
     # _selected_config_aims_unattested: files under
@@ -2919,8 +2995,12 @@ def _commands_digest(command_ids) -> str:
 # _selected_config_aims_unattested). What remains unbound
 # under a residue name is the tools' own state files
 # themselves (bytes planted under those exact names take
-# effect only through the tool, or through bound code that
-# chooses to load them — the explicit-path family), the
+# effect only through the tool — whose reads of them can
+# also SELECT what a run executes, the read side a bound
+# config arms only through the cache-selection flags
+# discovery refuses, see _addopts_cache_selection — or
+# through bound code that chooses to load them — the
+# explicit-path family), the
 # files under .git outside its enumerated bind set (an
 # archive under an arbitrary name among them), and the one
 # residual that needs no planted aiming: a bytecode-cache
@@ -2967,6 +3047,18 @@ def _is_code_file(name: str) -> bool:
     in git mode, what counts as dirty — under a residue
     directory, where tool state and planted code share a tree."""
     return name.endswith(_FS_CODE_SUFFIXES)
+
+
+def _is_code_shaped(name: str) -> bool:
+    """Whether the file *name* is content a runtime loads by
+    name — code (see _is_code_file) or a module archive (see
+    _FS_ARCHIVE_SUFFIXES). The union is the filename half of
+    the enumerated .git bind set, and it is also the shape the
+    git-mode cleanliness gate conditions the `.superpowers/`
+    drop on (see tree_clean): under both names the question
+    is the same — could this file's bytes be executed by a
+    run the seal attests?"""
+    return _is_code_file(name) or name.endswith(_FS_ARCHIVE_SUFFIXES)
 
 
 # The tool-state files of the cache residue directories: the
@@ -3048,11 +3140,7 @@ def _residue_file_binds(
     and is refused at discovery for the bare leg (see
     _selected_config_traversal_enters_residue)."""
     if active == ".git":
-        return (
-            inside[0] == "hooks"
-            or _is_code_file(inside[-1])
-            or inside[-1].endswith(_FS_ARCHIVE_SUFFIXES)
-        )
+        return inside[0] == "hooks" or _is_code_shaped(inside[-1])
     return not _is_tool_state_file(active, inside)
 
 
@@ -3359,9 +3447,18 @@ def tree_clean(root: Path, receipts_path: Path | None = None) -> bool:
     `git status --porcelain --untracked-files=all` must be empty
     after dropping (i) the
     receipts file itself and UNTRACKED entries under `.superpowers/`
-    (the workflow's own bookkeeping — a TRACKED `.superpowers/` entry
-    that is modified or staged counts as dirty like any other
-    tracked change) and (ii) untracked entries under a residue
+    whose names are not code-shaped (see _is_code_shaped) — the
+    workflow's own bookkeeping: ledgers, briefs, record files.
+    The drop is conditioned, not blanket (paperthin validation 4,
+    breach B-A): an untracked code-shaped file under
+    `.superpowers/` — source, a native extension, a module
+    archive — counts as dirty like untracked content anywhere
+    else, because committed code can import or collect it and
+    it would then execute under the seal bound nowhere; it
+    must be committed (which binds it via ls-tree) or removed.
+    A TRACKED `.superpowers/` entry that is modified or staged
+    counts as dirty like any other tracked change. And
+    (ii) untracked entries under a residue
     name that the fs binding would NOT cover (see
     _path_binds_under_residue: the cache tools' own state
     files, and files under .git outside its bind set). An
@@ -3422,7 +3519,7 @@ def tree_clean(root: Path, receipts_path: Path | None = None) -> bool:
             continue
         if status == b"??" and (
             path == ".superpowers" or path.startswith(".superpowers/")
-        ):
+        ) and not _is_code_shaped(path.rsplit("/", 1)[-1]):
             continue
         if status == b"??" and (
             _path_binds_under_residue(path.split("/")) is False

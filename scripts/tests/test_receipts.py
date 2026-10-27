@@ -2257,5 +2257,203 @@ class NonRegularFileBindingTests(unittest.TestCase):
             self.assertIn("RECEIPTS: PASS", proc.stdout)
 
 
+class SuperpowersCleanlinessTests(unittest.TestCase):
+    """Task 13 (paperthin validation 4, breach B-A): in git
+    mode, untracked entries under `.superpowers/` were dropped
+    from the cleanliness gate UNCONDITIONALLY — the one name
+    whose drop was not conditioned the way the residue names'
+    drop is (Task 10's parity rule). A committed test
+    importing a helper planted untracked under `.superpowers/`
+    executed unbound code under the seal; mutating the helper
+    left check-receipts at PASS (the fs-mode control of the
+    identical fixture went STALE, isolating the drop itself).
+
+    The drop is now conditioned on code shape, with the same
+    loads-by-name set the .git bind set enumerates (source and
+    native extension suffixes, module archives): an untracked
+    CODE-shaped file under `.superpowers/` counts as dirty
+    like untracked content anywhere else — it must be
+    committed (which binds it via ls-tree) or removed before
+    the tree can seal. The workflow's bookkeeping is not
+    code-shaped — ledgers, briefs, and receipt-shaped records
+    keep waving through, which is what the SDD verify flow in
+    git mode depends on."""
+
+    TEST_MAIN = (
+        "import sys\n"
+        "from pathlib import Path\n\n"
+        "sys.path.insert(0, str(Path(__file__).parent"
+        " / '.superpowers' / 'x'))\n\n"
+        "import helper\n\n\n"
+        "def test_helper_value():\n"
+        "    assert helper.VALUE == 'good'\n"
+    )
+
+    def _repo(self, root: Path) -> None:
+        git(root, "init", "-q", "-b", "main")
+        write(root, "test_main.py", self.TEST_MAIN)
+        git(root, "add", "test_main.py")
+        git(
+            root,
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-q",
+            "-m",
+            "fixture",
+        )
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_untracked_code_under_superpowers_blocks_sealing(self):
+        # The validator's B-A fixture rebuilt: pre-fix the
+        # seal waved the planted helper through (verify rc 0,
+        # audit PASS after mutation); the tree is dirty now.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._repo(root)
+            write(root, ".superpowers/x/helper.py", "VALUE = 'good'\n")
+            receipts = root / "r.jsonl"
+            self.assertFalse(mechanical_verify.tree_clean(root, receipts))
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("tree not clean at HEAD", proc.stdout)
+
+    def test_untracked_archive_under_superpowers_blocks_sealing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._repo(root)
+            write(root, ".superpowers/x/bundle.zip", "not a real zip\n")
+            receipts = root / "r.jsonl"
+            self.assertFalse(mechanical_verify.tree_clean(root, receipts))
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_committed_superpowers_helper_seals_and_mutation_dirties(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._repo(root)
+            commit_file(
+                root,
+                ".superpowers/x/helper.py",
+                "VALUE = 'good'\n",
+                "add helper",
+            )
+            receipts = root / "r.jsonl"
+            self.assertTrue(mechanical_verify.tree_clean(root, receipts))
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            proc = check(receipts, "1")
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("RECEIPTS: PASS", proc.stdout)
+            # Mutating the now-tracked helper is a tracked
+            # change: the audit reports the tree dirty.
+            write(root, ".superpowers/x/helper.py", "VALUE = 'evil'\n")
+            proc = check(receipts, "1")
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("RECEIPTS: DIRTY", proc.stdout)
+
+    def test_superpowers_bookkeeping_still_waves_through(self):
+        # The workflow control: untracked non-code bookkeeping
+        # under .superpowers/ — a ledger, a brief, chained
+        # record files at depth — keeps the tree clean, or the
+        # SDD verify flow in git mode breaks.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_git_repo(root)
+            receipts = root / "r.jsonl"
+            write(root, ".superpowers/sdd/ledger.md", "progress\n")
+            write(root, ".superpowers/sdd/brief.html", "<p>brief</p>\n")
+            write(root, ".superpowers/sdd/records.jsonl", "{}\n")
+            self.assertTrue(mechanical_verify.tree_clean(root, receipts))
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            proc = check(receipts, "1")
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("RECEIPTS: PASS", proc.stdout)
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_fs_mode_superpowers_helper_mutation_is_stale(self):
+        # The fs-mode control of the B-A fixture: fs mode binds
+        # .superpowers/ content like any other directory, so
+        # the same plant-and-mutate shape goes STALE — the
+        # parity the git-mode conditioning now matches for
+        # code-shaped files.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            write(root, "test_main.py", self.TEST_MAIN)
+            write(root, ".superpowers/x/helper.py", "VALUE = 'good'\n")
+            receipts = base / "r.jsonl"
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            proc = check_bound(receipts, "1", root)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("RECEIPTS: PASS", proc.stdout)
+            write(root, ".superpowers/x/helper.py", "VALUE = 'evil'\n")
+            proc = check_bound(receipts, "1", root)
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("RECEIPTS: STALE", proc.stdout)
+
+
+class CacheSelectionBindingTests(unittest.TestCase):
+    """Task 13 (paperthin validation 4, breach B-B), git-mode
+    instance (B-B3): the bound files are committed, the
+    lastfailed plant is untracked tool state the cleanliness
+    gate drops — pre-fix the tree sealed a subset PASS in git
+    mode exactly as in fs mode. The steering gate refuses the
+    leg at discovery (see CacheSelectionGateTests in
+    test_mechanical_verify.py for the gate matrix and the
+    fs-mode instance), so nothing seals here either."""
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_last_failed_subset_cannot_seal_in_git_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "pytest.ini",
+                "[pytest]\naddopts = --last-failed\n",
+            )
+            write(
+                root,
+                "test_ok.py",
+                "def test_ok():\n    assert True\n",
+            )
+            write(
+                root,
+                "test_bad.py",
+                "def test_bad():\n    assert False\n",
+            )
+            git(root, "init", "-q", "-b", "main")
+            git(root, "add", "pytest.ini", "test_ok.py", "test_bad.py")
+            git(
+                root,
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "-q",
+                "-m",
+                "fixture",
+            )
+            write(
+                root,
+                ".pytest_cache/v/cache/lastfailed",
+                '{"test_ok.py::test_ok": true}',
+            )
+            receipts = root / "r.jsonl"
+            proc = verify(root, "1", receipts)
+            self.assertEqual(
+                proc.returncode, 2, proc.stdout + proc.stderr
+            )
+            self.assertIn(
+                "no verification commands discovered", proc.stdout
+            )
+            self.assertFalse(receipts.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

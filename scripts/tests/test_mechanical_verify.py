@@ -2353,6 +2353,324 @@ class ResidueConfigAimTests(unittest.TestCase):
             self.assertEqual(pytest_receipts[0]["exit_code"], 0)
 
 
+class CacheSelectionGateTests(unittest.TestCase):
+    """Task 13 (paperthin validation 4, breach B-B): the cache
+    tools' state files are excluded from the binding as
+    write-side residue, but pytest's cacheprovider also READS
+    that state — a bound `addopts = --last-failed` makes the
+    set of tests the sealed run executes a function of the
+    planted, unbound `.pytest_cache/v/cache/lastfailed` bytes:
+    a one-test subset PASS for a tree whose full suite fails,
+    in both modes. The executed set of an attested run must be
+    a function of bound content alone, so the steering gate
+    refuses the bare pytest leg when the selected config's
+    addopts arms a cache-SELECTION flag — the family
+    enumerated from the installed pytest's own registrations
+    (cacheprovider.py and stepwise.py): --lf/--last-failed
+    and --sw/--stepwise, --sw-skip/--stepwise-skip (the skip
+    forms imply stepwise and share its deselection path).
+
+    Adjudicated NOT selection, by source and by probe against
+    the installed pytest, and therefore not refused:
+    --ff/--failed-first only reorders (LFPlugin concatenates
+    the previously-failed and previously-passed partitions —
+    every collected test still runs, and with -x the run still
+    stops ON a failure, never before one; its one narrowing
+    combination, --ff with --last-failed-no-failures=none on
+    an EMPTY lastfailed, deselects everything and exits 5,
+    never a PASS); --lfnf/--last-failed-no-failures is a
+    modifier that is inert on its own (the LF plugin is
+    inactive without --lf/--ff); --sw-reset/--stepwise-reset
+    DISCARDS the stepwise state before selection, so a PASS
+    under it means the full collected set ran; --nf/--new-first
+    reorders by cache/nodeids and selects nothing; nested
+    `-o addopts=...` inside addopts does not re-expand (the
+    run's addopts are fixed at preparse), so no recursion
+    channel exists for the scanner to miss."""
+
+    def _verify(self, root: Path, receipts: Path):
+        stdout = io.StringIO()
+        with mock.patch.object(
+            mechanical_verify, "available_memory_kb", return_value=10**9
+        ):
+            with contextlib.redirect_stdout(stdout):
+                rc = mechanical_verify.main(
+                    [
+                        "verify",
+                        "--root",
+                        str(root),
+                        "--task",
+                        "t",
+                        "--receipts",
+                        str(receipts),
+                    ]
+                )
+        records = []
+        if receipts.exists():
+            records = [
+                json.loads(line)
+                for line in receipts.read_text().splitlines()
+            ]
+        return rc, records, stdout.getvalue()
+
+    def _ids(self, root: Path) -> list[str]:
+        return [c.id for c in discover_verification_commands(root)]
+
+    def _config_tree(self, root: Path, config_name: str, config: str):
+        write(root, config_name, config)
+        write(
+            root,
+            "test_ok.py",
+            "def test_ok():\n    assert True\n",
+        )
+
+    def test_last_failed_addopts_disqualifies_bare_pytest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._config_tree(
+                root,
+                "pytest.ini",
+                "[pytest]\naddopts = --last-failed\n",
+            )
+            self.assertNotIn("pytest", self._ids(root))
+            # Control: the same tree without the flag schedules.
+            self._config_tree(root, "pytest.ini", "[pytest]\n")
+            self.assertIn("pytest", self._ids(root))
+
+    def test_cache_selection_spellings_disqualify(self):
+        for flag in (
+            "--lf",
+            "--stepwise",
+            "--sw",
+            "--stepwise-skip",
+            "--sw-skip",
+        ):
+            with self.subTest(flag=flag):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    self._config_tree(
+                        root,
+                        "pytest.ini",
+                        f"[pytest]\naddopts = {flag}\n",
+                    )
+                    self.assertNotIn("pytest", self._ids(root))
+
+    def test_cache_selection_in_toml_list_addopts_disqualifies(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._config_tree(
+                root,
+                "pyproject.toml",
+                "[tool.pytest.ini_options]\n"
+                'addopts = ["--last-failed"]\n',
+            )
+            self.assertNotIn("pytest", self._ids(root))
+
+    def test_cache_selection_in_setup_cfg_addopts_disqualifies(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._config_tree(
+                root,
+                "setup.cfg",
+                "[tool:pytest]\naddopts = --stepwise\n",
+            )
+            self.assertNotIn("pytest", self._ids(root))
+
+    def test_cache_selection_in_tox_ini_addopts_disqualifies(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._config_tree(
+                root,
+                "tox.ini",
+                "[pytest]\naddopts = --sw\n",
+            )
+            self.assertNotIn("pytest", self._ids(root))
+
+    def test_selection_flag_after_double_dash_is_not_armed(self):
+        # `--` ends option processing in the tokenizer pytest's
+        # argv gets: a selection spelling after it is a
+        # positional aim (at a path that collects nothing), not
+        # an armed flag, so the scanner does not refuse the leg.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._config_tree(
+                root,
+                "pytest.ini",
+                "[pytest]\naddopts = -- --last-failed\n",
+            )
+            self.assertIn("pytest", self._ids(root))
+
+    def test_selection_spelling_as_option_value_is_not_armed(self):
+        # A selection spelling swallowed as a value-taking
+        # option's value is not an armed flag either — real
+        # pytest rejects the run in that shape, so the leg
+        # fails closed on its own.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._config_tree(
+                root,
+                "pytest.ini",
+                "[pytest]\naddopts = --basetemp --last-failed\n",
+            )
+            self.assertIn("pytest", self._ids(root))
+
+    def test_failed_first_is_not_refused(self):
+        for flag in ("--failed-first", "--ff"):
+            with self.subTest(flag=flag):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    self._config_tree(
+                        root,
+                        "pytest.ini",
+                        f"[pytest]\naddopts = {flag}\n",
+                    )
+                    self.assertIn("pytest", self._ids(root))
+
+    def test_lfnf_modifier_alone_is_not_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._config_tree(
+                root,
+                "pytest.ini",
+                "[pytest]\naddopts = --last-failed-no-failures none\n",
+            )
+            self.assertIn("pytest", self._ids(root))
+
+    def test_stepwise_reset_is_not_refused(self):
+        for flag in ("--sw-reset", "--stepwise-reset"):
+            with self.subTest(flag=flag):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    self._config_tree(
+                        root,
+                        "pytest.ini",
+                        f"[pytest]\naddopts = {flag}\n",
+                    )
+                    self.assertIn("pytest", self._ids(root))
+
+    def test_new_first_is_not_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._config_tree(
+                root,
+                "pytest.ini",
+                "[pytest]\naddopts = --new-first\n",
+            )
+            self.assertIn("pytest", self._ids(root))
+
+    def _subset_fixture(self, root: Path, addopts: str) -> None:
+        write(
+            root,
+            "pytest.ini",
+            f"[pytest]\naddopts = {addopts}\n",
+        )
+        write(
+            root,
+            "test_ok.py",
+            "def test_ok():\n    assert True\n",
+        )
+        write(
+            root,
+            "test_bad.py",
+            "def test_bad():\n    assert False\n",
+        )
+        write(
+            root,
+            ".pytest_cache/v/cache/lastfailed",
+            '{"test_ok.py::test_ok": true}',
+        )
+
+    @unittest.skipUnless(_pytest_on_path(), "no pytest on PATH")
+    def test_last_failed_subset_cannot_seal(self):
+        # Validator B-B1, fs mode: pre-fix this sealed a
+        # one-test PASS (tests_collected = 1) for a tree whose
+        # full suite fails; the leg is now refused at discovery.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            receipts = base / "receipts.jsonl"
+            self._subset_fixture(root, "--last-failed")
+            rc, records, output = self._verify(root, receipts)
+            self.assertEqual(rc, 2, output)
+            self.assertIn("no verification commands discovered", output)
+            self.assertFalse(receipts.exists())
+
+    @unittest.skipUnless(_pytest_on_path(), "no pytest on PATH")
+    def test_stepwise_subset_cannot_seal(self):
+        # Validator B-B, stepwise instance: the planted
+        # stepwise state resumes AT test_ok, deselecting the
+        # failing test_bad (collected before it) — pre-fix a
+        # subset PASS; the leg is refused at discovery now.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            receipts = base / "receipts.jsonl"
+            self._subset_fixture(root, "--stepwise")
+            write(
+                root,
+                ".pytest_cache/v/cache/stepwise",
+                '{"last_failed": "test_ok.py::test_ok", '
+                '"last_test_count": 2, '
+                '"last_cache_date_str": "2026-01-01T00:00:00"}',
+            )
+            rc, records, output = self._verify(root, receipts)
+            self.assertEqual(rc, 2, output)
+            self.assertIn("no verification commands discovered", output)
+            self.assertFalse(receipts.exists())
+
+    @unittest.skipUnless(_pytest_on_path(), "no pytest on PATH")
+    def test_failed_first_runs_the_full_set(self):
+        # The --ff adjudication, end to end: with the same
+        # planted lastfailed that subsets a --lf run, a --ff
+        # run still executes the failing test and the leg
+        # records its failure — no PASS seals.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            receipts = base / "receipts.jsonl"
+            self._subset_fixture(root, "--failed-first")
+            rc, records, output = self._verify(root, receipts)
+            self.assertEqual(rc, 1, output)
+            pytest_receipts = [
+                r for r in records if r.get("command_id") == "pytest"
+            ]
+            self.assertEqual(len(pytest_receipts), 1)
+            self.assertNotEqual(pytest_receipts[0]["exit_code"], 0)
+            self.assertEqual(pytest_receipts[0]["tests_collected"], 2)
+
+    @unittest.skipUnless(_pytest_on_path(), "no pytest on PATH")
+    def test_stepwise_reset_runs_the_full_set(self):
+        # The --sw-reset adjudication, end to end: the flag
+        # discards the planted stepwise state before selection,
+        # so the failing test runs and the leg fails; on a
+        # passing tree the full collected set seals.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            receipts = base / "receipts.jsonl"
+            self._subset_fixture(root, "--sw-reset")
+            write(
+                root,
+                ".pytest_cache/v/cache/stepwise",
+                '{"last_failed": "test_ok.py::test_ok", '
+                '"last_test_count": 2, '
+                '"last_cache_date_str": "2026-01-01T00:00:00"}',
+            )
+            rc, records, output = self._verify(root, receipts)
+            self.assertNotEqual(rc, 0, output)
+            write(root, "test_bad.py", "def test_bad():\n    assert True\n")
+            rc, records, output = self._verify(root, receipts)
+            self.assertEqual(rc, 0, output)
+            pytest_receipts = [
+                r for r in records if r.get("command_id") == "pytest"
+            ]
+            self.assertEqual(pytest_receipts[-1]["tests_collected"], 2)
+
+
 class TraversalGateTests(unittest.TestCase):
     """Task 12 (paperthin validation 3, breach B-NEW): a bound
     config's `norecursedirs` REPLACES pytest's default traversal
