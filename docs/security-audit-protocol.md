@@ -3,8 +3,9 @@
 This document is the audit lane's protocol: the verdict vocabulary and
 contracts, the environment condition for this VM, the static-proof trace
 contract, the run-budget contract, the findings-schema profile the
-lane validates against, and the coverage ledger and run-artifact layout
-that are the system of record for coverage (§7). It is AEP-owned. The vendored security-audit
+lane validates against, the coverage ledger and run-artifact layout
+that are the system of record for coverage (§7), and the verifier
+phases with dispatch-recorded distinctness (§9). It is AEP-owned. The vendored security-audit
 skill under `reference/security-audit-skill/` (pin `c1c8a8c`) is the
 source the contracts below are adopted from; vendored files are data and
 are never edited by this lane.
@@ -658,3 +659,158 @@ FAIL: 2 validation error(s)   (exit 1)
 ```
 
 Both duplicated-ID ledgers are **rejected**, as §7.2 requires.
+
+## 9. Verifier phases and dispatch-recorded distinctness
+
+Coverage (§7) records what was hunted; this section records who
+verified it, and makes the finder != verifier rule checkable instead
+of asserted. It adopts the vendored `VALIDATION-AND-REPORTING.md`
+Phases 3 and 5, with identity recorded in the attestation sidecar and
+the dispatch log — never inside findings records, which stay
+schema-pure (§5; the vendored schema forbids additional properties at
+record level). The sidecar and dispatch-log contract is
+`scripts/audit/verification-attestations.schema.md`; enforcement is
+`scripts/audit/check_verifier_distinctness.cjs`.
+
+### 9.1 Fresh verifier per candidate (Phase 3)
+
+Every unique proposed `audit:confirmed` and `audit:needs_validation`
+candidate is validated by a fresh verifier that did not hunt it. The
+verifier re-reads every cited source location and independently runs
+any decisive check it can reproduce safely, under the environment
+condition in §2. A static-proof candidate (§3) stands only when that
+verifier has independently re-walked the trace and the re-walk is
+recorded as agreed in the sidecar.
+
+### 9.2 Fresh verifier per final record (Phase 5)
+
+Every record retained in `findings.json` is then verified again, as a
+final record, by a fresh verifier that did not hunt it and did not
+perform its Phase 3 validation. In a `quick` run the source merges
+Phases 3+5: the Phase 3 verifier also performs the final-record
+checks, so `phase3_verifier_agent_id == phase5_verifier_agent_id` is
+required and permitted in that profile, and only hunter-distinctness
+is checked between the phases. Every other profile keeps the two
+passes separate. Independent review of a confirmed record is never
+skipped in any profile.
+
+**Malformed verifier returns are discarded unrepaired.** A verifier
+result that is malformed or prose-wrapped — in either phase — is
+discarded without repair and re-run with a fresh verifier when the
+budget permits; otherwise the candidate remains an unvalidated ledger
+candidate under the budget rule in §4, and never enters
+`findings.json` under any verdict.
+
+### 9.3 Material replacements: the third-verifier rule
+
+A Phase 5 verifier may return a replacement record instead of
+`verified`. Whether that replacement is **material** is mechanical,
+decided from recorded inputs only: a replacement is material iff the
+sidecar's `superseded_verdict` / `superseded_severity` (the record the
+finding replaced) versus the finding's current verdict / overall
+severity shows movement toward `confirmed` (verdict rank `rejected` <
+`needs_validation` < `confirmed`) or a severity increase (rank
+`informational` < `low` < `medium` < `high` < `critical`).
+
+A material replacement is applied only after verification by a third
+verifier: an agent distinct from the hunter, the Phase 3 verifier,
+the Phase 5 verifier, and the replacement's proposer (the Phase 5
+verifier that proposed the replacement). That third verifier is
+recorded as the entry's `replacement_verifier_agent_id`. If another
+material replacement results, the rule repeats with a fresh verifier.
+If budget or independence is unavailable, the disputed record is
+removed from `findings.json`, its ledger unit stays an unresolved
+candidate, and the run reports `run_status: incomplete`. Non-material
+wording or line corrections may be applied directly when they do not
+change meaning or evidence.
+
+### 9.4 Dispatch-time recording
+
+Identity is recorded at dispatch, never asserted after the fact:
+
+- The orchestrator appends to the run's `dispatch-log.json` **at each
+  dispatch**: `{agent_id, role, session_id, dispatched_at}`, using IDs
+  in the ledger's canonical pattern
+  (`/^[a-z0-9][a-z0-9_-]{0,63}$/`). A returned payload asserting its
+  own identity is ignored.
+- The attestation sidecar (`verification-attestations.json`) carries
+  exactly one entry per `confirmed` / `needs_validation` fingerprint,
+  with the hunter, Phase 3 verifier, Phase 5 verifier (nullable),
+  replacement verifier (nullable), `confirmation_basis`,
+  `superseded_verdict` + `superseded_severity` (nullable),
+  `static_rewalk`, and the freshness hashes `findings_sha256` +
+  `ledger_sha256` binding the entry to the artifacts as checked. An
+  attestation written against earlier artifacts fails.
+- The hunter side anchors in the ledger (§7.7): the sidecar's
+  `hunter_agent_id` must equal the `agent_id` owning a check on a
+  ledger unit whose `result_fingerprints` contain the fingerprint.
+  Verifier identity lives only in the sidecar and the dispatch log.
+- IDs under the reserved `example-*` prefix are invalid in real runs;
+  they belong only to shape references under `examples/`.
+
+### 9.5 The checker contract, and what it proves
+
+`check_verifier_distinctness.cjs` exits 0 iff every `confirmed` /
+`needs_validation` record satisfies all of the rules above:
+completeness (exactly one sidecar entry per such fingerprint; absence
+is a fail), the hunter anchor, profile-aware distinctness, the
+mechanical materiality rule, the static re-walk requirement,
+freshness hashes matching the files as checked, and dispatch
+resolution plus ordering (every sidecar ID resolves to a dispatch-log
+entry in its role; roles carried by different agents carry distinct
+`session_id`s; each verifier's `dispatched_at` postdates the hunter's
+dispatch for that fingerprint). A nonzero exit names the offending
+fingerprints, and the run reports `run_status: incomplete` with its
+findings not publishable as verified. The checker reads the four
+artifacts, compares identities, anchors, hashes, and dispatch
+ordering, and reports; it edits no artifact and judges no finding's
+truth.
+
+**What the checker proves, stated honestly:** distinct recorded agent
+IDs, recorded at dispatch in the run's dispatch log and
+consistency-checked (hunter anchored in the ledger; artifacts
+hash-bound). It proves label distinctness over dispatch-recorded
+artifacts — fabrication is **detectable** (by sampling dispatch refs
+against the runtime's own subagent records, which the parent does not
+author; Task A7 samples three attestations), **not impossible**. It
+does not prove the sessions' contexts were independent beyond the
+dispatch record — that residue is the same fresh-context trust AEP's
+SDD already runs on, now made auditable instead of invisible.
+
+### 9.6 Validation of this section (Task A3, first use)
+
+The checker suite was written first and failed for the checker's
+absence (10 tests, 0 pass, module not found), then passed against the
+implementation:
+
+```text
+$ node --test scripts/audit/test/check_verifier_distinctness.test.cjs
+tests 10, pass 10, fail 0   (exit 0)
+```
+
+The suite's fixtures: (a) hunter == verifier fails naming the
+fingerprint; (b) a missing hunter anchor fails; (c) a material
+strengthening (superseded `needs_validation` → `confirmed`) with only
+two distinct agents fails; (d) a clean two-candidate run passes; (e) a
+record with no sidecar entry fails; (f) an `example-*` ID in a run
+directory not under `examples/` fails; (g) a static-basis confirmed
+record without `static_rewalk: "agreed"` fails; (h) a quick-profile
+run with `phase3 == phase5` and a distinct hunter passes; (i) a
+freshness-hash mismatch fails; (j) a verifier dispatched before the
+hunter for the same fingerprint fails.
+
+**Three-gate integration.** One fixture run (findings + ledger +
+sidecar + dispatch log, built under `/tmp`, never committed) was run
+through all three gates:
+
+```text
+$ node scripts/audit/validate_findings_profile.cjs /tmp/a3-integration-run/findings.json
+PASS: 2 findings valid (AEP profile)   (exit 0)
+$ node reference/security-audit-skill/skills/security-audit/validate-coverage-ledger.cjs /tmp/a3-integration-run/coverage-ledger.json
+PASS: 2 coverage units valid   (exit 0)
+$ node scripts/audit/check_verifier_distinctness.cjs /tmp/a3-integration-run
+PASS: 2 verified record(s) satisfy finder/verifier distinctness   (exit 0)
+```
+
+The fixture (a) variant of the same run (Phase 3 verifier set to the
+hunter) still fails the checker, naming `fp-candidate-one` (exit 1).
