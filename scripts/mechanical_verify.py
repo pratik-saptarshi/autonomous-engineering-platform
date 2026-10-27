@@ -1498,8 +1498,9 @@ def _count_collected(
     channel is the cross-check a present report is judged
     against. It never carries the count on its own: when the
     report channel abstains, the composed count is unproven
-    (None), not this channel's number (issue #53, round 2). A transcript with no summary line
-    at all (dots only, or quiet levels stacked past what
+    (None), not this channel's number (issue #53, round 2).
+    A transcript with no summary line at all (dots only, or
+    quiet levels stacked past what
     PYTEST_ARGV's net verbosity preserves — Codex P2, round 5)
     parses to 0 here: verbosity-independent evidence was
     deliberately NOT taken from e.g. the progress dots, which
@@ -1510,15 +1511,16 @@ def _count_collected(
     parser's trust level — a reporter-replacing plugin (e.g.
     pytest-sugar) that changes or omits the summary line, like
     every plugin loaded into the runner's environment, is
-    trusted the way the interpreter itself is trusted. The
-    failure direction is fail-closed: a summary this channel
-    cannot parse yields 0, and a leg that cannot prove it
-    collected anything fails the count gate — never a pass on
-    an inflated number. Since issue #53 the transcript is
-    also the cross-check for the run's junitxml report, so a
-    mangled summary that contradicts the report yields 0 as
-    well; _pytest_collected_count carries the full
-    trust-level statement for the composed count.
+    trusted the way the interpreter itself is trusted. Its
+    role in the composed count is cross-check, never carrier:
+    since issue #53 a summary that contradicts the run's
+    junitxml report yields 0 — both channels present, in
+    disagreement, so the run proves nothing — and since the
+    #53 round-2 fix a run whose report is absent has an
+    unproven count that fails the count gate, so this channel
+    is never believed on its own. _pytest_collected_count
+    carries the full trust-level statement for the composed
+    count.
     An unparseable count is 0 — a Python command
     that cannot prove it collected anything fails the count gate in
     VerificationResult.passed. Skips count as collected (deliberate
