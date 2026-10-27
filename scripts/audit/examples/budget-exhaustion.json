@@ -3,13 +3,11 @@
   "profile": "quick",
   "run_status": "incomplete",
   "incomplete_reason": "validation_budget_exhausted",
-  "budget": {
-    "max_agent_invocations": 20,
-    "reserved": {
-      "reconnaissance": 4,
-      "critics": 1,
-      "verifiers": 1
-    }
+  "budget": 20,
+  "budget_reserved": {
+    "reconnaissance": 4,
+    "critics": 1,
+    "verifiers": 1
   },
   "spent": {
     "total_agent_invocations": 20

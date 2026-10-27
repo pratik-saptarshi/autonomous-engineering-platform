@@ -228,14 +228,15 @@ made concrete.
 
 Each run writes `run-metadata.json` carrying:
 
-- `budget`: the maximum number of agent invocations across all phases,
-  with reconnaissance, critic, and verifier calls **reserved up
-  front**, before any hunting is assigned. Reserved calls are never
-  spent on hunting.
+- `budget`: the maximum number of agent invocations across all phases
+  — a single integer. Reconnaissance, critic, and verifier calls are
+  **reserved up front**, before any hunting is assigned, and the
+  reserved per-role counts are recorded in the sibling field
+  `budget_reserved`. Reserved calls are never spent on hunting.
 - `run_status`.
 - `spent: {total_agent_invocations}`, updated at run close. Budget
-  compliance is checked against the recorded `spent` versus `budget`,
-  not against prose.
+  compliance (AC9) is checked as exactly the recorded
+  `spent.total_agent_invocations` versus `budget`, not against prose.
 - `cap_override_approved_by`, required whenever a run's cap exceeds
   the profile cap below: the higher cap is valid only with Pratik's
   approval recorded in this field.
