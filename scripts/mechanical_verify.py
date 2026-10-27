@@ -32,6 +32,7 @@ import time
 import tomllib
 import uuid
 import xml.etree.ElementTree as ET
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1063,24 +1064,32 @@ def _pytest_config_addopts(config: Path) -> list[str]:
 
 
 # Options of pytest 9's core parser that consume the FOLLOWING
-# token as their value — introspected from _pytest.config's
-# parser (every registered option whose action is store/append
-# or whose nargs is a count), so an addopts value (a -k
-# expression, a --basetemp directory, a --junit-xml report
-# path) is never mistaken for a positional collection aim.
-# --cache-show is the one core exception: its value is
-# optional (nargs="?"), so a following token is not reliably
-# its value and is judged as an aim instead — the fail-closed
-# direction. Plugin-registered options are unknowable here; a
-# plugin option's space-separated value, when it names a path,
-# is judged as an aim like any bare token — over-refusal of
-# the leg, in the fail-closed direction, never a missed aim of
+# token as their REQUIRED value — introspected from
+# _pytest.config's parser (every registered option whose
+# action takes exactly one value: store/append with nargs
+# None), so an addopts value (a -k expression, a --basetemp
+# directory, a --junit-xml report path) is never mistaken for
+# a positional collection aim or an armed option spelling.
+# Options whose value is OPTIONAL (nargs="?") are excluded —
+# there are exactly two in the core parser, --debug and
+# --cache-show: the parser takes the following token as the
+# value only when it does not look like an option, so in
+# _addopts_token_stream the token after one of them keeps
+# both of its readings (`--debug --lf` arms --lf against the
+# raw binary — an optional-value option in this set would
+# swallow the spelling). A pin test (AddoptsGrammarTests)
+# re-derives this set from the installed parser, so a future
+# pytest that changes either side of it fails loudly.
+# Plugin-registered options are unknowable here; a plugin
+# option's space-separated value, when it names a path, is
+# judged as an aim like any bare token — over-refusal of the
+# leg, in the fail-closed direction, never a missed aim of
 # pytest's own surface.
 _PYTEST_VALUE_OPTIONS = frozenset(
     {
         "-W", "-c", "-k", "-m", "-o", "-p", "-r",
         "--assert", "--basetemp", "--capture", "--code-highlight",
-        "--color", "--confcutdir", "--config-file", "--debug",
+        "--color", "--confcutdir", "--config-file",
         "--deselect", "--doctest-glob", "--doctest-report",
         "--durations", "--durations-min", "--ignore",
         "--ignore-glob", "--import-mode", "--junit-prefix",
@@ -1097,35 +1106,82 @@ _PYTEST_VALUE_OPTIONS = frozenset(
 )
 
 
-def _addopts_aims(tokens: list[str]) -> tuple[list[str], bool]:
-    """(positional aims, uses_pyargs) in addopts *tokens*.
+def _addopts_token_stream(
+    tokens: list[str],
+) -> Iterator[tuple[str, str, str | None]]:
+    """The addopts *tokens* judged the way pytest 9's parser
+    can read them — ("option", name, value) and
+    ("aim", token, None) judgements in stream order. The one
+    tokenization every addopts consumer shares.
 
-    addopts entries are prepended argv: a bare token is a
-    positional collection aim (a path or nodeid pytest will
-    collect), an option token is not, and the token consumed
-    as a known value-taking option's value is not. `--`
-    ends option processing: everything after it is
-    positional. --pyargs is reported separately rather than
-    returned as an aim: it retargets collection at installed
-    packages, outside the bound set by construction."""
-    aims: list[str] = []
-    pyargs = False
+    The grammar is the parser's, not getopt's: pytest parses
+    its argv in two passes (argparse's intermixed parsing;
+    on pre-3.12.8 Pythons a fallback that splits the
+    leftovers the same way) — the first pass consumes a `--`
+    separator and the second re-reads the remainder as a
+    fresh stream, so a registered option spelling arms
+    WHEREVER it appears: before, between, or after
+    positionals, and after one `--` as surely as before it
+    (Task 13 review, finding F1; every spelling behaviour
+    stated here was proven against the raw binary). The
+    separator therefore terminates nothing for the scanners:
+    it is skipped, and every other token is judged under
+    BOTH readings the parser could give it — an option
+    spelling as an option, a bare token as a positional aim.
+    (After two separators the parser gives a spelling the
+    positional reading instead and errors on it as a path;
+    judging it as an option too is the fail-closed side of
+    that divergence.) A known value-taking option consumes
+    the token that follows it verbatim, separators and
+    spellings included: where the parser accepts the stream
+    it consumes that token the same way, and where the
+    scanner's reading is one the parser rejects (`-k -- x`,
+    `-c --lf` — proven rc 4, "expected one argument") the
+    run errors, so the scanner's silence about the swallowed
+    token cannot seal. Options whose value is OPTIONAL are
+    not in _PYTEST_VALUE_OPTIONS and never consume here (see
+    its comment): the token after --debug or --cache-show
+    keeps both readings."""
     index = 0
     while index < len(tokens):
         token = tokens[index]
         index += 1
         if token == "--":
-            aims.extend(tokens[index:])
-            break
-        if token == "--pyargs":
-            pyargs = True
             continue
         if token.startswith("-") and token != "-":
-            name = token.split("=", 1)[0]
-            if "=" not in token and name in _PYTEST_VALUE_OPTIONS:
-                index += 1  # the option's value is not an aim
+            name, sep, attached = token.partition("=")
+            value = attached if sep else None
+            if (
+                value is None
+                and name in _PYTEST_VALUE_OPTIONS
+                and index < len(tokens)
+            ):
+                value = tokens[index]
+                index += 1
+            yield ("option", name, value)
             continue
-        aims.append(token)
+        yield ("aim", token, None)
+
+
+def _addopts_aims(tokens: list[str]) -> tuple[list[str], bool]:
+    """(positional aims, uses_pyargs) in addopts *tokens*.
+
+    The aims are the bare tokens of _addopts_token_stream —
+    the tokens pytest's parser can read as positional
+    collection aims (a path or nodeid it will collect),
+    wherever they sit in the stream; a token consumed as a
+    known value-taking option's value is neither an aim nor
+    an option. --pyargs is reported separately rather than
+    returned as an aim: it retargets collection at installed
+    packages, outside the bound set by construction."""
+    aims: list[str] = []
+    pyargs = False
+    for kind, text, _value in _addopts_token_stream(tokens):
+        if kind == "option":
+            if text == "--pyargs":
+                pyargs = True
+        else:
+            aims.append(text)
     return aims, pyargs
 
 
@@ -1173,27 +1229,20 @@ _PYTEST_CACHE_SELECTION_OPTIONS = frozenset(
 
 def _addopts_cache_selection(tokens: list[str]) -> bool:
     """Whether addopts *tokens* arm a cache-selection flag
-    (see _PYTEST_CACHE_SELECTION_OPTIONS). Tokenized the way
-    _addopts_aims tokenizes: `--` ends option processing (a
-    selection spelling after it is a positional aim, judged
-    as one), and a token consumed as a known value-taking
-    option's value is not an option. A spelling carried as
-    `--flag=value` is judged by its name — real pytest
-    rejects that form for these store-true flags, so judging
-    it armed is the fail-closed direction."""
-    index = 0
-    while index < len(tokens):
-        token = tokens[index]
-        index += 1
-        if token == "--":
-            return False
-        if token.startswith("-") and token != "-":
-            name = token.split("=", 1)[0]
-            if name in _PYTEST_CACHE_SELECTION_OPTIONS:
-                return True
-            if "=" not in token and name in _PYTEST_VALUE_OPTIONS:
-                index += 1  # the option's value is not an option
-    return False
+    (see _PYTEST_CACHE_SELECTION_OPTIONS). Judged over the
+    shared token stream (_addopts_token_stream): a spelling
+    arms anywhere in the stream — after a `--` separator
+    included, because the separator does NOT end option
+    processing in pytest's parser (Task 13 review,
+    finding F1) — and a token consumed as a known
+    value-taking option's value is not an option. A spelling
+    carried as `--flag=value` is judged by its name — real
+    pytest rejects that form for these store-true flags, so
+    judging it armed is the fail-closed direction."""
+    return any(
+        kind == "option" and text in _PYTEST_CACHE_SELECTION_OPTIONS
+        for kind, text, _value in _addopts_token_stream(tokens)
+    )
 
 
 def _pytest_config_key_entries(
@@ -1325,28 +1374,19 @@ def _addopts_doctest_globs(tokens: list[str]) -> list[str]:
     --doctest-glob is the doctest plugin's append option:
     when a run carries any, they REPLACE its built-in
     default (test*.txt) as the fnmatch_ex globs
-    _pytest.doctest applies to non-.py files. The scan
-    consumes known value-taking options' values the way
-    _addopts_aims does, so a glob-looking token swallowed
-    as another option's value is not misread as one."""
-    globs: list[str] = []
-    index = 0
-    while index < len(tokens):
-        token = tokens[index]
-        index += 1
-        if token == "--":
-            break
-        if token.startswith("--doctest-glob="):
-            globs.append(token.split("=", 1)[1])
-            continue
-        if token.startswith("-") and token != "-":
-            name = token.split("=", 1)[0]
-            if "=" not in token and name in _PYTEST_VALUE_OPTIONS:
-                if name == "--doctest-glob" and index < len(tokens):
-                    globs.append(tokens[index])
-                index += 1
-            continue
-    return globs
+    _pytest.doctest applies to non-.py files. Judged over
+    the shared token stream (_addopts_token_stream), so a
+    glob spelled after a `--` separator — which the raw
+    parser arms like any other registered option — is read
+    too, and a glob-looking token swallowed as another
+    option's value is not misread as one."""
+    return [
+        value
+        for kind, text, value in _addopts_token_stream(tokens)
+        if kind == "option"
+        and text == "--doctest-glob"
+        and value is not None
+    ]
 
 
 def _pytest_collection_patterns(
@@ -3441,6 +3481,21 @@ def tree_binding(
     }
 
 
+def _entry_is_symlink(toplevel: Path, rel: str) -> bool:
+    """Whether the git-status entry at repo-relative *rel* is
+    a symlink in the working tree. git status reports a
+    symlink as a single entry and never enumerates through
+    it, so the entry's on-disk type is the only place its
+    nature is visible to the cleanliness gate. A path that
+    cannot be lstat'd (it vanished between the status and
+    this check) reads as not-a-symlink, and the name rules
+    decide it, as they did before entry types were judged."""
+    try:
+        return (toplevel / rel).is_symlink()
+    except OSError:
+        return False
+
+
 def tree_clean(root: Path, receipts_path: Path | None = None) -> bool:
     """Git-mode cleanliness predicate for the binding gate.
 
@@ -3468,7 +3523,21 @@ def tree_clean(root: Path, receipts_path: Path | None = None) -> bool:
     but the tools' own state, planted archives included —
     and git mode's parity is to refuse the seal until the
     file is committed (which binds it via ls-tree) or
-    removed. Untracked content
+    removed.
+    Both drops judge the entry's TYPE as well as its name
+    (Task 13 review, finding F2): an untracked SYMLINK entry
+    is dropped by neither. A name says nothing about what a
+    run executes through a link, and the fs binding attests
+    a link's target string wherever the link sits — under
+    `.superpowers/`, and under the residue names even at
+    paths the name rules exclude (a tool-state name, a
+    non-bind name under .git) — so parity counts an
+    untracked link as dirty until it is committed, when
+    ls-tree binds its target string exactly as it binds
+    code. Waved through on its name, a git-mode seal would
+    be blind even to the link's retargeting — the one event
+    the symlink contract promises always registers.
+    Untracked content
     under any other directory name —
     a dependency, virtualenv, or build-output tree included —
     counts as dirty like untracked content anywhere else: git
@@ -3519,11 +3588,12 @@ def tree_clean(root: Path, receipts_path: Path | None = None) -> bool:
             continue
         if status == b"??" and (
             path == ".superpowers" or path.startswith(".superpowers/")
-        ) and not _is_code_shaped(path.rsplit("/", 1)[-1]):
+        ) and not _is_code_shaped(path.rsplit("/", 1)[-1]) \
+                and not _entry_is_symlink(toplevel, path):
             continue
         if status == b"??" and (
             _path_binds_under_residue(path.split("/")) is False
-        ):
+        ) and not _entry_is_symlink(toplevel, path):
             continue
         return False
     return True

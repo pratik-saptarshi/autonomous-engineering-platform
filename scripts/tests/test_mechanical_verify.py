@@ -2486,11 +2486,16 @@ class CacheSelectionGateTests(unittest.TestCase):
             )
             self.assertNotIn("pytest", self._ids(root))
 
-    def test_selection_flag_after_double_dash_is_not_armed(self):
-        # `--` ends option processing in the tokenizer pytest's
-        # argv gets: a selection spelling after it is a
-        # positional aim (at a path that collects nothing), not
-        # an armed flag, so the scanner does not refuse the leg.
+    def test_selection_flag_after_double_dash_disqualifies(self):
+        # Task 13 review, finding F1: the premise this test
+        # originally pinned — "`--` ends option processing" —
+        # is false for pytest 9. Its parser re-reads the
+        # post-separator remainder as a fresh stream, so a
+        # registered spelling arms after one `--` exactly as
+        # before it (proven against the raw binary:
+        # `-- --last-failed` runs the planted subset). The scanner
+        # judges every spelling anywhere in the stream, so the
+        # leg is refused here too; see AddoptsGrammarTests.
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self._config_tree(
@@ -2498,7 +2503,7 @@ class CacheSelectionGateTests(unittest.TestCase):
                 "pytest.ini",
                 "[pytest]\naddopts = -- --last-failed\n",
             )
-            self.assertIn("pytest", self._ids(root))
+            self.assertNotIn("pytest", self._ids(root))
 
     def test_selection_spelling_as_option_value_is_not_armed(self):
         # A selection spelling swallowed as a value-taking
@@ -2669,6 +2674,251 @@ class CacheSelectionGateTests(unittest.TestCase):
                 r for r in records if r.get("command_id") == "pytest"
             ]
             self.assertEqual(pytest_receipts[-1]["tests_collected"], 2)
+
+
+class AddoptsGrammarTests(unittest.TestCase):
+    """Task 14 (Task 13 review, finding F1): the addopts
+    scanners shared one false premise — that `--` ends option
+    processing, so tokens after it are positional aims and no
+    option spelling there can arm. Pytest 9's parser does not
+    stop at the separator: it parses the stream in two passes
+    (argparse's intermixed parsing; on pre-3.12.8 Pythons a
+    fallback that splits the leftovers the same way), the
+    first pass consumes the separator and hands the remainder
+    to the second pass as a fresh stream, so a registered
+    option spelling arms wherever it appears — before,
+    between, or after positionals, and after one `--` as
+    surely as before it. Proven against the raw binary with a
+    planted lastfailed naming the passing test of a two-test
+    tree: `--last-failed`, `-- --last-failed`, `-- --lf`,
+    `--debug --lf`, and `--debug=x --lf` each run ONLY the
+    planted test (rc 0, full suite would fail); `-- 
+    --stepwise` resumes from a genuine stepwise plant; `-- 
+    --pyargs json` arms (rc 5, collected 0); `-- 
+    --doctest-glob=*.rst` and the space form both collect the
+    .rst doctest. Two separators restore the positional
+    reading (`-- -- --last-failed` errors rc 4, "file or
+    directory not found: --last-failed"), which the
+    both-readings composition covers by refusing on the
+    option reading anyway — the fail-closed direction.
+
+    The fix is one tokenization for every addopts consumer
+    (_addopts_token_stream): `--` is skipped, never a
+    terminator, and every remaining token is judged under
+    both readings the parser could give it — an option
+    spelling as an option, a bare token as an aim. A known
+    value-taking option consumes the following token
+    verbatim, separators and spellings included: where the
+    parser accepts the stream it consumes that token the
+    same way, and where the scanner's reading is one the
+    parser rejects (`-k -- test_ok`, `-c --lf` — both proven
+    rc 4, "expected one argument"), the run errors and the
+    leg fails closed on its own. Options whose value is
+    OPTIONAL (nargs="?") never consume in the scanner: the
+    parser takes the next token as the value only when it
+    does not look like an option (`--debug --lf` arms --lf —
+    the same premise in value-consumption form), so the
+    token keeps both readings. There are exactly two such
+    options in the installed parser, --debug and
+    --cache-show; the pin test below re-derives the value
+    set from the installed parser so a future pytest that
+    changes either set fails loudly."""
+
+    def test_cache_selection_arms_after_separator(self):
+        scan = mechanical_verify._addopts_cache_selection
+        self.assertTrue(scan(["--", "--last-failed"]))
+        self.assertTrue(scan(["--", "--lf"]))
+        self.assertTrue(scan(["--", "--stepwise"]))
+        self.assertTrue(scan(["sub", "--", "--sw-skip"]))
+
+    def test_cache_selection_arms_after_double_separator(self):
+        # After two separators the raw parser reads the
+        # spelling as a path and errors (rc 4) — but the
+        # option reading is one of the readings the token
+        # carries, and the scanner takes the reading that
+        # refuses.
+        self.assertTrue(
+            mechanical_verify._addopts_cache_selection(
+                ["--", "--", "--last-failed"]
+            )
+        )
+
+    def test_cache_selection_arms_after_optional_value_option(self):
+        scan = mechanical_verify._addopts_cache_selection
+        # --debug and --cache-show take an OPTIONAL value:
+        # an option-looking token after them is not their
+        # value, it is an armed option.
+        self.assertTrue(scan(["--debug", "--lf"]))
+        self.assertTrue(scan(["--cache-show", "--lf"]))
+        # With the value attached, the next token is judged
+        # on its own as before.
+        self.assertTrue(scan(["--debug=trace.txt", "--lf"]))
+
+    def test_cache_selection_value_consumption_still_applies(self):
+        scan = mechanical_verify._addopts_cache_selection
+        # A spelling consumed as a REQUIRED value is not an
+        # armed flag; the parser rejects those streams (rc 4)
+        # so the leg fails closed on its own either way.
+        self.assertFalse(scan(["--basetemp", "--last-failed"]))
+        self.assertFalse(scan(["-k", "--lf"]))
+        self.assertFalse(scan(["-c", "--lf"]))
+        # A separator swallowed as a value does not stop the
+        # scan either: the spelling after it is still judged.
+        self.assertTrue(scan(["-k", "--", "--last-failed"]))
+
+    def test_aims_pyargs_after_separator(self):
+        aims, pyargs = mechanical_verify._addopts_aims(
+            ["--", "--pyargs", "json"]
+        )
+        self.assertTrue(pyargs)
+        self.assertEqual(aims, ["json"])
+
+    def test_aims_positional_after_separator_is_an_aim(self):
+        # The positional reading of a post-separator token is
+        # real — the raw parser collects the path — so it
+        # stays an aim for the aim gate to judge.
+        aims, pyargs = mechanical_verify._addopts_aims(
+            ["--", ".pytest_cache/collected"]
+        )
+        self.assertEqual(aims, [".pytest_cache/collected"])
+        self.assertFalse(pyargs)
+
+    def test_aims_option_after_separator_consumes_its_value(self):
+        # `-- -k test_ok` against the raw binary: -k arms
+        # with its filter (1 passed, 1 deselected) — the
+        # value is the option's, not an aim.
+        aims, pyargs = mechanical_verify._addopts_aims(
+            ["--", "-k", "test_ok"]
+        )
+        self.assertEqual(aims, [])
+        self.assertFalse(pyargs)
+
+    def test_aims_interleaved_positionals_and_options(self):
+        aims, pyargs = mechanical_verify._addopts_aims(
+            ["tests/unit", "--lf", "tests/other"]
+        )
+        self.assertEqual(aims, ["tests/unit", "tests/other"])
+        self.assertFalse(pyargs)
+
+    def test_doctest_globs_after_separator(self):
+        globs = mechanical_verify._addopts_doctest_globs
+        self.assertEqual(
+            globs(["--", "--doctest-glob=*.rst"]), ["*.rst"]
+        )
+        self.assertEqual(
+            globs(["--", "--doctest-glob", "*.rst"]), ["*.rst"]
+        )
+        self.assertEqual(globs(["--doctest-glob=*.rst"]), ["*.rst"])
+
+    def test_value_options_match_installed_parser(self):
+        # The scanner's value-taking set must be exactly the
+        # installed parser's REQUIRED-value options (an
+        # option whose action stores or appends one value):
+        # an option missing from the set lets its "value" be
+        # misjudged as an aim or an armed spelling, and an
+        # option wrongly in the set (an optional-value one,
+        # like --debug was) lets it swallow the token after
+        # it. Recompute from the installed parser, the way
+        # TraversalGateTests pins the norecursedirs default.
+        from _pytest.config import get_config
+
+        parser = get_config()._parser
+        expected = {
+            option_string
+            for action in parser.optparser._actions
+            for option_string in action.option_strings
+            if action.nargs is None
+        }
+        self.assertEqual(
+            set(mechanical_verify._PYTEST_VALUE_OPTIONS), expected
+        )
+
+    def _ids(self, root: Path) -> list[str]:
+        return [c.id for c in discover_verification_commands(root)]
+
+    def _config_tree(self, root: Path, addopts: str):
+        write(
+            root,
+            "pytest.ini",
+            f"[pytest]\naddopts = {addopts}\n",
+        )
+        write(
+            root,
+            "test_ok.py",
+            "def test_ok():\n    assert True\n",
+        )
+
+    def test_pyargs_after_separator_disqualifies(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._config_tree(root, "-- --pyargs json")
+            self.assertNotIn("pytest", self._ids(root))
+            # Control: the plain separator alone schedules.
+            self._config_tree(root, "--")
+            self.assertIn("pytest", self._ids(root))
+
+    def test_debug_then_selection_flag_disqualifies(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._config_tree(root, "--debug --lf")
+            self.assertNotIn("pytest", self._ids(root))
+
+    def _verify(self, root: Path, receipts: Path):
+        stdout = io.StringIO()
+        with mock.patch.object(
+            mechanical_verify, "available_memory_kb", return_value=10**9
+        ):
+            with contextlib.redirect_stdout(stdout):
+                rc = mechanical_verify.main(
+                    [
+                        "verify",
+                        "--root",
+                        str(root),
+                        "--task",
+                        "t",
+                        "--receipts",
+                        str(receipts),
+                    ]
+                )
+        return rc, stdout.getvalue()
+
+    @unittest.skipUnless(_pytest_on_path(), "no pytest on PATH")
+    def test_last_failed_after_separator_cannot_seal(self):
+        # The Task 13 review's F1 fixture end to end: the
+        # validator's B-B1 tree with `addopts = -- 
+        # --last-failed` sealed a one-test subset PASS at the
+        # parent (audit PASS); the leg is refused now.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            receipts = base / "receipts.jsonl"
+            write(
+                root,
+                "pytest.ini",
+                "[pytest]\naddopts = -- --last-failed\n",
+            )
+            write(
+                root,
+                "test_ok.py",
+                "def test_ok():\n    assert True\n",
+            )
+            write(
+                root,
+                "test_bad.py",
+                "def test_bad():\n    assert False\n",
+            )
+            write(
+                root,
+                ".pytest_cache/v/cache/lastfailed",
+                '{"test_ok.py::test_ok": true}',
+            )
+            rc, output = self._verify(root, receipts)
+            self.assertEqual(rc, 2, output)
+            self.assertIn(
+                "no verification commands discovered", output
+            )
+            self.assertFalse(receipts.exists())
 
 
 class TraversalGateTests(unittest.TestCase):

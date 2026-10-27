@@ -2397,6 +2397,210 @@ class SuperpowersCleanlinessTests(unittest.TestCase):
             self.assertIn("RECEIPTS: STALE", proc.stdout)
 
 
+class SymlinkCleanlinessTests(unittest.TestCase):
+    """Task 14 (Task 13 review, finding F2): the
+    `.superpowers/` conditioning judged an untracked entry by
+    its NAME, and the residue drop judged by the name rules of
+    _path_binds_under_residue — but the fs binding attests a
+    symlink by its TARGET STRING wherever it sits (see
+    _fs_tree_digest and _fs_residue_entries), so a link's
+    executed content is independent of its name and both
+    drops waved untracked symlinks through: an untracked
+    symlink under `.superpowers/` with a bookkeeping name,
+    and a symlink under a residue name at a path the name
+    rules exclude (a tool-state name, a non-bind name under
+    .git). Git-mode seals were blind even to RETARGETING such
+    a link — the one event the symlink contract promises
+    always registers (the fs control of the review's fixture
+    went STALE on retarget). The drops now judge (entry
+    type, name): an untracked symlink entry is dropped by
+    neither — it counts as dirty until committed, when
+    ls-tree binds its target string exactly as it binds code.
+    Non-symlink bookkeeping is unchanged (see
+    SuperpowersCleanlinessTests).
+
+    The residue-side audit also checked `.git` itself: no
+    instance exists there to close — `git status` enumerates
+    NOTHING beneath a `.git` directory component (plain file,
+    symlink, any depth; verified against git directly), so
+    no path under a residue `.git` ever reaches either drop,
+    and such content can take effect only through bound code
+    loading it by explicit path, the family the docs already
+    disclose for the .git remainder. The residue instances
+    that DO reach the gate are the cache names', where git
+    enumerates normally; they are closed here."""
+
+    def _repo(self, root: Path) -> None:
+        git(root, "init", "-q", "-b", "main")
+        write(root, "Makefile", "test:\n\ttrue\n")
+        git(root, "add", "Makefile")
+        git(
+            root,
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-q",
+            "-m",
+            "fixture",
+        )
+
+    def test_untracked_symlink_file_under_superpowers_is_dirty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            outside = base / "outside"
+            write(outside, "helper.py", "VALUE = 'good'\n")
+            self._repo(root)
+            (root / ".superpowers").mkdir()
+            # A bookkeeping NAME: the name-only conditioning
+            # waved this entry through at the parent.
+            os.symlink(outside / "helper.py", root / ".superpowers" / "data.txt")
+            receipts = root / "r.jsonl"
+            self.assertFalse(mechanical_verify.tree_clean(root, receipts))
+
+    def test_untracked_symlinked_dir_under_superpowers_is_dirty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            write(base / "outside", "helper.py", "VALUE = 'good'\n")
+            self._repo(root)
+            (root / ".superpowers").mkdir()
+            os.symlink(base / "outside", root / ".superpowers" / "x")
+            receipts = root / "r.jsonl"
+            self.assertFalse(mechanical_verify.tree_clean(root, receipts))
+
+    def test_untracked_symlink_at_tool_state_name_is_dirty(self):
+        # The residue-side instance of the same blindness:
+        # a symlink AT the lastfailed path is dropped by the
+        # name rules (tool state does not bind), but the fs
+        # binding attests every symlink under a residue name
+        # by its target string — retargeting it post-seal
+        # moves the fs digest, so parity counts it dirty
+        # until committed. The regular file at the same path
+        # is the tool's own state and still waves through.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            self._repo(root)
+            receipts = root / "r.jsonl"
+            write(
+                root,
+                ".pytest_cache/v/cache/lastfailed",
+                '{"test_ok.py::test_ok": true}',
+            )
+            self.assertTrue(mechanical_verify.tree_clean(root, receipts))
+            target = write(base, "planted.json", "{}\n")
+            link = root / ".pytest_cache" / "v" / "cache" / "lastfailed"
+            link.unlink()
+            os.symlink(target, link)
+            self.assertFalse(mechanical_verify.tree_clean(root, receipts))
+
+    def test_untracked_symlink_at_pyc_name_is_dirty(self):
+        # The __pycache__ instance of the residue blindness:
+        # a symlink wearing a .pyc name is the tool's own
+        # state by the name rules (dropped at the parent),
+        # but the fs binding attests it by target string
+        # like every symlink under a residue name.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            self._repo(root)
+            target = write(base / "outside", "blob.bin", "bytes\n")
+            cache = root / "pkg" / "__pycache__"
+            cache.mkdir(parents=True)
+            os.symlink(target, cache / "helper.cpython-312.pyc")
+            receipts = root / "r.jsonl"
+            self.assertFalse(mechanical_verify.tree_clean(root, receipts))
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_symlinked_superpowers_dir_end_to_end(self):
+        # The review's F2 fixture: a Makefile leg whose
+        # recipe runs a committed script importing a helper
+        # THROUGH an untracked symlinked .superpowers/x.
+        # At the parent the tree sealed (rc 0), the audit
+        # stayed PASS after the target's content mutated,
+        # and stayed PASS after the link was RETARGETED to
+        # a different directory with identical content —
+        # while the fs control went STALE on the retarget.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            write(base / "outside1", "helper.py", "VALUE = 'good'\n")
+            write(base / "outside2", "helper.py", "VALUE = 'good'\n")
+            write(
+                root,
+                "Makefile",
+                "test:\n\tpython3 check_import.py\n",
+            )
+            write(
+                root,
+                "check_import.py",
+                "import sys\n"
+                "sys.path.insert(0, '.superpowers/x')\n"
+                "import helper\n"
+                "assert helper.VALUE == 'good'\n",
+            )
+            git(root, "init", "-q", "-b", "main")
+            git(root, "add", "Makefile", "check_import.py")
+            git(
+                root,
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "-q",
+                "-m",
+                "fixture",
+            )
+            (root / ".superpowers").mkdir()
+            link = root / ".superpowers" / "x"
+            os.symlink(base / "outside1", link)
+            receipts = root / "r.jsonl"
+            # Untracked link: the tree is dirty, nothing seals.
+            self.assertFalse(mechanical_verify.tree_clean(root, receipts))
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("tree not clean at HEAD", proc.stdout)
+            # Commit the link: ls-tree binds its target
+            # string, and the tree seals.
+            git(root, "add", ".superpowers/x")
+            git(
+                root,
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "-q",
+                "-m",
+                "link",
+            )
+            self.assertTrue(mechanical_verify.tree_clean(root, receipts))
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            proc = check(receipts, "1")
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("RECEIPTS: PASS", proc.stdout)
+            # Retarget the committed link at an identical-
+            # content directory: the working tree no longer
+            # matches the bound target string, so the audit
+            # reports the tree dirty — the registration the
+            # fs control showed and the parent missed.
+            link.unlink()
+            os.symlink(base / "outside2", link)
+            proc = check(receipts, "1")
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("RECEIPTS: DIRTY", proc.stdout)
+
+
 class CacheSelectionBindingTests(unittest.TestCase):
     """Task 13 (paperthin validation 4, breach B-B), git-mode
     instance (B-B3): the bound files are committed, the
