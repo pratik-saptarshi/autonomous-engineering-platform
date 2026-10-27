@@ -25,7 +25,7 @@ a7c5a550504213e5bcdf959553ff86b198adc6409b4188b8398a967251fb7648  ./CONTRIBUTING
 cbf3ffb926b1632de8ddc611ef770c2f8185183bf5c6748f5a7380ba5bbb09c0  ./Justfile
 bbff8983f1ba6ec0723c1566af28d2e1e2109ac478361bc8132302668ae2ce89  ./LICENSE
 906bcaaace6433c8d3a59eccc206345623ca286422aedd14c1732a830f7a3a54  ./Makefile
-bcd4f69ad7739e922a923a11bd1f37af231e34784b6355f1b6f2dcdc4842f287  ./PROVENANCE.md
+0cd42a62c68a7ffc1066c916b8fb819d53b6b84925d93250cf9ad9c4fc127757  ./PROVENANCE.md
 8f5814bbd4cf25072cd69d583f2820a69e53656215f297ddee43907b6fb69b18  ./README.md
 8f9f7845c21e4cb9ab6c0a8dbdec7bc5ce84c7aa22d446b9d5ab9db234a3cf6f  ./SECURITY.md
 9b7c5ad353aa8622a4338fc5c50b9c0b802d7d50fcd5c1f2a2063597bd944f2a  ./agent.py
@@ -252,8 +252,8 @@ c0f31e571d8b70684240bc42102b2ec81b73978321723a6e9963698efb16640c  ./internal/con
 839908626273e991184ab996a1c7d7961124c4f7b181739a7cdfae340d99fb16  ./internal/controlplane/web/dist/index.html
 56d6976dff8fd64cf5a8d13cccd7ddbfd5876c31d889027c3dc986a0288f45b2  ./internal/controlplane/web/index.html
 28761de10c298a45d2269aeca8b7300159d3c34e42c797ccda690ba7c673734b  ./internal/controlplane/web/jsconfig.json
-d4a8a2ecc6a2812040b684da05193f1300ae1f78231dceef8243980f9bbc3b33  ./internal/controlplane/web/package-lock.json
-d2f40dabc8a1216fa39adeada63fcc5c3ba1ff80402ffa0be0ee6a291a0b589f  ./internal/controlplane/web/package.json
+86771e1910f30076c13bcb1ea07f88a0dbd6aee8d7e5ddc6428cb7dc3d35d125  ./internal/controlplane/web/package-lock.json
+b0b913fb22bf17bf86f5f1eaa01ead37b0be9e9c8e3b810ec5a2c005d65feca1  ./internal/controlplane/web/package.json
 90386daf87cf7dc78059433c5e5b73770ddd92b6df32fef74fc44a88e523690e  ./internal/controlplane/web/src/analytics-state.js
 c649a5753fc195abb0ae6fa1872bd555423f67a970541bf37996335d3240119a  ./internal/controlplane/web/src/analytics.jsx
 29b57d6d8d390a3f94df0e09c000eee61fd21c8b92fef9f2fcc32cecc27d3a32  ./internal/controlplane/web/src/artifacts.jsx
@@ -503,4 +503,4 @@ f28ce80c4701c47cdae4127fe7fcebd08410c4e4b8be6424aa5ced8efbbb1b1a  ./tools/intake
 503dcac93a8692ac655798c45edf95c1414fb2e66dd979e52a447d3f8326c5d7  ./tools/intake/esf_intake/decision.py
 55d92fa558828885b33c9c0a7d34c9e1c934e2b5a6ead91c91ca8374dea190f2  ./tools/intake/pyproject.toml
 86c4294a66cfd20256045ec9aab1135175ae236591424576ea3b08610de5498c  ./tools/intake/tests/test_decision.py
-8bb3b9bff9b8734e44a402bca5dbca6bf486bbba8ff7c781b3bec9813e6375ba  ./uv.lock
+c26baff54c80c0604d9d7ef3d4c4e512bda2bbd9dac66ee6e5a0f53a32bad4e4  ./uv.lock
