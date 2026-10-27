@@ -1790,6 +1790,286 @@ class DeferredZeroReceiptTests(unittest.TestCase):
             self.assertEqual(check_rc, 0, check_output)
 
 
+class SpeculativeZeroReceiptTests(unittest.TestCase):
+    # Issue #51, round 3 (R1): run_all excuses a speculative
+    # leg's clean zero against the union of the run — any
+    # Python leg's pass, in any position (round 2). The receipts
+    # path must reach the same verdict for the runs that excuse
+    # creates: append_receipt records the leg's speculative mark
+    # in the segment (an additive field, covered by the chain),
+    # and check_receipts accepts a marked zero only when the
+    # segment itself proves another Python leg genuinely passed.
+    # Receipts without the mark — everything sealed before this
+    # field existed, and every deterministic leg — default to
+    # deterministic and stay fail-closed.
+
+    def _result(
+        self, command_id, exit_code, collected, *, speculative=False
+    ):
+        return VerificationResult(
+            command=VerificationCommand(
+                command_id, command_id, ("true",), speculative=speculative
+            ),
+            exit_code=exit_code,
+            timed_out=False,
+            duration_ms=1,
+            stdout="",
+            stderr="",
+            output_truncated=False,
+            tests_collected=collected,
+        )
+
+    def _seal(self, base: Path, results):
+        root = base / "root"
+        root.mkdir()
+        write(root, "placeholder.txt", "fixture\n")
+        receipts = base / "receipts.jsonl"
+        binding = mechanical_verify.tree_binding(root, receipts)
+        run_id = "speculative-zero-test"
+        mechanical_verify.append_run_start(
+            receipts, "t", run_id, binding=binding
+        )
+        for result in results:
+            mechanical_verify.append_receipt(
+                receipts, "t", result, run_id=run_id
+            )
+        mechanical_verify.append_completion(
+            receipts,
+            "t",
+            [r.command for r in results],
+            run_id=run_id,
+            binding=binding,
+        )
+        return root, receipts
+
+    def _check(self, receipts, root):
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            rc = mechanical_verify.check_receipts(receipts, "t", root)
+        return rc, stdout.getvalue()
+
+    def _verify_via_main(self, base: Path):
+        root = base / "root"
+        receipts = base / "receipts.jsonl"
+        stdout = io.StringIO()
+        with mock.patch.object(
+            mechanical_verify, "available_memory_kb", return_value=10**9
+        ):
+            with contextlib.redirect_stdout(stdout):
+                rc = mechanical_verify.main(
+                    [
+                        "verify",
+                        "--root",
+                        str(root),
+                        "--task",
+                        "t",
+                        "--receipts",
+                        str(receipts),
+                    ]
+                )
+        records = [
+            json.loads(line) for line in receipts.read_text().splitlines()
+        ]
+        return root, receipts, rc, records, stdout.getvalue()
+
+    def test_speculative_pytest_zero_receipt_passes_check_receipts(self):
+        # The round-2 headline presentation in receipt form: the
+        # speculative pytest zero is excused by an EARLIER leg's
+        # pass (the position Task 2's acceptor cannot mirror).
+        with tempfile.TemporaryDirectory() as tmp:
+            root, receipts = self._seal(
+                Path(tmp),
+                [
+                    self._result("unittest", 0, 1),
+                    self._result("pytest", 5, 0, speculative=True),
+                ],
+            )
+            rc, output = self._check(receipts, root)
+            self.assertEqual(rc, 0, output)
+            self.assertIn("RECEIPTS: PASS", output)
+
+    def test_speculative_pytest_zero_receipt_excused_by_later_leg(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, receipts = self._seal(
+                Path(tmp),
+                [
+                    self._result("pytest", 5, 0, speculative=True),
+                    self._result("unittest", 0, 1),
+                ],
+            )
+            rc, output = self._check(receipts, root)
+            self.assertEqual(rc, 0, output)
+            self.assertIn("RECEIPTS: PASS", output)
+
+    def test_speculative_unittest_zero_receipt_passes_check_receipts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, receipts = self._seal(
+                Path(tmp),
+                [
+                    self._result("pytest", 0, 1),
+                    self._result("unittest", 5, 0, speculative=True),
+                ],
+            )
+            rc, output = self._check(receipts, root)
+            self.assertEqual(rc, 0, output)
+            self.assertIn("RECEIPTS: PASS", output)
+
+    def test_unmarked_pytest_zero_receipt_still_fails(self):
+        # A zero receipt with no speculative mark — a
+        # deterministic leg, or any receipt sealed before the
+        # mark existed — is a failed receipt, exactly as before.
+        with tempfile.TemporaryDirectory() as tmp:
+            root, receipts = self._seal(
+                Path(tmp),
+                [
+                    self._result("unittest", 0, 1),
+                    self._result("pytest", 5, 0),
+                ],
+            )
+            rc, output = self._check(receipts, root)
+            self.assertEqual(rc, 1)
+            self.assertIn("receipt failed: pytest", output)
+
+    def test_deterministic_zero_receipt_still_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, receipts = self._seal(
+                Path(tmp),
+                [
+                    self._result("pytest", 5, 0, speculative=False),
+                    self._result("unittest", 0, 1),
+                ],
+            )
+            rc, output = self._check(receipts, root)
+            self.assertEqual(rc, 1)
+            self.assertIn("receipt failed: pytest", output)
+
+    def test_speculative_zero_without_passing_python_leg_fails(self):
+        # The excuse is against the union: no Python leg in the
+        # segment collected anything, so the marked zero has
+        # nothing to be excused by.
+        with tempfile.TemporaryDirectory() as tmp:
+            root, receipts = self._seal(
+                Path(tmp),
+                [
+                    self._result("pytest", 5, 0, speculative=True),
+                    self._result("unittest", 0, 0),
+                ],
+            )
+            rc, output = self._check(receipts, root)
+            self.assertEqual(rc, 1)
+            self.assertIn("receipt failed: pytest", output)
+
+    def test_speculative_receipt_with_positive_count_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, receipts = self._seal(
+                Path(tmp),
+                [
+                    self._result("unittest", 0, 1),
+                    self._result("pytest", 5, 2, speculative=True),
+                ],
+            )
+            rc, output = self._check(receipts, root)
+            self.assertEqual(rc, 1)
+            self.assertIn("receipt failed: pytest", output)
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_headline_fixture_seals_and_check_receipts_passes(self):
+        # End to end, the round-1 F1 fixture: an open module
+        # (star import, helper-only shared) beside a passing
+        # TestCase carrying `__test__ = False`. The speculative
+        # pytest leg collects literally zero and exits 5; the
+        # run seals on the unittest leg's pass — and the audit
+        # must now reach the same verdict.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            write(root, "shared.py", "def helper():\n    pass\n")
+            write(
+                root,
+                "test_star.py",
+                "import unittest\n"
+                "\n"
+                "from shared import *\n"
+                "\n"
+                "\n"
+                "class StarTests(unittest.TestCase):\n"
+                "    __test__ = False\n"
+                "\n"
+                "    def test_ok(self):\n"
+                "        pass\n",
+            )
+            root, receipts, rc, records, output = self._verify_via_main(
+                base
+            )
+            self.assertEqual(rc, 0, output)
+            pytest_receipts = [
+                r for r in records if r.get("command_id") == "pytest"
+            ]
+            self.assertEqual(len(pytest_receipts), 1)
+            self.assertEqual(pytest_receipts[0]["exit_code"], 5)
+            self.assertEqual(pytest_receipts[0]["tests_collected"], 0)
+            self.assertIs(pytest_receipts[0].get("speculative"), True)
+            check_rc, check_output = self._check(receipts, root)
+            self.assertEqual(check_rc, 0, check_output)
+            self.assertIn("RECEIPTS: PASS", check_output)
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_mixin_shape_fixture_seals_and_check_receipts_passes(self):
+        # The round-2 review's probe (a) shape, end to end: a
+        # Test* class on an imported plain mixin (unresolved
+        # base) schedules the speculative pytest leg; a real
+        # TestCase module passes under unittest; BOTH classes
+        # carry `__test__ = False`, so pytest collects literally
+        # zero and exits 5. Sealed on the union — audit agrees.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            write(root, "shared_mixin.py", "class Mixin:\n    pass\n")
+            write(
+                root,
+                "test_mixin.py",
+                "from shared_mixin import Mixin\n"
+                "\n"
+                "\n"
+                "class TestFromMixin(Mixin):\n"
+                "    __test__ = False\n"
+                "\n"
+                "    def test_ok(self):\n"
+                "        pass\n",
+            )
+            write(
+                root,
+                "test_real.py",
+                "import unittest\n"
+                "\n"
+                "\n"
+                "class RealTests(unittest.TestCase):\n"
+                "    __test__ = False\n"
+                "\n"
+                "    def test_ok(self):\n"
+                "        pass\n",
+            )
+            root, receipts, rc, records, output = self._verify_via_main(
+                base
+            )
+            self.assertEqual(rc, 0, output)
+            by_id = {
+                r["command_id"]: r
+                for r in records
+                if r.get("command_id") in ("unittest", "pytest")
+            }
+            self.assertEqual(by_id["unittest"]["exit_code"], 0)
+            self.assertEqual(by_id["unittest"]["tests_collected"], 1)
+            self.assertEqual(by_id["pytest"]["exit_code"], 5)
+            self.assertEqual(by_id["pytest"]["tests_collected"], 0)
+            self.assertIs(by_id["pytest"].get("speculative"), True)
+            check_rc, check_output = self._check(receipts, root)
+            self.assertEqual(check_rc, 0, check_output)
+            self.assertIn("RECEIPTS: PASS", check_output)
+
+
 class ClassifierUncertaintyTests(unittest.TestCase):
     """Bucket A2 (panel CLASS-P1): classification uncertainty routes
     to MORE execution, never less. The panel's three variant families
@@ -3422,6 +3702,156 @@ class ClassifierUncertaintyTests(unittest.TestCase):
             self.assertEqual(results[0].tests_collected, 1)
             self.assertEqual(results[1].tests_collected, 0)
             self.assertEqual(results[1].exit_code, 5)
+
+    def _speculative_zero_result(self, command_id, exit_code, stdout):
+        return VerificationResult(
+            command=VerificationCommand(
+                command_id, command_id, ("true",), speculative=True
+            ),
+            exit_code=exit_code,
+            timed_out=False,
+            duration_ms=1,
+            stdout=stdout,
+            stderr="",
+            output_truncated=False,
+            tests_collected=0,
+        )
+
+    def test_speculative_clean_zero_pytest_binds_to_collection_evidence(
+        self,
+    ):
+        # Issue #51, round 3 (R2): a pytest leg's (0, 5) pair is
+        # clean only when the transcript's own collection line
+        # positively reports zero collection. Exit 5 alone is
+        # not conclusive: a tree-supplied conftest can
+        # manufacture the pair (see the end-to-end test below).
+        clean = self._speculative_zero_result(
+            "pytest", 5, "collecting ... collected 0 items\n"
+        )
+        self.assertTrue(
+            mechanical_verify._speculative_clean_zero(
+                clean.command, clean
+            )
+        )
+        contradicted = self._speculative_zero_result(
+            "pytest", 5, "collecting ... collected 2 items\n"
+        )
+        self.assertFalse(
+            mechanical_verify._speculative_clean_zero(
+                contradicted.command, contradicted
+            )
+        )
+        silent = self._speculative_zero_result("pytest", 5, "")
+        self.assertFalse(
+            mechanical_verify._speculative_clean_zero(
+                silent.command, silent
+            )
+        )
+
+    def test_speculative_clean_zero_unittest_requires_ran_zero_line(self):
+        # Re-pin (round 3): the unittest side's transcript
+        # requirement is unchanged — the genuine "Ran 0 tests"
+        # line, never the fallback zero of a dead runner.
+        genuine = self._speculative_zero_result(
+            "unittest", 5, "Ran 0 tests in 0.000s\n"
+        )
+        self.assertTrue(
+            mechanical_verify._speculative_clean_zero(
+                genuine.command, genuine
+            )
+        )
+        dead = self._speculative_zero_result("unittest", 5, "")
+        self.assertFalse(
+            mechanical_verify._speculative_clean_zero(dead.command, dead)
+        )
+        historic = self._speculative_zero_result("unittest", 0, "")
+        self.assertTrue(
+            mechanical_verify._speculative_clean_zero(
+                historic.command, historic
+            )
+        )
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_conftest_manufactured_pytest_zero_is_not_excused(self):
+        # Issue #51, round 3 (R2), end to end — the round-2
+        # reviewer's fixture: the shared module exports a real
+        # passing test ONLY the speculative pytest leg can run,
+        # and a tree-supplied conftest aborts collection via
+        # pytest.exit(returncode=5) AFTER printing "collected 2
+        # items". The parsed pair (0, 5) is manufactured: the
+        # routed tests never ran, so the leg is judged on its
+        # merits and the run fails.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "shared.py",
+                "def test_from_helpers():\n    assert True\n",
+            )
+            write(
+                root,
+                "test_star.py",
+                "import unittest\n"
+                "\n"
+                "from shared import *\n"
+                "\n"
+                "\n"
+                "class StarTests(unittest.TestCase):\n"
+                "    def test_ok(self):\n"
+                "        pass\n",
+            )
+            write(
+                root,
+                "conftest.py",
+                "import pytest\n"
+                "\n"
+                "\n"
+                "def pytest_collection_modifyitems(items):\n"
+                "    pytest.exit('blocked by conftest', returncode=5)\n",
+            )
+            commands, results, rc, _ = self.run_fixture(root)
+            self.assertEqual(
+                [c.id for c in commands], ["unittest", "pytest"]
+            )
+            self.assertTrue(commands[1].speculative)
+            self.assertEqual(rc, 1)
+            self.assertEqual(len(results), 2)
+            self.assertTrue(results[0].passed)
+            self.assertEqual(results[1].tests_collected, 0)
+            self.assertEqual(results[1].exit_code, 5)
+            self.assertIn("collected 2 items", results[1].stdout)
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_conftest_free_star_import_fixture_still_passes(self):
+        # Control for the fixture above: without the conftest,
+        # the same tree's speculative leg really collects the
+        # star-imported test and the run passes on merits.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "shared.py",
+                "def test_from_helpers():\n    assert True\n",
+            )
+            write(
+                root,
+                "test_star.py",
+                "import unittest\n"
+                "\n"
+                "from shared import *\n"
+                "\n"
+                "\n"
+                "class StarTests(unittest.TestCase):\n"
+                "    def test_ok(self):\n"
+                "        pass\n",
+            )
+            commands, results, rc, _ = self.run_fixture(root)
+            self.assertEqual(
+                [c.id for c in commands], ["unittest", "pytest"]
+            )
+            self.assertEqual(rc, 0)
+            self.assertEqual(results[1].tests_collected, 2)
+            self.assertEqual(results[1].exit_code, 0)
 
     def test_uncertain_class_only_module_collecting_zero_fails_closed(
         self,

@@ -65,7 +65,7 @@ class VerificationCommand:
     # (an unresolved class base, a star-import-open module) is
     # marked speculative at discovery: run_all judges its clean
     # zero collection against the union of the run instead of
-    # letting it veto a verdict deterministic legs produced
+    # letting it veto a run another Python leg passed
     # (issue #51). Deterministic legs leave this False.
     speculative: bool = False
 
@@ -1133,6 +1133,11 @@ _PYTEST_COUNT_RE = re.compile(
     r"(\d+)\s+(passed|failed|skipped|deselected|errors?|xfailed|xpassed)\b"
 )
 _PYTEST_SUMMARY_TAIL_RE = re.compile(r" in \d+(?:\.\d+)?s\b")
+# The collection header pytest prints as collection finishes
+# ("collecting ... collected N items"): the transcript's own
+# statement of how much collection found, independent of the
+# summary line the count parser reads.
+_PYTEST_COLLECTED_RE = re.compile(r"collected (\d+) items?\b")
 
 
 def _count_collected(
@@ -1233,32 +1238,81 @@ def _clean_zero_collection(
     return match is not None and int(match.group(1)) == 0
 
 
+def _speculative_zero_pair(tests_collected, exit_code) -> bool:
+    """The (parsed count, exit code) pair a speculative clean
+    zero must present — the part of the predicate the runtime
+    and the audit acceptor share. A parsed zero, and either
+    exit 0 (the historic presentation) or the runners' no-tests
+    exit code 5. The pair is necessary, never sufficient: each
+    side adds the evidence its shape allows (the transcript at
+    runtime, the segment at audit).
+    """
+    return tests_collected == 0 and exit_code in (
+        0,
+        _UNITTEST_NO_TESTS_EXIT_CODE,
+    )
+
+
+def _pytest_reports_zero_collection(
+    result: VerificationResult,
+) -> bool:
+    """Whether a pytest transcript positively reports that
+    collection found nothing: at least one "collected N items"
+    header line, and every such line reports zero. A line
+    reporting more — wherever in the transcript it appears —
+    contradicts the zero the summary parsed to, and the
+    benefit of the doubt goes to the contradiction (a genuine
+    zero's only collected line reports zero).
+    """
+    counts = [
+        int(n)
+        for n in _PYTEST_COLLECTED_RE.findall(
+            result.stdout + "\n" + result.stderr
+        )
+    ]
+    return bool(counts) and all(n == 0 for n in counts)
+
+
 def _speculative_clean_zero(
     command: VerificationCommand, result: VerificationResult
 ) -> bool:
     """Whether a speculative leg's failure is solely a clean zero
-    collection, judged by the pair (parsed count, exit code).
+    collection, judged by the pair (parsed count, exit code)
+    plus the transcript evidence each runner can produce.
 
     Exit 0 with a parsed zero is the historic presentation for
-    either runner. Exit 5 is each runner's no-tests code —
-    unittest's on CPython ≥3.12, pytest's by definition — but
-    the two are not equally self-evidencing: pytest exits 5
-    ONLY when it collected and selected nothing (collection
-    errors exit 2, usage errors 4), so the pair (0, 5) is
-    conclusive for a pytest leg; a unittest leg must
-    additionally present the genuine "Ran 0 tests" transcript,
-    exactly as _clean_zero_collection pins for the deferral,
-    so a runner that died before printing a summary — whose
-    count parses to a fallback zero — is not mistaken for a
-    clean zero here either.
+    unittest (older CPython exits 0 over the same "Ran 0 tests"
+    transcript). The no-tests exit code 5 is not
+    self-evidencing for either runner, and each proves a clean
+    zero against its own transcript:
+
+    - unittest must present the genuine "Ran 0 tests" line,
+      exactly as _clean_zero_collection pins for the deferral,
+      so a runner that died before printing a summary — whose
+      count parses to a fallback zero — is not mistaken for a
+      clean zero.
+    - pytest must positively report zero collection: a
+      "collected 0 items" header line and no collected line
+      reporting more. Exit 5 alone would also accept a
+      MANUFACTURED pair: a tree-supplied conftest whose
+      pytest_collection_modifyitems calls
+      pytest.exit(returncode=5) after collection printed
+      "collected 2 items" leaves a summary that parses to zero
+      beside exit 5, while the routed tests never ran. The
+      collection line sits in the same transcript and
+      contradicts the zero, so such a leg is judged on its
+      merits. (A hook that could suppress the header entirely
+      would operate at the transcript's trust level — issue
+      #54's family; absent the positive line, the zero is
+      simply not clean either way.)
     """
-    if result.tests_collected != 0:
-        return False
-    if result.exit_code == 0:
-        return True
-    if result.exit_code != _UNITTEST_NO_TESTS_EXIT_CODE:
+    if not _speculative_zero_pair(
+        result.tests_collected, result.exit_code
+    ):
         return False
     if command.id == "pytest":
+        return _pytest_reports_zero_collection(result)
+    if result.exit_code == 0:
         return True
     return _clean_zero_collection(command, result)
 
@@ -1733,7 +1787,7 @@ RUN_START_FIELDS = (
 # The map covers every field the writers can emit across the three
 # record kinds — the base fields above plus the Task 1/2/4/5
 # extensions (binding, subreaper, env, survivors_killed,
-# tests_collected). exit_code alone may also be null: a spawn-error
+# tests_collected, speculative). exit_code alone may also be null: a spawn-error
 # receipt legitimately records it. Fields absent from the map are
 # ignored — the schema must not freeze against follow-ups (issue #38,
 # P2-2). Element types are pinned for the two list fields.
@@ -1757,6 +1811,7 @@ SEGMENT_FIELD_TYPES: dict[str, tuple[type, ...]] = {
     "env": (str,),
     "survivors_killed": (list,),
     "tests_collected": (int,),
+    "speculative": (bool,),
 }
 
 SEGMENT_LIST_ELEMENT_TYPES: dict[str, type] = {
@@ -2187,6 +2242,18 @@ def append_receipt(
         body["survivors_killed"] = list(result.survivors_killed)
     if result.tests_collected is not None:
         body["tests_collected"] = result.tests_collected
+    if result.command.speculative:
+        # Issue #51, round 3: the leg's speculative mark,
+        # recorded at seal time (and covered by the chain) so
+        # check_receipts can mirror run_all's speculative-zero
+        # excuse from the segment itself — see
+        # _speculative_zero_receipt. Recorded only when true,
+        # in the style of the other optional fields: absence
+        # means deterministic, so receipts sealed before this
+        # field existed default to deterministic at audit and
+        # stay fail-closed, and omitting the mark can only make
+        # the audit stricter, never looser.
+        body["speculative"] = True
     _append_record(receipts_path, body)
 
 
@@ -2288,6 +2355,53 @@ def _deferred_zero_receipt(
     )
 
 
+def _speculative_zero_receipt(
+    receipts: list[dict], idx: int, receipt: dict
+) -> bool:
+    """Whether a non-zero receipt is a speculative leg's excused
+    clean zero (issue #51), acceptable at audit time.
+
+    run_all excuses a speculative leg whose only failure is a
+    clean zero collection when another Python leg passed — in
+    either position (round 2) — and seals the excused leg's
+    receipt with its exit code and the mark append_receipt
+    recorded from its command (speculativeness is taken from
+    that record, never re-derived: the record is what the
+    verifier sealed, chain-covered like the exit code itself,
+    while re-classifying a bound tree at audit would answer a
+    different question about a possibly changed tree). The
+    audit accepts the presentation only when the segment itself
+    proves the excuse was sound, mirroring the runtime
+    predicate over the shapes a receipt carries: the receipt
+    is marked speculative (absent → deterministic, so
+    pre-mark receipts stay fail-closed), it presents the shared
+    (count, exit) pair (_speculative_zero_pair), and some
+    Python leg in the segment collected tests and exited 0
+    un-timed-out — the union the excuse judged, in any
+    position. The transcript evidence the runtime predicate
+    additionally demands cannot be re-seen here (receipts
+    record only output hashes); that check is necessarily
+    runtime-only, exactly as the deferred-zero acceptor above
+    cannot re-see the "Ran 0 tests" line. Any other non-zero
+    receipt remains a failed receipt.
+    """
+    if receipt.get("speculative") is not True:
+        return False
+    if receipt.get("command_id") not in _PYTHON_LEG_IDS:
+        return False
+    if not _speculative_zero_pair(
+        receipt.get("tests_collected"), receipt.get("exit_code")
+    ):
+        return False
+    return any(
+        other.get("command_id") in _PYTHON_LEG_IDS
+        and other.get("exit_code") == 0
+        and not other.get("timed_out")
+        and (other.get("tests_collected") or 0) > 0
+        for other in receipts
+    )
+
+
 def check_receipts(
     receipts_path: Path,
     task: str,
@@ -2384,6 +2498,7 @@ def check_receipts(
         if receipt["timed_out"] or (
             receipt["exit_code"] != 0
             and not _deferred_zero_receipt(mine, idx, receipt)
+            and not _speculative_zero_receipt(mine, idx, receipt)
         ):
             print(
                 f"RECEIPTS: FAIL task {task}: "
