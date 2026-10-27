@@ -75,6 +75,13 @@ class VerificationResult:
     survivors_killed: tuple[int, ...] = ()
     survivors_remaining: bool = False
     tests_collected: int | None = None
+    # The raw capped bytes behind stdout/stderr, exactly as captured
+    # (issue #38). Receipts hash these, never the lossy decode above.
+    # None only for hand-built results that never went through
+    # run_verification; append_receipt then falls back to encoding
+    # the text, which is byte-identical for valid UTF-8 output.
+    stdout_bytes: bytes | None = None
+    stderr_bytes: bytes | None = None
 
     @property
     def passed(self) -> bool:
@@ -758,6 +765,11 @@ class _TailBuffer:
     def truncated(self) -> bool:
         return self.total > OUTPUT_CAP_BYTES
 
+    @property
+    def raw(self) -> bytes:
+        """The retained bytes exactly as captured (post-cap tail)."""
+        return bytes(self._buf)
+
     def text(self) -> str:
         return bytes(self._buf).decode("utf-8", errors="replace")
 
@@ -1164,6 +1176,8 @@ def run_verification(
             stdout="",
             stderr=str(exc),
             output_truncated=False,
+            stdout_bytes=b"",
+            stderr_bytes=str(exc).encode("utf-8"),
         )
 
     stdout_buf = _TailBuffer()
@@ -1221,6 +1235,8 @@ def run_verification(
         duration_ms=int((time.monotonic() - started) * 1000),
         stdout=stdout_text,
         stderr=stderr_text,
+        stdout_bytes=stdout_buf.raw,
+        stderr_bytes=stderr_buf.raw,
         output_truncated=stdout_buf.truncated or stderr_buf.truncated,
         survivors_killed=survivors_killed,
         survivors_remaining=survivors_remaining,
@@ -1819,8 +1835,22 @@ def append_receipt(
         "exit_code": result.exit_code,
         "timed_out": result.timed_out,
         "duration_ms": result.duration_ms,
-        "stdout_sha256": hashlib.sha256(result.stdout.encode("utf-8")).hexdigest(),
-        "stderr_sha256": hashlib.sha256(result.stderr.encode("utf-8")).hexdigest(),
+        # Issue #38: hash the raw capped bytes the runner retained.
+        # The decoded text is lossy on non-UTF-8 output (every invalid
+        # sequence became U+FFFD), so hashing it never covered the
+        # bytes the command actually emitted. The fallback covers
+        # hand-built results without captured bytes; it is identical
+        # whenever the text is valid UTF-8.
+        "stdout_sha256": hashlib.sha256(
+            result.stdout_bytes
+            if result.stdout_bytes is not None
+            else result.stdout.encode("utf-8")
+        ).hexdigest(),
+        "stderr_sha256": hashlib.sha256(
+            result.stderr_bytes
+            if result.stderr_bytes is not None
+            else result.stderr.encode("utf-8")
+        ).hexdigest(),
     }
     if run_id is not None:
         body["run_id"] = run_id

@@ -1,4 +1,5 @@
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -573,6 +574,123 @@ class RunVerificationTests(unittest.TestCase):
             )
             self.assertLessEqual(len(result.stdout.encode()), 65536)
             self.assertTrue(result.output_truncated)
+
+    def _receipt_record(self, root: Path, result) -> dict:
+        receipts = root / "r.jsonl"
+        mechanical_verify.append_receipt(receipts, "t", result)
+        return json.loads(receipts.read_text().splitlines()[0])
+
+    def test_receipt_stdout_hash_covers_raw_non_utf8_bytes(self):
+        # Issue #38: stdout_sha256 must cover the exact raw capped
+        # bytes the runner retained — not the lossy UTF-8 decode,
+        # which rewrites every invalid sequence to U+FFFD before the
+        # hash is taken.
+        payload = b"prefix \xff\xfe\x80 invalid \xc3\x28 tail\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_verification(
+                root,
+                VerificationCommand(
+                    "t",
+                    "t",
+                    (
+                        sys.executable,
+                        "-c",
+                        f"import sys; sys.stdout.buffer.write({payload!r}); "
+                        "sys.stdout.buffer.flush()",
+                    ),
+                ),
+            )
+            self.assertEqual(result.exit_code, 0)
+            record = self._receipt_record(root, result)
+            self.assertEqual(
+                record["stdout_sha256"], hashlib.sha256(payload).hexdigest()
+            )
+            self.assertNotEqual(
+                record["stdout_sha256"],
+                hashlib.sha256(
+                    payload.decode("utf-8", errors="replace").encode("utf-8")
+                ).hexdigest(),
+            )
+
+    def test_receipt_stderr_hash_covers_raw_non_utf8_bytes(self):
+        # Issue #38, stderr twin: stderr_sha256 gets the same
+        # raw-bytes treatment as stdout_sha256.
+        payload = b"err \xff\xfe\x80 invalid \xc3\x28 tail\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_verification(
+                root,
+                VerificationCommand(
+                    "t",
+                    "t",
+                    (
+                        sys.executable,
+                        "-c",
+                        f"import sys; sys.stderr.buffer.write({payload!r}); "
+                        "sys.stderr.buffer.flush()",
+                    ),
+                ),
+            )
+            self.assertEqual(result.exit_code, 0)
+            record = self._receipt_record(root, result)
+            self.assertEqual(
+                record["stderr_sha256"], hashlib.sha256(payload).hexdigest()
+            )
+
+    def test_receipt_hash_unchanged_for_pure_ascii_output(self):
+        # Control: decode-then-encode is the identity on pure ASCII,
+        # so the raw-bytes hash equals what receipts recorded before
+        # issue #38 — ASCII receipts are unaffected by the change.
+        payload = b"all plain ascii\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_verification(
+                root,
+                VerificationCommand(
+                    "t",
+                    "t",
+                    (
+                        sys.executable,
+                        "-c",
+                        f"import sys; sys.stdout.buffer.write({payload!r}); "
+                        "sys.stdout.buffer.flush()",
+                    ),
+                ),
+            )
+            self.assertEqual(result.exit_code, 0)
+            self.assertEqual(result.stdout, payload.decode("utf-8"))
+            record = self._receipt_record(root, result)
+            self.assertEqual(
+                record["stdout_sha256"], hashlib.sha256(payload).hexdigest()
+            )
+
+    def test_receipt_stdout_hash_covers_capped_raw_tail(self):
+        # Issue #38 at the cap: when output exceeds OUTPUT_CAP_BYTES
+        # the receipt hash covers exactly the raw bytes the tail
+        # buffer retained (the last OUTPUT_CAP_BYTES) — including a
+        # non-UTF-8 tail the decode would have mangled and a leading
+        # codepoint the cap may have split.
+        cap = mechanical_verify.OUTPUT_CAP_BYTES
+        payload = b"a" * (cap + 1000) + b"\xff\xfe" * 500
+        retained = payload[-cap:]
+        source = (
+            f"import sys; sys.stdout.buffer.write("
+            f"b'a' * {cap + 1000} + b'\\xff\\xfe' * 500); "
+            "sys.stdout.buffer.flush()"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_verification(
+                root,
+                VerificationCommand("t", "t", (sys.executable, "-c", source)),
+            )
+            self.assertEqual(result.exit_code, 0)
+            self.assertTrue(result.output_truncated)
+            record = self._receipt_record(root, result)
+            self.assertEqual(
+                record["stdout_sha256"], hashlib.sha256(retained).hexdigest()
+            )
 
 
 DRIVER = Path(__file__).resolve().parent / "survivor_driver.py"
