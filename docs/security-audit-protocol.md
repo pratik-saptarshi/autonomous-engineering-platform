@@ -2,8 +2,9 @@
 
 This document is the audit lane's protocol: the verdict vocabulary and
 contracts, the environment condition for this VM, the static-proof trace
-contract, the run-budget contract, and the findings-schema profile the
-lane validates against. It is AEP-owned. The vendored security-audit
+contract, the run-budget contract, the findings-schema profile the
+lane validates against, and the coverage ledger and run-artifact layout
+that are the system of record for coverage (§7). It is AEP-owned. The vendored security-audit
 skill under `reference/security-audit-skill/` (pin `c1c8a8c`) is the
 source the contracts below are adopted from; vendored files are data and
 are never edited by this lane.
@@ -18,6 +19,8 @@ there.
 Sources:
 
 - Verdict contracts: vendored `VALIDATION-AND-REPORTING.md` (Phases 3–4).
+- Coverage ledger: vendored `RECONNAISSANCE.md`, "Deterministic
+  coverage ledger", and the vendored `validate-coverage-ledger.cjs`.
 - Run budget: vendored `SKILL.md`, "Cost budget".
 - Findings schema: vendored `report-schema.json`, as profiled by
   `docs/security-audit-schema-profile.json` (see §5).
@@ -390,3 +393,268 @@ was checked field-by-field against
 `incomplete_reason`, `spent`, and the cap all match the recorded
 expected terminal state (`incomplete` / `validation_budget_exhausted`,
 candidate unlabelled). Result: match.
+
+## 7. Coverage ledger: the system of record for coverage
+
+The coverage ledger is the coverage claim. An architecture summary, an
+agent count, or a generic "auth reviewed" sentence is not coverage
+evidence. This section adopts the vendored `RECONNAISSANCE.md` ledger
+construction and the vendored `validate-coverage-ledger.cjs` as the
+lane's ledger system of record: the deterministic unit set, the
+canonical-ID derivation, the status state table, the attempts archive,
+and the run-artifact layout every audit run must emit.
+
+### 7.1 Unit derivation
+
+Reconnaissance seeds the ledger deterministically, before any hunting
+is assigned: one unit for every material combination of the identity
+tuple
+
+> surface × trust boundary × subsystem × attack class + lifecycle
+
+where lifecycle is part of the tuple when it is material (the `deep`
+profile adds lifecycle modes; the `quick` profile coarsens the
+subsystem dimension to the fixed canonical value
+`profile/quick/all-in-scope-subsystems`).
+
+The tuple is the unit's identity, but its axes are not five independent
+multipliers. The independent axes are **surface**, **attack class**,
+and **lifecycle**: the unit set is the product of the inventoried
+surfaces, the applicable attack classes, and the lifecycle modes.
+Trust boundary and subsystem are **determined per surface**, not chosen
+independently for each combination: a surface's trust boundary is the
+source control that defines the boundary for that surface's role, and
+its subsystem is the package or directory that contains it. One surface
+therefore contributes exactly one boundary and one subsystem to every
+unit derived from it, however many attack classes and lifecycles it is
+crossed with. The worked derivation of record (Task P0, Q3) is 32
+surfaces × 9 attack classes × 2 lifecycles = 576 units; a reproducer
+who multiplies five independent axis counts will not reproduce it.
+
+Each dimension carries a human label and a stable, source-derived
+value in `canonical_refs`; the same canonical reference names the same
+source object across runs even if its display label changes. An
+attack-class block reference is `FILE.md#` plus the exact class name as
+written in that file — a stable identifier matched against the file
+text, not a rendered anchor — and references are never derived by
+lowercasing or slugging display labels. Each unit also keeps its
+assignment-level blocks: `ordinary_attack_class_block` (null only when
+no ordinary block applies), `selected_companion_blocks`, and
+`excluded_blocks` with the source fact that excludes each. For a scoped
+run, in-scope surfaces are seeded for assignment and discovered
+excluded surfaces are retained as `out_of_scope` units, so a later
+full run can turn them into current work.
+
+### 7.2 Canonical `coverage_id` derivation
+
+`coverage_id` is derived without lossy slugs:
+
+1. Every canonical reference must be Unicode NFC with valid scalar
+   values, visible content, no control, format, line/paragraph
+   separator, or default-ignorable code point, and no surrounding
+   whitespace.
+2. Encode each reference's UTF-8 bytes with RFC 3986 percent encoding:
+   leave only `A-Z a-z 0-9 - . _ ~` unescaped and use uppercase `%HH`
+   for every other byte.
+3. Join the encoded `surface`, `boundary`, `subsystem`, and
+   `attack_class` references with `::`; append the encoded `lifecycle`
+   reference when present.
+
+Wave number, agent, verdict, severity, and line number are never part
+of a reference or an ID. Units are sorted lexicographically by
+`coverage_id` before each assignment. Duplicate IDs are fatal: a
+duplicate ID whose semantic fields differ is a canonical identity
+collision — never merged, never silently overwritten — and the
+validator also rejects one semantic tuple represented by different
+canonical references.
+
+### 7.3 Status state table
+
+Every unit is in exactly one of eight statuses, with the invariants
+below (enforced by the vendored validator exactly):
+
+| Status | Unit `agent_id` | `reviewed_paths` / `local_checks` | `result_fingerprints` | `unresolved` |
+|---|---|---|---|---|
+| `planned` | null | empty | empty | empty |
+| `in_progress` | canonical owner | empty | empty | empty |
+| `blocked` | canonical owner | both nonempty owned partial evidence | empty | nonempty blocker |
+| `covered` | canonical owner | both nonempty | empty | empty |
+| `candidate` | canonical owner | both nonempty | nonempty | optional |
+| `deferred` | null | empty | empty | nonempty reason |
+| `out_of_scope` | null | empty | empty | nonempty reason |
+| `not_applicable` | null | empty | empty | nonempty reason |
+
+Canonical agent IDs match `^[a-z0-9][a-z0-9_-]{0,63}$`, are not Windows
+device names, and are lowercase-mandatory, so one ledger cannot contain
+case-fold aliases. The unit `agent_id` records the assignment owner.
+Every check records its own `agent_id` and nonempty `reviewed_paths`;
+the unit-level `reviewed_paths` is exactly the union of its checks'
+paths. A source-only check uses `artifact: null`; an artifact-bearing
+check must satisfy the artifact-path rule in §7.6.
+
+`prior_status` carries the unit's relationship to prior runs: `new`
+marks a surface first seen in this run when compatible prior ledgers
+exist; `none` marks a unit seeded when no compatible prior ledger is
+available. Prior `deferred`, `blocked`, `out_of_scope`, and
+changed-source units initialize as current `planned` work when now in
+scope.
+
+### 7.4 Attempts archive
+
+`attempts` is an append-only archive for evidence-bearing assignments
+that a coverage critic reopens. Before reassignment, the parent
+appends the prior unit's exact `wave`, `status`, `agent_id`,
+`reviewed_paths`, `local_checks`, `result_fingerprints`, and
+`unresolved`, plus the critic's source-backed `reassignment_reason`.
+Only `blocked`, `covered`, and `candidate` states can be archived.
+Archived attempts retain the same state and evidence invariants as
+live units, use strictly increasing waves, and every archived wave is
+below the current wave. The next assignment increments `wave`, uses a
+fresh owner, and starts with empty live evidence; an archived owner's
+checks or artifacts are never copied into the live state, and an
+artifact from an archived attempt cannot be reused by a later check. A
+later live terminal state contains only the new attempt's evidence;
+the archive remains unchanged. If the profile or budget prevents
+another assignment, `wave` increments and the live state is `deferred`
+with null owner, empty evidence, and the stop reason in `unresolved`.
+
+### 7.5 Sole writer, and validation cadence
+
+The parent is the ledger's sole writer. The parent initializes
+`run-metadata.json`, applies the §4 budget gate, and creates the agent
+scratch roots and the shared ledger before hunting; hunters return
+structured results, and the parent closes units only from the paths
+and checks in a hunter's structured result. No agent writes the ledger
+directly.
+
+The parent runs the vendored ledger validator after seeding, after
+every parent update, and before the run's final report, and fixes
+every error before assigning work or making a coverage claim. The
+validator rejects input beyond 5 MiB, 64 nesting levels, 10,000 units,
+1,000 entries in a nested collection, or 500,000 traversed values, and
+caps reported validation errors at 100; in practice the 5 MiB byte
+limit holds roughly 2,000–5,000 realistic units, so it binds before
+the 10,000-unit cap.
+
+### 7.6 Run-artifact layout
+
+Runs live outside the target repo by default (the source's
+write-isolation rule). The run root is
+
+```text
+~/workspace/goals/autonomous-code-defense-factory/audit-runs/<run-id>/
+```
+
+and contains exactly:
+
+```text
+coverage-ledger.json
+findings.json
+run-metadata.json
+verification-attestations.json      (the attestation sidecar, Task A3)
+dispatch-log.json                   (the dispatch log, Task A3)
+agents/<agent-id>/scratch/
+agents/<agent-id>/artifacts/
+```
+
+with one `agents/<agent-id>/` pair of directories per dispatched agent
+and nothing else at the run root. `run-metadata.json` carries the §4
+budget shape, plus the egress inventory: any run that sends task
+material to a remote model API records the provider class and the
+material classes sent.
+
+A local check's artifact is evidence only under exactly
+`agents/<agent_id>/artifacts/` — the vendored ledger validator's
+`isOwnedArtifactPath` requires the artifact path, relative to the run
+root, to carry the prefix `agents/<check.agent_id>/artifacts/` for the
+check's own agent ID. Scratch paths, output-root files, symlinks,
+special files, and another check owner's artifacts are not evidence.
+
+An in-repo output directory is permitted only if **both** preconditions
+hold: the user selects it, **and** version control ignores the whole
+directory.
+
+### 7.7 The `result_fingerprints` join
+
+Only `candidate` units carry `result_fingerprints` (nonempty); every
+other status keeps the list empty (§7.3). A unit's `result_fingerprints`
+list links a finding to the unit whose owner hunted it — the hunter
+anchor Task A3's distinctness checker relies on: the attestation
+sidecar's `hunter_agent_id` must equal the `agent_id` of a check
+recorded on a ledger unit whose `result_fingerprints` contain the
+fingerprint. Verifier identity lives only in the attestation sidecar
+and the dispatch log; for fresh candidates the ledger records no
+verifier identity anywhere.
+
+### 7.8 The limit, and the coverage-citation rule
+
+**Validator success proves format and ledger consistency only.** It
+proves nothing about the truth of a unit's evidence or of any finding;
+truthfulness is carried by Task A3's fresh-verifier phases, not by the
+validators.
+
+A coverage claim in any AEP report must cite ledger units from a real
+run under the external run root (§7.6) — never the examples directory,
+and never prose. Accordingly, `scripts/audit/examples/synthetic-ledger.json`
+(§8) is a shape reference only: it is excluded from coverage claims by
+this rule, and it is not acceptance evidence for anything.
+
+## 8. Validation of the ledger adoption (Task A2, first use)
+
+All runs below were performed in this worktree at the time this
+section was written.
+
+**Shipped validator suites** (the suites use `node:test`; there is no
+header run command):
+
+```text
+$ node --test reference/security-audit-skill/skills/security-audit/validate-findings.test.cjs
+tests 34, pass 34, fail 0   (exit 0)
+$ node --test reference/security-audit-skill/skills/security-audit/validate-coverage-ledger.test.cjs
+tests 31, pass 31, fail 0   (exit 0)
+```
+
+Both counts match the adoption analysis (34 and 31).
+
+**Synthetic example.** `scripts/audit/examples/synthetic-ledger.json`
+is Task P0's Q3 synthetic ledger — the 576-unit ledger over this
+worktree's `scripts/` tree recorded in
+`docs/security-audit-spikes-2026-10-26.md` — committed with
+`"aep_bookkeeping": {"synthetic": true}` added to every unit (the
+source tolerates parent bookkeeping fields on units; a top-level key
+would break the array shape and the validator). The source ledger's
+units are all `planned` with `agent_id: null`, empty `attempts`, and
+empty `local_checks`, so it contains no agent IDs; had any owner or
+agent ID appeared, it would have been rewritten under the reserved
+`example-*` prefix, consistently, before committing. Validation of the
+committed file:
+
+```text
+$ node reference/security-audit-skill/skills/security-audit/validate-coverage-ledger.cjs scripts/audit/examples/synthetic-ledger.json
+PASS: 576 coverage units valid   (exit 0)
+```
+
+Recorded as a shape check only, per §7.8.
+
+**Negative test — duplicated `coverage_id`.** Two scratch copies were
+made under `/tmp` (never committed). In the first, unit 1's
+`coverage_id` was overwritten with unit 0's, leaving unit 1's semantic
+fields intact:
+
+```text
+$ node reference/security-audit-skill/skills/security-audit/validate-coverage-ledger.cjs /tmp/a2-duplicate-ledger.json
+ERROR: $[1].coverage_id: expected canonical ID "scripts%2Fapply-domain-blocks.sh::scripts%2Fpolicy.data%23operator-invocation-boundary::scripts::ATTACK-CLASSES.md%23Access%20control::lifecycle%2Fsteady-state-operation"
+ERROR: $[1].coverage_id: canonical identity collision with different semantic fields at $[0]
+FAIL: 2 validation error(s)   (exit 1)
+```
+
+In the second, an exact copy of unit 0 was appended as a 577th unit:
+
+```text
+$ node reference/security-audit-skill/skills/security-audit/validate-coverage-ledger.cjs /tmp/a2-duplicate-unit-ledger.json
+ERROR: $[576].coverage_id: duplicate coverage ID at $[0]
+ERROR: $[576].coverage_id: units must be sorted lexicographically
+FAIL: 2 validation error(s)   (exit 1)
+```
+
+Both duplicated-ID ledgers are **rejected**, as §7.2 requires.
