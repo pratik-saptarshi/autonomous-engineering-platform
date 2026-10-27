@@ -2417,6 +2417,9 @@ class SubdirectoryRootTests(unittest.TestCase):
             receipts = sub / "r.jsonl"
             self.assertTrue(mechanical_verify.tree_clean(sub, receipts))
 
+    @unittest.skipUnless(
+        _path_pytest_available(), "python3 on PATH has no pytest module"
+    )
     def test_subdirectory_root_seals_and_audits(self):
         with tempfile.TemporaryDirectory() as tmp:
             root, sub = self._repo(tmp)
