@@ -2844,6 +2844,7 @@ class AddoptsGrammarTests(unittest.TestCase):
         )
         self.assertEqual(globs(["--doctest-glob=*.rst"]), ["*.rst"])
 
+    @unittest.skipUnless(_pytest_on_path(), "no pytest on PATH")
     def test_value_options_match_installed_parser(self):
         # The scanner's value-taking set must be exactly the
         # installed parser's REQUIRED-value options (an

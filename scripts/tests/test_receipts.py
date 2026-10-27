@@ -4,6 +4,7 @@ import io
 import json
 import os
 import shutil
+import stat
 import struct
 import subprocess
 import sys
@@ -1874,6 +1875,18 @@ class GitInstrumentPinTests(unittest.TestCase):
             self.assertIn("RECEIPTS: PASS", proc.stdout)
 
 
+def _plant_over_readonly(path: Path, data: bytes) -> None:
+    """Write *data* over the file at *path*, adding owner-write
+    first when the file already exists: git creates object and
+    pack files read-only, so an unprivileged run cannot
+    overwrite one in place — a root run masks that, which is
+    how these plants passed locally while erroring in CI
+    (run 40566947790, PermissionError on every plant)."""
+    if path.exists():
+        path.chmod(path.stat().st_mode | stat.S_IWUSR)
+    path.write_bytes(data)
+
+
 def poison_loose_object(root: Path, sha: str, payload: bytes) -> None:
     """Replace the loose object at `sha` with a zlib payload of
     *payload* framed as a blob — the delivered-store lie of
@@ -1883,7 +1896,7 @@ def poison_loose_object(root: Path, sha: str, payload: bytes) -> None:
     obj = root / ".git" / "objects" / sha[:2] / sha[2:]
     obj.parent.mkdir(parents=True, exist_ok=True)
     framed = b"blob %d\x00" % len(payload) + payload
-    obj.write_bytes(zlib.compress(framed))
+    _plant_over_readonly(obj, zlib.compress(framed))
 
 
 def plant_size_lying_object(
@@ -1899,7 +1912,9 @@ def plant_size_lying_object(
     its framing check."""
     obj = root / ".git" / "objects" / sha[:2] / sha[2:]
     obj.parent.mkdir(parents=True, exist_ok=True)
-    obj.write_bytes(zlib.compress(b"blob %d\x00" % declared + payload))
+    _plant_over_readonly(
+        obj, zlib.compress(b"blob %d\x00" % declared + payload)
+    )
 
 
 def swap_pack_idx_entries(root: Path, sha_a: str, sha_b: str) -> None:
@@ -1930,7 +1945,7 @@ def swap_pack_idx_entries(root: Path, sha_a: str, sha_b: str) -> None:
         data[base + 4 * ia : base + 4 * ia + 4] = entry_b
         data[base + 4 * ib : base + 4 * ib + 4] = entry_a
     data[-20:] = hashlib.sha1(bytes(data[:-20])).digest()
-    idx_path.write_bytes(bytes(data))
+    _plant_over_readonly(idx_path, bytes(data))
 
 
 class ObjectStoreIntegrityTests(unittest.TestCase):
