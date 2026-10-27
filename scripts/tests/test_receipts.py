@@ -1038,7 +1038,11 @@ class ContentBindingTests(unittest.TestCase):
     .mypy_cache) stay excluded: the verifier's own legs regenerate
     them during the run itself (a pytest leg creates .pytest_cache
     and __pycache__ from cold), so binding them would make the
-    run's own residue abort every seal of a Python tree."""
+    run's own residue abort every seal of a Python tree.
+
+    (Task 11 narrows that last sentence: the exclusion covers
+    tool state only — code files under the four names bind now;
+    see ResidueCodeBindingTests.)"""
 
     CONTENT_DIRS = [
         "node_modules",
@@ -1359,6 +1363,238 @@ class ContentBindingTests(unittest.TestCase):
             receipts = root / "r.jsonl"
             write(root, "sub/node_modules/helper.py", 'VALUE = "ok"\n')
             self.assertTrue(mechanical_verify.tree_clean(root, receipts))
+
+
+class ResidueCodeBindingTests(unittest.TestCase):
+    """Task 11 (paperthin validation 2, §1): the residue exclusion
+    cannot extend to planted source. Validation 1 closed the
+    content-directory door (Task 10); validation 2 found plain
+    SOURCE under the four residue names — imported by bound code
+    (B1a/B1b/B1c) or collected via bound testpaths (B2) — was just
+    as invisible: seal, mutate only the planted file, and
+    check-receipts still blessed the run while a fresh verify
+    failed. Code files under a residue name bind now, in both
+    modes; only tool-state files (.pyc bytecode, cache data) stay
+    unbound, which is what keeps mid-run cache generation from
+    aborting a seal. The B2 collection shape is additionally
+    refused at discovery (see ResidueConfigAimTests in
+    test_mechanical_verify.py)."""
+
+    RESIDUE_DIRS = [".git", "__pycache__", ".pytest_cache", ".mypy_cache"]
+
+    def test_fs_digest_binds_code_but_not_tool_state_under_residue(self):
+        for name in self.RESIDUE_DIRS:
+            with self.subTest(name=name):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    write(root, "a.txt", "one\n")
+                    before = mechanical_verify.tree_binding(root)[
+                        "tree_digest"
+                    ]
+                    # Tool state — bytecode and cache data — is
+                    # what the run itself regenerates; it stays
+                    # unbound so a seal cannot abort on it.
+                    write(root, f"{name}/planted/state.pyc", "cache\n")
+                    write(root, f"{name}/v/cache/data.json", "{}\n")
+                    self.assertEqual(
+                        before,
+                        mechanical_verify.tree_binding(root)[
+                            "tree_digest"
+                        ],
+                    )
+                    # Planted source binds, and mutating it moves
+                    # the digest.
+                    write(root, f"{name}/planted/helper.py", "X = 1\n")
+                    bound = mechanical_verify.tree_binding(root)[
+                        "tree_digest"
+                    ]
+                    self.assertNotEqual(before, bound)
+                    write(root, f"{name}/planted/helper.py", "X = 2\n")
+                    self.assertNotEqual(
+                        bound,
+                        mechanical_verify.tree_binding(root)[
+                            "tree_digest"
+                        ],
+                    )
+
+    def test_fs_digest_binds_native_extension_under_residue(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "a.txt", "one\n")
+            before = mechanical_verify.tree_binding(root)["tree_digest"]
+            write(root, ".mypy_cache/planted/native.so", "elf\n")
+            self.assertNotEqual(
+                before, mechanical_verify.tree_binding(root)["tree_digest"]
+            )
+
+    def test_fs_digest_binds_residue_code_at_any_depth(self):
+        cases = [
+            "pkg/.pytest_cache/planted/helper.py",
+            "node_modules/pkg/__pycache__/helper.py",
+            ".git/modules/sub/.mypy_cache/helper.py",
+        ]
+        for rel in cases:
+            with self.subTest(rel=rel):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    write(root, "a.txt", "one\n")
+                    before = mechanical_verify.tree_binding(root)[
+                        "tree_digest"
+                    ]
+                    write(root, rel, "X = 1\n")
+                    self.assertNotEqual(
+                        before,
+                        mechanical_verify.tree_binding(root)[
+                            "tree_digest"
+                        ],
+                    )
+        # Non-code content at depth under a residue name stays
+        # unbound (the disclosed data residual).
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "a.txt", "one\n")
+            before = mechanical_verify.tree_binding(root)["tree_digest"]
+            write(root, "pkg/.pytest_cache/v/cache/nodeids", "[]\n")
+            self.assertEqual(
+                before, mechanical_verify.tree_binding(root)["tree_digest"]
+            )
+
+    def _seal_import_fixture(self, root: Path, helper_rel: str) -> Path:
+        """A pytest suite whose only test imports a helper from
+        *helper_rel*'s directory (validator B1 shape)."""
+        helper_dir = str(Path(helper_rel).parent)
+        write(root, helper_rel, 'VALUE = "ok"\n')
+        write(
+            root,
+            "test_app.py",
+            "import sys\n"
+            "from pathlib import Path\n"
+            f"sys.path.insert(0, str(Path(__file__).parent / {helper_dir!r}))\n"
+            "import helper\n\n\n"
+            "def test_helper_value():\n"
+            "    assert helper.VALUE == 'ok'\n",
+        )
+        receipts = root / "r.jsonl"
+        proc = verify(root, "1", receipts)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        proc = check(receipts, "1")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertIn("RECEIPTS: PASS", proc.stdout)
+        return receipts
+
+    @unittest.skipUnless(
+        _path_pytest_available(), "python3 on PATH has no pytest module"
+    )
+    def test_fs_pytest_cache_helper_mutation_goes_stale(self):
+        # Validator B1a.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            receipts = self._seal_import_fixture(
+                root, ".pytest_cache/planted/helper.py"
+            )
+            write(
+                root,
+                ".pytest_cache/planted/helper.py",
+                'VALUE = "broken"\n',
+            )
+            proc = check(receipts, "1")
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("RECEIPTS: STALE", proc.stdout)
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+
+    @unittest.skipUnless(
+        _path_pytest_available(), "python3 on PATH has no pytest module"
+    )
+    def test_fs_mypy_cache_helper_mutation_goes_stale(self):
+        # Validator B1b.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            receipts = self._seal_import_fixture(
+                root, ".mypy_cache/planted/helper.py"
+            )
+            write(
+                root, ".mypy_cache/planted/helper.py", 'VALUE = "broken"\n'
+            )
+            proc = check(receipts, "1")
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("RECEIPTS: STALE", proc.stdout)
+
+    @unittest.skipUnless(
+        _path_pytest_available(), "python3 on PATH has no pytest module"
+    )
+    def test_fs_dotgit_helper_mutation_goes_stale(self):
+        # Validator B1c: an fs tree (the .git directory is a plain
+        # directory here, not a repository) importing from .git/.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            receipts = self._seal_import_fixture(
+                root, ".git/planted/helper.py"
+            )
+            write(root, ".git/planted/helper.py", 'VALUE = "broken"\n')
+            proc = check(receipts, "1")
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("RECEIPTS: STALE", proc.stdout)
+
+    @unittest.skipUnless(
+        _path_pytest_available(), "python3 on PATH has no pytest module"
+    )
+    def test_fs_residue_code_tree_reseals_cleanly(self):
+        # Lifecycle control: binding planted code must not break
+        # the seal lifecycle for a tree that has it — seal, audit,
+        # seal again over warm caches, audit again.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            receipts = self._seal_import_fixture(
+                root, ".mypy_cache/planted/helper.py"
+            )
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            proc = check(receipts, "1")
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("RECEIPTS: PASS", proc.stdout)
+
+    def test_git_untracked_code_under_residue_blocks_sealing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_git_repo(root)
+            receipts = root / "r.jsonl"
+            # Tool state under residue names stays ignored.
+            write(root, ".pytest_cache/v/cache/nodeids", "[]\n")
+            write(root, "__pycache__/mod.cpython-312.pyc", "cache\n")
+            self.assertTrue(mechanical_verify.tree_clean(root, receipts))
+            # Planted code under a residue name is dirty like
+            # untracked code anywhere else.
+            write(root, ".pytest_cache/planted/helper.py", "X = 1\n")
+            self.assertFalse(mechanical_verify.tree_clean(root, receipts))
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("tree not clean at HEAD", proc.stdout)
+            (root / ".pytest_cache/planted/helper.py").unlink()
+            self.assertTrue(mechanical_verify.tree_clean(root, receipts))
+
+    def test_git_tracked_code_under_residue_binds_via_ls_tree(self):
+        # Control (already true pre-fix; pinned so the parity
+        # claim stays honest): tracked content under a residue
+        # name is in ls-tree, so it binds exactly like tracked
+        # content anywhere, and a working-tree edit is dirty.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            init_git_repo(root)
+            commit_file(
+                root, ".mypy_cache/planted/helper.py", "X = 1\n", "plant"
+            )
+            receipts = root / "r.jsonl"
+            self.assertTrue(mechanical_verify.tree_clean(root, receipts))
+            first = mechanical_verify.tree_binding(root)["tree_digest"]
+            commit_file(
+                root, ".mypy_cache/planted/helper.py", "X = 2\n", "change"
+            )
+            self.assertNotEqual(
+                first, mechanical_verify.tree_binding(root)["tree_digest"]
+            )
+            write(root, ".mypy_cache/planted/helper.py", "X = 3\n")
+            self.assertFalse(mechanical_verify.tree_clean(root, receipts))
 
 
 SWAP_MAKEFILE_H1 = "test:\n\tgit reset --hard HEAD~1\n\ttrue\n"

@@ -959,6 +959,115 @@ def _pytest_argv(root: Path) -> tuple[str, ...]:
     return PYTEST_ARGV
 
 
+def _pytest_config_path_entries(config: Path) -> list[str]:
+    """The `testpaths` and `pythonpath` entries of a REAL pytest
+    config file, read with the same parsers the qualification
+    walk uses — tomllib for the .toml family (pytest.toml's
+    [pytest] table; pyproject.toml's [tool.pytest] keys and its
+    [tool.pytest.ini_options] table), configparser for the .ini
+    names ([pytest], or [tool:pytest] for setup.cfg). Values in
+    TOML may be a list or a single string; INI values are
+    whitespace-separated, as pytest's own ini types split them.
+    An unreadable or unparseable file yields no entries: real
+    pytest aborts on such a config, so its aims never steer a
+    run that could seal."""
+    name = config.name
+    try:
+        text = config.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return []
+    values: list[object] = []
+    if name in ("pytest.toml", ".pytest.toml", "pyproject.toml"):
+        parsed = _parse_toml(text)
+        if not isinstance(parsed, dict):
+            return []
+        if name == "pyproject.toml":
+            tool = parsed.get("tool")
+            table = (
+                tool.get("pytest") if isinstance(tool, dict) else None
+            )
+            if not isinstance(table, dict):
+                return []
+            values += [table.get("testpaths"), table.get("pythonpath")]
+            ini_options = table.get("ini_options")
+            if isinstance(ini_options, dict):
+                values += [
+                    ini_options.get("testpaths"),
+                    ini_options.get("pythonpath"),
+                ]
+        else:
+            table = parsed.get("pytest")
+            if not isinstance(table, dict):
+                return []
+            values += [table.get("testpaths"), table.get("pythonpath")]
+    else:
+        section = "tool:pytest" if name == "setup.cfg" else "pytest"
+        parser = configparser.ConfigParser(
+            interpolation=None, allow_no_value=True, strict=False
+        )
+        try:
+            parser.read_string(text)
+        except configparser.Error:
+            return []
+        if not parser.has_section(section):
+            return []
+        for key in ("testpaths", "pythonpath"):
+            if parser.has_option(section, key):
+                values.append(parser.get(section, key))
+    entries: list[str] = []
+    for value in values:
+        if isinstance(value, str):
+            entries.extend(value.split())
+        elif isinstance(value, list):
+            entries.extend(
+                item for item in value if isinstance(item, str)
+            )
+    return entries
+
+
+def _entry_aims_into_residue(root: Path, entry: str) -> bool:
+    """Whether one testpaths/pythonpath *entry* names a path
+    with a residue-named component — judged as written, so
+    `.mypy_cache/collected` and `pkg/.pytest_cache/x` are
+    caught, and again after normalization against *root*, so
+    `pkg/../.mypy_cache/x` is caught too."""
+    for candidate in (entry, os.path.join(root, entry)):
+        normalized = os.path.normpath(candidate)
+        if any(
+            part in FS_RESIDUE_DIRS
+            for part in normalized.split(os.sep)
+        ):
+            return True
+    return False
+
+
+def _selected_config_aims_into_residue(root: Path) -> bool:
+    """Whether the REAL config pytest would read at *root* aims
+    the bare leg into a residue directory — a `testpaths` or
+    `pythonpath` entry with a residue-named component.
+
+    The collected .py files under a residue name are bound in
+    the tree digest (see _fs_residue_entries), so the aim is
+    not an audit hole for them; it is refused anyway, in the
+    fail-closed posture of _bare_pytest_scope_has_symlink,
+    because collection aimed into a residue directory can
+    execute shapes no extension set enumerates — a bound
+    conftest registering a custom pytest_collect_file hook
+    executes non-.py files from there (paperthin validation
+    2, probe B2's family) — and a pythonpath entry makes the
+    directory the import machinery's home. A symlinked
+    selected config is never read here: _pytest_argv already
+    pins it to an empty config, so its entries define nothing
+    (issue #64)."""
+    selected = _pytest_config_selected(root)
+    if selected is None or selected.is_symlink():
+        return False
+    return any(
+        _entry_aims_into_residue(root, entry)
+        for entry in _pytest_config_path_entries(selected)
+    )
+
+
 def _pytest_collectable_file(name: str) -> bool:
     """Whether pytest collection imports the file *name*:
     its default test-module patterns (python_files =
@@ -1047,7 +1156,12 @@ def discover_verification_commands(root: Path) -> tuple[VerificationCommand, ...
     # since over-insulation is the safe direction).
     # Issue #62: the bare pytest leg is additionally disqualified
     # when its collection scope contains a symlink (see
-    # _bare_pytest_scope_has_symlink). Excluding links from
+    # _bare_pytest_scope_has_symlink), or when the real config
+    # pytest would read aims testpaths or pythonpath into a
+    # residue directory (see _selected_config_aims_into_residue:
+    # code files under residue names are bound in the tree
+    # digest, but collection aimed there can execute shapes no
+    # extension set enumerates). Excluding links from
     # discovery's own reads cannot help there — the leg runs
     # pytest over the whole tree, and pytest's own traversal is
     # what reaches the linked content — so the leg is not
@@ -1069,7 +1183,10 @@ def discover_verification_commands(root: Path) -> tuple[VerificationCommand, ...
 
     def bare_pytest_disqualified() -> bool:
         if not scope_check:
-            scope_check.append(_bare_pytest_scope_has_symlink(root))
+            scope_check.append(
+                _bare_pytest_scope_has_symlink(root)
+                or _selected_config_aims_into_residue(root)
+            )
         return scope_check[0]
 
     # 1. Go (AEP addition).
@@ -2379,6 +2496,29 @@ FS_RESIDUE_DIRS = frozenset(
     }
 )
 
+# The file suffixes the binding treats as code wherever they
+# live: Python source (.py) and native extension modules (.so,
+# .pyd — the suffixes importlib accepts for extension modules;
+# versioned names like .cpython-312-x86_64-linux-gnu.so still
+# END in .so, so an exact-suffix test catches them). Judged on
+# the name's final suffix, case-sensitively: on the platforms
+# this verifier runs, the interpreter loads nothing else by
+# name. Bytecode (.pyc) is deliberately NOT in the set — it is
+# the tool state the residue exclusion exists for (the run
+# regenerates it), and its residual is the disclosed one (a
+# cache entry actively forged to match its source's recorded
+# stat; see FS_RESIDUE_DIRS above and the Tree binding section
+# of docs/deepcode-mechanisms.md).
+_FS_CODE_SUFFIXES = (".py", ".so", ".pyd")
+
+
+def _is_code_file(name: str) -> bool:
+    """Whether the file *name* is code a runtime loads by name
+    (see _FS_CODE_SUFFIXES). Used to decide what binds — and,
+    in git mode, what counts as dirty — under a residue
+    directory, where tool state and planted code share a tree."""
+    return name.endswith(_FS_CODE_SUFFIXES)
+
 
 def _git(root: Path, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
@@ -2437,16 +2577,81 @@ def _fs_entry_mode(path: Path) -> str:
     return format(stat.S_IFMT(st.st_mode), "06o")
 
 
+def _fs_residue_entries(
+    residue_root: Path,
+    resolved: Path,
+    receipts_resolved: Path | None,
+) -> list[tuple[str, str, str]]:
+    """Digest entries from inside one residue directory.
+
+    The walk descends (never following symlinks) and binds the
+    two things whose post-seal mutation must move the digest:
+    code files (see _is_code_file) by content hash, and
+    symlinks by target string — exactly as the main walk binds
+    them everywhere else. Everything else under the residue
+    name — the tool state the exclusion exists for (bytecode,
+    cache indexes, git internals) — contributes nothing, so
+    the run's own cache generation cannot change the digest
+    mid-run and abort the seal. Planted source is not tool
+    state: a file a runtime can load binds wherever it sits,
+    so content a sealed run imports from a residue directory
+    is content the seal attests (paperthin validation 2,
+    probes B1a/B1b/B1c).
+    """
+    entries: list[tuple[str, str, str]] = []
+    for dirpath, dirnames, filenames in os.walk(
+        residue_root, followlinks=False
+    ):
+        current = Path(dirpath)
+        descend: list[str] = []
+        for name in dirnames:
+            path = current / name
+            if path.is_symlink():
+                entries.append(
+                    (
+                        path.relative_to(resolved).as_posix(),
+                        _fs_entry_mode(path),
+                        os.readlink(path),
+                    )
+                )
+            else:
+                descend.append(name)
+        dirnames[:] = descend
+        for name in filenames:
+            path = current / name
+            if (
+                receipts_resolved is not None
+                and path.resolve() == receipts_resolved
+            ):
+                continue
+            rel = path.relative_to(resolved).as_posix()
+            if path.is_symlink():
+                entries.append(
+                    (rel, _fs_entry_mode(path), os.readlink(path))
+                )
+            elif _is_code_file(name):
+                entries.append(
+                    (
+                        rel,
+                        _fs_entry_mode(path),
+                        hashlib.sha256(path.read_bytes()).hexdigest(),
+                    )
+                )
+    return entries
+
+
 def _fs_tree_digest(root: Path, receipts_path: Path | None = None) -> str:
     """Digest of a non-git tree: sha256 over sorted relative paths of
     `relpath + "\\0" + mode + "\\0" + content + "\\0"`, where mode is
     the entry's git-style mode string (file type + executable bit —
     see `_fs_entry_mode`) and content is the file's sha256 hex
-    (symlinks: the target string, never followed). Paths with a
-    component in FS_RESIDUE_DIRS and the receipts file itself are
-    excluded. Every other directory — dependency, virtualenv, and
-    build-output trees included — is bound: content a run can
-    execute from them is content the seal attests.
+    (symlinks: the target string, never followed). The receipts
+    file itself is excluded. A directory named in
+    FS_RESIDUE_DIRS contributes only its code files and
+    symlinks (see _fs_residue_entries); its tool state is not
+    bound. Every other directory — dependency, virtualenv, and
+    build-output trees included — is bound in full: content a
+    run can execute from them is content the seal attests.
     """
     resolved = root.resolve()
     receipts_resolved = (
@@ -2457,9 +2662,23 @@ def _fs_tree_digest(root: Path, receipts_path: Path | None = None) -> str:
         current = Path(dirpath)
         descend: list[str] = []
         for name in dirnames:
-            if name in FS_RESIDUE_DIRS:
-                continue
             path = current / name
+            if name in FS_RESIDUE_DIRS:
+                if path.is_symlink():
+                    entries.append(
+                        (
+                            path.relative_to(resolved).as_posix(),
+                            _fs_entry_mode(path),
+                            os.readlink(path),
+                        )
+                    )
+                else:
+                    entries.extend(
+                        _fs_residue_entries(
+                            path, resolved, receipts_resolved
+                        )
+                    )
+                continue
             if path.is_symlink():
                 entries.append(
                     (
@@ -2545,9 +2764,14 @@ def tree_clean(root: Path, receipts_path: Path | None = None) -> bool:
     receipts file itself and UNTRACKED entries under `.superpowers/`
     (the workflow's own bookkeeping — a TRACKED `.superpowers/` entry
     that is modified or staged counts as dirty like any other
-    tracked change) and (ii) untracked entries whose path has a
-    component in FS_RESIDUE_DIRS (tool caches the run itself
-    creates). Untracked content under any other directory name —
+    tracked change) and (ii) untracked non-code entries whose path
+    has a component in FS_RESIDUE_DIRS (tool state the run itself
+    creates). An untracked CODE file under a residue name counts
+    as dirty like untracked code anywhere else — the fs binding
+    binds such files (see _fs_residue_entries), and git mode's
+    parity is to refuse the seal until the file is committed
+    (which binds it via ls-tree) or removed. Untracked content
+    under any other directory name —
     a dependency, virtualenv, or build-output tree included —
     counts as dirty like untracked content anywhere else: git
     mode binds committed content, and an untracked file a run
@@ -2599,8 +2823,12 @@ def tree_clean(root: Path, receipts_path: Path | None = None) -> bool:
             path == ".superpowers" or path.startswith(".superpowers/")
         ):
             continue
-        if status == b"??" and any(
-            part in FS_RESIDUE_DIRS for part in path.split("/")
+        if (
+            status == b"??"
+            and any(
+                part in FS_RESIDUE_DIRS for part in path.split("/")
+            )
+            and not _is_code_file(path.rsplit("/", 1)[-1])
         ):
             continue
         return False

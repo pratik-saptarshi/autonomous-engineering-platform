@@ -1683,6 +1683,262 @@ class BarePytestSymlinkScopeTests(unittest.TestCase):
             self.assertFalse(receipts.exists())
 
 
+class ResidueConfigAimTests(unittest.TestCase):
+    """Task 11 (paperthin validation 2, probe B2): a bound config
+    must not aim the bare pytest leg into a residue directory.
+
+    Task 11 binds code files under the residue names in the tree
+    digest, which covers the collected .py shape of B2 at audit
+    time. The leg is additionally refused at discovery when the
+    config pytest would select — a real, bound file — aims
+    testpaths or pythonpath into a residue-named path: collection
+    or import machinery can execute shapes no extension set can
+    enumerate there (a bound conftest registering a custom
+    collector for non-.py files is the proven instance), so the
+    aim itself disqualifies the leg, in the fail-closed posture
+    of issue #62. A symlinked config is NOT read for this check:
+    it is already insulated by the -c pin (issue #64), and its
+    options define nothing."""
+
+    def _verify(self, root: Path, receipts: Path):
+        stdout = io.StringIO()
+        with mock.patch.object(
+            mechanical_verify, "available_memory_kb", return_value=10**9
+        ):
+            with contextlib.redirect_stdout(stdout):
+                rc = mechanical_verify.main(
+                    [
+                        "verify",
+                        "--root",
+                        str(root),
+                        "--task",
+                        "t",
+                        "--receipts",
+                        str(receipts),
+                    ]
+                )
+        records = []
+        if receipts.exists():
+            records = [
+                json.loads(line)
+                for line in receipts.read_text().splitlines()
+            ]
+        return rc, records, stdout.getvalue()
+
+    def _ids(self, root: Path) -> list[str]:
+        return [c.id for c in discover_verification_commands(root)]
+
+    def test_testpaths_into_residue_disqualifies_bare_pytest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "pytest.ini",
+                "[pytest]\ntestpaths = .mypy_cache/collected\n",
+            )
+            write(
+                root,
+                ".mypy_cache/collected/test_planted.py",
+                "def test_planted():\n    assert True\n",
+            )
+            write(
+                root,
+                "test_ok.py",
+                "def test_ok():\n    assert True\n",
+            )
+            self.assertNotIn("pytest", self._ids(root))
+            # Control: the same tree aimed at a bound directory
+            # schedules the leg.
+            write(root, "pytest.ini", "[pytest]\ntestpaths = tests\n")
+            self.assertIn("pytest", self._ids(root))
+
+    def test_pythonpath_into_residue_disqualifies_bare_pytest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "pyproject.toml",
+                "[tool.pytest.ini_options]\n"
+                'pythonpath = [".pytest_cache/planted"]\n',
+            )
+            write(
+                root,
+                "test_ok.py",
+                "def test_ok():\n    assert True\n",
+            )
+            self.assertNotIn("pytest", self._ids(root))
+            write(
+                root,
+                "pyproject.toml",
+                "[tool.pytest.ini_options]\n"
+                'pythonpath = ["src"]\n',
+            )
+            self.assertIn("pytest", self._ids(root))
+
+    def test_pyproject_toml_mode_testpaths_into_residue_disqualifies(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "pyproject.toml",
+                "[tool.pytest]\n"
+                'testpaths = [".git/collected"]\n',
+            )
+            self.assertNotIn("pytest", self._ids(root))
+
+    def test_pytest_toml_testpaths_into_residue_disqualifies(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "pytest.toml",
+                "[pytest]\n"
+                'testpaths = [".pytest_cache/collected"]\n',
+            )
+            self.assertNotIn("pytest", self._ids(root))
+
+    def test_setup_cfg_testpaths_into_residue_disqualifies(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "setup.cfg",
+                "[tool:pytest]\ntestpaths = .mypy_cache/collected\n",
+            )
+            self.assertNotIn("pytest", self._ids(root))
+
+    def test_residue_component_at_depth_or_via_dotdot_disqualifies(self):
+        for aimed in (
+            "pkg/.pytest_cache/collected",
+            "pkg/../.mypy_cache/collected",
+            "__pycache__",
+        ):
+            with self.subTest(aimed=aimed):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    write(
+                        root,
+                        "pytest.ini",
+                        f"[pytest]\ntestpaths = {aimed}\n",
+                    )
+                    self.assertNotIn("pytest", self._ids(root))
+
+    def test_symlinked_config_aiming_into_residue_stays_insulated(self):
+        # The refusal never reads through a link: a symlinked
+        # config is already neutralized by the -c pin (issue #64),
+        # so the leg is scheduled and pinned, not disqualified.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            external = base / "external.ini"
+            external.write_text(
+                "[pytest]\ntestpaths = .mypy_cache/collected\n"
+            )
+            os.symlink(external, root / "pytest.ini")
+            write(
+                root,
+                "test_ok.py",
+                "def test_ok():\n    assert True\n",
+            )
+            commands = discover_verification_commands(root)
+            pytest_commands = [c for c in commands if c.id == "pytest"]
+            self.assertEqual(len(pytest_commands), 1)
+            self.assertIn("-c", pytest_commands[0].argv)
+
+    @unittest.skipUnless(_pytest_on_path(), "no pytest on PATH")
+    def test_b2_tree_seals_no_pytest_pass(self):
+        # Validator B2 end to end: pre-fix this tree sealed a
+        # PASS over a test collected from .mypy_cache and kept
+        # blessing it after the test was mutated; now the leg is
+        # disqualified at discovery and nothing seals.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            receipts = base / "receipts.jsonl"
+            write(
+                root,
+                "pytest.ini",
+                "[pytest]\ntestpaths = .mypy_cache/collected\n",
+            )
+            write(
+                root,
+                ".mypy_cache/collected/test_planted.py",
+                "def test_planted():\n    assert True\n",
+            )
+            rc, _, output = self._verify(root, receipts)
+            self.assertEqual(rc, 2, output)
+            self.assertIn("no verification commands discovered", output)
+            self.assertFalse(receipts.exists())
+
+    @unittest.skipUnless(_pytest_on_path(), "no pytest on PATH")
+    def test_custom_collector_shape_aimed_into_residue_is_refused(self):
+        # The shape part 1's extension set cannot see: a bound
+        # conftest registers a pytest_collect_file hook that
+        # executes a non-.py file, and bound testpaths aims
+        # collection at the residue directory holding it. Real
+        # pytest executes the planted file; the refusal is what
+        # keeps it out of a sealed run.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            receipts = base / "receipts.jsonl"
+            write(
+                root,
+                "pytest.ini",
+                "[pytest]\ntestpaths = .mypy_cache/collected\n",
+            )
+            write(
+                root,
+                "conftest.py",
+                "import pytest\n\n\n"
+                "class TxtFile(pytest.File):\n"
+                "    def collect(self):\n"
+                "        yield TxtItem.from_parent(self, name='planted')\n\n\n"
+                "class TxtItem(pytest.Item):\n"
+                "    def runtest(self):\n"
+                "        namespace = {}\n"
+                "        exec(self.path.read_text(), namespace)\n"
+                "        namespace['test_planted']()\n\n\n"
+                "def pytest_collect_file(file_path, parent):\n"
+                "    if file_path.suffix == '.txt' and "
+                "file_path.name.startswith('check_'):\n"
+                "        return TxtFile.from_parent(parent, path=file_path)\n",
+            )
+            write(
+                root,
+                ".mypy_cache/collected/check_planted.txt",
+                "def test_planted():\n    assert True\n",
+            )
+            rc, _, output = self._verify(root, receipts)
+            self.assertEqual(rc, 2, output)
+            self.assertIn("no verification commands discovered", output)
+            self.assertFalse(receipts.exists())
+
+    @unittest.skipUnless(_pytest_on_path(), "no pytest on PATH")
+    def test_ordinary_testpaths_control_still_seals(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            receipts = base / "receipts.jsonl"
+            write(root, "pytest.ini", "[pytest]\ntestpaths = tests\n")
+            write(
+                root,
+                "tests/test_ok.py",
+                "def test_ok():\n    assert True\n",
+            )
+            rc, records, output = self._verify(root, receipts)
+            self.assertEqual(rc, 0, output)
+            pytest_receipts = [
+                r for r in records if r.get("command_id") == "pytest"
+            ]
+            self.assertEqual(len(pytest_receipts), 1)
+            self.assertEqual(pytest_receipts[0]["exit_code"], 0)
+
+
 def _pid_dead(pid: int) -> bool:
     """Gone entirely, or a zombie (dead, awaiting reaping by init)."""
     try:
