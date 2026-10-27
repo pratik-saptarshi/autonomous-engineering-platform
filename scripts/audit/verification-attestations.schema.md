@@ -76,8 +76,15 @@ the orchestrator **at dispatch time**:
   `phase3_verifier_agent_id == phase5_verifier_agent_id` is **required
   and permitted** there, and only hunter-distinctness is checked
   between the phases; in every other profile a present Phase 5 verifier
-  must differ from the Phase 3 verifier. The profile is read from the
-  run's `run-metadata.json` (or `--profile` in the four-file form).
+  must differ from the Phase 3 verifier. Profile sourcing: in the
+  run-directory form the profile is taken only from the run's
+  `run-metadata.json` — the run's recorded profile is the artifact of
+  record, and `--profile` is reserved for the four-file form, where it
+  (or a `run-metadata.json` beside the findings file) supplies the
+  profile. There is no default profile: a missing, unreadable, or
+  profile-less metadata file, or a profile value outside
+  `quick` / `standard` / `deep`, is malformed input and the checker
+  fails closed (`run_status: incomplete`).
 - **Sessions and ordering.** The roles for one fingerprint that are
   carried by different agents carry distinct `session_id`s in the
   dispatch log, and each verifier's `dispatched_at` postdates the
