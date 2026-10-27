@@ -2,15 +2,763 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::fs::{File, OpenOptions};
+use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use lbug::{Connection, Database, SystemConfig};
 
 use crate::domain::domain_key;
 use crate::traits::{
-    DomainMatchMode, DomainSearchOutcome, MemoryPayload, RelocateOutcome, SearchResult, VectorStore,
+    is_internal_ingest_stage_namespace, is_reserved_ingest_destination, DomainMatchMode,
+    DomainSearchOutcome, MemoryPayload, RelocateOutcome, SearchResult, VectorStore,
+    INTERNAL_INGEST_STAGE_PREFIX,
 };
+
+struct IngestStageLease {
+    file: Option<File>,
+}
+
+impl Drop for IngestStageLease {
+    fn drop(&mut self) {
+        if let Some(file) = self.file.take() {
+            let _ = file.unlock();
+            // Keep the sidecar as durable provenance if staging exits before
+            // publication. The next ingest can then safely recover its rows.
+            drop(file);
+        }
+    }
+}
+
+pub(crate) fn ingest_stage_lease_path(db_path: &Path, namespace: &str) -> Result<PathBuf> {
+    let generation = namespace
+        .strip_prefix(INTERNAL_INGEST_STAGE_PREFIX)
+        .ok_or_else(|| anyhow::anyhow!("invalid internal ingest generation namespace"))?;
+    let parsed = uuid::Uuid::parse_str(generation)
+        .map_err(|_| anyhow::anyhow!("invalid internal ingest generation identifier"))?;
+    if parsed.to_string() != generation {
+        anyhow::bail!("invalid internal ingest generation identifier");
+    }
+    Ok(raw_database_sibling(
+        &canonical_database_path(db_path),
+        &format!(".stage-{generation}.lock"),
+    ))
+}
+
+fn ingest_stage_lease_candidates(db_path: &Path, namespace: &str) -> Result<Vec<PathBuf>> {
+    let canonical = ingest_stage_lease_path(db_path, namespace)?;
+    let alias = raw_database_sibling(
+        db_path,
+        &format!(
+            ".stage-{}.lock",
+            namespace
+                .strip_prefix(INTERNAL_INGEST_STAGE_PREFIX)
+                .expect("validated by ingest_stage_lease_path")
+        ),
+    );
+    let mut paths = Vec::new();
+    let mut identities = HashSet::new();
+    for path in [canonical, alias] {
+        let identity = canonical_path_for_comparison(&path);
+        if identities.insert(identity) {
+            paths.push(path);
+        }
+    }
+    Ok(paths)
+}
+
+fn ingest_stage_lease_candidates_with_aliases(
+    db_path: &Path,
+    aliases: &[PathBuf],
+    namespace: &str,
+) -> Result<Vec<PathBuf>> {
+    let mut paths = ingest_stage_lease_candidates(db_path, namespace)?;
+    let mut identities = HashSet::new();
+    for path in &paths {
+        identities.insert(canonical_path_for_comparison(path));
+    }
+    for alias in aliases {
+        // Alias entries are frozen at store-open time: their parent is
+        // canonicalized but the final filename is preserved. Do not resolve a
+        // symlinked parent again during later recovery, or a retargeted parent
+        // could make this database inspect another directory's sidecars.
+        let generation = namespace
+            .strip_prefix(INTERNAL_INGEST_STAGE_PREFIX)
+            .expect("validated by is_internal_ingest_stage_namespace");
+        let path = raw_database_sibling(alias, &format!(".stage-{generation}.lock"));
+        let identity = canonical_path_for_comparison(&path);
+        if identities.insert(identity) {
+            paths.push(path);
+        }
+    }
+    Ok(paths)
+}
+
+fn canonical_path_for_comparison(path: &Path) -> PathBuf {
+    if let Ok(canonical) = std::fs::canonicalize(path) {
+        return canonical;
+    }
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let Some(name) = path.file_name() else {
+        return path.to_path_buf();
+    };
+    std::fs::canonicalize(parent)
+        .map(|parent| parent.join(name))
+        .unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn canonical_database_path(db_path: &Path) -> PathBuf {
+    std::fs::canonicalize(db_path)
+        .ok()
+        .or_else(|| {
+            let parent = db_path
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."));
+            let name = db_path.file_name()?;
+            std::fs::canonicalize(parent)
+                .ok()
+                .map(|parent| parent.join(name))
+        })
+        .unwrap_or_else(|| db_path.to_path_buf())
+}
+
+/// Resolve one database identity before locks, sidecars, or the engine open.
+/// Existing aliases resolve to their target; fresh files resolve through an
+/// already-created canonical parent. Dangling symlinks are not fresh DB paths.
+fn resolve_database_path(db_path: &Path) -> Result<PathBuf> {
+    match std::fs::canonicalize(db_path) {
+        Ok(path) => Ok(path),
+        Err(error) if std::fs::symlink_metadata(db_path).is_ok() => Err(anyhow::anyhow!(
+            "cannot resolve existing database path {}: {}",
+            db_path.display(),
+            error
+        )),
+        Err(error) if error.kind() != ErrorKind::NotFound => Err(anyhow::anyhow!(
+            "cannot resolve database path {}: {}",
+            db_path.display(),
+            error
+        )),
+        Err(_) => {
+            let parent = db_path
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."));
+            let name = db_path.file_name().ok_or_else(|| {
+                anyhow::anyhow!("database path {} has no file name", db_path.display())
+            })?;
+            let parent = std::fs::canonicalize(parent).map_err(|error| {
+                anyhow::anyhow!(
+                    "cannot resolve database parent {}: {}",
+                    parent.display(),
+                    error
+                )
+            })?;
+            Ok(parent.join(name))
+        }
+    }
+}
+
+fn anchor_path_spelling(path: &Path) -> Result<PathBuf> {
+    let anchored = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    absolute_path_spelling(&anchored)
+}
+
+fn absolute_path_spelling(path: &Path) -> Result<PathBuf> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    if !absolute.is_absolute() {
+        anyhow::bail!("database path {} is not absolute", path.display());
+    }
+    Ok(absolute)
+}
+
+fn freeze_path_parent(path: &Path) -> Result<PathBuf> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let name = path
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("database path {} has no file name", path.display()))?;
+    Ok(std::fs::canonicalize(parent)?.join(name))
+}
+
+/// Find supported path spellings that resolve to the same database. Follow
+/// symlink chains in file and parent components so every known sibling marker
+/// is inspected before the engine opens.
+fn discover_database_path_aliases(resolved: &Path, supplied: &Path) -> Result<Vec<PathBuf>> {
+    let supplied = absolute_path_spelling(supplied)?;
+    ensure_database_path_unchanged(resolved, &supplied)?;
+    let mut pending = vec![supplied];
+    let mut seen = HashSet::new();
+    let mut aliases = Vec::new();
+    while let Some(candidate) = pending.pop() {
+        if !seen.insert(candidate.clone()) {
+            continue;
+        }
+        if seen.len() > 64 {
+            anyhow::bail!("database alias chain exceeds the supported 64-path limit");
+        }
+        if resolve_database_path(&candidate).ok().as_deref() == Some(resolved)
+            && candidate != resolved
+        {
+            // Sidecars are siblings, so freeze the containing directory while
+            // retaining this alias's filename. A later parent-symlink retarget
+            // must not redirect recovery into another database's sidecars.
+            let frozen = freeze_path_parent(&candidate)?;
+            if frozen != resolved {
+                aliases.push(frozen);
+            }
+        }
+
+        let mut prefix = PathBuf::new();
+        for component in candidate.components() {
+            match component {
+                std::path::Component::CurDir => prefix.push("."),
+                std::path::Component::ParentDir => prefix.push(".."),
+                _ => prefix.push(component.as_os_str()),
+            }
+            match std::fs::symlink_metadata(&prefix) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    let target = std::fs::read_link(&prefix).map_err(|error| {
+                        anyhow::anyhow!(
+                            "cannot inspect database alias {}: {}",
+                            prefix.display(),
+                            error
+                        )
+                    })?;
+                    let target = if target.is_absolute() {
+                        target
+                    } else {
+                        prefix
+                            .parent()
+                            .unwrap_or_else(|| Path::new("/"))
+                            .join(target)
+                    };
+                    let remainder = candidate.strip_prefix(&prefix).map_err(|error| {
+                        anyhow::anyhow!("cannot expand database alias: {}", error)
+                    })?;
+                    let expanded = if remainder.as_os_str().is_empty() {
+                        target
+                    } else {
+                        target.join(remainder)
+                    };
+                    pending.push(absolute_path_spelling(&expanded)?);
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == ErrorKind::NotFound => {}
+                Err(error) => {
+                    anyhow::bail!(
+                        "cannot inspect database path component {}: {}",
+                        prefix.display(),
+                        error
+                    )
+                }
+            }
+        }
+    }
+    aliases.sort();
+    aliases.dedup();
+    Ok(aliases)
+}
+
+fn ensure_database_path_unchanged(resolved: &Path, supplied: &Path) -> Result<()> {
+    let current = resolve_database_path(supplied)?;
+    if current != resolved {
+        anyhow::bail!(
+            "database path alias {} changed while it was being inspected; no database was opened. Retry with a stable path and preserve all marker files",
+            supplied.display()
+        );
+    }
+    Ok(())
+}
+
+fn raw_database_sibling(db_path: &Path, suffix: &str) -> PathBuf {
+    let mut path = db_path.as_os_str().to_os_string();
+    path.push(suffix);
+    PathBuf::from(path)
+}
+
+fn database_path_spellings(db_path: &Path, aliases: &[PathBuf]) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    let mut seen = HashSet::new();
+    for path in std::iter::once(db_path).chain(aliases.iter().map(PathBuf::as_path)) {
+        if seen.insert(path.to_path_buf()) {
+            paths.push(path.to_path_buf());
+        }
+    }
+    paths
+}
+
+fn discover_stage_lease_sidecars_with_aliases(
+    db_path: &Path,
+    aliases: &[PathBuf],
+) -> Result<Vec<(String, PathBuf)>> {
+    let database_paths = database_path_spellings(db_path, aliases);
+    let mut found = std::collections::BTreeMap::<String, PathBuf>::new();
+    for database in database_paths {
+        let Some(name) = database.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let Some(parent) = database.parent() else {
+            continue;
+        };
+        let prefix = format!("{name}.stage-");
+        let entries = match std::fs::read_dir(parent) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
+        for entry in entries {
+            let entry = entry?;
+            let Some(filename) = entry.file_name().to_str().map(ToOwned::to_owned) else {
+                continue;
+            };
+            let Some(generation) = filename
+                .strip_prefix(&prefix)
+                .and_then(|value| value.strip_suffix(".lock"))
+            else {
+                continue;
+            };
+            let Ok(parsed) = uuid::Uuid::parse_str(generation) else {
+                continue;
+            };
+            if parsed.to_string() != generation {
+                continue;
+            }
+            let namespace = format!("{INTERNAL_INGEST_STAGE_PREFIX}{generation}");
+            found.entry(namespace).or_insert_with(|| entry.path());
+        }
+    }
+    Ok(found.into_iter().collect())
+}
+
+fn database_writer_lock_path(db_path: &Path) -> PathBuf {
+    raw_database_sibling(&canonical_database_path(db_path), ".writer.lock")
+}
+
+pub(crate) fn acquire_database_writer_lock(db_path: &Path) -> Result<File> {
+    let path = database_writer_lock_path(db_path);
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(&path)
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "could not open database writer lock {}: {}",
+                path.display(),
+                error
+            )
+        })?;
+    file.lock().map_err(|error| {
+        anyhow::anyhow!(
+            "could not lock database writer lock {}: {}",
+            path.display(),
+            error
+        )
+    })?;
+    Ok(file)
+}
+
+pub(crate) fn restore_in_progress_path(db_path: &Path) -> PathBuf {
+    let mut marker = db_path.as_os_str().to_os_string();
+    marker.push(".restore-in-progress");
+    PathBuf::from(marker)
+}
+
+pub(crate) fn create_restored_stage_leases(
+    db_path: &Path,
+    namespaces: &[String],
+) -> Result<Vec<PathBuf>> {
+    let mut created = Vec::new();
+    for namespace in namespaces {
+        if !is_internal_ingest_stage_namespace(namespace) {
+            for path in &created {
+                let _ = std::fs::remove_file(path);
+            }
+            anyhow::bail!("snapshot contains an invalid staging namespace identifier");
+        }
+        let path = ingest_stage_lease_path(db_path, namespace)?;
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => {
+                drop(file);
+                created.push(path);
+            }
+            Err(error) => {
+                for path in &created {
+                    let _ = std::fs::remove_file(path);
+                }
+                return Err(anyhow::anyhow!(
+                    "cannot install fresh staging provenance beside restored database: {}",
+                    error
+                ));
+            }
+        }
+    }
+    Ok(created)
+}
+
+fn has_ingest_stage_lease(db_path: &Path, aliases: &[PathBuf], namespace: &str) -> bool {
+    if !is_internal_ingest_stage_namespace(namespace) {
+        return false;
+    }
+    let Ok(paths) = ingest_stage_lease_candidates_with_aliases(db_path, aliases, namespace) else {
+        return false;
+    };
+    paths.into_iter().any(|path| {
+        let Ok(file) = OpenOptions::new().read(true).write(true).open(path) else {
+            return false;
+        };
+        match file.try_lock() {
+            Ok(()) => {
+                let _ = file.unlock();
+                false
+            }
+            Err(std::fs::TryLockError::WouldBlock) => true,
+            Err(std::fs::TryLockError::Error(_)) => false,
+        }
+    })
+}
+
+fn read_stage_provenance(conn: &Connection) -> Result<Vec<(String, String)>> {
+    let mut rows = match conn
+        .query("MATCH (s:IngestStage) RETURN s.namespace, s.generation ORDER BY s.namespace")
+    {
+        Ok(rows) => rows,
+        Err(error) if error.to_string().contains("does not exist in catalog") => {
+            return Ok(Vec::new())
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let mut stages = Vec::new();
+    while let Some(row) = rows.next() {
+        let namespace = format!("{}", row[0]);
+        let generation = format!("{}", row[1]);
+        let valid = namespace
+            .strip_prefix(INTERNAL_INGEST_STAGE_PREFIX)
+            .is_some_and(|raw| raw == generation && is_internal_ingest_stage_namespace(&namespace));
+        if valid {
+            stages.push((namespace, generation));
+        }
+    }
+    Ok(stages)
+}
+
+/// Returns cataloged stages plus pre-catalog stage rows whose exact reserved
+/// UUID namespace, generated sidecar, and auto-ingestor-qualified IDs prove
+/// staging ownership. This is only a visibility filter; it does not authorize
+/// deletion or migration of an active stage.
+fn read_hidden_stage_namespaces(
+    conn: &Connection,
+    db_path: &Path,
+    aliases: &[PathBuf],
+) -> Result<HashSet<String>> {
+    let mut hidden: HashSet<String> = read_stage_provenance(conn)?
+        .into_iter()
+        .map(|(namespace, _)| namespace)
+        .collect();
+    for (namespace, sidecar) in discover_stage_lease_sidecars_with_aliases(db_path, aliases)? {
+        if hidden.contains(&namespace) || !sidecar.is_file() {
+            continue;
+        }
+        if !is_internal_ingest_stage_namespace(&namespace) {
+            continue;
+        }
+        let safe = escape_ladybug_string(&namespace);
+        let mut rows = conn.query(&format!(
+            "MATCH (m:Memory) WHERE m.namespace = '{}' RETURN m.id, m.user_id",
+            safe
+        ))?;
+        let mut found = false;
+        let mut owned = true;
+        while let Some(row) = rows.next() {
+            found = true;
+            let id = format!("{}", row[0]);
+            let user_id = format!("{}", row[1]);
+            if user_id != "auto-ingestor"
+                || !id.starts_with(&format!(
+                    "{}{}",
+                    namespace,
+                    crate::parser::ingest::NAMESPACE_SEPARATOR
+                ))
+            {
+                owned = false;
+                break;
+            }
+        }
+        if found && owned {
+            hidden.insert(namespace);
+        }
+    }
+    Ok(hidden)
+}
+
+/// Register legacy stage rows at a snapshot cut while the caller owns the
+/// database writer lock. A valid UUID sidecar plus exclusively auto-ingestor,
+/// namespace-qualified rows is the legacy ownership evidence. This only writes
+/// catalog provenance; it never deletes rows or touches lease ownership.
+fn migrate_legacy_stages_at_snapshot_cut(
+    conn: &Connection,
+    db_path: &Path,
+    aliases: &[PathBuf],
+) -> Result<Vec<File>> {
+    let mut known: HashSet<String> = read_stage_provenance(conn)?
+        .into_iter()
+        .map(|(namespace, _)| namespace)
+        .collect();
+    let mut legacy_leases = Vec::new();
+    for (namespace, sidecar) in discover_stage_lease_sidecars_with_aliases(db_path, aliases)? {
+        if known.contains(&namespace) || !sidecar.is_file() {
+            continue;
+        }
+        // A legacy generation has no durable catalog marker yet. Lock every
+        // known alias before classifying it and keep those locks through the
+        // completed snapshot. If a pre-catalog writer is still active, refuse
+        // the snapshot instead of capturing a moving generation.
+        for candidate in ingest_stage_lease_candidates_with_aliases(db_path, aliases, &namespace)? {
+            if !candidate.is_file() {
+                continue;
+            }
+            let lease = OpenOptions::new().read(true).write(true).open(&candidate)?;
+            match lease.try_lock() {
+                Ok(()) => legacy_leases.push(lease),
+                Err(std::fs::TryLockError::WouldBlock) => {
+                    anyhow::bail!(
+                        "cannot snapshot legacy ingest generation {} while its stage lease is active",
+                        namespace
+                    )
+                }
+                Err(std::fs::TryLockError::Error(error)) => {
+                    return Err(anyhow::anyhow!(
+                        "cannot verify legacy ingest generation {} lease: {}",
+                        namespace,
+                        error
+                    ));
+                }
+            }
+        }
+        let Some(generation) = namespace.strip_prefix(INTERNAL_INGEST_STAGE_PREFIX) else {
+            continue;
+        };
+        conn.query("BEGIN TRANSACTION")?;
+        let result = (|| -> Result<bool> {
+            let safe = escape_ladybug_string(&namespace);
+            let mut rows = conn.query(&format!(
+                "MATCH (m:Memory) WHERE m.namespace = '{}' RETURN m.id, m.user_id",
+                safe
+            ))?;
+            let mut found = false;
+            while let Some(row) = rows.next() {
+                found = true;
+                let id = format!("{}", row[0]);
+                let user_id = format!("{}", row[1]);
+                if user_id != "auto-ingestor"
+                    || !id.starts_with(&format!(
+                        "{}{}",
+                        namespace,
+                        crate::parser::ingest::NAMESPACE_SEPARATOR
+                    ))
+                {
+                    return Ok(false);
+                }
+            }
+            if !found {
+                return Ok(false);
+            }
+            conn.query(&format!(
+                "CREATE (s:IngestStage {{namespace: '{}', generation: '{}'}})",
+                safe,
+                escape_ladybug_string(generation)
+            ))?;
+            Ok(true)
+        })();
+        match result {
+            Ok(true) => {
+                conn.query("COMMIT")?;
+                known.insert(namespace);
+            }
+            Ok(false) => {
+                conn.query("ROLLBACK")?;
+            }
+            Err(error) => {
+                let rollback = conn.query("ROLLBACK");
+                return match rollback {
+                    Ok(_) => Err(error),
+                    Err(rollback) => Err(anyhow::anyhow!(
+                        "snapshot stage provenance migration failed: {}; rollback failed: {}",
+                        error,
+                        rollback
+                    )),
+                };
+            }
+        }
+    }
+    Ok(legacy_leases)
+}
+
+fn cleanup_ingest_stage_lease_after_commit(path: &Path) -> Option<String> {
+    match std::fs::remove_file(path) {
+        Ok(()) => None,
+        Err(error) if error.kind() == ErrorKind::NotFound => None,
+        Err(error) => Some(format!(
+            "Ingest generation committed, but staging lease cleanup failed: {}. The empty generation is safe and can be cleaned up later.",
+            error
+        )),
+    }
+}
+
+#[cfg(test)]
+static TEST_PUBLISH_CRASH_BARRIER: std::sync::OnceLock<
+    std::sync::Mutex<Option<(String, PathBuf, PathBuf)>>,
+> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+static TEST_SNAPSHOT_OPERATION_BARRIER: std::sync::OnceLock<
+    std::sync::Mutex<Option<(String, PathBuf, PathBuf)>>,
+> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+static TEST_WRITE_LOCK_ATTEMPT: std::sync::OnceLock<
+    std::sync::Mutex<Option<(PathBuf, PathBuf)>>,
+> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+fn set_test_write_lock_attempt(db_path: PathBuf, marker: PathBuf) {
+    *TEST_WRITE_LOCK_ATTEMPT
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .unwrap() = Some((db_path, marker));
+}
+
+#[cfg(test)]
+fn test_write_lock_attempt(db_path: &Path) {
+    let marker = {
+        let mut state = TEST_WRITE_LOCK_ATTEMPT
+            .get_or_init(|| std::sync::Mutex::new(None))
+            .lock()
+            .unwrap();
+        match state.as_ref() {
+            Some((path, _))
+                if std::fs::canonicalize(path).ok() == std::fs::canonicalize(db_path).ok() =>
+            {
+                Some(state.take().unwrap().1)
+            }
+            _ => None,
+        }
+    };
+    if let Some(marker) = marker {
+        let lock_path = database_writer_lock_path(db_path);
+        let probe = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(lock_path)
+            .expect("writer lock probe file is openable");
+        match probe.try_lock() {
+            Err(std::fs::TryLockError::WouldBlock) => {
+                std::fs::write(marker, "writer lock was contended")
+                    .expect("write lock contention marker is writable");
+            }
+            Ok(()) => {
+                let _ = probe.unlock();
+                panic!("expected the checkpoint to hold the writer lock");
+            }
+            Err(std::fs::TryLockError::Error(error)) => {
+                panic!("could not verify writer lock contention: {error}");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+fn set_test_snapshot_operation_barrier(operation: &str, db_path: PathBuf, barrier: PathBuf) {
+    *TEST_SNAPSHOT_OPERATION_BARRIER
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .unwrap() = Some((operation.to_string(), db_path, barrier));
+}
+
+#[cfg(test)]
+fn test_snapshot_operation_barrier(db_path: &Path, operation: &str) {
+    let barrier = {
+        let mut state = TEST_SNAPSHOT_OPERATION_BARRIER
+            .get_or_init(|| std::sync::Mutex::new(None))
+            .lock()
+            .unwrap();
+        match state.as_ref() {
+            Some((expected, path, _))
+                if expected == operation
+                    && std::fs::canonicalize(path).ok() == std::fs::canonicalize(db_path).ok() =>
+            {
+                state.take().unwrap().2
+            }
+            _ => return,
+        }
+    };
+    std::fs::write(&barrier, operation).expect("snapshot operation barrier is writable");
+    let mut release = barrier.as_os_str().to_os_string();
+    release.push(".release");
+    let release = PathBuf::from(release);
+    let started = std::time::Instant::now();
+    while !release.exists() {
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(20),
+            "snapshot operation barrier watchdog expired at {operation}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+#[cfg(test)]
+fn set_test_publish_crash_barrier(phase: &str, db_path: PathBuf, barrier: PathBuf) {
+    *TEST_PUBLISH_CRASH_BARRIER
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .unwrap() = Some((phase.to_string(), db_path, barrier));
+}
+
+#[cfg(test)]
+fn test_publish_crash_barrier(db_path: &Path, phase: &str) {
+    let barrier = {
+        let mut state = TEST_PUBLISH_CRASH_BARRIER
+            .get_or_init(|| std::sync::Mutex::new(None))
+            .lock()
+            .unwrap();
+        match state.as_ref() {
+            Some((configured_phase, configured_db, _))
+                if configured_phase == phase
+                    && std::fs::canonicalize(configured_db).ok()
+                        == std::fs::canonicalize(db_path).ok() =>
+            {
+                state.take().unwrap().2
+            }
+            _ => return,
+        }
+    };
+    std::fs::write(&barrier, phase).expect("publish crash barrier is writable");
+    let mut release_path = barrier.as_os_str().to_os_string();
+    release_path.push(".release");
+    let release = PathBuf::from(release_path);
+    let started = std::time::Instant::now();
+    while !release.exists() {
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(20),
+            "publish crash barrier watchdog expired at {phase}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
 
 /// Read a boolean column out of a query row.
 ///
@@ -43,7 +791,20 @@ async fn search_inner(
     store
         .with_conn(move |conn| {
             let safe_ns = escape_ladybug_string(&namespace);
-            let vec_str = format!("[{}]", vector.iter().map(|f| f.to_string()).collect::<Vec<_>>().join(","));
+            let vec_str = format!(
+                "[{}]",
+                // R16: defense-in-depth (no native bind in lbug 0.20.4).
+                // Always emit decimal (e.g. 0 → 0.0) so ARRAY_DISTANCE
+                // binder never sees pure-integer arrays.
+                vector.iter().map(|f| {
+                    let s = format!("{}", f);
+                    if s.contains('.') || s.contains('e') || s.contains('E') {
+                        s
+                    } else {
+                        format!("{}.0", s)
+                    }
+                }).collect::<Vec<_>>().join(",")
+            );
             let now = chrono::Utc::now().timestamp();
 
             // LadybugDB (the embedder) has no OFFSET, so we over-fetch with a larger LIMIT and
@@ -89,6 +850,7 @@ async fn search_inner(
             );
 
             let result = conn.query(&search_query)?;
+            let result_count = result.get_num_tuples() as usize;
             let mut all_primaries = Vec::new();
             let mut filtered_primaries = Vec::new();
 
@@ -504,8 +1266,20 @@ async fn search_inner(
                 // The real discriminator is EvidenceKind, not score.
                 const EXPANSION_BASE_SCORE: f32 = 1.0; // sorts after any real boosted_distance (< 1.0 typically)
                 for id in &admitted {
-                    let entry = by_id.remove(id).unwrap();
-                    let payload = entry.payload.unwrap();
+                    let entry = match by_id.remove(id) {
+                        Some(e) => e,
+                        None => {
+                            tracing::warn!("admitted id {} not in by_id map (drift); skipping", id);
+                            continue;
+                        }
+                    };
+                    let payload = match entry.payload {
+                        Some(p) => p,
+                        None => {
+                            tracing::warn!("entry for {} has no payload (drift); skipping", id);
+                            continue;
+                        }
+                    };
                     let mut evidence = entry.evidence;
                     // Sort evidence: kind (OneHop < Governs2hop), then path edges
                     evidence.sort_by(|a, b| {
@@ -542,19 +1316,376 @@ async fn search_inner(
                 }
             });
 
-            // Return limit primaries + their expansions (no truncation to limit*2)
-            // The admission caps already bound expansions to limit per family.
-            Ok(DomainSearchOutcome { results, mode })
+            // Incomplete marker: set when the full 10x budget was consumed by the
+// Cypher LIMIT, meaning more matching rows beyond the page may exist and
+// must be fetched via pagination to avoid losing live matches hidden behind
+// rows filtered out after LIMIT. Heuristic: if result_count == fetch_limit
+// the engine's LIMIT was hit, indicating the multiplier exhausted and pages
+// beyond remain.
+let incomplete = result_count >= fetch_limit;
+Ok(DomainSearchOutcome { results, mode, incomplete })
         })
         .await
+}
+
+/// Memory ceilings for the embedded graph store.
+///
+/// Both defaults exist because the engine's own defaults are not ceilings:
+/// `SystemConfig::default()` leaves `buffer_pool_size` at 0, which lbug turns
+/// into 80% of the machine's physical memory, and `max_db_size` at `u32::MAX`,
+/// which it turns into an 8 TB virtual region. The test constructor has always
+/// bounded both; the production open path did not, so the pool was free to grow
+/// to most of RAM as pages were touched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StoreLimits {
+    pub buffer_pool_bytes: u64,
+    pub max_db_bytes: u64,
+}
+
+impl StoreLimits {
+    /// 256 MiB is a ceiling, not an allocation -- the pool fills as pages are
+    /// read -- and is comfortably above the working set of a symbol index.
+    pub const DEFAULT_BUFFER_POOL_BYTES: u64 = 256 * 1024 * 1024;
+    /// 8 GiB of address space: far below the engine's 8 TB default, and far
+    /// above anything this tool has produced.
+    pub const DEFAULT_MAX_DB_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+
+    fn validate(self) -> Result<()> {
+        if self.buffer_pool_bytes == 0 || self.max_db_bytes == 0 {
+            anyhow::bail!(
+                "store byte limits must be positive; zero selects an unbounded engine default"
+            );
+        }
+        if self.buffer_pool_bytes == u32::MAX as u64 || self.max_db_bytes == u32::MAX as u64 {
+            anyhow::bail!(
+                "store byte limits cannot use the engine's u32::MAX automatic-size sentinel"
+            );
+        }
+        if self.buffer_pool_bytes > self.max_db_bytes {
+            anyhow::bail!("the buffer-pool ceiling cannot exceed the database-size ceiling");
+        }
+        Ok(())
+    }
+}
+
+impl Default for StoreLimits {
+    fn default() -> Self {
+        Self {
+            buffer_pool_bytes: Self::DEFAULT_BUFFER_POOL_BYTES,
+            max_db_bytes: Self::DEFAULT_MAX_DB_BYTES,
+        }
+    }
+}
+
+/// Width and, for newly marked databases, model identity used to create a DB.
+///
+/// The `Memory` table stores `embedding FLOAT[N]`, sized from the embedder at
+/// creation time. The fixed width can be read from the catalog, but the schema
+/// does not record which model produced each vector. A sidecar records both for
+/// new stores; a legacy store without identity adopts its current model with a
+/// visible warning, then blocks subsequent identity changes. The adoption is
+/// itself recorded in the persisted marker as provenance (see
+/// `PersistedEmbeddingMarker`); adopting never refuses the open.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct EmbeddingMarker {
+    version: u8,
+    dimensions: usize,
+    #[serde(default)]
+    embedder_id: Option<String>,
+}
+pub(crate) fn width_marker_path(db_path: &Path) -> PathBuf {
+    let canonical = canonical_database_path(db_path);
+    let mut marker = canonical.as_os_str().to_os_string();
+    marker.push(".embedding");
+    PathBuf::from(marker)
+}
+
+/// Adoption provenance recorded in a marker's JSON, if any. Legacy numeric
+/// markers and markers written before provenance existed carry none.
+fn adopted_from_in_marker_bytes(bytes: &[u8]) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    value.get("adopted_from")?.as_str().map(str::to_string)
+}
+
+/// Read the marker; legacy numeric markers remain readable for an explicit,
+/// warned identity adoption.
+#[allow(dead_code)] // the open path uses the provenance-aware form below
+fn read_width_marker(
+    resolved_db_path: &Path,
+    supplied_db_paths: &[PathBuf],
+    configured_embedder_id: Option<&str>,
+) -> Result<Option<EmbeddingMarker>> {
+    Ok(read_width_marker_with_provenance(
+        resolved_db_path,
+        supplied_db_paths,
+        configured_embedder_id,
+    )?
+    .map(|(marker, _)| marker))
+}
+
+/// Read the marker together with any adoption provenance recorded in it.
+/// Provenance is not a field of `EmbeddingMarker`: it describes how the
+/// marker came to carry its identity, not the identity itself, and keeping
+/// it alongside leaves every existing marker construction untouched.
+fn read_width_marker_with_provenance(
+    resolved_db_path: &Path,
+    supplied_db_paths: &[PathBuf],
+    configured_embedder_id: Option<&str>,
+) -> Result<Option<(EmbeddingMarker, Option<String>)>> {
+    // `resolved_db_path` is the exact file identity locked and passed to the
+    // engine. Do not resolve the caller's symlink again here: it could be
+    // retargeted between resolution and marker preflight.
+    let canonical = raw_database_sibling(resolved_db_path, ".embedding");
+    let mut paths = vec![canonical.clone()];
+    for supplied in supplied_db_paths {
+        let marker = raw_database_sibling(supplied, ".embedding");
+        if marker != canonical && !paths.contains(&marker) {
+            paths.push(marker);
+        }
+    }
+    let mut found: Vec<(PathBuf, EmbeddingMarker, Option<String>)> = Vec::new();
+    for path in paths {
+        match std::fs::read(&path) {
+            Ok(bytes) => {
+                let adopted_from = adopted_from_in_marker_bytes(&bytes);
+                let marker = parse_width_marker(&path, &bytes)?;
+                found.push((path.clone(), marker, adopted_from));
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                // A dangling symlink or other existing but unreadable marker is
+                // evidence, not absence. Never adopt a new identity over it.
+                if std::fs::symlink_metadata(&path).is_ok() {
+                    anyhow::bail!("Cannot inspect the embedding marker at {}: {}", path.display(), error);
+                }
+            }
+            Err(error) => anyhow::bail!(
+                "Cannot read the embedding marker at {}: {}. Keep the database and marker intact; repair access or restore a matching snapshot to a separate path.",
+                path.display(), error
+            ),
+        }
+    }
+    let Some((_, first, _)) = found.first() else {
+        return Ok(None);
+    };
+    let identities = found
+        .iter()
+        .filter_map(|(_, marker, _)| marker.embedder_id.as_deref())
+        .map(|identity| match configured_embedder_id {
+            Some(configured) => {
+                crate::embed::canonicalize_persisted_embedder_id(identity, configured)
+            }
+            None => Ok(identity.to_string()),
+        })
+        .collect::<Result<HashSet<_>>>()?;
+    if found
+        .iter()
+        .any(|(_, other, _)| other.dimensions != first.dimensions)
+        || identities.len() > 1
+    {
+        let paths = found
+            .iter()
+            .map(|(path, _, _)| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(" and ");
+        anyhow::bail!(
+            "Conflicting embedding markers exist at {}. Preserve both markers and the database; reconcile them only after verifying which model created the vectors.",
+            paths
+        );
+    }
+    let identity_marker = found
+        .iter()
+        .find(|(_, marker, _)| marker.embedder_id.is_some())
+        .map(|(_, marker, adopted_from)| (marker, adopted_from));
+    let (selected, adopted_from) = identity_marker.unwrap_or((first, &found[0].2));
+    Ok(Some((selected.clone(), adopted_from.clone())))
+}
+
+fn parse_width_marker(path: &Path, bytes: &[u8]) -> Result<EmbeddingMarker> {
+    let raw = String::from_utf8_lossy(bytes);
+    let marker = if let Ok(marker) = serde_json::from_slice::<EmbeddingMarker>(bytes) {
+        marker
+    } else {
+        let dimensions = raw.trim().parse().map_err(|error| {
+            anyhow::anyhow!(
+                "The embedding marker at {} is malformed; preserve it and inspect it without overwriting it: {}",
+                path.display(),
+                error
+            )
+        })?;
+        EmbeddingMarker {
+            version: 1,
+            dimensions,
+            embedder_id: None,
+        }
+    };
+    if marker.version != 1 || marker.dimensions == 0 {
+        anyhow::bail!(
+            "The embedding marker at {} has unsupported version {} or zero width",
+            path.display(),
+            marker.version
+        );
+    }
+    Ok(marker)
+}
+
+fn persisted_embedding_width(db: &Database) -> Result<Option<usize>> {
+    let conn = Connection::new(db)?;
+    let mut rows = match conn.query("CALL table_info('Memory') RETURN *") {
+        Ok(rows) => rows,
+        Err(error) if error.to_string().contains("does not exist in catalog") => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let mut has_properties = false;
+    while let Some(row) = rows.next() {
+        has_properties = true;
+        if format!("{}", row[1]) != "embedding" {
+            continue;
+        }
+        let property_type = format!("{}", row[2]);
+        let Some((_, raw_width)) = property_type.split_once('[') else {
+            anyhow::bail!("Memory.embedding has unsupported schema type {property_type}");
+        };
+        let width = raw_width
+            .trim_end_matches(']')
+            .parse::<usize>()
+            .map_err(|e| {
+                anyhow::anyhow!("Memory.embedding has unsupported schema type {property_type}: {e}")
+            })?;
+        return Ok(Some(width));
+    }
+    if has_properties {
+        anyhow::bail!("Memory table exists but has no embedding property");
+    }
+    Ok(None)
+}
+
+/// The canonicalized (saved, configured) identity pair for refusal
+/// messages, or `None` when either identity is absent or the saved
+/// legacy identity cannot be safely canonicalized against the
+/// configured one. Refusal text must only ever carry canonicalized
+/// identities (Refusal Standard element 6): a legacy remote identity
+/// can embed a credential-bearing URL, and one that cannot be matched
+/// to the configured identity must never be printed raw.
+fn canonical_identity_pair(
+    saved: Option<&str>,
+    configured: Option<&str>,
+) -> Option<(String, String)> {
+    let (saved, configured) = (saved?, configured?);
+    crate::embed::canonicalize_persisted_embedder_id(saved, configured)
+        .ok()
+        .map(|canonical| (canonical, configured.to_string()))
+}
+
+fn check_embedding_width(
+    db_path: &Path,
+    recorded: usize,
+    dimensions: usize,
+    identities: Option<(&str, &str)>,
+) -> Result<()> {
+    if recorded != dimensions {
+        let identity_clause = match identities {
+            Some((saved, configured)) => format!(
+                " It was embedded with model identity {saved:?}, while the configured identity is {configured:?}."
+            ),
+            None => String::new(),
+        };
+        return Err(anyhow::anyhow!(
+            "Refusing to open {}: its Memory.embedding column has width {} but the configured embedder produces {}.{} Keep the database intact and reopen it with the original embedder, or use a separate database path for the new model; no in-place re-embedding migration is available. Marker: {}",
+            db_path.display(),
+            recorded,
+            dimensions,
+            identity_clause,
+            width_marker_path(db_path).display()
+        ));
+    }
+
+    Ok(())
+}
+
+/// Persist the schema width and embedding identity used to create the database.
+/// A failed write must stop the open; otherwise a later same-width model could
+/// silently adopt an unmarked database.
+#[allow(dead_code)] // the open path uses the provenance-aware form below
+fn write_width_marker(db_path: &Path, dimensions: usize, embedder_id: Option<&str>) -> Result<()> {
+    write_width_marker_with_adopted_from(db_path, dimensions, embedder_id, None)
+}
+
+/// The marker's serialization form. `adopted_from` records that this store's
+/// identity was adopted from a legacy marker (`"width-only"`) or from its
+/// fixed-width schema alone (`"schema-only"`); it is serialized only when an
+/// adoption occurred, so natively marked stores keep the pre-existing shape
+/// and markers written before it existed parse unchanged.
+#[derive(serde::Serialize)]
+struct PersistedEmbeddingMarker {
+    version: u8,
+    dimensions: usize,
+    embedder_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    adopted_from: Option<String>,
+}
+
+fn write_width_marker_with_adopted_from(
+    db_path: &Path,
+    dimensions: usize,
+    embedder_id: Option<&str>,
+    adopted_from: Option<&str>,
+) -> Result<()> {
+    let path = width_marker_path(db_path);
+    let marker = PersistedEmbeddingMarker {
+        version: 1,
+        dimensions,
+        embedder_id: embedder_id.map(str::to_string),
+        adopted_from: adopted_from.map(str::to_string),
+    };
+    let tmp = path.with_extension(format!("embedding.{}.tmp", uuid::Uuid::new_v4()));
+    let result = (|| -> Result<()> {
+        std::fs::write(&tmp, serde_json::to_vec_pretty(&marker)?)?;
+        std::fs::rename(&tmp, &path)?;
+        Ok(())
+    })()
+    .map_err(|error| {
+        anyhow::anyhow!(
+            "could not persist the embedding marker at {}: {}",
+            path.display(),
+            error
+        )
+    });
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
+
+/// One pass of the row-identity audit init() runs (Task 7): the store's
+/// Memory rows classified by their (namespace, id) identity. A row whose
+/// namespace property is NULL predates the identity rule (or arrived
+/// damaged); the audit backfills it in place when its metadata carries a
+/// valid `namespace`, and quarantines it otherwise. A quarantined row
+/// keeps its data, blocks nothing, and refuses writes aimed at its id
+/// until an operator repairs it. The audit never fails init.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RowIdentityAudit {
+    pub total_rows: i64,
+    pub null_namespace_rows: i64,
+    pub backfilled: i64,
+    pub quarantined: i64,
 }
 
 pub struct LadybugStore {
     #[allow(dead_code)]
     local_path: PathBuf,
+    /// Original path spellings are retained only to find historical lease
+    /// sidecars. Engine and snapshot operations use the resolved path above.
+    path_aliases: Vec<PathBuf>,
     dimensions: usize,
     db: Arc<Database>,
     dirty: Dirty,
+    /// Serializes checkpointing and snapshot copies. The write lock is also
+    /// held during a snapshot so the database and provenance manifest share a
+    /// single application-level cut.
+    snapshot_lock: Arc<tokio::sync::Mutex<()>>,
+    /// The most recent row-identity audit, taken by init() (Task 7).
+    identity_audit: std::sync::Mutex<RowIdentityAudit>,
     /// LadybugDB allows exactly one write transaction and REFUSES a second
     /// rather than queueing it, so two writers that overlap produce "Cannot
     /// start a new write transaction in the system" for whichever arrives
@@ -574,6 +1705,13 @@ pub struct LadybugStore {
     /// already exists. That is a write transaction per read, colliding with
     /// real writes for nothing.
     schema_ready: std::sync::atomic::AtomicBool,
+    /// Set by init() when the Memory table carries the derived `pk`
+    /// column (Task 7 re-plan): fresh tables are created with it, and a
+    /// pre-existing table gains it via ALTER + backfill. While false,
+    /// identity operations (upsert MERGE, get, delete, edge MERGE) use
+    /// the legacy (namespace, id) property matching instead of keying on
+    /// pk — the store never refuses to open over a missing column.
+    pk_ready: std::sync::atomic::AtomicBool,
 }
 
 /// Whether a write is sitting in the log with no checkpoint behind it yet.
@@ -581,8 +1719,8 @@ pub struct LadybugStore {
 /// `take` clears and reports in one step so a write landing mid-checkpoint is
 /// not swallowed: the flag is cleared before the flush, and put back if the
 /// flush fails.
-#[derive(Default)]
-struct Dirty(std::sync::atomic::AtomicBool);
+#[derive(Clone, Default)]
+struct Dirty(Arc<std::sync::atomic::AtomicBool>);
 
 impl Dirty {
     fn mark(&self) {
@@ -598,12 +1736,26 @@ impl Dirty {
     }
 }
 
+/// Marks a write attempt dirty before its cross-process writer lock is
+/// released. Checkpoint acquires the same lock before taking this flag, so a
+/// canceled caller cannot hide a mutation from the checkpoint loop.
+struct MarkDirtyOnDrop(Dirty);
+
+impl Drop for MarkDirtyOnDrop {
+    fn drop(&mut self) {
+        self.0.mark();
+    }
+}
+
 /// Normal open: checksums on, and replay failures throw. The throw is the whole
 /// point -- with it off the engine swallows a failed verification, opens anyway
 /// and silently drops every record it could not authenticate, which is exactly
 /// the outcome this code exists to make visible.
-fn verifying_config() -> SystemConfig {
-    SystemConfig::default().throw_on_wal_replay_failure(true)
+fn verifying_config(limits: StoreLimits) -> SystemConfig {
+    SystemConfig::default()
+        .buffer_pool_size(limits.buffer_pool_bytes)
+        .max_db_size(limits.max_db_bytes)
+        .throw_on_wal_replay_failure(true)
 }
 
 /// Recovery open, used only after verification has already failed. The engine
@@ -614,8 +1766,10 @@ fn verifying_config() -> SystemConfig {
 ///
 /// This trades tamper-evidence for the writes, so it is never the normal path
 /// and never silent.
-fn unverified_config() -> SystemConfig {
+fn unverified_config(limits: StoreLimits) -> SystemConfig {
     SystemConfig::default()
+        .buffer_pool_size(limits.buffer_pool_bytes)
+        .max_db_size(limits.max_db_bytes)
         .throw_on_wal_replay_failure(false)
         .enable_checksums(false)
 }
@@ -678,6 +1832,408 @@ fn preserve_unclean_wal(local_path: &std::path::Path) {
 }
 
 impl LadybugStore {
+    #[cfg(test)]
+    pub(crate) async fn seed_legacy_memory_for_test(
+        &self,
+        namespace: &str,
+        id: &str,
+        vector: Vec<f32>,
+        payload: MemoryPayload,
+    ) -> Result<()> {
+        let (namespace, id) = (namespace.to_string(), id.to_string());
+        let pk_ready = self.pk_ready();
+        self.write_with_deadline("seeding a legacy memory fixture", move |conn| {
+            let vector = format!(
+                "[{}]",
+                vector
+                    .iter()
+                    .map(|value| value.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
+            // Task 7 fix round: this fixture seeds rows into a fresh
+            // (pk-keyed) table, so the CREATE must supply the derived
+            // key as create input, exactly as a production writer
+            // does. In legacy mode (no pk column) the fragment is
+            // empty and the statement is unchanged.
+            let pk_prop = if pk_ready {
+                format!(
+                    "pk: '{}', ",
+                    escape_ladybug_string(&memory_pk(&namespace, &id))
+                )
+            } else {
+                String::new()
+            };
+            conn.query(&format!(
+                "CREATE (m:Memory {{{}id: '{}', namespace: '{}', content: '{}', user_id: '{}', memory_type: '{}', agent_name: '{}', location: '{}', location_lines: '{}', metadata: '{}', embedding: {}}})",
+                pk_prop,
+                escape_ladybug_string(&id),
+                escape_ladybug_string(&namespace),
+                escape_ladybug_string(&payload.content),
+                escape_ladybug_string(&payload.user_id),
+                escape_ladybug_string(&payload.memory_type),
+                escape_ladybug_string(payload.agent_name.as_deref().unwrap_or("unknown")),
+                escape_ladybug_string(&payload.location),
+                escape_ladybug_string(&payload.location_lines),
+                escape_ladybug_string(&serde_json::to_string(&payload.metadata)?),
+                vector
+            ))?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn clear_internal_ingest_stage(&self, namespace: &str) -> Result<()> {
+        if !is_internal_ingest_stage_namespace(namespace) {
+            anyhow::bail!("refusing to clear a non-staging namespace as an ingest generation");
+        }
+        let namespace = namespace.to_string();
+        self.write_with_deadline("recovering an interrupted ingest generation", move |conn| {
+            let safe_ns = escape_ladybug_string(&namespace);
+            let generation = namespace
+                .strip_prefix(INTERNAL_INGEST_STAGE_PREFIX)
+                .ok_or_else(|| anyhow::anyhow!("invalid ingest generation"))?
+                .to_string();
+            conn.query("BEGIN TRANSACTION")?;
+            let result = (|| -> Result<()> {
+                let has_provenance = conn
+                    .query(&format!(
+                        "MATCH (s:IngestStage) WHERE s.namespace = '{}' AND s.generation = '{}' RETURN s.namespace LIMIT 1",
+                        safe_ns,
+                        escape_ladybug_string(&generation)
+                    ))?
+                    .next()
+                    .is_some();
+                if !has_provenance {
+                    anyhow::bail!("refusing to clear an ingest generation without database provenance");
+                }
+                conn.query(&format!(
+                    "MATCH (m:Memory) WHERE m.namespace = '{}' DETACH DELETE m",
+                    safe_ns
+                ))?;
+                conn.query(&format!(
+                    "MATCH (s:IngestStage) WHERE s.namespace = '{}' AND s.generation = '{}' DELETE s",
+                    safe_ns,
+                    escape_ladybug_string(&generation)
+                ))?;
+                Ok(())
+            })();
+            match result {
+                Ok(()) => {
+                    conn.query("COMMIT")?;
+                    Ok(())
+                }
+                Err(error) => {
+                    let rollback = conn.query("ROLLBACK");
+                    match rollback {
+                        Ok(_) => Err(error),
+                        Err(rollback) => Err(anyhow::anyhow!(
+                            "stage recovery failed: {}; rollback failed: {}",
+                            error,
+                            rollback
+                        )),
+                    }
+                }
+            }
+        })
+        .await
+    }
+
+    async fn recover_interrupted_ingest_stages(&self) -> Result<()> {
+        self.migrate_pre_catalog_stage_leases().await?;
+        let stages = self.with_conn(read_stage_provenance).await?;
+
+        for (namespace, _generation) in stages {
+            let lease_paths = ingest_stage_lease_candidates_with_aliases(
+                &self.local_path,
+                &self.path_aliases,
+                &namespace,
+            )?;
+            // Older path aliases could leave a stale unlocked sidecar beside
+            // the canonical sidecar. Recovery must hold every extant alias
+            // before it treats the generation as abandoned.
+            let mut leases = Vec::new();
+            let mut active = false;
+            for path in &lease_paths {
+                match OpenOptions::new().read(true).write(true).open(path) {
+                    Ok(file) => match file.try_lock() {
+                        Ok(()) => leases.push(file),
+                        Err(std::fs::TryLockError::WouldBlock) => active = true,
+                        Err(std::fs::TryLockError::Error(error)) => {
+                            eprintln!(
+                                "Could not determine whether hidden ingest generation {} is active: {}. Leaving it intact.",
+                                namespace, error
+                            );
+                            active = true;
+                        }
+                    },
+                    Err(error) if error.kind() == ErrorKind::NotFound => {}
+                    Err(error) => {
+                        eprintln!(
+                            "Could not inspect hidden ingest generation {}: {}. Leaving it intact.",
+                            namespace, error
+                        );
+                        active = true;
+                    }
+                }
+            }
+            if active {
+                drop(leases);
+                continue;
+            }
+            if leases.is_empty() {
+                let path = &lease_paths[0];
+                let file = match OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create_new(true)
+                    .open(path)
+                {
+                    Ok(file) => file,
+                    Err(_) => continue,
+                };
+                if file.try_lock().is_err() {
+                    continue;
+                }
+                leases.push(file);
+            }
+
+            match self.clear_internal_ingest_stage(&namespace).await {
+                Ok(()) => {
+                    for file in leases {
+                        let _ = file.unlock();
+                    }
+                    for path in lease_paths {
+                        let _ = std::fs::remove_file(path);
+                    }
+                }
+                Err(error) => {
+                    eprintln!(
+                        "Could not remove interrupted hidden ingest generation {}: {}. It remains excluded from namespace listings and graph exports.",
+                        namespace, error
+                    );
+                }
+            }
+        }
+        self.remove_orphan_stage_lease_sidecars().await?;
+        Ok(())
+    }
+
+    /// Upgrade abandoned generations created by the previous release, which
+    /// recorded ownership only in a locked sidecar. Require the reserved UUID
+    /// namespace, that exact sidecar, and exclusively auto-ingestor rows before
+    /// writing durable catalog provenance; user/lookalike rows remain intact.
+    async fn migrate_pre_catalog_stage_leases(&self) -> Result<()> {
+        let current: HashSet<String> = self
+            .with_conn(read_stage_provenance)
+            .await?
+            .into_iter()
+            .map(|(namespace, _)| namespace)
+            .collect();
+        for (namespace, discovered_path) in
+            discover_stage_lease_sidecars_with_aliases(&self.local_path, &self.path_aliases)?
+        {
+            if current.contains(&namespace) {
+                continue;
+            }
+            let mut paths = ingest_stage_lease_candidates_with_aliases(
+                &self.local_path,
+                &self.path_aliases,
+                &namespace,
+            )?;
+            if !paths.contains(&discovered_path) {
+                paths.push(discovered_path.clone());
+            }
+            let mut leases = Vec::new();
+            let mut active_lease = false;
+            let mut unreadable = false;
+            for path in paths {
+                match OpenOptions::new().read(true).write(true).open(&path) {
+                    Ok(file) => match file.try_lock() {
+                        Ok(()) => leases.push(file),
+                        // An active legacy generation still needs durable
+                        // catalog provenance so snapshots hide it. Migration
+                        // only records ownership; it never deletes these rows
+                        // or its lease. The database writer lock below
+                        // serializes this check with engine writes.
+                        Err(std::fs::TryLockError::WouldBlock) => active_lease = true,
+                        Err(std::fs::TryLockError::Error(_)) => unreadable = true,
+                    },
+                    Err(error) if error.kind() == ErrorKind::NotFound => {}
+                    Err(_) => unreadable = true,
+                }
+            }
+            if unreadable {
+                drop(leases);
+                continue;
+            }
+            if active_lease {
+                // Without ownership of every legacy lease alias, do not
+                // convert a transient old-format stage into catalog provenance:
+                // later snapshot code would mistake that marker for proof the
+                // generation is stable. The strict namespace + sidecar + row
+                // check in read_hidden_stage_namespaces keeps it invisible.
+                drop(leases);
+                continue;
+            }
+            // The discovered sidecar may be in a symlink alias directory that
+            // is not represented by the canonical candidate list.
+            if leases.is_empty() && !active_lease {
+                let file = match OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(&discovered_path)
+                {
+                    Ok(file) => file,
+                    Err(_) => continue,
+                };
+                match file.try_lock() {
+                    Ok(()) => leases.push(file),
+                    Err(_) => continue,
+                }
+            }
+            let generation = namespace
+                .strip_prefix(INTERNAL_INGEST_STAGE_PREFIX)
+                .expect("sidecar discovery produces reserved namespace")
+                .to_string();
+            let migrated = self
+                .write_with_deadline("upgrading ingest stage provenance", move |conn| {
+                    conn.query("BEGIN TRANSACTION")?;
+                    let result = (|| -> Result<bool> {
+                        let safe = escape_ladybug_string(&namespace);
+                        let mut rows = conn.query(&format!(
+                            "MATCH (m:Memory) WHERE m.namespace = '{}' RETURN m.id, m.user_id",
+                            safe
+                        ))?;
+                        let mut found = false;
+                        while let Some(row) = rows.next() {
+                            found = true;
+                            let id = format!("{}", row[0]);
+                            let user_id = format!("{}", row[1]);
+                            if user_id != "auto-ingestor"
+                                || !id.starts_with(&format!(
+                                    "{}{sep}",
+                                    namespace,
+                                    sep = crate::parser::ingest::NAMESPACE_SEPARATOR
+                                ))
+                            {
+                                return Ok(false);
+                            }
+                        }
+                        if !found {
+                            return Ok(false);
+                        }
+                        conn.query(&format!(
+                            "CREATE (s:IngestStage {{namespace: '{}', generation: '{}'}})",
+                            safe,
+                            escape_ladybug_string(&generation)
+                        ))?;
+                        Ok(true)
+                    })();
+                    match result {
+                        Ok(true) => {
+                            conn.query("COMMIT")?;
+                            Ok(true)
+                        }
+                        Ok(false) => {
+                            conn.query("ROLLBACK")?;
+                            Ok(false)
+                        }
+                        Err(error) => {
+                            let rollback = conn.query("ROLLBACK");
+                            match rollback {
+                                Ok(_) => Err(error),
+                                Err(rollback) => Err(anyhow::anyhow!(
+                                    "stage provenance upgrade failed: {}; rollback failed: {}",
+                                    error,
+                                    rollback
+                                )),
+                            }
+                        }
+                    }
+                })
+                .await?;
+            drop(leases);
+            let _ = migrated;
+        }
+        Ok(())
+    }
+
+    async fn remove_orphan_stage_lease_sidecars(&self) -> Result<()> {
+        let _write_turn = self.write_lock.lock().await;
+        let db_path = self.local_path.clone();
+        let _cross_process_writer =
+            tokio::task::spawn_blocking(move || acquire_database_writer_lock(&db_path)).await??;
+        let live_stages: HashSet<String> = self
+            .with_conn(read_stage_provenance)
+            .await?
+            .into_iter()
+            .map(|(namespace, _)| namespace)
+            .collect();
+        for (namespace, _) in
+            discover_stage_lease_sidecars_with_aliases(&self.local_path, &self.path_aliases)?
+        {
+            if live_stages.contains(&namespace) {
+                continue;
+            }
+            let has_rows = self
+                .with_conn({
+                    let namespace = namespace.clone();
+                    move |conn| {
+                        let safe = escape_ladybug_string(&namespace);
+                        let mut rows = conn.query(&format!(
+                            "MATCH (m:Memory) WHERE m.namespace = '{}' RETURN m.id LIMIT 1",
+                            safe
+                        ))?;
+                        Ok(rows.next().is_some())
+                    }
+                })
+                .await?;
+            if has_rows {
+                // Without catalog provenance, preserve these bytes and their
+                // sidecar. They may be legacy or user-owned rows.
+                continue;
+            }
+            for path in ingest_stage_lease_candidates_with_aliases(
+                &self.local_path,
+                &self.path_aliases,
+                &namespace,
+            )? {
+                let lock = match OpenOptions::new().read(true).write(true).open(&path) {
+                    Ok(file) => file,
+                    Err(error) if error.kind() == ErrorKind::NotFound => continue,
+                    Err(error) => return Err(error.into()),
+                };
+                match lock.try_lock() {
+                    Ok(()) => {
+                        drop(lock);
+                        match std::fs::remove_file(&path) {
+                            Ok(()) => {}
+                            Err(error) if error.kind() == ErrorKind::NotFound => {}
+                            // Some platforms refuse to unlink a locked file. The
+                            // leftover is harmless and can be retried later.
+                            Err(error) if error.kind() == ErrorKind::PermissionDenied => {}
+                            Err(error) => return Err(error.into()),
+                        }
+                    }
+                    Err(std::fs::TryLockError::WouldBlock) => continue,
+                    Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn ingest_stage_namespaces(&self) -> Result<Vec<String>> {
+        self.with_conn(|conn| {
+            Ok(read_stage_provenance(conn)?
+                .into_iter()
+                .map(|(namespace, _)| namespace)
+                .collect())
+        })
+        .await
+    }
+
     /// Construct a `LadybugStore` for tests with a small system footprint so
     /// `cargo test` (parallel by default) does not mmap-reserve 8 TiB per
     /// open. The defaults are 512 MiB max database size + 64 MiB buffer
@@ -688,6 +2244,23 @@ impl LadybugStore {
     /// 15-ish test sites use temp directories; this keeps every concurrent
     /// open well under container memory ceilings and ends the open-time
     /// `Mmap for size 8796093022208 failed` flake (task neurostrata-c8te).
+    /// The most recent row-identity audit, taken by init() (Task 7). All
+    /// zeroes until the first init() completes on this store instance.
+    pub fn row_identity_audit(&self) -> RowIdentityAudit {
+        *self
+            .identity_audit
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Whether init() confirmed the derived `pk` column on the Memory
+    /// table (Task 7 re-plan). Identity operations key on pk when this
+    /// holds and fall back to (namespace, id) property matching when it
+    /// does not.
+    fn pk_ready(&self) -> bool {
+        self.pk_ready.load(std::sync::atomic::Ordering::Acquire)
+    }
+
     pub fn for_testing(local_path: impl Into<PathBuf>, dimensions: usize) -> Result<Self> {
         let max_db_size: u64 = std::env::var("NEUROSTRATA_TEST_MAX_DB_SIZE")
             .ok()
@@ -697,37 +2270,154 @@ impl LadybugStore {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(64 * 1024 * 1024);
+        let limits = StoreLimits {
+            buffer_pool_bytes: buffer_pool_size,
+            max_db_bytes: max_db_size,
+        };
         let cfg = SystemConfig::default()
             .max_db_size(max_db_size)
             .buffer_pool_size(buffer_pool_size)
             .throw_on_wal_replay_failure(true);
-        Self::with_system_config(local_path, dimensions, cfg)
+        Self::with_system_config(local_path, dimensions, cfg, limits)
+    }
+
+    /// Production open with an explicit memory ceiling. Every caller that is not
+    /// a test should use this rather than `new`, so the pool cannot inherit the
+    /// engine default of 80% of physical memory.
+    pub fn new_with_limits(
+        local_path: impl Into<PathBuf>,
+        dimensions: usize,
+        limits: StoreLimits,
+    ) -> Result<Self> {
+        Self::with_system_config(local_path, dimensions, verifying_config(limits), limits)
+    }
+
+    pub fn new_with_identity_limits(
+        local_path: impl Into<PathBuf>,
+        dimensions: usize,
+        embedder_id: String,
+        limits: StoreLimits,
+    ) -> Result<Self> {
+        Self::with_system_config_and_identity(
+            local_path,
+            dimensions,
+            Some(embedder_id),
+            verifying_config(limits),
+            limits,
+        )
     }
 
     pub fn new(local_path: impl Into<PathBuf>, dimensions: usize) -> Result<Self> {
-        Self::with_system_config(local_path, dimensions, verifying_config())
+        Self::new_with_limits(local_path, dimensions, StoreLimits::default())
     }
 
     /// Open the database with a custom `SystemConfig`. Production paths go
-    /// through `new`; tests go through `for_testing`. The fallback path
-    /// (WAL verification failure) always uses the hardcoded `unverified_config`
-    /// recovery path; only the *initial* open is parameterized.
+    /// through `new_with_limits`; tests go through `for_testing`. The fallback
+    /// path (WAL verification failure) always uses the hardcoded recovery shape;
+    /// only the *initial* open is parameterized. `limits` is threaded into both
+    /// so recovery cannot silently drop the memory ceiling.
     pub fn with_system_config(
         local_path: impl Into<PathBuf>,
         dimensions: usize,
         initial_config: SystemConfig,
+        limits: StoreLimits,
+    ) -> Result<Self> {
+        Self::with_system_config_and_identity(local_path, dimensions, None, initial_config, limits)
+    }
+
+    fn with_system_config_and_identity(
+        local_path: impl Into<PathBuf>,
+        dimensions: usize,
+        embedder_id: Option<String>,
+        initial_config: SystemConfig,
+        limits: StoreLimits,
     ) -> Result<Self> {
         let local_path = local_path.into();
+        limits.validate()?;
+        if let Some(parent) = local_path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            std::fs::create_dir_all(parent).map_err(|error| {
+                anyhow::anyhow!(
+                    "could not create database directory {}: {}",
+                    parent.display(),
+                    error
+                )
+            })?;
+        }
+        // Anchor the caller's path to this working directory without resolving
+        // symlinks. Alias discovery must see every original chain spelling so
+        // its marker evidence can be checked before the engine open.
+        let supplied_path = anchor_path_spelling(&local_path)?;
+        // Serialize the marker check and engine open with snapshot restore. A
+        // restore holds this same canonical writer lock from destination
+        // preflight through installation, so an opener cannot pass the check
+        // just before the restore interlock appears and then race its rename.
+        let resolved_path = resolve_database_path(&supplied_path)?;
+        let _open_writer = acquire_database_writer_lock(&resolved_path)?;
+        let path_aliases = discover_database_path_aliases(&resolved_path, &supplied_path)?;
+        ensure_database_path_unchanged(&resolved_path, &supplied_path)?;
+        if restore_in_progress_path(&resolved_path).exists() {
+            anyhow::bail!(
+                "database restore at {} is incomplete; finish or recover it before opening",
+                local_path.display()
+            );
+        }
+        if dimensions == 0 {
+            anyhow::bail!("embedding dimensions must be positive");
+        }
+        let database_preexisted = resolved_path.is_file();
+        // A marker cannot outlive the database it described. If the file is
+        // absent, ignore any sibling marker and replace it after opening this
+        // fresh path; otherwise a stale 768 marker can strand a new 384 DB.
+        let (marker, existing_adopted_from) = if database_preexisted {
+            match read_width_marker_with_provenance(
+                &resolved_path,
+                &path_aliases,
+                embedder_id.as_deref(),
+            )? {
+                Some((marker, adopted_from)) => (Some(marker), adopted_from),
+                None => (None, None),
+            }
+        } else {
+            (None, None)
+        };
+        ensure_database_path_unchanged(&resolved_path, &supplied_path)?;
+        if let Some(marker) = &marker {
+            let identities = canonical_identity_pair(
+                marker.embedder_id.as_deref(),
+                embedder_id.as_deref(),
+            );
+            check_embedding_width(
+                &resolved_path,
+                marker.dimensions,
+                dimensions,
+                identities.as_ref().map(|(saved, configured)| {
+                    (saved.as_str(), configured.as_str())
+                }),
+            )?;
+            if let (Some(saved), Some(current)) = (&marker.embedder_id, &embedder_id) {
+                let saved_canonical =
+                    crate::embed::canonicalize_persisted_embedder_id(saved, current)?;
+                if saved_canonical != current.as_str() {
+                    anyhow::bail!(
+                        "Refusing to open database path alias: it was embedded with model identity {:?}, while the configured identity is {:?}. The recorded embedding width is {} and the configured embedding width is {}. Keep the database intact and reopen it with the original embedder, or use a separate database path for the new model; no in-place re-embedding migration is available.",
+                        saved_canonical, current, marker.dimensions, dimensions
+                    );
+                }
+            }
+        }
 
         // A WAL present at open time means the last process did not close cleanly:
         // a clean close checkpoints and removes it. Keep a copy before the engine
         // replays, because replay truncates the file to the last good record and
         // whatever followed is then unrecoverable.
-        preserve_unclean_wal(&local_path);
+        preserve_unclean_wal(&resolved_path);
 
         // Open with verification first. Only if the WAL fails to authenticate do we
         // consider replaying it unverified, and never quietly.
-        let db = match Database::new(&local_path, initial_config) {
+        let db = match Database::new(&resolved_path, initial_config) {
             Ok(db) => db,
             Err(e) => {
                 let err_msg = e.to_string();
@@ -748,7 +2438,7 @@ impl LadybugStore {
 
                 eprintln!("ERROR: retrying WITHOUT checksum verification to recover those writes. The records replayed this way are NOT authenticated -- if this database may have been tampered with, stop and inspect the preserved copy instead. Set NEUROSTRATA_STRICT_WAL=1 to refuse this fallback.");
 
-                match Database::new(&local_path, unverified_config()) {
+                match Database::new(&resolved_path, unverified_config(limits)) {
                     Ok(db) => {
                         eprintln!("Recovered by replaying the unverified write-ahead log.");
                         db
@@ -756,7 +2446,7 @@ impl LadybugStore {
                     Err(retry_e) => {
                         // Unreadable even without verification: set it aside rather
                         // than leave the database unopenable, and say what was lost.
-                        let mut wal_path = local_path.clone().into_os_string();
+                        let mut wal_path = resolved_path.clone().into_os_string();
                         wal_path.push(".wal");
                         let wal_file = std::path::PathBuf::from(wal_path);
 
@@ -791,21 +2481,103 @@ impl LadybugStore {
                         );
                         eprintln!("ERROR: they were kept at {:?} -- do not delete it if those writes mattered.", corrupted_file);
                         // No WAL left to verify at this point.
-                        Database::new(&local_path, verifying_config()).map_err(|last_e| {
-                            anyhow::anyhow!("Retry failed after discarding the WAL: {}", last_e)
-                        })?
+                        Database::new(&resolved_path, verifying_config(limits)).map_err(
+                            |last_e| {
+                                anyhow::anyhow!("Retry failed after discarding the WAL: {}", last_e)
+                            },
+                        )?
                     }
                 }
             }
         };
 
+        let schema_width = persisted_embedding_width(&db)?;
+        let identities = marker.as_ref().and_then(|marker| {
+            canonical_identity_pair(marker.embedder_id.as_deref(), embedder_id.as_deref())
+        });
+        let identity_args = identities
+            .as_ref()
+            .map(|(saved, configured)| (saved.as_str(), configured.as_str()));
+        if let Some(schema_width) = schema_width {
+            check_embedding_width(&resolved_path, schema_width, dimensions, identity_args)?;
+            if let Some(marker) = &marker {
+                check_embedding_width(
+                    &resolved_path,
+                    marker.dimensions,
+                    schema_width,
+                    identity_args,
+                )?;
+            }
+        } else if database_preexisted {
+            // An existing DB without Memory is either a new empty catalog or a
+            // partial/foreign schema; init() performs its own idempotent DDL.
+        }
+        let mut adopted_from: Option<&str> = None;
+        if let Some(marker) = &marker {
+            check_embedding_width(
+                &resolved_path,
+                marker.dimensions,
+                dimensions,
+                identity_args,
+            )?;
+            if let (Some(saved), Some(current)) = (&marker.embedder_id, &embedder_id) {
+                let saved_canonical =
+                    crate::embed::canonicalize_persisted_embedder_id(saved, current)?;
+                if saved_canonical != current.as_str() {
+                    return Err(anyhow::anyhow!(
+                        "Refusing to open {}: it was embedded with model identity {:?}, while the configured identity is {:?}. The recorded embedding width is {} and the configured embedding width is {}. Keep the database intact and reopen it with the original embedder, or use a separate database path for the new model; no in-place re-embedding migration is available.",
+                        local_path.display(), saved_canonical, current, marker.dimensions, dimensions
+                    ));
+                }
+            } else if marker.embedder_id.is_none() && embedder_id.is_some() {
+                adopted_from = Some("width-only");
+                eprintln!(
+                    "WARNING: {} records embedding width but no model identity; adopting the configured identity without verifying historical vectors. Future model changes will be blocked. This adoption has been recorded in the store's marker.",
+                    local_path.display()
+                );
+            }
+        } else if schema_width.is_some() && embedder_id.is_some() {
+            adopted_from = Some("schema-only");
+            eprintln!(
+                "WARNING: {} has a fixed-width embedding schema but no sidecar identity; adopting the configured model identity without verifying historical vectors. This adoption has been recorded in the store's marker.",
+                local_path.display()
+            );
+        }
+        let marker_identity = match (
+            marker
+                .as_ref()
+                .and_then(|marker| marker.embedder_id.as_deref()),
+            embedder_id.as_deref(),
+        ) {
+            (Some(saved), Some(current)) => Some(crate::embed::canonicalize_persisted_embedder_id(
+                saved, current,
+            )?),
+            (Some(saved), None) => Some(saved.to_string()),
+            (None, Some(current)) => Some(current.to_string()),
+            (None, None) => None,
+        };
+        // Provenance is sticky: a fresh adoption records its origin, and a
+        // later open under the adopted identity carries the existing record
+        // forward instead of dropping it in this rewrite.
+        let marker_provenance = adopted_from.or(existing_adopted_from.as_deref());
+        write_width_marker_with_adopted_from(
+            &resolved_path,
+            dimensions,
+            marker_identity.as_deref(),
+            marker_provenance,
+        )?;
+
         Ok(Self {
-            local_path,
+            local_path: resolved_path,
+            path_aliases,
             dimensions,
             db: Arc::new(db),
             dirty: Dirty::default(),
+            snapshot_lock: Arc::new(tokio::sync::Mutex::new(())),
+            identity_audit: std::sync::Mutex::new(RowIdentityAudit::default()),
             write_lock: Arc::new(tokio::sync::Mutex::new(())),
             schema_ready: std::sync::atomic::AtomicBool::new(false),
+            pk_ready: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -833,6 +2605,8 @@ impl LadybugStore {
     {
         let write_lock = Arc::clone(&self.write_lock);
         let db = self.db.clone();
+        let db_path = self.local_path.clone();
+        let write_dirty = self.dirty.clone();
 
         let outcome = bounded(what, write_timeout(), async move {
             // One writer at a time, because the engine refuses the second
@@ -849,8 +2623,14 @@ impl LadybugStore {
             // handing the caller a failure it can do nothing about.
             let mut attempt = 0;
             loop {
-                let (returned, result) =
-                    Self::write_owning_turn(db.clone(), turn, f.clone()).await?;
+                let (returned, result) = Self::write_owning_turn(
+                    db.clone(),
+                    db_path.clone(),
+                    turn,
+                    write_dirty.clone(),
+                    f.clone(),
+                )
+                .await?;
                 turn = returned;
 
                 match result {
@@ -878,10 +2658,68 @@ impl LadybugStore {
             );
         }
 
-        // Marked whatever the outcome: a write that timed out may still land,
-        // and an unnecessary checkpoint attempt costs nothing next to a write
-        // that never reaches disk.
-        self.dirty.mark();
+        outcome
+    }
+
+    /// Atomic publication cannot return a timeout while the transaction may
+    /// still commit in the background. Log when the ordinary write deadline
+    /// expires, then wait for a definitive commit or rollback result. The
+    /// general write deadline behavior remains unchanged.
+    async fn write_to_completion<T, F>(
+        &self,
+        what: &'static str,
+        deadline: std::time::Duration,
+        f: F,
+    ) -> Result<T>
+    where
+        T: Send + 'static,
+        F: Fn(&Connection) -> Result<T> + Clone + Send + 'static,
+    {
+        let write_lock = Arc::clone(&self.write_lock);
+        let db = self.db.clone();
+        let db_path = self.local_path.clone();
+        let write_dirty = self.dirty.clone();
+        let mut worker = tokio::spawn(async move {
+            let mut turn = write_lock.lock_owned().await;
+            let mut attempt = 0;
+            loop {
+                let (returned, result) = Self::write_owning_turn(
+                    db.clone(),
+                    db_path.clone(),
+                    turn,
+                    write_dirty.clone(),
+                    f.clone(),
+                )
+                .await?;
+                turn = returned;
+                match result {
+                    Err(error)
+                        if is_write_collision(&error) && attempt < WRITE_COLLISION_RETRIES =>
+                    {
+                        attempt += 1;
+                        tokio::time::sleep(std::time::Duration::from_millis(25 * attempt as u64))
+                            .await;
+                    }
+                    result => return result,
+                }
+            }
+        });
+
+        let outcome = match tokio::time::timeout(deadline, &mut worker).await {
+            Ok(joined) => joined.map_err(|error| {
+                anyhow::anyhow!("the publication task did not finish: {}", error)
+            })?,
+            Err(_) => {
+                eprintln!(
+                    "DIAGNOSTIC: publication exceeded its {}s deadline; waiting for its transaction to commit or roll back before reporting an outcome -- engine: {}",
+                    deadline.as_secs(),
+                    engine_stats()
+                );
+                worker.await.map_err(|error| {
+                    anyhow::anyhow!("the publication task did not finish: {}", error)
+                })?
+            }
+        };
         outcome
     }
 
@@ -894,7 +2732,9 @@ impl LadybugStore {
     /// should be allowed to start.
     async fn write_owning_turn<T, F>(
         db: Arc<Database>,
+        db_path: PathBuf,
         turn: tokio::sync::OwnedMutexGuard<()>,
+        dirty: Dirty,
         f: F,
     ) -> Result<(tokio::sync::OwnedMutexGuard<()>, Result<T>)>
     where
@@ -910,8 +2750,12 @@ impl LadybugStore {
             // before it touches the engine. The call is idempotent, so the
             // pool reusing this thread does not leak another stack.
             let _ = crate::crash::install_alt_stack();
+            #[cfg(test)]
+            test_write_lock_attempt(&db_path);
             let outcome = (|| -> Result<T> {
+                let _cross_process_writer = acquire_database_writer_lock(&db_path)?;
                 let conn = Connection::new(&db)?;
+                let _mark_dirty = MarkDirtyOnDrop(dirty);
                 f(&conn)
             })();
             ENGINE_CALLS_FINISHED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1331,7 +3175,9 @@ fn norm_path(
     edges
         .iter()
         .map(|e| {
-            if *kind == crate::traits::EvidenceKind::OneHop && relations[e.relation.as_str()]["direction"] == "undirected" {
+            if *kind == crate::traits::EvidenceKind::OneHop
+                && relations[e.relation.as_str()]["direction"] == "undirected"
+            {
                 let (a, b) = if e.source <= e.target {
                     (e.source.clone(), e.target.clone())
                 } else {
@@ -1349,9 +3195,97 @@ fn escape_ladybug_string(s: &str) -> String {
     s.replace("\\", "\\\\").replace("'", "\\'")
 }
 
+/// The derived single-column key for a Memory row (Task 7 re-plan,
+/// ratified 2026-10-25): `namespace + U+0001 + id`, carried in the `pk`
+/// column — the PRIMARY KEY of fresh tables, an ordinary backfilled
+/// column on tables that predate it.
+///
+/// The scheme exists because lbug 0.20.4's parser rejects a multi-column
+/// PRIMARY KEY in CREATE NODE TABLE outright (probed, run 40164691714),
+/// so the (namespace, id) identity the row MERGE keys on cannot be the
+/// table's key directly. The separator is U+0001, a control character:
+/// DR-1 namespaces, DR-2 bare ids, and the ratified qualified-id
+/// remainder (no quotes, backslashes, or control characters) all refuse
+/// control characters, so neither side of the derivation can contain the
+/// separator and the concatenation is injective — two distinct
+/// (namespace, id) pairs never derive the same pk.
+fn memory_pk(namespace: &str, id: &str) -> String {
+    format!("{}\u{1}{}", namespace, id)
+}
+
+/// NUL is refused at the store boundary, by name (Task 7). It is the one
+/// byte no rung of the escaping ladder may carry into the engine: handed
+/// to a bound parameter it would meet the engine's C strings, and embedded
+/// in an escaped literal it would land raw. Every other control character
+/// is the ladder's business; NUL is the boundary's.
+fn reject_nul(field: &str, value: &str) -> Result<()> {
+    if value.contains('\u{0}') {
+        anyhow::bail!("ERROR [NUL]: NUL byte in {field} is refused at the store boundary");
+    }
+    Ok(())
+}
+
+/// Whether any string in a metadata value — keys included — carries a NUL.
+/// Checked on the value itself, not its serialization: in the serialized
+/// text a NUL appears as a six-character escape sequence, where a scan
+/// for the raw byte would miss it.
+fn value_contains_nul(value: &Value) -> bool {
+    match value {
+        Value::String(s) => s.contains('\u{0}'),
+        Value::Array(items) => items.iter().any(value_contains_nul),
+        Value::Object(map) => map
+            .iter()
+            .any(|(k, v)| k.contains('\u{0}') || value_contains_nul(v)),
+        _ => false,
+    }
+}
+
+/// Validates a Cypher relation (edge) type name before it is interpolated
+/// into a query string. Relation types are compile-time constants today, but
+/// this guard prevents a future code path that accepts user-supplied relation
+/// names from becoming a Cypher-injection vector. Returns `true` only for
+/// names matching `^[A-Z][A-Z0-9_]*$`.
+fn is_valid_relation_name(name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_uppercase() => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+}
+
+fn replace_json_namespace_prefix(value: &mut Value, from: &str, to: &str) {
+    match value {
+        Value::String(text) => {
+            if let Some(rest) = text.strip_prefix(from) {
+                *text = format!("{to}{rest}");
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                replace_json_namespace_prefix(item, from, to);
+            }
+        }
+        Value::Object(items) => {
+            for item in items.values_mut() {
+                replace_json_namespace_prefix(item, from, to);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// How many edges go into one relinking statement. The pairs are written into
 /// the query text, so this is what bounds how large that text can get.
 const RELINK_BATCH: usize = 500;
+
+/// The relationship tables init() creates between Memory rows. Relocate's
+/// delete-and-recreate path replays a moved row's edges across exactly
+/// these tables.
+const MEMORY_REL_TABLES: [&str; 4] = ["RELATES_TO", "CONTAINS", "GOVERNS", "EXTRACTED_FROM"];
 
 /// Replays one relationship type in a couple of statements instead of one per
 /// edge.
@@ -1372,6 +3306,9 @@ fn create_missing_edges(
     rel_type: &str,
     pairs: &[(String, String)],
 ) -> Result<usize> {
+    if !is_valid_relation_name(rel_type) {
+        anyhow::bail!("invalid relation name for Cypher interpolation: {:?}", rel_type);
+    }
     let existing = conn.query(&format!(
         "MATCH (x:Memory)-[:{}]->(y:Memory) RETURN x.id, y.id",
         rel_type
@@ -1427,18 +3364,45 @@ impl VectorStore for LadybugStore {
             return Ok(());
         }
 
-        let _namespace = _namespace.to_string();
+        // The snapshot guard is held across the call so schema creation
+        // stays exclusive with snapshot operations (export/checkpoint). The
+        // write turn must NOT be pre-acquired here: write_with_deadline
+        // takes it inside its own non-cancellable blocking closure (see R5),
+        // which is also what keeps it from being released by a timeout while
+        // the C++ call is still running.
+        let _snapshot_turn = self.snapshot_lock.clone().lock_owned().await;
         let dimensions = self.dimensions;
-        let _turn = self.write_lock.lock().await;
-        let outcome = self.with_conn(move |conn| {
+        #[cfg(test)]
+        let db_path = self.local_path.clone();
+        // Use write_with_deadline so the write lock is held INSIDE the
+        // spawn_blocking closure (see R5). Holding an async lock across
+        // with_conn releases it on timeout while the C++ call is still running.
+        let outcome = self.write_with_deadline("initializing schema", move |conn| {
+            #[cfg(test)]
+            test_snapshot_operation_barrier(&db_path, "init");
 
+            // Task 7 re-plan (ratified 2026-10-25): fresh Memory tables
+            // key on the derived pk (see memory_pk) — lbug 0.20.4 accepts
+            // only a single-column PRIMARY KEY, so (namespace, id)
+            // identity is carried in one column. A table that already
+            // exists keeps its PRIMARY KEY (id); it gains the pk column
+            // below instead of being recreated.
             let create_node_table = format!(
-                "CREATE NODE TABLE Memory (id STRING, namespace STRING, content STRING, user_id STRING, memory_type STRING, agent_name STRING, location STRING, location_lines STRING, metadata STRING, embedding FLOAT[{}], PRIMARY KEY (id))",
+                "CREATE NODE TABLE Memory (pk STRING, id STRING, namespace STRING, content STRING, user_id STRING, memory_type STRING, agent_name STRING, location STRING, location_lines STRING, metadata STRING, embedding FLOAT[{}], PRIMARY KEY (pk))",
                 dimensions
             );
+            let mut created_fresh = true;
             if let Err(e) = conn.query(&create_node_table) {
                 if !e.to_string().contains("already exists") {
                     return Err(e.into());
+                }
+                created_fresh = false;
+            }
+
+            let create_ingest_stage_table = "CREATE NODE TABLE IngestStage (namespace STRING, generation STRING, PRIMARY KEY (namespace))";
+            if let Err(error) = conn.query(create_ingest_stage_table) {
+                if !error.to_string().contains("already exists") {
+                    return Err(error.into());
                 }
             }
 
@@ -1455,18 +3419,181 @@ impl VectorStore for LadybugStore {
             let create_extracted_table = "CREATE REL TABLE EXTRACTED_FROM (FROM Memory TO Memory)";
             conn.query(create_extracted_table).ok();
 
-            Ok(())
+            // PQTH: Intake receipts table (operational, not memory rows)
+            let create_receipts_table = "CREATE NODE TABLE IntakeReceipt (id STRING, namespace STRING, source_kind STRING, source_revision STRING, source_digest STRING, detected_intents STRING, raw_text STRING, created_at STRING, PRIMARY KEY (id))";
+            conn.query(create_receipts_table).ok();
+
+            // PQTH: Intake candidates table (operational, not memory rows)
+            let create_candidates_table = "CREATE NODE TABLE IntakeCandidate (id STRING, namespace STRING, receipt_id STRING, title STRING, description STRING, review_state STRING, disposition STRING, task_id STRING, cas_version LONG, created_at STRING, updated_at STRING, PRIMARY KEY (id))";
+            conn.query(create_candidates_table).ok();
+
+            // Task 7 row-identity audit: classify the store's rows by
+            // (namespace, id) identity. A row whose namespace property is
+            // NULL predates the identity rule (or arrived damaged); one
+            // carrying a valid namespace in its metadata is backfilled in
+            // place, the rest are quarantined — counted, left
+            // byte-identical, and refused as write targets by upsert and
+            // delete until an operator repairs them. The audit runs
+            // inside init's write on purpose: it must never become a
+            // reason the store refuses to open, so every failure mode
+            // here degrades to a count, never an error.
+            let mut audit = RowIdentityAudit::default();
+            if let Ok(mut rows) = conn.query("MATCH (m:Memory) RETURN count(m)") {
+                if let Some(row) = rows.next() {
+                    audit.total_rows = format!("{}", row[0]).parse().unwrap_or(0);
+                }
+            }
+            let mut orphans: Vec<(String, String)> = Vec::new();
+            if let Ok(mut rows) = conn.query(
+                "MATCH (m:Memory) WHERE m.namespace IS NULL RETURN m.id, m.metadata",
+            ) {
+                while let Some(row) = rows.next() {
+                    orphans.push((format!("{}", row[0]), format!("{}", row[1])));
+                }
+            }
+            audit.null_namespace_rows = orphans.len() as i64;
+            for (orphan_id, metadata) in &orphans {
+                let claimed = serde_json::from_str::<Value>(metadata).ok().and_then(|v| {
+                    v.get("namespace")
+                        .and_then(|n| n.as_str())
+                        .map(str::to_string)
+                });
+                let repaired = match claimed {
+                    Some(ns) if crate::domain::validate_namespace(&ns).is_ok() => {
+                        let repair = format!(
+                            "MATCH (m:Memory) WHERE m.id = '{}' AND m.namespace IS NULL SET m.namespace = '{}'",
+                            escape_ladybug_string(orphan_id),
+                            escape_ladybug_string(&ns),
+                        );
+                        conn.query(&repair).is_ok()
+                    }
+                    _ => false,
+                };
+                if repaired {
+                    audit.backfilled += 1;
+                } else {
+                    audit.quarantined += 1;
+                }
+            }
+            if audit.null_namespace_rows > 0 {
+                eprintln!(
+                    "[neurostrata:identity-audit] {} of {} Memory rows had a NULL namespace: {} backfilled from metadata, {} quarantined (writes to a quarantined id refuse until an operator repairs the row)",
+                    audit.null_namespace_rows, audit.total_rows, audit.backfilled, audit.quarantined
+                );
+            }
+
+            // Task 7 re-plan: a pre-existing Memory table has no pk
+            // column (its PRIMARY KEY is still (id)). Add the column and
+            // backfill each row's derived pk, so identity operations can
+            // key on pk against it exactly as they do against a fresh
+            // table. This never blocks the open either: if the ALTER or
+            // the backfill fails, the store continues in legacy
+            // (namespace, id) matching mode (pk_ready stays false) and
+            // says so on stderr. Runs after the namespace audit above so
+            // rows whose namespace was just backfilled get the pk of
+            // their repaired identity in the same pass.
+            let mut pk_ready = created_fresh;
+            if !created_fresh {
+                let has_pk_column =
+                    conn.query("MATCH (m:Memory) RETURN m.pk LIMIT 1").is_ok();
+                if has_pk_column {
+                    pk_ready = true;
+                } else {
+                    match conn.query("ALTER TABLE Memory ADD pk STRING DEFAULT ''") {
+                        Ok(_) => {
+                            pk_ready = true;
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "[neurostrata:identity-audit] could not add the derived pk column to the existing Memory table ({}) — continuing in legacy (namespace, id) matching mode",
+                                e
+                            );
+                        }
+                    }
+                }
+                if pk_ready {
+                    let mut stale: Vec<(String, String, String)> = Vec::new();
+                    if let Ok(mut rows) = conn.query(
+                        "MATCH (m:Memory) WHERE m.namespace IS NOT NULL RETURN m.id, m.namespace, m.pk",
+                    ) {
+                        while let Some(row) = rows.next() {
+                            let row_id = format!("{}", row[0]);
+                            let row_ns = format!("{}", row[1]);
+                            let row_pk = format!("{}", row[2]);
+                            let derived = memory_pk(&row_ns, &row_id);
+                            if row_pk != derived {
+                                stale.push((row_id, row_ns, derived));
+                            }
+                        }
+                    }
+                    let mut backfilled = 0usize;
+                    let mut unfixable = 0usize;
+                    for (row_id, row_ns, derived) in &stale {
+                        let applied = (|| -> std::result::Result<(), lbug::Error> {
+                            let mut stmt = conn.prepare(
+                                "MATCH (m:Memory) WHERE m.id = $id AND m.namespace = $ns SET m.pk = $pk",
+                            )?;
+                            conn.execute(
+                                &mut stmt,
+                                vec![
+                                    ("id", lbug::Value::String(row_id.clone())),
+                                    ("ns", lbug::Value::String(row_ns.clone())),
+                                    ("pk", lbug::Value::String(derived.clone())),
+                                ],
+                            )?;
+                            Ok(())
+                        })();
+                        if applied.is_ok() {
+                            backfilled += 1;
+                        } else {
+                            unfixable += 1;
+                        }
+                    }
+                    if backfilled > 0 {
+                        eprintln!(
+                            "[neurostrata:identity-audit] backfilled the derived pk on {} Memory row(s)",
+                            backfilled
+                        );
+                    }
+                    if unfixable > 0 {
+                        // A primary-key column cannot be updated in
+                        // place (the binder refuses SET on it), so a
+                        // stale pk on a fresh table is beyond init's
+                        // repair: the row keeps its stored key, stays
+                        // readable by property scans, and is reported
+                        // here rather than silently skipped.
+                        eprintln!(
+                            "[neurostrata:identity-audit] {} Memory row(s) carry a pk that does not match their (namespace, id) and could not be rewritten in place — an operator repair (delete + reinsert) is required",
+                            unfixable
+                        );
+                    }
+                }
+            }
+
+            Ok((audit, pk_ready))
         })
         .await;
 
-        if outcome.is_ok() {
-            self.schema_ready
-                .store(true, std::sync::atomic::Ordering::Release);
-        }
-
         // Creating the tables is itself a write worth flushing.
         self.dirty.mark();
-        outcome
+        match outcome {
+            Ok((audit, pk_ready)) => {
+                *self
+                    .identity_audit
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = audit;
+                self.pk_ready
+                    .store(pk_ready, std::sync::atomic::Ordering::Release);
+                self.schema_ready
+                    .store(true, std::sync::atomic::Ordering::Release);
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 
     async fn upsert(
@@ -1476,11 +3603,61 @@ impl VectorStore for LadybugStore {
         vector: Vec<f32>,
         payload: MemoryPayload,
     ) -> Result<crate::traits::UpsertReport> {
+        if namespace.starts_with(INTERNAL_INGEST_STAGE_PREFIX) {
+            let authorized_stage_write = payload.user_id == "auto-ingestor"
+                && has_ingest_stage_lease(&self.local_path, &self.path_aliases, namespace);
+            if !authorized_stage_write {
+                anyhow::bail!("reserved ingest staging namespace is not available for this write");
+            }
+        }
+        let staged_generation = namespace
+            .strip_prefix(INTERNAL_INGEST_STAGE_PREFIX)
+            .filter(|_| namespace.starts_with(INTERNAL_INGEST_STAGE_PREFIX))
+            .map(ToOwned::to_owned);
         let namespace = namespace.to_string();
         let id = id.to_string();
+        // Task 7: the store boundary validates row identity before any
+        // query is built. NUL is refused first and by name — it is the one
+        // byte no rung of the escaping ladder may carry into the engine —
+        // then DR-1/DR-2 decide the namespace and the id (validate_id
+        // carries the ratified composite rule for qualified ids).
+        reject_nul("namespace", &namespace)?;
+        reject_nul("id", &id)?;
+        crate::domain::validate_namespace(&namespace).map_err(anyhow::Error::msg)?;
+        crate::domain::validate_id(&id).map_err(anyhow::Error::msg)?;
+        reject_nul("content", &payload.content)?;
+        reject_nul("user_id", &payload.user_id)?;
+        reject_nul("memory_type", &payload.memory_type)?;
+        if let Some(agent_name) = &payload.agent_name {
+            reject_nul("agent_name", agent_name)?;
+        }
+        reject_nul("location", &payload.location)?;
+        reject_nul("location_lines", &payload.location_lines)?;
+        if value_contains_nul(&payload.metadata) {
+            anyhow::bail!("ERROR [NUL]: NUL byte in metadata is refused at the store boundary");
+        }
+        // R14: reject empty/whitespace namespaces before hitting the store.
+        // DR-1 above already refuses both; this stays as the store-layer
+        // backstop R14 landed, beneath the validator.
+        if namespace.trim().is_empty() {
+            anyhow::bail!("namespace must be non-empty");
+        }
         // Parse shape warnings from the ORIGINAL payload before the write.
         let shape_warnings = write_shape_warnings(&payload);
+        let pk_ready = self.pk_ready();
         self.write_with_deadline("writing a memory", move |conn| {
+
+            if let Some(generation) = &staged_generation {
+                let safe_ns = escape_ladybug_string(&namespace);
+                let mut rows = conn.query(&format!(
+                    "MATCH (s:IngestStage) WHERE s.namespace = '{}' AND s.generation = '{}' RETURN s.namespace LIMIT 1",
+                    safe_ns,
+                    escape_ladybug_string(generation)
+                ))?;
+                if rows.next().is_none() {
+                    anyhow::bail!("reserved ingest staging namespace has no database provenance");
+                }
+            }
 
             let safe_id = escape_ladybug_string(&id);
             let safe_ns = escape_ladybug_string(&namespace);
@@ -1494,17 +3671,108 @@ impl VectorStore for LadybugStore {
             let safe_location_lines = escape_ladybug_string(&payload.location_lines);
             let safe_metadata = escape_ladybug_string(&serde_json::to_string(&payload.metadata)?);
 
-            let vec_str = format!("[{}]", vector.iter().map(|f| f.to_string()).collect::<Vec<_>>().join(","));
-
-            let insert_query = format!(
-                "MERGE (m:Memory {{id: '{}'}})
-                 ON CREATE SET m.namespace = '{}', m.content = '{}', m.user_id = '{}', m.memory_type = '{}', m.agent_name = '{}', m.location = '{}', m.location_lines = '{}', m.metadata = '{}', m.embedding = {}
-                 ON MATCH SET m.content = '{}', m.user_id = '{}', m.memory_type = '{}', m.agent_name = '{}', m.location = '{}', m.location_lines = '{}', m.metadata = '{}', m.embedding = {}",
-                safe_id, safe_ns, safe_content, safe_user_id, safe_memory_type, safe_agent_name, safe_location, safe_location_lines, safe_metadata, vec_str,
-                safe_content, safe_user_id, safe_memory_type, safe_agent_name, safe_location, safe_location_lines, safe_metadata, vec_str
+            let vec_str = format!(
+                "[{}]",
+                // R16: defense-in-depth (no native bind in lbug 0.20.4).
+                // Always emit decimal (e.g. 0 → 0.0) so ARRAY_DISTANCE
+                // binder never sees pure-integer arrays.
+                vector.iter().map(|f| {
+                    let s = format!("{}", f);
+                    if s.contains('.') || s.contains('e') || s.contains('E') {
+                        s
+                    } else {
+                        format!("{}.0", s)
+                    }
+                }).collect::<Vec<_>>().join(",")
             );
 
-            conn.query(&insert_query)?;
+            // A quarantined row (NULL namespace, per init's audit) must not
+            // be forked into a second identity by this write: refuse loudly
+            // and leave the row byte-identical for an operator to repair.
+            let mut held = conn.query(&format!(
+                "MATCH (m:Memory) WHERE m.id = '{}' AND m.namespace IS NULL RETURN count(m)",
+                safe_id
+            ))?;
+            let held_count = held
+                .next()
+                .map(|row| format!("{}", row[0]).parse::<i64>().unwrap_or(0))
+                .unwrap_or(0);
+            if held_count > 0 {
+                anyhow::bail!(
+                    "write refused: id '{}' is held by a quarantined row (NULL namespace) — the quarantine is repaired by an operator, not by forking the id into a second row",
+                    id
+                );
+            }
+
+            // Row identity is (namespace, id). When the table carries
+            // the derived pk column, the MERGE keys on it and every value
+            // is a bound parameter (B1 — binding is probed, Step A): the
+            // pattern key and the SET values travel as $parameters, so
+            // nothing caller-supplied is interpolated into the statement.
+            // The embedding still interpolates as a literal: it is a
+            // vector of engine-formatted numbers built above, never
+            // caller text. When init could not give the table a pk
+            // column (legacy mode), the MERGE keeps the pre-re-plan
+            // (namespace, id) property pattern over escaped literals.
+            if pk_ready {
+                // The pattern carries id beside pk: on a legacy table
+                // (pk added by ALTER) the PRIMARY KEY is still id, and
+                // the binder refuses a MERGE whose create path does not
+                // supply the key property in the pattern ("Create node m
+                // expects primary key id as input" — run 40167089842).
+                // A key property also cannot be assigned via SET, so id
+                // comes from the pattern and ON CREATE SET starts at
+                // namespace.
+                let merge_query = format!(
+                    "MERGE (m:Memory {{pk: $pk, id: $id}})
+                     ON CREATE SET m.namespace = $ns, m.content = $content, m.user_id = $user_id, m.memory_type = $memory_type, m.agent_name = $agent_name, m.location = $location, m.location_lines = $location_lines, m.metadata = $metadata, m.embedding = {}
+                     ON MATCH SET m.content = $content, m.user_id = $user_id, m.memory_type = $memory_type, m.agent_name = $agent_name, m.location = $location, m.location_lines = $location_lines, m.metadata = $metadata, m.embedding = {}",
+                    vec_str, vec_str
+                );
+                let mut stmt = conn.prepare(&merge_query)?;
+                conn.execute(
+                    &mut stmt,
+                    vec![
+                        ("pk", lbug::Value::String(memory_pk(&namespace, &id))),
+                        ("id", lbug::Value::String(id.clone())),
+                        ("ns", lbug::Value::String(namespace.clone())),
+                        ("content", lbug::Value::String(payload.content.clone())),
+                        ("user_id", lbug::Value::String(payload.user_id.clone())),
+                        (
+                            "memory_type",
+                            lbug::Value::String(payload.memory_type.clone()),
+                        ),
+                        (
+                            "agent_name",
+                            lbug::Value::String(
+                                payload
+                                    .agent_name
+                                    .clone()
+                                    .unwrap_or_else(|| "unknown".to_string()),
+                            ),
+                        ),
+                        ("location", lbug::Value::String(payload.location.clone())),
+                        (
+                            "location_lines",
+                            lbug::Value::String(payload.location_lines.clone()),
+                        ),
+                        (
+                            "metadata",
+                            lbug::Value::String(serde_json::to_string(&payload.metadata)?),
+                        ),
+                    ],
+                )?;
+            } else {
+                let insert_query = format!(
+                    "MERGE (m:Memory {{id: '{}', namespace: '{}'}})
+                     ON CREATE SET m.content = '{}', m.user_id = '{}', m.memory_type = '{}', m.agent_name = '{}', m.location = '{}', m.location_lines = '{}', m.metadata = '{}', m.embedding = {}
+                     ON MATCH SET m.content = '{}', m.user_id = '{}', m.memory_type = '{}', m.agent_name = '{}', m.location = '{}', m.location_lines = '{}', m.metadata = '{}', m.embedding = {}",
+                    safe_id, safe_ns, safe_content, safe_user_id, safe_memory_type, safe_agent_name, safe_location, safe_location_lines, safe_metadata, vec_str,
+                    safe_content, safe_user_id, safe_memory_type, safe_agent_name, safe_location, safe_location_lines, safe_metadata, vec_str
+                );
+
+                conn.query(&insert_query)?;
+            }
 
             // Emit shape warnings after successful row write.
             for w in &shape_warnings {
@@ -1571,17 +3839,106 @@ impl VectorStore for LadybugStore {
                         }
                     }
                 };
-                let target_safe = escape_ladybug_string(&target);
-                let (from, to) = if edge.points_at_target {
-                    (safe_id.as_str(), target_safe.as_str())
-                } else {
-                    (target_safe.as_str(), safe_id.as_str())
+                if !is_valid_relation_name(edge.rel_type) {
+                    deferred_edges.push(crate::traits::EdgeResolutionStatus {
+                        rel_type: edge.rel_type.to_string(),
+                        declared_target: edge.target_id.clone(),
+                        declaration_index: edge.declaration_index,
+                        resolution: crate::traits::TargetResolution::Failed(
+                            "invalid relation name for Cypher interpolation".to_string(),
+                        ),
+                    });
+                    continue;
+                }
+                // Task 7: the edge binds rows by (namespace, id), never by
+                // id alone — an id-only MATCH lands the edge on every
+                // same-id twin in other namespaces. The target row's
+                // namespace is resolved with the source namespace
+                // preferred; a true tie (the id lives in several
+                // namespaces, the source's not among them) defers instead
+                // of spraying.
+                let target_ns = match bind_row_namespace(conn, &target, &namespace) {
+                    RowBind::Bound(ns) => ns,
+                    RowBind::Gone => {
+                        deferred_edges.push(crate::traits::EdgeResolutionStatus {
+                            rel_type: edge.rel_type.to_string(),
+                            declared_target: edge.target_id.clone(),
+                            declaration_index: edge.declaration_index,
+                            resolution: crate::traits::TargetResolution::Missing,
+                        });
+                        emit_write_shape_warning(&namespace, &id, &WriteShapeWarning {
+                            field: format!("metadata.{}", edge.rel_type.to_lowercase()),
+                            why: "target row no longer exists".to_string(),
+                            skipped: "this edge materialization".to_string(),
+                        });
+                        continue;
+                    }
+                    RowBind::Ambiguous(candidates) => {
+                        deferred_edges.push(crate::traits::EdgeResolutionStatus {
+                            rel_type: edge.rel_type.to_string(),
+                            declared_target: edge.target_id.clone(),
+                            declaration_index: edge.declaration_index,
+                            resolution: crate::traits::TargetResolution::Ambiguous(candidates),
+                        });
+                        emit_write_shape_warning(&namespace, &id, &WriteShapeWarning {
+                            field: format!("metadata.{}", edge.rel_type.to_lowercase()),
+                            why: "target id is ambiguous across namespaces".to_string(),
+                            skipped: "this edge materialization".to_string(),
+                        });
+                        continue;
+                    }
                 };
-                let edge_query = format!(
-                    "MATCH (a:Memory {{id: '{}'}}), (b:Memory {{id: '{}'}}) MERGE (a)-[:{}]->(b)",
-                    from, to, edge.rel_type
-                );
-                if let Err(e) = conn.query(&edge_query) {
+                let (from_pair, to_pair) = if edge.points_at_target {
+                    (
+                        (id.as_str(), namespace.as_str()),
+                        (target.as_str(), target_ns.as_str()),
+                    )
+                } else {
+                    (
+                        (target.as_str(), target_ns.as_str()),
+                        (id.as_str(), namespace.as_str()),
+                    )
+                };
+                // With the pk column present, both ends bind by derived
+                // pk via $parameters (B1); the relation type still
+                // interpolates — it is a validated identifier
+                // (is_valid_relation_name above), never free text. In
+                // legacy mode the (id, namespace) property MATCH over
+                // escaped literals is kept.
+                let edge_result: Result<()> = (|| {
+                    if pk_ready {
+                        let edge_query = format!(
+                            "MATCH (a:Memory {{pk: $apk}}), (b:Memory {{pk: $bpk}}) MERGE (a)-[:{}]->(b)",
+                            edge.rel_type
+                        );
+                        let mut stmt = conn.prepare(&edge_query)?;
+                        conn.execute(
+                            &mut stmt,
+                            vec![
+                                (
+                                    "apk",
+                                    lbug::Value::String(memory_pk(from_pair.1, from_pair.0)),
+                                ),
+                                (
+                                    "bpk",
+                                    lbug::Value::String(memory_pk(to_pair.1, to_pair.0)),
+                                ),
+                            ],
+                        )?;
+                    } else {
+                        let edge_query = format!(
+                            "MATCH (a:Memory {{id: '{}', namespace: '{}'}}), (b:Memory {{id: '{}', namespace: '{}'}}) MERGE (a)-[:{}]->(b)",
+                            escape_ladybug_string(from_pair.0),
+                            escape_ladybug_string(from_pair.1),
+                            escape_ladybug_string(to_pair.0),
+                            escape_ladybug_string(to_pair.1),
+                            edge.rel_type
+                        );
+                        conn.query(&edge_query)?;
+                    }
+                    Ok(())
+                })();
+                if let Err(e) = edge_result {
                     deferred_edges.push(crate::traits::EdgeResolutionStatus {
                         rel_type: edge.rel_type.to_string(),
                         declared_target: edge.target_id.clone(),
@@ -1665,7 +4022,8 @@ impl VectorStore for LadybugStore {
         let scope = query.scope;
         let limit = query.limit;
         let namespace = namespace.to_string();
-        let is_procedure_scope = matches!(scope, crate::traits::DedupCandidateScope::Procedure { .. });
+        let is_procedure_scope =
+            matches!(scope, crate::traits::DedupCandidateScope::Procedure { .. });
         let proc_trigger = match &scope {
             crate::traits::DedupCandidateScope::Procedure { trigger } => Some(trigger.clone()),
             _ => None,
@@ -1675,7 +4033,17 @@ impl VectorStore for LadybugStore {
             let safe_ns = escape_ladybug_string(&namespace);
             let vec_str = format!(
                 "[{}]",
-                vector.iter().map(|f| f.to_string()).collect::<Vec<_>>().join(",")
+                // R16: defense-in-depth (no native bind in lbug 0.20.4).
+                // Always emit decimal (e.g. 0 → 0.0) so ARRAY_DISTANCE
+                // binder never sees pure-integer arrays.
+                vector.iter().map(|f| {
+                    let s = format!("{}", f);
+                    if s.contains('.') || s.contains('e') || s.contains('E') {
+                        s
+                    } else {
+                        format!("{}.0", s)
+                    }
+                }).collect::<Vec<_>>().join(",")
             );
             let now = chrono::Utc::now().timestamp();
 
@@ -1809,7 +4177,8 @@ impl VectorStore for LadybugStore {
         exact_content: &str,
         scope: crate::traits::DedupCandidateScope,
     ) -> Result<Vec<crate::traits::ExactContentCandidate>> {
-        let is_procedure_scope = matches!(scope, crate::traits::DedupCandidateScope::Procedure { .. });
+        let is_procedure_scope =
+            matches!(scope, crate::traits::DedupCandidateScope::Procedure { .. });
         let proc_trigger = match &scope {
             crate::traits::DedupCandidateScope::Procedure { trigger } => Some(trigger.clone()),
             _ => None,
@@ -1919,13 +4288,54 @@ impl VectorStore for LadybugStore {
     async fn delete(&self, namespace: &str, id: &str) -> Result<()> {
         let namespace = namespace.to_string();
         let id = id.to_string();
+        // Task 7: NUL is refused at the store boundary on writes too.
+        reject_nul("namespace", &namespace)?;
+        reject_nul("id", &id)?;
+        let pk_ready = self.pk_ready();
         self.write_with_deadline("deleting a memory", move |conn| {
             let safe_ns = escape_ladybug_string(&namespace);
             let safe_id = escape_ladybug_string(&id);
 
+            // A quarantined row (NULL namespace, per init's audit) refuses
+            // writes aimed at its id, delete included: removing it is an
+            // operator's repair decision, not a caller's side effect.
+            let mut held = conn.query(&format!(
+                "MATCH (m:Memory) WHERE m.id = '{}' AND m.namespace IS NULL RETURN count(m)",
+                safe_id
+            ))?;
+            let held_count = held
+                .next()
+                .map(|row| format!("{}", row[0]).parse::<i64>().unwrap_or(0))
+                .unwrap_or(0);
+            if held_count > 0 {
+                anyhow::bail!(
+                    "delete refused: id '{}' is held by a quarantined row (NULL namespace) — the quarantine is repaired by an operator, not deleted around",
+                    id
+                );
+            }
+
             // A silent no-op on a missing id reads as success to the caller
             // (the CLI then reports a deletion that never happened), so
             // resolve the row first and fail loudly when it is absent.
+            // With the pk column present the row is addressed by its
+            // derived pk (bound, B1); legacy mode keeps the (id,
+            // namespace) property match.
+            if pk_ready {
+                let pk = memory_pk(&namespace, &id);
+                let exists = (|| -> std::result::Result<bool, lbug::Error> {
+                    let mut stmt =
+                        conn.prepare("MATCH (m:Memory {pk: $pk}) RETURN m.id LIMIT 1")?;
+                    let mut rows =
+                        conn.execute(&mut stmt, vec![("pk", lbug::Value::String(pk.clone()))])?;
+                    Ok(rows.next().is_some())
+                })()?;
+                if !exists {
+                    anyhow::bail!("No memory with id '{}' in namespace '{}'. Note: stored ids are namespace-qualified for ingested nodes.", id, namespace);
+                }
+                let mut stmt = conn.prepare("MATCH (m:Memory {pk: $pk}) DETACH DELETE m")?;
+                conn.execute(&mut stmt, vec![("pk", lbug::Value::String(pk))])?;
+                return Ok(());
+            }
             let exists = conn
                 .query(&format!(
                     "MATCH (m:Memory) WHERE m.id = '{}' AND m.namespace = '{}' RETURN m.id LIMIT 1",
@@ -1946,11 +4356,21 @@ impl VectorStore for LadybugStore {
     }
 
     async fn relocate(&self, id: &str, from: &str, to: &str) -> Result<RelocateOutcome> {
+        // Task 7: the store boundary validates the move's identity before
+        // any store access, as it does a write's. NUL is refused by name
+        // on every caller-supplied input, and the destination must pass
+        // DR-1: a relocate that minted a row under a namespace the
+        // validators refuse everywhere else would strand the row there,
+        // unreachable by any later upsert.
+        reject_nul("id", id)?;
+        reject_nul("namespace", from)?;
+        reject_nul("namespace", to)?;
+        crate::domain::validate_namespace(to).map_err(anyhow::Error::msg)?;
         if from == to {
             return Ok(RelocateOutcome::SameNamespace);
         }
-        let payload = match self.get(from, id).await? {
-            Some((_, payload)) => payload,
+        let (vector, payload) = match self.get(from, id).await? {
+            Some(pair) => pair,
             None => return Ok(RelocateOutcome::NotFound),
         };
         // An ingested node's id names the namespace that owns it, and the next
@@ -1963,9 +4383,184 @@ impl VectorStore for LadybugStore {
         }
 
         let (id, from, to) = (id.to_string(), from.to_string(), to.to_string());
+        let pk_ready = self.pk_ready();
+        let payload = payload.clone();
         self.write_with_deadline("moving a memory", move |conn| {
-            // One statement, so there is no moment at which the memory exists in
-            // neither namespace, and the row keeps its id, vector and edges.
+            // The single-statement forms (the in-place SET below on a
+            // pk-column table, and the legacy SET at the bottom) move the
+            // row in one statement: no moment at which the memory exists
+            // in neither namespace, and the row keeps its id, vector and
+            // edges. The fresh-table fallback cannot claim that — it
+            // recreates before it deletes, so the row briefly
+            // exists in both namespaces instead (never in neither), as
+            // its own comment states.
+            // With the pk column present the derived key must move with
+            // the row (bound, B1): a relocate that left the old
+            // namespace's pk behind would strand the row — pk lookups in
+            // the new namespace would miss it, and a fresh upsert there
+            // could fork a second row under the same id.
+            if pk_ready {
+                let old_pk = memory_pk(&from, &id);
+                let new_pk = memory_pk(&to, &id);
+                // First attempt: move the row in place. Legal where pk
+                // is a plain column (a legacy table that gained it via
+                // ALTER); the binder refuses it where pk IS the primary
+                // key — "Cannot set property pk ... Try delete and then
+                // insert" (run 40167089842) — and that refusal selects
+                // the delete-and-recreate path below.
+                let in_place = (|| -> std::result::Result<(), lbug::Error> {
+                    let mut stmt = conn.prepare(
+                        "MATCH (m:Memory) WHERE m.id = $id AND m.namespace = $from AND m.user_id <> 'auto-ingestor' SET m.namespace = $to, m.pk = $pk",
+                    )?;
+                    conn.execute(
+                        &mut stmt,
+                        vec![
+                            ("id", lbug::Value::String(id.clone())),
+                            ("from", lbug::Value::String(from.clone())),
+                            ("to", lbug::Value::String(to.clone())),
+                            ("pk", lbug::Value::String(new_pk.clone())),
+                        ],
+                    )?;
+                    Ok(())
+                })();
+                match in_place {
+                    Ok(()) => return Ok(RelocateOutcome::Moved),
+                    Err(e) if e.to_string().contains("primary key") => {}
+                    Err(e) => return Err(e.into()),
+                }
+                // Recreate under the new namespace's key, then delete
+                // the old row: the new row is created FIRST and the
+                // captured edges are replayed onto it, and only then is
+                // the old row deleted. The order is the atomicity story
+                // — no engine transaction spans these statements, so
+                // every intermediate state must be loss-free on its own:
+                // a crash or error anywhere before the final delete
+                // leaves the memory in both namespaces at worst (a
+                // duplicate a later relocate or delete can clean up),
+                // never in neither, and never with a prefix of its
+                // edges. The whole sequence runs under the writer's
+                // turn, so no other writer observes the row mid-move.
+                let mut edges: Vec<(&'static str, bool, String)> = Vec::new();
+                for rel in MEMORY_REL_TABLES {
+                    for outgoing in [true, false] {
+                        let capture = if outgoing {
+                            format!(
+                                "MATCH (m:Memory {{pk: $pk}})-[:{}]->(o:Memory) RETURN o.pk",
+                                rel
+                            )
+                        } else {
+                            format!(
+                                "MATCH (o:Memory)-[:{}]->(m:Memory {{pk: $pk}}) RETURN o.pk",
+                                rel
+                            )
+                        };
+                        let mut stmt = conn.prepare(&capture)?;
+                        let rows = conn.execute(
+                            &mut stmt,
+                            vec![("pk", lbug::Value::String(old_pk.clone()))],
+                        )?;
+                        for row in rows {
+                            let other_pk = format!("{}", row[0]);
+                            // A self-edge's other end is the moved row
+                            // itself, and the outgoing pass already
+                            // captured it; the incoming pass skips it, or
+                            // the replay below would create it twice.
+                            if !outgoing && other_pk == old_pk {
+                                continue;
+                            }
+                            edges.push((rel, outgoing, other_pk));
+                        }
+                    }
+                }
+                let vec_str = format!(
+                    "[{}]",
+                    vector
+                        .iter()
+                        .map(|f| {
+                            let s = format!("{}", f);
+                            if s.contains('.') || s.contains('e') || s.contains('E') {
+                                s
+                            } else {
+                                format!("{}.0", s)
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(",")
+                );
+                let create = format!(
+                    "CREATE (m:Memory {{pk: $pk, id: $id, namespace: $ns, content: $content, user_id: $user_id, memory_type: $memory_type, agent_name: $agent_name, location: $location, location_lines: $location_lines, metadata: $metadata, embedding: {}}})",
+                    vec_str
+                );
+                let mut stmt = conn.prepare(&create)?;
+                conn.execute(
+                    &mut stmt,
+                    vec![
+                        ("pk", lbug::Value::String(new_pk.clone())),
+                        ("id", lbug::Value::String(id.clone())),
+                        ("ns", lbug::Value::String(to.clone())),
+                        ("content", lbug::Value::String(payload.content.clone())),
+                        ("user_id", lbug::Value::String(payload.user_id.clone())),
+                        (
+                            "memory_type",
+                            lbug::Value::String(payload.memory_type.clone()),
+                        ),
+                        (
+                            "agent_name",
+                            lbug::Value::String(
+                                payload
+                                    .agent_name
+                                    .clone()
+                                    .unwrap_or_else(|| "unknown".to_string()),
+                            ),
+                        ),
+                        ("location", lbug::Value::String(payload.location.clone())),
+                        (
+                            "location_lines",
+                            lbug::Value::String(payload.location_lines.clone()),
+                        ),
+                        (
+                            "metadata",
+                            lbug::Value::String(serde_json::to_string(&payload.metadata)?),
+                        ),
+                    ],
+                )?;
+                for (rel, outgoing, other_pk) in &edges {
+                    // A self-edge's other end is the moved row itself:
+                    // it follows the row to its new key.
+                    let other = if other_pk == &old_pk {
+                        new_pk.clone()
+                    } else {
+                        other_pk.clone()
+                    };
+                    let (a_pk, b_pk) = if *outgoing {
+                        (new_pk.clone(), other)
+                    } else {
+                        (other, new_pk.clone())
+                    };
+                    let replay = format!(
+                        "MATCH (a:Memory {{pk: $apk}}), (b:Memory {{pk: $bpk}}) CREATE (a)-[:{}]->(b)",
+                        rel
+                    );
+                    let mut stmt = conn.prepare(&replay)?;
+                    conn.execute(
+                        &mut stmt,
+                        vec![
+                            ("apk", lbug::Value::String(a_pk)),
+                            ("bpk", lbug::Value::String(b_pk)),
+                        ],
+                    )?;
+                }
+                // The old row goes LAST, once the new row and every
+                // replayed edge exist. DETACH takes the old row's
+                // original edges with it, leaving exactly the replayed
+                // set on the new row.
+                let mut stmt = conn.prepare("MATCH (m:Memory {pk: $pk}) DETACH DELETE m")?;
+                conn.execute(
+                    &mut stmt,
+                    vec![("pk", lbug::Value::String(old_pk.clone()))],
+                )?;
+                return Ok(RelocateOutcome::Moved);
+            }
             let query = format!(
                 "MATCH (m:Memory) WHERE m.id = '{}' AND m.namespace = '{}' AND m.user_id <> 'auto-ingestor' SET m.namespace = '{}'",
                 escape_ladybug_string(&id),
@@ -1979,64 +4574,128 @@ impl VectorStore for LadybugStore {
     }
 
     async fn export_database(&self, dir: &str) -> Result<()> {
-        let dir = std::path::PathBuf::from(dir);
+        self.init("snapshot").await?;
+        let snapshot_turn = self.snapshot_lock.clone().lock_owned().await;
+        let write_turn = self.write_lock.clone().lock_owned().await;
         let source = self.local_path.clone();
-        self.with_conn(move |conn| {
-            // Checkpoint first so the snapshot cannot miss writes still in the
-            // WAL. The engine's EXPORT DATABASE is not used: it SIGSEGVs in
-            // lbug 0.20.4's planner on every store (planExportTableData ->
-            // std::__format on a dangling string_view).
-            conn.query("CHECKPOINT")?;
-            Ok(())
+        let source_aliases = self.path_aliases.clone();
+        let database = self.db.clone();
+        let dir = PathBuf::from(dir);
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            // These guards stay in the non-cancellable worker for the entire
+            // checkpoint, provenance read, and sibling-file copy. Cancelling
+            // export's async caller cannot expose a moving DB/WAL cut.
+            let _snapshot_turn = snapshot_turn;
+            let _write_turn = write_turn;
+            let _cross_process_writer = acquire_database_writer_lock(&source)?;
+            #[cfg(test)]
+            test_snapshot_operation_barrier(&source, "export");
+            if dir.exists() {
+                anyhow::bail!("snapshot destination already exists; choose a new empty path");
+            }
+            let parent = dir.parent().unwrap_or_else(|| Path::new("."));
+            std::fs::create_dir_all(parent)?;
+            let _ = crate::crash::install_alt_stack();
+            let conn = Connection::new(&database)?;
+            let (stages, _legacy_stage_leases) = {
+                // The writer lock makes this the stable DB/lease cut. Register
+                // proven pre-catalog generations before checkpoint and
+                // manifest capture, including a stage created after preflight.
+                let legacy_stage_leases =
+                    migrate_legacy_stages_at_snapshot_cut(&conn, &source, &source_aliases)?;
+                // Checkpoint first so the snapshot cannot miss writes still in the
+                // WAL. The engine's EXPORT DATABASE is not used: it SIGSEGVs in
+                // lbug 0.20.4's planner on every store (planExportTableData ->
+                // std::__format on a dangling string_view).
+                conn.query("CHECKPOINT")?;
+                (read_stage_provenance(&conn)?, legacy_stage_leases)
+            };
+            drop(conn);
+            let dir_name = dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("snapshot");
+            let staging_dir = parent.join(format!(".{dir_name}.staging-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir(&staging_dir)?;
+            let outcome = (|| -> Result<()> {
+                let target = staging_dir.join("ladybug.store");
+                std::fs::copy(&source, &target).map_err(|e| {
+                    anyhow::anyhow!("could not copy the database into the snapshot: {}", e)
+                })?;
+                let wal = raw_database_sibling(&source, ".wal");
+                if wal.exists() {
+                    std::fs::copy(&wal, staging_dir.join("ladybug.store.wal")).map_err(|e| {
+                        anyhow::anyhow!(
+                            "could not copy the write-ahead log into the snapshot: {}",
+                            e
+                        )
+                    })?;
+                }
+                let source_marker = width_marker_path(&source);
+                if source_marker.exists() {
+                    std::fs::copy(&source_marker, width_marker_path(&target)).map_err(|e| {
+                        anyhow::anyhow!(
+                            "could not copy the embedding marker into the snapshot: {}",
+                            e
+                        )
+                    })?;
+                }
+                let stage_namespaces: Vec<String> = stages
+                    .iter()
+                    .map(|(namespace, _)| namespace.clone())
+                    .collect();
+                let manifest = serde_json::json!({
+                    "format": "neurostrata-snapshot",
+                    "version": 2,
+                    "created_at": chrono::Utc::now().to_rfc3339(),
+                    "source": source.display().to_string(),
+                    "bytes": std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0),
+                    "stage_generations": stage_namespaces,
+                });
+                std::fs::write(
+                    staging_dir.join("manifest.json"),
+                    serde_json::to_string_pretty(&manifest)?,
+                )?;
+                std::fs::rename(&staging_dir, &dir)?;
+                Ok(())
+            })();
+            if outcome.is_err() {
+                let _ = std::fs::remove_dir_all(&staging_dir);
+            }
+            outcome
         })
-        .await?;
-        std::fs::create_dir_all(&dir)?;
-        let target = dir.join("ladybug.store");
-        std::fs::copy(&source, &target)
-            .map_err(|e| anyhow::anyhow!("could not copy {:?} into the snapshot: {}", source, e))?;
-        // A WAL left behind after the checkpoint rides along, so a restore
-        // replays it exactly as the engine would have.
-        let mut wal = source.clone().into_os_string();
-        wal.push(".wal");
-        let wal = std::path::PathBuf::from(wal);
-        if wal.exists() {
-            std::fs::copy(&wal, dir.join("ladybug.store.wal")).map_err(|e| {
-                anyhow::anyhow!(
-                    "could not copy the write-ahead log into the snapshot: {}",
-                    e
-                )
-            })?;
-        }
-        let manifest = serde_json::json!({
-            "format": "neurostrata-snapshot",
-            "version": 1,
-            "created_at": chrono::Utc::now().to_rfc3339(),
-            "source": source.display().to_string(),
-            "bytes": std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0),
-        });
-        std::fs::write(
-            dir.join("manifest.json"),
-            serde_json::to_string_pretty(&manifest)?,
-        )?;
-        Ok(())
+        .await
+        .map_err(|error| anyhow::anyhow!("snapshot worker failed: {}", error))?
     }
 
     async fn checkpoint(&self) -> Result<()> {
-        // Cleared first: a write that lands while the engine is flushing must
-        // survive, and clearing afterwards would drop its mark.
-        let had_writes = self.dirty.take();
-
-        let outcome = self
-            .with_conn(move |conn| {
+        let snapshot_turn = self.snapshot_lock.clone().lock_owned().await;
+        let source = self.local_path.clone();
+        let database = self.db.clone();
+        let dirty = self.dirty.clone();
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            let _snapshot_turn = snapshot_turn;
+            let _cross_process_writer = acquire_database_writer_lock(&source)?;
+            // Clear after obtaining the cross-process writer lock. Any write
+            // that lands after the checkpoint marks dirty again.
+            let had_writes = dirty.take();
+            let _ = crate::crash::install_alt_stack();
+            #[cfg(test)]
+            test_snapshot_operation_barrier(&source, "checkpoint");
+            ENGINE_CALLS_STARTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let result = (|| -> Result<()> {
+                let conn = Connection::new(&database)?;
                 conn.query("CHECKPOINT")?;
                 Ok(())
-            })
-            .await;
-
-        if outcome.is_err() && had_writes {
-            self.dirty.mark();
-        }
-        outcome
+            })();
+            ENGINE_CALLS_FINISHED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if result.is_err() && had_writes {
+                dirty.mark();
+            }
+            result
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("checkpoint worker failed: {}", error))?
     }
 
     fn is_dirty(&self) -> bool {
@@ -2047,7 +4706,7 @@ impl VectorStore for LadybugStore {
         // Declarations live in each memory's metadata, which survives ingestion;
         // only the edges themselves are lost with the nodes. Replaying them is
         // therefore a read of what is already stored, not a guess.
-        let memories = self.list(namespace, None).await?;
+        let memories = self.list(namespace, None, None).await?;
 
         // Ids stored before node ids became repository-relative are absolute, so
         // a rule written to match them declares C:/proj/src/foo.rs and matches
@@ -2133,17 +4792,309 @@ impl VectorStore for LadybugStore {
         .await
     }
 
-    async fn list(&self, namespace: &str, user_id: Option<&str>) -> Result<Vec<SearchResult>> {
+    async fn begin_ingest_stage(&self, namespace: &str) -> Result<Box<dyn Send>> {
+        if !is_internal_ingest_stage_namespace(namespace) {
+            anyhow::bail!("ingest staging namespace is not internal");
+        }
+        self.recover_interrupted_ingest_stages().await?;
+        let requested_namespace = namespace.to_string();
+        let already_present = self
+            .with_conn(move |conn| {
+                let safe_namespace = escape_ladybug_string(&requested_namespace);
+                let mut rows = match conn.query(&format!(
+                    "MATCH (m:Memory) WHERE m.namespace = '{}' RETURN count(m)",
+                    safe_namespace
+                )) {
+                    Ok(rows) => rows,
+                    Err(error) if error.to_string().contains("does not exist in catalog") => {
+                        return Ok(false)
+                    }
+                    Err(error) => return Err(error.into()),
+                };
+                Ok(rows.next().is_some_and(|row| format!("{}", row[0]) != "0"))
+            })
+            .await?;
+        if already_present {
+            anyhow::bail!(
+                "ingest generation namespace already contains rows; preserving existing data"
+            );
+        }
+        let path = ingest_stage_lease_path(&self.local_path, namespace)?;
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|error| {
+                anyhow::anyhow!("could not create the ingest generation lease: {}", error)
+            })?;
+        file.try_lock().map_err(|error| {
+            let _ = std::fs::remove_file(&path);
+            anyhow::anyhow!("could not lock the ingest generation lease: {}", error)
+        })?;
+        let stage_namespace = namespace.to_string();
+        let generation = namespace
+            .strip_prefix(INTERNAL_INGEST_STAGE_PREFIX)
+            .expect("validated stage namespace")
+            .to_string();
+        if let Err(error) = self
+            .write_with_deadline("recording ingest stage provenance", move |conn| {
+                conn.query(&format!(
+                    "CREATE (s:IngestStage {{namespace: '{}', generation: '{}'}})",
+                    escape_ladybug_string(&stage_namespace),
+                    escape_ladybug_string(&generation)
+                ))?;
+                Ok(())
+            })
+            .await
+        {
+            let _ = file.unlock();
+            drop(file);
+            let _ = std::fs::remove_file(&path);
+            return Err(error);
+        }
+        Ok(Box::new(IngestStageLease { file: Some(file) }))
+    }
+
+    async fn publish_ingested(&self, namespace: &str, staged_namespace: &str) -> Result<usize> {
+        if is_reserved_ingest_destination(namespace) {
+            anyhow::bail!("ingest destination uses the reserved internal staging namespace");
+        }
+        if !is_internal_ingest_stage_namespace(staged_namespace) || namespace == staged_namespace {
+            anyhow::bail!("ingest publication requires a distinct internal staging generation");
+        }
+        let lease_path = ingest_stage_lease_path(&self.local_path, staged_namespace)?;
+        if !lease_path.is_file() {
+            anyhow::bail!("ingest publication requires an active staging lease");
+        }
+        let namespace = namespace.to_string();
+        let staged_namespace = staged_namespace.to_string();
+        let pk_ready = self.pk_ready();
+        #[cfg(test)]
+        let hook_db_path = self.local_path.clone();
+        let published = self.write_to_completion(
+            "publishing an ingested generation",
+            write_timeout(),
+            move |conn| {
+            conn.query("BEGIN TRANSACTION")?;
+            let transaction = (|| -> Result<usize> {
+                #[cfg(test)]
+                test_publish_crash_barrier(&hook_db_path, "after-begin");
+                let safe_namespace = escape_ladybug_string(&namespace);
+                let safe_stage_namespace = escape_ladybug_string(&staged_namespace);
+                let generation = staged_namespace
+                    .strip_prefix(INTERNAL_INGEST_STAGE_PREFIX)
+                    .ok_or_else(|| anyhow::anyhow!("invalid staged generation"))?
+                    .to_string();
+                let has_stage_provenance = conn
+                    .query(&format!(
+                        "MATCH (s:IngestStage) WHERE s.namespace = '{}' AND s.generation = '{}' RETURN s.namespace LIMIT 1",
+                        safe_stage_namespace,
+                        escape_ladybug_string(&generation)
+                    ))?
+                    .next()
+                    .is_some();
+                if !has_stage_provenance {
+                    anyhow::bail!("ingest publication has no database stage provenance");
+                }
+                conn.query(&format!(
+                    "MATCH (m:Memory) WHERE m.namespace = '{}' AND m.user_id = 'auto-ingestor' DETACH DELETE m",
+                    safe_namespace
+                ))?;
+                #[cfg(test)]
+                test_publish_crash_barrier(&hook_db_path, "after-delete");
+
+                let staged_prefix = format!(
+                    "{}{}",
+                    staged_namespace,
+                    crate::parser::ingest::NAMESPACE_SEPARATOR
+                );
+                let published_prefix = format!(
+                    "{}{}",
+                    namespace,
+                    crate::parser::ingest::NAMESPACE_SEPARATOR
+                );
+
+                // Promote in bounded pages. The vectors and text payloads
+                // remain in the database; only IDs and metadata cross into
+                // process memory for namespace-reference rewriting.
+                let mut first_page = true;
+                loop {
+                    let mut staged = conn.query(&format!(
+                        "MATCH (m:Memory) WHERE m.namespace = '{}' AND m.user_id = 'auto-ingestor' RETURN m.id, m.metadata LIMIT 128",
+                        safe_stage_namespace
+                    ))?;
+                    let mut page = Vec::with_capacity(128);
+                    while let Some(row) = staged.next() {
+                        page.push((format!("{}", row[0]), format!("{}", row[1])));
+                    }
+                    drop(staged);
+                    if page.is_empty() {
+                        break;
+                    }
+                    for (old_id, metadata_text) in page {
+                        let path = old_id.strip_prefix(&staged_prefix).ok_or_else(|| {
+                            anyhow::anyhow!("staged node id does not match its internal generation")
+                        })?;
+                        let new_id = format!("{}{}", published_prefix, path);
+                        let mut metadata: serde_json::Value = serde_json::from_str(&metadata_text)
+                            .map_err(|error| anyhow::anyhow!("invalid staged metadata: {}", error))?;
+                        replace_json_namespace_prefix(
+                            &mut metadata,
+                            &staged_prefix,
+                            &published_prefix,
+                        );
+                        let safe_old_id = escape_ladybug_string(&old_id);
+                        let safe_new_id = escape_ladybug_string(&new_id);
+                        let safe_metadata =
+                            escape_ladybug_string(&serde_json::to_string(&metadata)?);
+                        // Task 7 fix round: the promoted row is a fresh
+                        // CREATE, so on a pk-carrying table it must supply
+                        // the derived key (memory_pk of the destination
+                        // namespace and the new id) as create input — the
+                        // binder refuses a create that omits the primary
+                        // key. In legacy mode (no pk column) the fragment
+                        // is empty and the statement is unchanged.
+                        let pk_prop = if pk_ready {
+                            format!(
+                                "pk: '{}', ",
+                                escape_ladybug_string(&memory_pk(&namespace, &new_id))
+                            )
+                        } else {
+                            String::new()
+                        };
+                        conn.query(&format!(
+                            "MATCH (m:Memory) WHERE m.namespace = '{}' AND m.id = '{}' CREATE (n:Memory {{{}id: '{}'}}) SET n.namespace = '{}', n.content = m.content, n.user_id = m.user_id, n.memory_type = m.memory_type, n.agent_name = m.agent_name, n.location = m.location, n.location_lines = m.location_lines, n.metadata = '{}', n.embedding = m.embedding",
+                            safe_stage_namespace,
+                            safe_old_id,
+                            pk_prop,
+                            safe_new_id,
+                            safe_namespace,
+                            safe_metadata
+                        ))?;
+                        conn.query(&format!(
+                            "MATCH (m:Memory) WHERE m.namespace = '{}' AND m.id = '{}' DETACH DELETE m",
+                            safe_stage_namespace, safe_old_id
+                        ))?;
+                    }
+                    if first_page {
+                        first_page = false;
+                        #[cfg(test)]
+                        test_publish_crash_barrier(&hook_db_path, "after-first-page");
+                    }
+                }
+                // A generation is private state and must not survive a
+                // successful publication, even if an unexpected row type was
+                // written there. Promotion and disposal share this transaction.
+                conn.query(&format!(
+                    "MATCH (m:Memory) WHERE m.namespace = '{}' DETACH DELETE m",
+                    safe_stage_namespace
+                ))?;
+                conn.query(&format!(
+                    "MATCH (s:IngestStage) WHERE s.namespace = '{}' AND s.generation = '{}' DELETE s",
+                    safe_stage_namespace,
+                    escape_ladybug_string(&generation)
+                ))?;
+
+                // Re-read declarations inside the transaction so the new nodes
+                // and the rules that point at them become visible together.
+                let mut memories = conn.query(&format!(
+                    "MATCH (m:Memory) WHERE m.namespace = '{}' RETURN m.id, m.user_id, m.metadata",
+                    safe_namespace
+                ))?;
+                let mut edge_rows = Vec::new();
+                let mut known_ids = Vec::new();
+                while let Some(row) = memories.next() {
+                    let id = format!("{}", row[0]);
+                    let user_id = format!("{}", row[1]);
+                    let metadata_text = format!("{}", row[2]);
+                    let metadata: serde_json::Value = serde_json::from_str(&metadata_text)
+                        .map_err(|e| anyhow::anyhow!("invalid metadata for {}: {}", id, e))?;
+                    known_ids.push(id.clone());
+                    edge_rows.push((id, user_id, metadata));
+                }
+                let known = KnownIds::new(known_ids.iter().map(String::as_str));
+                let mut wanted: std::collections::HashMap<
+                    &'static str,
+                    Vec<(String, String)>,
+                > = std::collections::HashMap::new();
+                for (id, _user_id, metadata) in &edge_rows {
+                    if is_retired(metadata) {
+                        continue;
+                    }
+                    for edge in edge_specs(metadata) {
+                        let target = known
+                            .resolve(&edge.target_id)
+                            .unwrap_or_else(|| edge.target_id.clone());
+                        let pair = if edge.points_at_target {
+                            (id.clone(), target)
+                        } else {
+                            (target, id.clone())
+                        };
+                        wanted.entry(edge.rel_type).or_default().push(pair);
+                    }
+                }
+                let mut created = 0;
+                for (rel_type, pairs) in &wanted {
+                    created += create_missing_edges(conn, rel_type, pairs)?;
+                }
+                #[cfg(test)]
+                test_publish_crash_barrier(&hook_db_path, "precommit");
+                Ok(created)
+            })();
+
+            match transaction {
+                Ok(created) => match conn.query("COMMIT") {
+                    Ok(_) => {
+                        #[cfg(test)]
+                        test_publish_crash_barrier(&hook_db_path, "postcommit");
+                        Ok(created)
+                    }
+                    Err(commit) => match conn.query("ROLLBACK") {
+                        Ok(_) => Err(commit.into()),
+                        Err(rollback) => Err(anyhow::anyhow!(
+                            "atomic ingest commit outcome is uncertain: commit failed: {}; rollback also failed: {}",
+                            commit,
+                            rollback
+                        )),
+                    },
+                },
+                Err(error) => match conn.query("ROLLBACK") {
+                    Ok(_) => Err(error),
+                    Err(rollback) => Err(anyhow::anyhow!(
+                        "atomic ingest publication outcome is uncertain: {}; rollback also failed: {}",
+                        error,
+                        rollback
+                    )),
+                },
+            }
+        },
+        )
+        .await?;
+        if let Some(warning) = cleanup_ingest_stage_lease_after_commit(&lease_path) {
+            eprintln!("{}", warning);
+        }
+        Ok(published)
+    }
+
+    async fn list(&self, namespace: &str, user_id: Option<&str>, memory_type: Option<&str>) -> Result<Vec<SearchResult>> {
         let namespace = namespace.to_string();
         let user_id = user_id.map(|v| v.to_string());
+        let memory_type = memory_type.map(|v| v.to_string());
         self.with_conn(move |conn| {
             let safe_ns = escape_ladybug_string(&namespace);
 
-            let query = if let Some(uid) = user_id {
-                format!("MATCH (m:Memory) WHERE m.namespace = '{}' AND m.user_id = '{}' RETURN m.id, m.content, m.user_id, m.memory_type, m.agent_name, m.location, m.location_lines, m.metadata", safe_ns, escape_ladybug_string(&uid))
-            } else {
-                format!("MATCH (m:Memory) WHERE m.namespace = '{}' RETURN m.id, m.content, m.user_id, m.memory_type, m.agent_name, m.location, m.location_lines, m.metadata", safe_ns)
-            };
+            // Build WHERE clause with optional filters (R15: push into Cypher).
+            let mut conditions = vec![format!("m.namespace = '{}'", safe_ns)];
+            if let Some(ref uid) = user_id {
+                conditions.push(format!("m.user_id = '{}'", escape_ladybug_string(uid)));
+            }
+            if let Some(ref mt) = memory_type {
+                conditions.push(format!("m.memory_type = '{}'", escape_ladybug_string(mt)));
+            }
+            let where_clause = conditions.join(" AND ");
+
+            let query = format!("MATCH (m:Memory) WHERE {} RETURN m.id, m.content, m.user_id, m.memory_type, m.agent_name, m.location, m.location_lines, m.metadata", where_clause);
 
             let result = conn.query(&query)?;
             let mut results = Vec::new();
@@ -2184,13 +5135,31 @@ impl VectorStore for LadybugStore {
     async fn get(&self, namespace: &str, id: &str) -> Result<Option<(Vec<f32>, MemoryPayload)>> {
         let namespace = namespace.to_string();
         let id = id.to_string();
+        // Task 7: NUL is refused at the store boundary on reads too — a
+        // lookup carrying one is refused by name rather than escaped into
+        // a query that can only miss.
+        reject_nul("namespace", &namespace)?;
+        reject_nul("id", &id)?;
+        let pk_ready = self.pk_ready();
         self.with_conn(move |conn| {
             let safe_ns = escape_ladybug_string(&namespace);
             let safe_id = escape_ladybug_string(&id);
 
-            let query = format!("MATCH (m:Memory) WHERE m.namespace = '{}' AND m.id = '{}' RETURN m.embedding, m.content, m.user_id, m.memory_type, m.agent_name, m.location, m.location_lines, m.metadata", safe_ns, safe_id);
-
-            let mut result = conn.query(&query)?;
+            // With the pk column present the row is addressed by its
+            // derived pk (bound, B1); legacy mode keeps the (namespace,
+            // id) property match.
+            let mut result = if pk_ready {
+                let mut stmt = conn.prepare(
+                    "MATCH (m:Memory {pk: $pk}) RETURN m.embedding, m.content, m.user_id, m.memory_type, m.agent_name, m.location, m.location_lines, m.metadata",
+                )?;
+                conn.execute(
+                    &mut stmt,
+                    vec![("pk", lbug::Value::String(memory_pk(&namespace, &id)))],
+                )?
+            } else {
+                let query = format!("MATCH (m:Memory) WHERE m.namespace = '{}' AND m.id = '{}' RETURN m.embedding, m.content, m.user_id, m.memory_type, m.agent_name, m.location, m.location_lines, m.metadata", safe_ns, safe_id);
+                conn.query(&query)?
+            };
 
             if let Some(row) = result.next() {
                 // The column is FLOAT[N], a fixed-size ARRAY, so the engine hands
@@ -2242,14 +5211,19 @@ impl VectorStore for LadybugStore {
     }
 
     async fn list_namespaces(&self) -> Result<Vec<String>> {
+        let db_path = self.local_path.clone();
+        let path_aliases = self.path_aliases.clone();
         self.with_conn(move |conn| {
+            let hidden_stages = read_hidden_stage_namespaces(conn, &db_path, &path_aliases)?;
             let query = "MATCH (m:Memory) RETURN DISTINCT m.namespace AS ns;";
             let mut result = conn.query(query)?;
 
             let mut namespaces = Vec::new();
             while let Some(row) = result.next() {
                 if let lbug::Value::String(ns) = row[0].clone() {
-                    namespaces.push(ns);
+                    if !hidden_stages.contains(&ns) {
+                        namespaces.push(ns);
+                    }
                 }
             }
 
@@ -2267,18 +5241,27 @@ impl VectorStore for LadybugStore {
     ) -> Result<serde_json::Value> {
         let project_contexts = project_contexts.clone();
         let anchor_override = anchor_override.cloned();
+        let db_path = self.local_path.clone();
+        let path_aliases = self.path_aliases.clone();
         self.with_conn(move |conn| {
             let now = chrono::Utc::now().timestamp();
+            let hidden_stage_namespaces =
+                read_hidden_stage_namespaces(conn, &db_path, &path_aliases)?;
 
             // 1. Fetch all nodes
             let mut nodes = Vec::new();
             let mut retired_ids = std::collections::HashSet::new();
+            let mut hidden_stage_ids = std::collections::HashSet::new();
             let query_nodes = "MATCH (n:Memory) RETURN n.id, n.namespace, n.memory_type, n.content, n.location, n.metadata;";
             let mut result_nodes = conn.query(query_nodes)?;
 
             while let Some(row) = result_nodes.next() {
                 let id = if let lbug::Value::String(s) = &row[0] { s.clone() } else { continue };
                 let namespace = if let lbug::Value::String(s) = &row[1] { s.clone() } else { "global".to_string() };
+                if hidden_stage_namespaces.contains(&namespace) {
+                    hidden_stage_ids.insert(id);
+                    continue;
+                }
                 let memory_type = if let lbug::Value::String(s) = &row[2] { s.clone() } else { "unknown".to_string() };
                 let content = if let lbug::Value::String(s) = &row[3] { s.clone() } else { "".to_string() };
                 let location = if let lbug::Value::String(s) = &row[4] { s.clone() } else { "".to_string() };
@@ -2370,7 +5353,11 @@ impl VectorStore for LadybugStore {
             while let Some(row) = res_relates.next() {
                 let source = if let lbug::Value::String(s) = &row[0] { s.clone() } else { continue };
                 let target = if let lbug::Value::String(s) = &row[1] { s.clone() } else { continue };
-                if !include_retired && (retired_ids.contains(&source) || retired_ids.contains(&target)) {
+                if hidden_stage_ids.contains(&source)
+                    || hidden_stage_ids.contains(&target)
+                    || (!include_retired
+                        && (retired_ids.contains(&source) || retired_ids.contains(&target)))
+                {
                     continue;
                 }
                 links.push(serde_json::json!({
@@ -2386,7 +5373,11 @@ impl VectorStore for LadybugStore {
             while let Some(row) = res_contains.next() {
                 let source = if let lbug::Value::String(s) = &row[0] { s.clone() } else { continue };
                 let target = if let lbug::Value::String(s) = &row[1] { s.clone() } else { continue };
-                if !include_retired && (retired_ids.contains(&source) || retired_ids.contains(&target)) {
+                if hidden_stage_ids.contains(&source)
+                    || hidden_stage_ids.contains(&target)
+                    || (!include_retired
+                        && (retired_ids.contains(&source) || retired_ids.contains(&target)))
+                {
                     continue;
                 }
                 links.push(serde_json::json!({
@@ -2402,7 +5393,11 @@ impl VectorStore for LadybugStore {
             while let Some(row) = res_governs.next() {
                 let source = if let lbug::Value::String(s) = &row[0] { s.clone() } else { continue };
                 let target = if let lbug::Value::String(s) = &row[1] { s.clone() } else { continue };
-                if !include_retired && (retired_ids.contains(&source) || retired_ids.contains(&target)) {
+                if hidden_stage_ids.contains(&source)
+                    || hidden_stage_ids.contains(&target)
+                    || (!include_retired
+                        && (retired_ids.contains(&source) || retired_ids.contains(&target)))
+                {
                     continue;
                 }
                 links.push(serde_json::json!({
@@ -2420,7 +5415,11 @@ impl VectorStore for LadybugStore {
             for row in res_extracted {
                 let source = if let lbug::Value::String(s) = &row[0] { s.clone() } else { continue };
                 let target = if let lbug::Value::String(s) = &row[1] { s.clone() } else { continue };
-                if !include_retired && (retired_ids.contains(&source) || retired_ids.contains(&target)) {
+                if hidden_stage_ids.contains(&source)
+                    || hidden_stage_ids.contains(&target)
+                    || (!include_retired
+                        && (retired_ids.contains(&source) || retired_ids.contains(&target)))
+                {
                     continue;
                 }
                 links.push(serde_json::json!({
@@ -2471,6 +5470,539 @@ impl VectorStore for LadybugStore {
             Ok(())
         })
         .await
+    }
+}
+
+impl crate::traits::AsAny for LadybugStore {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+/// IntakeStore implementation for LadybugStore (PQTH durable intake ledger).
+#[async_trait::async_trait]
+impl crate::traits::IntakeStore for LadybugStore {
+    async fn create_receipt(
+        &self,
+        request: crate::task::intake::CreateReceiptRequest,
+    ) -> Result<crate::task::intake::CreateReceiptResult, String> {
+        let namespace = request.namespace.clone();
+        let source_digest = request.source_digest.clone();
+        let text = request.text.clone();
+        let source_kind = request.source_kind;
+        let source_revision = request.source_revision.clone();
+
+        // Generate receipt ID deterministically from namespace + source_digest
+        let receipt_id = crate::task::intake::generate_receipt_id(&namespace, &source_digest);
+
+        // Process text through M2 lexical detector
+        let detected_intents = crate::task::intake::process_intake_text(&text);
+
+        // Create candidates from detected intents
+        let candidates = crate::task::intake::create_candidates_from_intents(
+            &namespace,
+            &receipt_id,
+            &request,
+            detected_intents.clone(),
+        );
+
+        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        // Clone values needed for both receipt construction and safe strings
+        let source_revision_for_receipt = source_revision.clone();
+        let source_digest_for_receipt = source_digest.clone();
+        let detected_intents_for_receipt = detected_intents.clone();
+        let text_for_receipt = text.clone();
+        let now_for_receipt = now.clone();
+
+        let receipt = crate::task::intake::IntakeReceipt {
+            id: receipt_id.clone(),
+            namespace: namespace.clone(),
+            source_kind,
+            source_revision: source_revision_for_receipt,
+            source_digest: source_digest_for_receipt,
+            detected_intents: detected_intents_for_receipt,
+            raw_text: text_for_receipt,
+            created_at: now_for_receipt,
+        };
+
+        // Serialize detected intents for storage
+        let intents_json = serde_json::to_string(&detected_intents).unwrap_or_default();
+        let safe_intents = escape_ladybug_string(&intents_json);
+        let safe_raw_text = escape_ladybug_string(&text);
+        let safe_receipt_id = escape_ladybug_string(&receipt_id);
+        let safe_ns = escape_ladybug_string(&namespace);
+        let safe_source_kind = format!("{:?}", source_kind).to_lowercase();
+        let safe_source_revision = escape_ladybug_string(&source_revision);
+        let safe_source_digest = escape_ladybug_string(&source_digest);
+        let safe_created_at = escape_ladybug_string(&now);
+
+        // Transactional write: receipt + candidates atomically
+        let candidates_clone = candidates.clone();
+        self.write_with_deadline("creating intake receipt and candidates", move |conn| {
+            // Insert receipt
+            let receipt_query = format!(
+                "MERGE (r:IntakeReceipt {{id: '{}'}})
+                 ON CREATE SET r.namespace = '{}', r.source_kind = '{}', r.source_revision = '{}',
+                     r.source_digest = '{}', r.detected_intents = '{}', r.raw_text = '{}', r.created_at = '{}'",
+                safe_receipt_id, safe_ns, safe_source_kind, safe_source_revision,
+                safe_source_digest, safe_intents, safe_raw_text, safe_created_at
+            );
+            conn.query(&receipt_query)?;
+
+            // Insert candidates
+            for cand in &candidates_clone {
+                let safe_cand_id = escape_ladybug_string(&cand.id);
+                let safe_receipt_id = escape_ladybug_string(&cand.receipt_id);
+                let safe_title = escape_ladybug_string(&cand.title);
+                let safe_desc = cand.description.as_ref().map(|d| escape_ladybug_string(d)).unwrap_or_default();
+                let safe_review_state = format!("{:?}", cand.review_state).to_lowercase();
+                let safe_disposition = format!("{:?}", cand.disposition).to_lowercase();
+                let safe_task_id = cand.task_id.as_ref().map(|t| escape_ladybug_string(t)).unwrap_or_default();
+                let safe_created = escape_ladybug_string(&cand.created_at);
+                let safe_updated = escape_ladybug_string(&cand.updated_at);
+
+                let cand_query = format!(
+                    "MERGE (c:IntakeCandidate {{id: '{}'}})
+                     ON CREATE SET c.namespace = '{}', c.receipt_id = '{}', c.title = '{}',
+                         c.description = '{}', c.review_state = '{}', c.disposition = '{}',
+                         c.task_id = '{}', c.cas_version = {}, c.created_at = '{}', c.updated_at = '{}'",
+                    safe_cand_id, safe_ns, safe_receipt_id, safe_title, safe_desc,
+                    safe_review_state, safe_disposition, safe_task_id, cand.cas_version,
+                    safe_created, safe_updated
+                );
+                conn.query(&cand_query)?;
+            }
+
+            Ok(())
+        })
+        .await
+        .map_err(|e| format!("Failed to create intake receipt: {}", e))?;
+
+        let candidate_count = candidates.len();
+        Ok(crate::task::intake::CreateReceiptResult {
+            receipt,
+            candidates,
+            candidate_count,
+        })
+    }
+
+    async fn list_receipts(
+        &self,
+        request: crate::task::intake::ListReceiptsRequest,
+    ) -> Result<crate::task::intake::IntakeListResponse<crate::task::intake::IntakeReceipt>, String> {
+        let namespace = request.namespace.clone();
+        let limit = request.limit.unwrap_or(50);
+        let offset = request.offset.unwrap_or(0);
+
+        self.with_conn(move |conn| {
+            let safe_ns = escape_ladybug_string(&namespace);
+
+            // Get total count
+            let count_query = format!(
+                "MATCH (r:IntakeReceipt) WHERE r.namespace = '{}' RETURN count(r)",
+                safe_ns
+            );
+            let total: i64 = conn
+                .query(&count_query)?
+                .next()
+                .and_then(|row| format!("{}", row[0]).parse().ok())
+                .unwrap_or(0);
+
+            // Get paginated results
+            let query = format!(
+                "MATCH (r:IntakeReceipt) WHERE r.namespace = '{}' RETURN r.id, r.namespace, r.source_kind, r.source_revision, r.source_digest, r.detected_intents, r.raw_text, r.created_at ORDER BY r.created_at DESC LIMIT {} OFFSET {}",
+                safe_ns, limit, offset
+            );
+            let mut results = Vec::new();
+            for row in conn.query(&query)? {
+                let id: String = format!("{}", row[0]);
+                let ns: String = format!("{}", row[1]);
+                let source_kind_str: String = format!("{}", row[2]);
+                let source_revision: String = format!("{}", row[3]);
+                let source_digest: String = format!("{}", row[4]);
+                let detected_intents_str: String = format!("{}", row[5]);
+                let raw_text: String = format!("{}", row[6]);
+                let created_at: String = format!("{}", row[7]);
+
+                let source_kind = match source_kind_str.as_str() {
+                    "conversation" => crate::task::intake::SourceKind::Conversation,
+                    "manual" => crate::task::intake::SourceKind::Manual,
+                    "imported" => crate::task::intake::SourceKind::Imported,
+                    "tool" => crate::task::intake::SourceKind::Tool,
+                    _ => crate::task::intake::SourceKind::Conversation,
+                };
+
+                let detected_intents: Vec<crate::task::intake::DetectedIntent> =
+                    serde_json::from_str(&detected_intents_str).unwrap_or_default();
+
+                results.push(crate::task::intake::IntakeReceipt {
+                    id,
+                    namespace: ns,
+                    source_kind,
+                    source_revision,
+                    source_digest,
+                    detected_intents,
+                    raw_text,
+                    created_at,
+                });
+            }
+
+            Ok(crate::task::intake::IntakeListResponse {
+                namespace,
+                count: results.len(),
+                total: total as usize,
+                offset,
+                limit,
+                items: results,
+            })
+        })
+        .await
+        .map_err(|e| format!("Failed to list receipts: {}", e))
+    }
+
+    async fn list_candidates(
+        &self,
+        request: crate::task::intake::ListCandidatesRequest,
+    ) -> Result<crate::task::intake::IntakeListResponse<crate::task::intake::IntakeCandidate>, String> {
+        let namespace = request.namespace.clone();
+        let limit = request.limit.unwrap_or(50);
+        let offset = request.offset.unwrap_or(0);
+        let review_state_filter = request.review_state;
+        let disposition_filter = request.disposition;
+
+        self.with_conn(move |conn| {
+            let safe_ns = escape_ladybug_string(&namespace);
+
+            // Build WHERE clause for filters
+            let mut where_clauses = vec![format!("c.namespace = '{}'", safe_ns)];
+            if let Some(rs) = review_state_filter {
+                where_clauses.push(format!("c.review_state = '{}'", format!("{:?}", rs).to_lowercase()));
+            }
+            if let Some(d) = disposition_filter {
+                where_clauses.push(format!("c.disposition = '{}'", format!("{:?}", d).to_lowercase()));
+            }
+            let where_clause = where_clauses.join(" AND ");
+
+            // Get total count
+            let count_query = format!(
+                "MATCH (c:IntakeCandidate) WHERE {} RETURN count(c)",
+                where_clause
+            );
+            let total: i64 = conn
+                .query(&count_query)?
+                .next()
+                .and_then(|row| format!("{}", row[0]).parse().ok())
+                .unwrap_or(0);
+
+            // Get paginated results
+            let query = format!(
+                "MATCH (c:IntakeCandidate) WHERE {} RETURN c.id, c.namespace, c.receipt_id, c.title, c.description, c.review_state, c.disposition, c.task_id, c.cas_version, c.created_at, c.updated_at ORDER BY c.created_at DESC LIMIT {} OFFSET {}",
+                where_clause, limit, offset
+            );
+            let mut results = Vec::new();
+            for row in conn.query(&query)? {
+                let id: String = format!("{}", row[0]);
+                let ns: String = format!("{}", row[1]);
+                let receipt_id: String = format!("{}", row[2]);
+                let title: String = format!("{}", row[3]);
+                let description: String = format!("{}", row[4]);
+                let review_state_str: String = format!("{}", row[5]);
+                let disposition_str: String = format!("{}", row[6]);
+                let task_id: String = format!("{}", row[7]);
+                let cas_version: i64 = format!("{}", row[8]).parse().unwrap_or(1);
+                let created_at: String = format!("{}", row[9]);
+                let updated_at: String = format!("{}", row[10]);
+
+                let review_state = match review_state_str.as_str() {
+                    "pending" => crate::task::intake::ReviewState::Pending,
+                    "inreview" => crate::task::intake::ReviewState::InReview,
+                    "accepted" => crate::task::intake::ReviewState::Accepted,
+                    "dismissed" => crate::task::intake::ReviewState::Dismissed,
+                    _ => crate::task::intake::ReviewState::Pending,
+                };
+
+                let disposition = match disposition_str.as_str() {
+                    "pending" => crate::task::intake::Disposition::Pending,
+                    "created" => crate::task::intake::Disposition::Created,
+                    "linked" => crate::task::intake::Disposition::Linked,
+                    "dismissed" => crate::task::intake::Disposition::Dismissed,
+                    _ => crate::task::intake::Disposition::Pending,
+                };
+
+                results.push(crate::task::intake::IntakeCandidate {
+                    id,
+                    namespace: ns,
+                    receipt_id,
+                    title,
+                    description: if description.is_empty() { None } else { Some(description) },
+                    review_state,
+                    disposition,
+                    task_id: if task_id.is_empty() { None } else { Some(task_id) },
+                    cas_version: cas_version as u64,
+                    created_at,
+                    updated_at,
+                });
+            }
+
+            Ok(crate::task::intake::IntakeListResponse {
+                namespace,
+                count: results.len(),
+                total: total as usize,
+                offset,
+                limit,
+                items: results,
+            })
+        })
+        .await
+        .map_err(|e| format!("Failed to list candidates: {}", e))
+    }
+
+    async fn resolve_candidate(
+        &self,
+        request: crate::task::intake::ResolveCandidateRequest,
+    ) -> Result<crate::task::intake::ResolveCandidateResult, String> {
+        let namespace = request.namespace.clone();
+        let candidate_id = request.candidate_id.clone();
+        let disposition = request.disposition;
+        let task_id = request.task_id.clone();
+        let task_id_for_closure = task_id.clone();
+        let cas_version = request.cas_version;
+
+        self.write_with_deadline("resolving intake candidate", move |conn| {
+            let safe_ns = escape_ladybug_string(&namespace);
+            let safe_cand_id = escape_ladybug_string(&candidate_id);
+            let safe_disposition = format!("{:?}", disposition).to_lowercase();
+            let safe_task_id = task_id_for_closure.as_ref().map(|t| escape_ladybug_string(t)).unwrap_or_default();
+            let new_version = cas_version + 1;
+            let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+            let safe_updated = escape_ladybug_string(&now);
+
+            // For "created" disposition, verify the task_id refers to a real task
+            // in the Memory table (memory_type = 'task') in the same namespace.
+            // Reject missing/blank/wrong-namespace/non-task IDs.
+            if disposition == crate::task::intake::Disposition::Created {
+                if safe_task_id.is_empty() {
+                    return Err(anyhow::anyhow!("task_id is required for 'created' disposition"));
+                }
+                let task_check = format!(
+                    "MATCH (m:Memory) WHERE m.id = '{}' AND m.namespace = '{}' AND m.memory_type = 'task' RETURN m.id",
+                    safe_task_id, safe_ns
+                );
+                let mut task_result = conn.query(&task_check)?;
+                if task_result.next().is_none() {
+                    return Err(anyhow::anyhow!(
+                        "task_id '{}' does not refer to an existing task in namespace '{}'",
+                        task_id_for_closure.as_deref().unwrap_or(""),
+                        namespace
+                    ));
+                }
+            }
+
+            // CAS: only update if cas_version matches
+            let query = format!(
+                "MATCH (c:IntakeCandidate) WHERE c.id = '{}' AND c.namespace = '{}' AND c.cas_version = {} SET c.disposition = '{}', c.task_id = '{}', c.cas_version = {}, c.updated_at = '{}', c.review_state = '{}' RETURN c.id",
+                safe_cand_id, safe_ns, cas_version, safe_disposition, safe_task_id, new_version, safe_updated,
+                if disposition == crate::task::intake::Disposition::Dismissed { "dismissed" } else { "accepted" }
+            );
+            let mut result = conn.query(&query)?;
+
+            if result.next().is_none() {
+                // Check if candidate exists but version mismatch
+                let check_query = format!(
+                    "MATCH (c:IntakeCandidate) WHERE c.id = '{}' AND c.namespace = '{}' RETURN c.cas_version",
+                    safe_cand_id, safe_ns
+                );
+                let mut check_result = conn.query(&check_query)?;
+                if let Some(row) = check_result.next() {
+                    let current_version: i64 = format!("{}", row[0]).parse().unwrap_or(0);
+                    return Err(anyhow::anyhow!("CAS conflict: expected version {}, found {}", cas_version, current_version));
+                }
+                return Err(anyhow::anyhow!("Candidate not found: {}", candidate_id));
+            }
+
+            // Fetch updated candidate
+            let fetch_query = format!(
+                "MATCH (c:IntakeCandidate) WHERE c.id = '{}' AND c.namespace = '{}' RETURN c.id, c.namespace, c.receipt_id, c.title, c.description, c.review_state, c.disposition, c.task_id, c.cas_version, c.created_at, c.updated_at",
+                safe_cand_id, safe_ns
+            );
+            let mut fetch_result = conn.query(&fetch_query)?;
+            let row = fetch_result.next().ok_or_else(|| anyhow::anyhow!("Candidate not found after update: {}", candidate_id))?;
+
+            let id: String = format!("{}", row[0]);
+            let ns: String = format!("{}", row[1]);
+            let receipt_id: String = format!("{}", row[2]);
+            let title: String = format!("{}", row[3]);
+            let description: String = format!("{}", row[4]);
+            let review_state_str: String = format!("{}", row[5]);
+            let disposition_str: String = format!("{}", row[6]);
+            let task_id_db: String = format!("{}", row[7]);
+            let cas_version_db: i64 = format!("{}", row[8]).parse().unwrap_or(new_version as i64);
+            let created_at: String = format!("{}", row[9]);
+            let updated_at: String = format!("{}", row[10]);
+
+            let review_state = match review_state_str.as_str() {
+                "pending" => crate::task::intake::ReviewState::Pending,
+                "inreview" => crate::task::intake::ReviewState::InReview,
+                "accepted" => crate::task::intake::ReviewState::Accepted,
+                "dismissed" => crate::task::intake::ReviewState::Dismissed,
+                _ => crate::task::intake::ReviewState::Pending,
+            };
+
+            let disposition_enum = match disposition_str.as_str() {
+                "pending" => crate::task::intake::Disposition::Pending,
+                "created" => crate::task::intake::Disposition::Created,
+                "linked" => crate::task::intake::Disposition::Linked,
+                "dismissed" => crate::task::intake::Disposition::Dismissed,
+                _ => crate::task::intake::Disposition::Pending,
+            };
+
+            let candidate = crate::task::intake::IntakeCandidate {
+                id,
+                namespace: ns,
+                receipt_id,
+                title,
+                description: if description.is_empty() { None } else { Some(description) },
+                review_state,
+                disposition: disposition_enum,
+                task_id: if task_id_db.is_empty() { None } else { Some(task_id_db) },
+                cas_version: cas_version_db as u64,
+                created_at,
+                updated_at,
+            };
+
+            Ok(crate::task::intake::ResolveCandidateResult {
+                candidate: candidate.clone(),
+                task_created: disposition == crate::task::intake::Disposition::Created,
+                task_id: task_id_for_closure.clone(),
+            })
+        })
+        .await
+        .map_err(|e| format!("Failed to resolve candidate: {}", e))
+    }
+
+    async fn get_receipt(
+        &self,
+        namespace: &str,
+        id: &str,
+    ) -> Result<Option<crate::task::intake::IntakeReceipt>, String> {
+        let namespace = namespace.to_string();
+        let id = id.to_string();
+
+        self.with_conn(move |conn| {
+            let safe_ns = escape_ladybug_string(&namespace);
+            let safe_id = escape_ladybug_string(&id);
+
+            let query = format!(
+                "MATCH (r:IntakeReceipt) WHERE r.id = '{}' AND r.namespace = '{}' RETURN r.id, r.namespace, r.source_kind, r.source_revision, r.source_digest, r.detected_intents, r.raw_text, r.created_at",
+                safe_id, safe_ns
+            );
+            let mut result = conn.query(&query)?;
+
+            if let Some(row) = result.next() {
+                let receipt_id: String = format!("{}", row[0]);
+                let ns: String = format!("{}", row[1]);
+                let source_kind_str: String = format!("{}", row[2]);
+                let source_revision: String = format!("{}", row[3]);
+                let source_digest: String = format!("{}", row[4]);
+                let detected_intents_str: String = format!("{}", row[5]);
+                let raw_text: String = format!("{}", row[6]);
+                let created_at: String = format!("{}", row[7]);
+
+                let source_kind = match source_kind_str.as_str() {
+                    "conversation" => crate::task::intake::SourceKind::Conversation,
+                    "manual" => crate::task::intake::SourceKind::Manual,
+                    "imported" => crate::task::intake::SourceKind::Imported,
+                    "tool" => crate::task::intake::SourceKind::Tool,
+                    _ => crate::task::intake::SourceKind::Conversation,
+                };
+
+                let detected_intents: Vec<crate::task::intake::DetectedIntent> =
+                    serde_json::from_str(&detected_intents_str).unwrap_or_default();
+
+                Ok(Some(crate::task::intake::IntakeReceipt {
+                    id: receipt_id,
+                    namespace: ns,
+                    source_kind,
+                    source_revision,
+                    source_digest,
+                    detected_intents,
+                    raw_text,
+                    created_at,
+                }))
+            } else {
+                Ok(None)
+            }
+        })
+        .await
+        .map_err(|e| format!("Failed to get receipt: {}", e))
+    }
+
+    async fn get_candidate(
+        &self,
+        namespace: &str,
+        id: &str,
+    ) -> Result<Option<crate::task::intake::IntakeCandidate>, String> {
+        let namespace = namespace.to_string();
+        let id = id.to_string();
+
+        self.with_conn(move |conn| {
+            let safe_ns = escape_ladybug_string(&namespace);
+            let safe_id = escape_ladybug_string(&id);
+
+            let query = format!(
+                "MATCH (c:IntakeCandidate) WHERE c.id = '{}' AND c.namespace = '{}' RETURN c.id, c.namespace, c.receipt_id, c.title, c.description, c.review_state, c.disposition, c.task_id, c.cas_version, c.created_at, c.updated_at",
+                safe_id, safe_ns
+            );
+            let mut result = conn.query(&query)?;
+
+            if let Some(row) = result.next() {
+                let cand_id: String = format!("{}", row[0]);
+                let ns: String = format!("{}", row[1]);
+                let receipt_id: String = format!("{}", row[2]);
+                let title: String = format!("{}", row[3]);
+                let description: String = format!("{}", row[4]);
+                let review_state_str: String = format!("{}", row[5]);
+                let disposition_str: String = format!("{}", row[6]);
+                let task_id: String = format!("{}", row[7]);
+                let cas_version: i64 = format!("{}", row[8]).parse().unwrap_or(1);
+                let created_at: String = format!("{}", row[9]);
+                let updated_at: String = format!("{}", row[10]);
+
+                let review_state = match review_state_str.as_str() {
+                    "pending" => crate::task::intake::ReviewState::Pending,
+                    "inreview" => crate::task::intake::ReviewState::InReview,
+                    "accepted" => crate::task::intake::ReviewState::Accepted,
+                    "dismissed" => crate::task::intake::ReviewState::Dismissed,
+                    _ => crate::task::intake::ReviewState::Pending,
+                };
+
+                let disposition = match disposition_str.as_str() {
+                    "pending" => crate::task::intake::Disposition::Pending,
+                    "created" => crate::task::intake::Disposition::Created,
+                    "linked" => crate::task::intake::Disposition::Linked,
+                    "dismissed" => crate::task::intake::Disposition::Dismissed,
+                    _ => crate::task::intake::Disposition::Pending,
+                };
+
+                Ok(Some(crate::task::intake::IntakeCandidate {
+                    id: cand_id,
+                    namespace: ns,
+                    receipt_id,
+                    title,
+                    description: if description.is_empty() { None } else { Some(description) },
+                    review_state,
+                    disposition,
+                    task_id: if task_id.is_empty() { None } else { Some(task_id) },
+                    cas_version: cas_version as u64,
+                    created_at,
+                    updated_at,
+                }))
+            } else {
+                Ok(None)
+            }
+        })
+        .await
+        .map_err(|e| format!("Failed to get candidate: {}", e))
     }
 }
 
@@ -2607,6 +6139,47 @@ fn pick_declared_target(
 /// The exact id stays unscoped, as edges always have been; everything inferred
 /// from it is confined to the memory's own namespace, so a bare `src/lib.rs`
 /// cannot land on another project's file.
+/// How an edge target binds to exactly one row (Task 7).
+enum RowBind {
+    /// The namespace of the row the edge lands on.
+    Bound(String),
+    /// No row carries the id (or the lookup itself failed — edge
+    /// materialization is best-effort and reports through the deferred
+    /// list either way).
+    Gone,
+    /// The id lives in several namespaces, none of them the preferred
+    /// one: a true tie, deferred rather than sprayed.
+    Ambiguous(Vec<String>),
+}
+
+/// Resolve the namespace of the row an edge should land on: the row whose
+/// id is `id`, preferring `preferred` (the source memory's namespace)
+/// when the id lives there, else the single namespace holding it.
+fn bind_row_namespace(conn: &Connection, id: &str, preferred: &str) -> RowBind {
+    let query = format!(
+        "MATCH (b:Memory) WHERE b.id = '{}' AND b.namespace IS NOT NULL RETURN DISTINCT b.namespace",
+        escape_ladybug_string(id)
+    );
+    let mut namespaces = Vec::new();
+    match conn.query(&query) {
+        Ok(mut rows) => {
+            while let Some(row) = rows.next() {
+                namespaces.push(format!("{}", row[0]));
+            }
+        }
+        Err(_) => return RowBind::Gone,
+    }
+    if namespaces.iter().any(|ns| ns == preferred) {
+        RowBind::Bound(preferred.to_string())
+    } else if namespaces.len() == 1 {
+        RowBind::Bound(namespaces.into_iter().next().unwrap())
+    } else if namespaces.is_empty() {
+        RowBind::Gone
+    } else {
+        RowBind::Ambiguous(namespaces)
+    }
+}
+
 fn resolve_target_on_write(
     conn: &Connection,
     namespace: &str,
@@ -2676,6 +6249,2638 @@ fn bump_access_count(metadata: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::collections::HashMap;
+
+    static TEST_CWD_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    async fn wait_for_test_barrier(path: &Path) {
+        let started = std::time::Instant::now();
+        while !path.exists() {
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(15),
+                "test operation did not reach its barrier"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    fn release_test_barrier(path: &Path) {
+        let mut release = path.as_os_str().to_os_string();
+        release.push(".release");
+        std::fs::write(PathBuf::from(release), "continue").unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn database_path_aliases_share_writer_and_stage_sidecars() {
+        let root = std::env::temp_dir().join(format!("db-alias-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let database = root.join("database.store");
+        let alias = root.join("database-alias.store");
+        std::fs::write(&database, b"fixture").unwrap();
+        std::os::unix::fs::symlink(&database, &alias).unwrap();
+        let namespace = format!("{}{}", INTERNAL_INGEST_STAGE_PREFIX, uuid::Uuid::new_v4());
+        assert_eq!(
+            database_writer_lock_path(&database),
+            database_writer_lock_path(&alias)
+        );
+        assert_eq!(
+            ingest_stage_lease_path(&database, &namespace).unwrap(),
+            ingest_stage_lease_path(&alias, &namespace).unwrap()
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    async fn seed_process_crash_publication_fixture(db: &Path, namespace: &str, stage: &str) {
+        let store = LadybugStore::for_testing(db, 4).unwrap();
+        store.init("process-crash-fixture").await.unwrap();
+        let old_id = format!(
+            "{}{}old.rs",
+            namespace,
+            crate::parser::ingest::NAMESPACE_SEPARATOR
+        );
+        store
+            .upsert(
+                namespace,
+                &old_id,
+                vec![0.1; 4],
+                MemoryPayload {
+                    content: "old-generation".into(),
+                    user_id: "auto-ingestor".into(),
+                    memory_type: "file".into(),
+                    agent_name: None,
+                    location: "old.rs".into(),
+                    location_lines: String::new(),
+                    metadata: json!({}),
+                },
+            )
+            .await
+            .unwrap();
+        let manual_rule_id = format!(
+            "{}{}manual-rule",
+            namespace,
+            crate::parser::ingest::NAMESPACE_SEPARATOR
+        );
+        store
+            .upsert(
+                namespace,
+                &manual_rule_id,
+                vec![0.2; 4],
+                MemoryPayload {
+                    content: "manual rule".into(),
+                    user_id: "owner".into(),
+                    memory_type: "rule".into(),
+                    agent_name: None,
+                    location: String::new(),
+                    location_lines: String::new(),
+                    metadata: json!({"governs": [old_id]}),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(governs_edges_from(&store, &manual_rule_id).await, 1);
+
+        let lease = store.begin_ingest_stage(stage).await.unwrap();
+        let staged_namespace = stage.to_string();
+        let staged_prefix = format!("{}{}", stage, crate::parser::ingest::NAMESPACE_SEPARATOR);
+        let pk_ready = store.pk_ready();
+        store
+            .write_with_deadline("seeding a staged process-crash fixture", move |conn| {
+                // Task 7 fix round: the fixture's raw CREATEs seed a
+                // fresh (pk-keyed) table, so each row supplies the
+                // derived key as create input, as a production writer
+                // must. In legacy mode the fragment is empty.
+                let pk_prop = |id: &str| {
+                    if pk_ready {
+                        format!(
+                            "pk: '{}', ",
+                            escape_ladybug_string(&memory_pk(&staged_namespace, id))
+                        )
+                    } else {
+                        String::new()
+                    }
+                };
+                for i in 0..130 {
+                    let location = if i == 0 {
+                        "old.rs".to_string()
+                    } else {
+                        format!("file-{i}.rs")
+                    };
+                    let id = format!("{staged_prefix}{location}");
+                    conn.query(&format!(
+                        "CREATE (m:Memory {{{}id: '{}', namespace: '{}', content: 'new-generation-{i}', user_id: 'auto-ingestor', memory_type: 'file', agent_name: '', location: '{}', location_lines: '', metadata: '{{}}', embedding: [0.3, 0.3, 0.3, 0.3]}})",
+                        pk_prop(&id),
+                        escape_ladybug_string(&id),
+                        escape_ladybug_string(&staged_namespace),
+                        escape_ladybug_string(&location)
+                    ))?;
+                }
+                let rule_id = format!("{staged_prefix}new-rule");
+                let target_id = format!("{staged_prefix}old.rs");
+                let metadata = serde_json::to_string(&json!({"governs": [target_id]}))?;
+                conn.query(&format!(
+                    "CREATE (m:Memory {{{}id: '{}', namespace: '{}', content: 'new rule', user_id: 'auto-ingestor', memory_type: 'rule', agent_name: '', location: '', location_lines: '', metadata: '{}', embedding: [0.4, 0.4, 0.4, 0.4]}})",
+                    pk_prop(&rule_id),
+                    escape_ladybug_string(&rule_id),
+                    escape_ladybug_string(&staged_namespace),
+                    escape_ladybug_string(&metadata)
+                ))?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        drop(lease);
+        drop(store);
+    }
+
+    async fn assert_process_crash_generation(
+        store: &LadybugStore,
+        namespace: &str,
+        committed: bool,
+    ) {
+        let namespace = namespace.to_string();
+        let query_namespace = namespace.clone();
+        let (rows, edges) = store
+            .with_conn(move |conn| {
+                let safe_namespace = escape_ladybug_string(&query_namespace);
+                let mut result = conn.query(&format!(
+                    "MATCH (m:Memory) WHERE m.namespace = '{}' RETURN m.id, m.content, m.user_id, m.memory_type, m.location, m.metadata, m.embedding",
+                    safe_namespace
+                ))?;
+                let mut rows = HashMap::<String, (Vec<f32>, MemoryPayload)>::new();
+                while let Some(row) = result.next() {
+                    let id = format!("{}", row[0]);
+                    let mut embedding = Vec::new();
+                    if let lbug::Value::Array(_, values) | lbug::Value::List(_, values) = &row[6] {
+                        for value in values {
+                            match value {
+                                lbug::Value::Float(value) => embedding.push(*value),
+                                lbug::Value::Double(value) => embedding.push(*value as f32),
+                                other => anyhow::bail!("unexpected embedding value: {other:?}"),
+                            }
+                        }
+                    }
+                    let metadata_text = format!("{}", row[5]);
+                    let metadata = serde_json::from_str(&metadata_text)?;
+                    rows.insert(
+                        id,
+                        (
+                            embedding,
+                            MemoryPayload {
+                                content: format!("{}", row[1]),
+                                user_id: format!("{}", row[2]),
+                                memory_type: format!("{}", row[3]),
+                                agent_name: None,
+                                location: format!("{}", row[4]),
+                                location_lines: String::new(),
+                                metadata,
+                            },
+                        ),
+                    );
+                }
+                let mut result = conn.query(&format!(
+                    "MATCH (a:Memory)-[:GOVERNS]->(b:Memory) WHERE a.namespace = '{}' AND b.namespace = '{}' RETURN a.id, b.id",
+                    safe_namespace, safe_namespace
+                ))?;
+                let mut edges = HashSet::new();
+                while let Some(row) = result.next() {
+                    edges.insert((format!("{}", row[0]), format!("{}", row[1])));
+                }
+                Ok((rows, edges))
+            })
+            .await
+            .unwrap();
+
+        let old_id = format!(
+            "{namespace}{}old.rs",
+            crate::parser::ingest::NAMESPACE_SEPARATOR
+        );
+        let manual_rule_id = format!(
+            "{namespace}{}manual-rule",
+            crate::parser::ingest::NAMESPACE_SEPARATOR
+        );
+        let mut expected_ids = HashSet::from([old_id.clone(), manual_rule_id.clone()]);
+        let mut expected_edges = HashSet::from([(manual_rule_id.clone(), old_id.clone())]);
+        if committed {
+            for index in 1..130 {
+                let path = format!("file-{index}.rs");
+                expected_ids.insert(format!(
+                    "{namespace}{}{path}",
+                    crate::parser::ingest::NAMESPACE_SEPARATOR
+                ));
+            }
+            let new_rule_id = format!(
+                "{namespace}{}new-rule",
+                crate::parser::ingest::NAMESPACE_SEPARATOR
+            );
+            expected_ids.insert(new_rule_id.clone());
+            expected_edges.insert((new_rule_id, old_id.clone()));
+        }
+        assert_eq!(
+            rows.keys().cloned().collect::<HashSet<_>>(),
+            expected_ids,
+            "crash recovery must expose exactly the old or committed generation"
+        );
+
+        let (vector, payload) = rows.get(&old_id).expect("old.rs row exists");
+        assert_eq!(vector, &vec![if committed { 0.3 } else { 0.1 }; 4]);
+        assert_eq!(
+            payload.content,
+            if committed {
+                "new-generation-0"
+            } else {
+                "old-generation"
+            }
+        );
+        assert_eq!(payload.user_id, "auto-ingestor");
+        assert_eq!(payload.memory_type, "file");
+        assert_eq!(payload.location, "old.rs");
+        assert_eq!(payload.metadata, json!({}));
+
+        let (vector, payload) = rows.get(&manual_rule_id).expect("manual rule exists");
+        assert_eq!(vector, &vec![0.2; 4]);
+        assert_eq!(payload.content, "manual rule");
+        assert_eq!(payload.user_id, "owner");
+        assert_eq!(payload.memory_type, "rule");
+        assert_eq!(payload.metadata, json!({"governs": [old_id.clone()]}));
+
+        if committed {
+            for index in 1..130 {
+                let path = format!("file-{index}.rs");
+                let id = format!(
+                    "{namespace}{}{path}",
+                    crate::parser::ingest::NAMESPACE_SEPARATOR
+                );
+                let (vector, payload) = rows.get(&id).expect("committed file row exists");
+                assert_eq!(vector, &vec![0.3; 4], "vector for {id}");
+                assert_eq!(payload.content, format!("new-generation-{index}"));
+                assert_eq!(payload.user_id, "auto-ingestor");
+                assert_eq!(payload.memory_type, "file");
+                assert_eq!(payload.location, path);
+                assert_eq!(payload.metadata, json!({}));
+            }
+            let new_rule_id = format!(
+                "{namespace}{}new-rule",
+                crate::parser::ingest::NAMESPACE_SEPARATOR
+            );
+            let (vector, payload) = rows.get(&new_rule_id).expect("new rule exists");
+            assert_eq!(vector, &vec![0.4; 4]);
+            assert_eq!(payload.content, "new rule");
+            assert_eq!(payload.user_id, "auto-ingestor");
+            assert_eq!(payload.memory_type, "rule");
+            assert_eq!(payload.metadata, json!({"governs": [old_id]}));
+        }
+        assert_eq!(
+            edges, expected_edges,
+            "the exact declaration edge set survives"
+        );
+    }
+
+    #[tokio::test]
+    async fn publish_process_crash_child_worker() {
+        let Ok(db) = std::env::var("NEUROSTRATA_TEST_PUBLISH_CRASH_DB") else {
+            return;
+        };
+        let phase = std::env::var("NEUROSTRATA_TEST_PUBLISH_CRASH_PHASE").unwrap();
+        let barrier =
+            PathBuf::from(std::env::var_os("NEUROSTRATA_TEST_PUBLISH_CRASH_BARRIER").unwrap());
+        set_test_publish_crash_barrier(&phase, PathBuf::from(&db), barrier);
+        let namespace = std::env::var("NEUROSTRATA_TEST_PUBLISH_CRASH_NAMESPACE").unwrap();
+        let stage = std::env::var("NEUROSTRATA_TEST_PUBLISH_CRASH_STAGE").unwrap();
+        let db_path = PathBuf::from(&db);
+        let store = LadybugStore::for_testing(db, 4).unwrap();
+        store.init("process-crash-child").await.unwrap();
+        test_publish_crash_barrier(&db_path, "staged");
+        store.publish_ingested(&namespace, &stage).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn snapshot_writer_lock_child_worker() {
+        let Ok(db) = std::env::var("NEUROSTRATA_TEST_SNAPSHOT_WRITER_DB") else {
+            return;
+        };
+        let barrier =
+            PathBuf::from(std::env::var_os("NEUROSTRATA_TEST_SNAPSHOT_WRITER_BARRIER").unwrap());
+        let _lock = acquire_database_writer_lock(Path::new(&db)).unwrap();
+        std::fs::write(&barrier, "writer holds database lock").unwrap();
+        let mut release_path = barrier.as_os_str().to_os_string();
+        release_path.push(".release");
+        let release = PathBuf::from(release_path);
+        let started = std::time::Instant::now();
+        while !release.exists() {
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(20),
+                "snapshot writer lock watchdog expired"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn snapshot_waits_for_a_competing_process_writer() {
+        let root = std::env::temp_dir().join(format!("snapshot-lock-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = root.join("fixture.store");
+        let snapshot = root.join("snapshot");
+        let store = std::sync::Arc::new(LadybugStore::for_testing(&db, 4).unwrap());
+        store.init("snapshot-lock").await.unwrap();
+        store
+            .upsert(
+                "snapshot-lock",
+                "snapshot-row",
+                vec![0.0; 4],
+                MemoryPayload {
+                    content: "before-writer-lock".into(),
+                    user_id: "owner".into(),
+                    memory_type: "note".into(),
+                    agent_name: None,
+                    location: String::new(),
+                    location_lines: String::new(),
+                    metadata: json!({}),
+                },
+            )
+            .await
+            .unwrap();
+        let barrier = root.join("writer-barrier");
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("store::ladybug::tests::snapshot_writer_lock_child_worker")
+            .arg("--nocapture")
+            .env("NEUROSTRATA_TEST_SNAPSHOT_WRITER_DB", &db)
+            .env("NEUROSTRATA_TEST_SNAPSHOT_WRITER_BARRIER", &barrier)
+            .spawn()
+            .unwrap();
+        let started = std::time::Instant::now();
+        while !barrier.exists() {
+            if let Some(status) = child.try_wait().unwrap() {
+                panic!("snapshot writer child exited before holding lock: {status}");
+            }
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(15),
+                "snapshot writer child did not reach its barrier"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let store_for_export = store.clone();
+        let output = snapshot.clone();
+        let exporter = tokio::spawn(async move {
+            store_for_export
+                .export_database(&output.to_string_lossy())
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        assert!(
+            !exporter.is_finished(),
+            "snapshot must wait while another process owns the database writer lock"
+        );
+        let mut release_path = barrier.as_os_str().to_os_string();
+        release_path.push(".release");
+        std::fs::write(release_path, "release").unwrap();
+        let status = child.wait().unwrap();
+        assert!(status.success(), "snapshot writer child failed: {status}");
+        exporter.await.unwrap().unwrap();
+        drop(store);
+
+        let snapshot_db = snapshot.join("ladybug.store");
+        let restored = LadybugStore::for_testing(&snapshot_db, 4).unwrap();
+        restored.init("snapshot-cut-check").await.unwrap();
+        let row = restored
+            .get("snapshot-lock", "snapshot-row")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.1.content, "before-writer-lock");
+        drop(restored);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn process_crash_during_publication_recovers_old_or_committed_generation() {
+        for phase in [
+            "staged",
+            "after-delete",
+            "after-first-page",
+            "precommit",
+            "postcommit",
+        ] {
+            let root = std::env::temp_dir()
+                .join(format!("publish-crash-{phase}-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&root).unwrap();
+            let db = root.join("fixture.store");
+            let namespace = format!("crash-{phase}");
+            let stage = format!("{}{}", INTERNAL_INGEST_STAGE_PREFIX, uuid::Uuid::new_v4());
+            seed_process_crash_publication_fixture(&db, &namespace, &stage).await;
+            let barrier = root.join("barrier");
+            let executable = std::env::current_exe().unwrap();
+            let mut child = std::process::Command::new(executable)
+                .arg("--exact")
+                .arg("store::ladybug::tests::publish_process_crash_child_worker")
+                .arg("--nocapture")
+                .env("NEUROSTRATA_TEST_PUBLISH_CRASH_PHASE", phase)
+                .env("NEUROSTRATA_TEST_PUBLISH_CRASH_BARRIER", &barrier)
+                .env("NEUROSTRATA_TEST_PUBLISH_CRASH_DB", &db)
+                .env("NEUROSTRATA_TEST_PUBLISH_CRASH_NAMESPACE", &namespace)
+                .env("NEUROSTRATA_TEST_PUBLISH_CRASH_STAGE", &stage)
+                .spawn()
+                .unwrap();
+            let started = std::time::Instant::now();
+            while !barrier.exists() {
+                if let Some(status) = child.try_wait().unwrap() {
+                    panic!("child exited before reaching {phase} barrier: {status}");
+                }
+                assert!(
+                    started.elapsed() < std::time::Duration::from_secs(15),
+                    "child did not reach {phase} barrier before watchdog"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            child.kill().unwrap();
+            let crash_status = child.wait().unwrap();
+            assert!(
+                !crash_status.success(),
+                "the writer must be killed without normal process unwinding"
+            );
+
+            let reopened = LadybugStore::for_testing(&db, 4).unwrap();
+            reopened.init("after-process-crash").await.unwrap();
+            let should_be_new = phase == "postcommit";
+            assert_process_crash_generation(&reopened, &namespace, should_be_new).await;
+
+            let followup = format!("{}{}", INTERNAL_INGEST_STAGE_PREFIX, uuid::Uuid::new_v4());
+            let old_id = format!(
+                "{}{}old.rs",
+                namespace,
+                crate::parser::ingest::NAMESPACE_SEPARATOR
+            );
+            let _lease = reopened.begin_ingest_stage(&followup).await.unwrap();
+            assert!(
+                !ingest_stage_lease_path(&db, &stage).unwrap().exists(),
+                "recovery removes orphan stage lease sidecars after a completed or rolled-back transaction"
+            );
+            if !should_be_new {
+                assert!(reopened
+                    .get(
+                        &stage,
+                        &format!(
+                            "{}{}old.rs",
+                            stage,
+                            crate::parser::ingest::NAMESPACE_SEPARATOR
+                        )
+                    )
+                    .await
+                    .unwrap()
+                    .is_none());
+            }
+            let followup_id = format!(
+                "{}{}old.rs",
+                followup,
+                crate::parser::ingest::NAMESPACE_SEPARATOR
+            );
+            reopened
+                .upsert(
+                    &followup,
+                    &followup_id,
+                    vec![0.9; 4],
+                    MemoryPayload {
+                        content: "follow-up replacement".into(),
+                        user_id: "auto-ingestor".into(),
+                        memory_type: "file".into(),
+                        agent_name: None,
+                        location: "old.rs".into(),
+                        location_lines: String::new(),
+                        metadata: json!({}),
+                    },
+                )
+                .await
+                .unwrap();
+            reopened
+                .publish_ingested(&namespace, &followup)
+                .await
+                .unwrap();
+            assert_eq!(
+                reopened
+                    .get(&namespace, &old_id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .1
+                    .content,
+                "follow-up replacement"
+            );
+            assert_eq!(
+                governs_edges_from(
+                    &reopened,
+                    &format!(
+                        "{}{}manual-rule",
+                        namespace,
+                        crate::parser::ingest::NAMESPACE_SEPARATOR
+                    )
+                )
+                .await,
+                1
+            );
+            drop(reopened);
+            let _ = std::fs::remove_dir_all(root);
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelling_publication_caller_waits_for_definitive_commit() {
+        let root = std::env::temp_dir().join(format!("publish-cancel-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = root.join("fixture.store");
+        let namespace = "cancel-publication";
+        let stage = format!("{}{}", INTERNAL_INGEST_STAGE_PREFIX, uuid::Uuid::new_v4());
+        seed_process_crash_publication_fixture(&db, namespace, &stage).await;
+        let store = std::sync::Arc::new(LadybugStore::for_testing(&db, 4).unwrap());
+        store.init("cancel-publication").await.unwrap();
+        store
+            .checkpoint()
+            .await
+            .expect("checkpoint staged generation before publication");
+        assert!(
+            !store.is_dirty(),
+            "publication starts with no pending checkpoint work"
+        );
+        let barrier = root.join("barrier");
+        set_test_publish_crash_barrier("precommit", db.clone(), barrier.clone());
+        let writer_store = store.clone();
+        let namespace_owned = namespace.to_string();
+        let stage_owned = stage.clone();
+        let caller = tokio::spawn(async move {
+            writer_store
+                .publish_ingested(&namespace_owned, &stage_owned)
+                .await
+        });
+        let started = std::time::Instant::now();
+        while !barrier.exists() {
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(15),
+                "publication did not reach precommit barrier"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        caller.abort();
+        let cancellation = caller
+            .await
+            .expect_err("publication caller must be canceled")
+            .is_cancelled();
+        assert!(
+            cancellation,
+            "JoinHandle must confirm cancellation before release"
+        );
+        let mut release_path = barrier.as_os_str().to_os_string();
+        release_path.push(".release");
+        std::fs::write(release_path, "continue").unwrap();
+
+        let lock_path = db.clone();
+        let drained_writer =
+            tokio::task::spawn_blocking(move || acquire_database_writer_lock(&lock_path))
+                .await
+                .expect("writer-lock waiter completes")
+                .expect("detached publication releases its writer lock");
+        assert_process_crash_generation(&store, namespace, true).await;
+        assert!(
+            store.is_dirty(),
+            "a committed publication must remain dirty after its caller is canceled"
+        );
+        drop(drained_writer);
+        store
+            .checkpoint()
+            .await
+            .expect("checkpoint the committed publication");
+        assert!(
+            !store.is_dirty(),
+            "checkpoint clears the publication dirty flag"
+        );
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    async fn seed_raw_reserved_namespace_row(
+        store: &LadybugStore,
+        namespace: &str,
+        id: &str,
+        user_id: &str,
+    ) {
+        // Task 7 fix round: derive the pk from the RAW namespace/id
+        // (before escaping) with memory_pk, exactly as a production
+        // writer does; the fragment is empty in legacy mode (no pk
+        // column), where the binder does not demand it.
+        let pk_prop = if store.pk_ready() {
+            format!(
+                "pk: '{}', ",
+                escape_ladybug_string(&memory_pk(namespace, id))
+            )
+        } else {
+            String::new()
+        };
+        let namespace = escape_ladybug_string(namespace);
+        let id = escape_ladybug_string(id);
+        let user_id = escape_ladybug_string(user_id);
+        store
+            .with_conn(move |conn| {
+                conn.query(&format!(
+                    "CREATE (m:Memory {{{}id: '{}', namespace: '{}', content: 'preserve me', user_id: '{}', memory_type: 'fact', agent_name: '', location: '', location_lines: '', metadata: '{{}}', embedding: [0.0, 0.0, 0.0, 0.0]}})",
+                    pk_prop, id, namespace, user_id
+                ))?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+    }
+
+    #[test]
+    fn post_commit_stage_lease_cleanup_failure_is_only_a_warning() {
+        let path = std::env::temp_dir().join(format!("stage-lease-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&path).unwrap();
+        let warning = cleanup_ingest_stage_lease_after_commit(&path).unwrap();
+        assert!(warning.contains("generation committed"));
+        assert!(warning.contains("cleanup failed"));
+        assert!(
+            path.is_dir(),
+            "cleanup reports the failure without deleting data"
+        );
+        std::fs::remove_dir(path).unwrap();
+    }
+
+    /// The production open path must never hand the engine its own defaults: a
+    /// `buffer_pool_size` of 0 becomes 80% of physical memory, and a
+    /// `max_db_size` of `u32::MAX` becomes an 8 TB virtual region.
+    #[test]
+    fn the_default_limits_are_a_ceiling_rather_than_most_of_ram() {
+        let limits = StoreLimits::default();
+        assert!(
+            limits.buffer_pool_bytes > 0,
+            "a zero pool means 'ask the engine'"
+        );
+        assert!(
+            limits.buffer_pool_bytes <= 512 * 1024 * 1024,
+            "the default pool must stay small enough not to scale with installed RAM"
+        );
+        assert!(limits.max_db_bytes > 0);
+        assert!(
+            limits.max_db_bytes < 1024 * 1024 * 1024 * 1024,
+            "the default must be far below the engine's 8 TB virtual reservation"
+        );
+    }
+
+    #[test]
+    fn a_missing_width_marker_is_written_on_first_open() {
+        let dir = std::env::temp_dir().join(format!("ladybug-marker-{}", uuid::Uuid::new_v4()));
+        {
+            let _store = LadybugStore::for_testing(&dir, 4).expect("open at width 4");
+        }
+
+        let marker = width_marker_path(&dir);
+        assert!(marker.exists(), "the width is recorded beside the database");
+        let marker_value: EmbeddingMarker =
+            serde_json::from_slice(&std::fs::read(&marker).expect("read marker")).unwrap();
+        assert_eq!(marker_value.dimensions, 4);
+
+        assert!(
+            LadybugStore::for_testing(&dir, 4).is_ok(),
+            "the same width must reopen"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reopening_a_database_with_a_different_embedding_width_is_refused() {
+        let dir = std::env::temp_dir().join(format!("ladybug-width-{}", uuid::Uuid::new_v4()));
+        {
+            let _store = LadybugStore::for_testing(&dir, 8).expect("open at width 8");
+        }
+
+        let error = match LadybugStore::for_testing(&dir, 4) {
+            Ok(_) => panic!("a 4-wide embedder must not open an 8-wide database"),
+            Err(error) => error,
+        };
+        let message = format!("{error}");
+        assert!(
+            message.contains("width 8"),
+            "names the recorded width: {message}"
+        );
+        assert!(
+            message.contains("produces 4"),
+            "names the configured width: {message}"
+        );
+        // Refusal Standard elements 4-5, in the reference site's wording.
+        for element in [
+            "Keep the database intact",
+            "original embedder",
+            "separate database path",
+            "no in-place re-embedding migration is available",
+        ] {
+            assert!(message.contains(element), "remediation element {element:?} missing: {message}");
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Refusal Standard at the width site (Spec Feature 3 AC1): when
+    /// identities are in context, the width refusal — often the only
+    /// refusal that fires — names both canonicalized identities as well
+    /// as both widths and the reference remediation.
+    #[test]
+    fn width_refusal_names_both_identities_and_both_widths() {
+        let dir = std::env::temp_dir().join(format!("ladybug-width-id-{}", uuid::Uuid::new_v4()));
+        let limits = StoreLimits::default();
+        {
+            let _store =
+                LadybugStore::new_with_identity_limits(&dir, 8, "fastembed:model-a".into(), limits)
+                    .expect("open model A at width 8");
+        }
+        let error = match LadybugStore::new_with_identity_limits(
+            &dir,
+            4,
+            "fastembed:model-b".into(),
+            limits,
+        ) {
+            Ok(_) => panic!("a 4-wide embedder must not open an 8-wide database"),
+            Err(error) => error,
+        };
+        let message = format!("{error}");
+        for element in [
+            "fastembed:model-a",
+            "fastembed:model-b",
+            "width 8",
+            "produces 4",
+            "Keep the database intact",
+            "original embedder",
+            "separate database path",
+            "no in-place re-embedding migration is available",
+        ] {
+            assert!(message.contains(element), "width refusal element {element:?} missing: {message}");
+        }
+        let _ = std::fs::remove_file(&dir);
+        let _ = std::fs::remove_file(width_marker_path(&dir));
+    }
+
+    #[tokio::test]
+    async fn legacy_database_without_marker_uses_catalog_width() {
+        let dir =
+            std::env::temp_dir().join(format!("ladybug-legacy-width-{}", uuid::Uuid::new_v4()));
+        {
+            let store = LadybugStore::for_testing(&dir, 8).expect("open at width 8");
+            store.init("probe").await.expect("create Memory schema");
+        }
+        std::fs::remove_file(width_marker_path(&dir)).expect("remove only test sidecar");
+        let error = match LadybugStore::for_testing(&dir, 4) {
+            Ok(_) => panic!("catalog width must guard a legacy DB without a sidecar"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("width 8"));
+        let _ = std::fs::remove_file(&dir);
+    }
+
+    #[test]
+    fn stale_marker_is_replaced_when_database_path_is_absent() {
+        let dir =
+            std::env::temp_dir().join(format!("ladybug-stale-marker-{}", uuid::Uuid::new_v4()));
+        std::fs::write(width_marker_path(&dir), "768\n").unwrap();
+        {
+            let _store =
+                LadybugStore::for_testing(&dir, 4).expect("fresh path ignores orphan marker");
+            let marker: EmbeddingMarker =
+                serde_json::from_slice(&std::fs::read(width_marker_path(&dir)).unwrap()).unwrap();
+            assert_eq!(marker.dimensions, 4);
+        }
+        let _ = std::fs::remove_file(&dir);
+        let _ = std::fs::remove_file(width_marker_path(&dir));
+    }
+
+    #[tokio::test]
+    async fn same_width_model_identity_change_is_refused() {
+        let dir = std::env::temp_dir().join(format!("ladybug-model-id-{}", uuid::Uuid::new_v4()));
+        let limits = StoreLimits::default();
+        {
+            let store =
+                LadybugStore::new_with_identity_limits(&dir, 4, "fastembed:model-a".into(), limits)
+                    .expect("open model A");
+            store.init("probe").await.expect("create schema");
+        }
+        let error = match LadybugStore::new_with_identity_limits(
+            &dir,
+            4,
+            "fastembed:model-b".into(),
+            limits,
+        ) {
+            Ok(_) => panic!("same-width model changes alter the vector space"),
+            Err(error) => error,
+        };
+        let message = error.to_string();
+        assert!(message.contains("model identity"));
+        // Refusal Standard (Spec Feature 3 AC1): both canonicalized
+        // identities, both widths (equal at this site — the width check
+        // has already passed — stated for uniformity), and the reference
+        // remediation elements.
+        for element in [
+            "fastembed:model-a",
+            "fastembed:model-b",
+            "recorded embedding width is 4",
+            "configured embedding width is 4",
+            "Keep the database intact",
+            "original embedder",
+            "separate database path",
+            "no in-place re-embedding migration is available",
+        ] {
+            assert!(message.contains(element), "identity refusal element {element:?} missing: {message}");
+        }
+        let _ = std::fs::remove_file(&dir);
+        let _ = std::fs::remove_file(width_marker_path(&dir));
+    }
+
+    fn read_marker_json(db_path: &Path) -> serde_json::Value {
+        serde_json::from_slice(&std::fs::read(width_marker_path(db_path)).unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn width_only_store_adoption_records_provenance() {
+        let dir =
+            std::env::temp_dir().join(format!("ladybug-adopt-width-{}", uuid::Uuid::new_v4()));
+        let limits = StoreLimits::default();
+        {
+            let store =
+                LadybugStore::new_with_identity_limits(&dir, 4, "fastembed:model-a".into(), limits)
+                    .expect("open model A");
+            store.init("probe").await.expect("create schema");
+        }
+        // Rewrite the sidecar as a legacy marker: width recorded, no identity.
+        std::fs::write(
+            width_marker_path(&dir),
+            serde_json::to_vec(&json!({"version": 1, "dimensions": 4})).unwrap(),
+        )
+        .unwrap();
+        {
+            let _store =
+                LadybugStore::new_with_identity_limits(&dir, 4, "fastembed:model-a".into(), limits)
+                    .expect("width-only store is adopted under the configured identity");
+        }
+        let marker: EmbeddingMarker =
+            serde_json::from_slice(&std::fs::read(width_marker_path(&dir)).unwrap()).unwrap();
+        assert_eq!(marker.embedder_id.as_deref(), Some("fastembed:model-a"));
+        assert_eq!(
+            read_marker_json(&dir).get("adopted_from"),
+            Some(&json!("width-only")),
+            "the adoption is recorded in the marker itself"
+        );
+        let _ = std::fs::remove_file(&dir);
+        let _ = std::fs::remove_file(width_marker_path(&dir));
+    }
+    /// Spec Feature 1 AC1 (store side, Ruling R1 placement): with an
+    /// auto-generated embedders file and `NEUROSTRATA_PROFILE=low`, the
+    /// resolved model is BGESmallENV15Q and a store created in that state
+    /// is minted with the BGE-small identity, not Nomic's.
+    #[tokio::test]
+    async fn profile_low_resolution_mints_bge_small_identity_on_a_new_store() {
+        let resolved = crate::embed::resolve_configured_model_from_inputs(
+            crate::embed::auto_generated_defaults(),
+            crate::embed::EmbeddersFileState::AutoGenerated,
+            None,
+            Some("low"),
+        )
+        .expect("profile resolution succeeds");
+        assert_eq!(resolved.model.model_name, "BGESmallENV15Q");
+        let identity = crate::embed::configured_identity_for(&resolved.model)
+            .expect("the profile model has a canonical identity");
+
+        let profile = crate::config::CapacityProfile::Low;
+        let limits = StoreLimits {
+            buffer_pool_bytes: profile.buffer_pool_bytes(),
+            max_db_bytes: profile.max_db_bytes(),
+        };
+        let dir = std::env::temp_dir()
+            .join(format!("ladybug-profile-mint-{}", uuid::Uuid::new_v4()));
+        {
+            let store = LadybugStore::new_with_identity_limits(
+                &dir,
+                resolved.model.dimensions,
+                identity,
+                limits,
+            )
+            .expect("open a new store with the profile-resolved identity");
+            store.init("profile-mint").await.expect("create schema");
+        }
+        let marker: EmbeddingMarker =
+            serde_json::from_slice(&std::fs::read(width_marker_path(&dir)).unwrap()).unwrap();
+        assert_eq!(
+            marker.embedder_id.as_deref(),
+            Some("fastembed:BGESmallENV15Q")
+        );
+        assert_eq!(marker.dimensions, 384);
+        let _ = std::fs::remove_file(&dir);
+        let _ = std::fs::remove_file(width_marker_path(&dir));
+    }
+
+    #[tokio::test]
+    async fn schema_only_adoption_records_provenance() {
+        let dir =
+            std::env::temp_dir().join(format!("ladybug-adopt-schema-{}", uuid::Uuid::new_v4()));
+        let limits = StoreLimits::default();
+        {
+            let store =
+                LadybugStore::new_with_identity_limits(&dir, 4, "fastembed:model-a".into(), limits)
+                    .expect("open model A");
+            store.init("probe").await.expect("create schema");
+        }
+        // No sidecar at all: the width can only come from the fixed schema.
+        std::fs::remove_file(width_marker_path(&dir)).expect("remove only test sidecar");
+        {
+            let _store =
+                LadybugStore::new_with_identity_limits(&dir, 4, "fastembed:model-a".into(), limits)
+                    .expect("schema-only store is adopted under the configured identity");
+        }
+        let marker: EmbeddingMarker =
+            serde_json::from_slice(&std::fs::read(width_marker_path(&dir)).unwrap()).unwrap();
+        assert_eq!(marker.embedder_id.as_deref(), Some("fastembed:model-a"));
+        assert_eq!(
+            read_marker_json(&dir).get("adopted_from"),
+            Some(&json!("schema-only")),
+            "the adoption is recorded in the marker itself"
+        );
+        let _ = std::fs::remove_file(&dir);
+        let _ = std::fs::remove_file(width_marker_path(&dir));
+    }
+
+    #[tokio::test]
+    async fn adopted_store_refuses_a_different_same_width_model() {
+        let dir =
+            std::env::temp_dir().join(format!("ladybug-adopt-refuse-{}", uuid::Uuid::new_v4()));
+        let limits = StoreLimits::default();
+        {
+            let store =
+                LadybugStore::new_with_identity_limits(&dir, 4, "fastembed:model-a".into(), limits)
+                    .expect("open model A");
+            store.init("probe").await.expect("create schema");
+        }
+        std::fs::write(
+            width_marker_path(&dir),
+            serde_json::to_vec(&json!({"version": 1, "dimensions": 4})).unwrap(),
+        )
+        .unwrap();
+        {
+            let _store =
+                LadybugStore::new_with_identity_limits(&dir, 4, "fastembed:model-a".into(), limits)
+                    .expect("model A adopts the width-only store");
+        }
+        // Model B has the same width, so only the recorded identity — now
+        // persisted by the adoption — can refuse it.
+        let error = match LadybugStore::new_with_identity_limits(
+            &dir,
+            4,
+            "fastembed:model-b".into(),
+            limits,
+        ) {
+            Ok(_) => panic!("an adopted store must refuse a different same-width model"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("model identity"));
+        let _ = std::fs::remove_file(&dir);
+        let _ = std::fs::remove_file(width_marker_path(&dir));
+    }
+
+    #[test]
+    fn native_store_has_no_adoption_provenance() {
+        let dir = std::env::temp_dir().join(format!("ladybug-native-{}", uuid::Uuid::new_v4()));
+        let limits = StoreLimits::default();
+        {
+            let _store =
+                LadybugStore::new_with_identity_limits(&dir, 4, "fastembed:model-a".into(), limits)
+                    .expect("open model A");
+        }
+        let marker: EmbeddingMarker =
+            serde_json::from_slice(&std::fs::read(width_marker_path(&dir)).unwrap()).unwrap();
+        assert_eq!(marker.embedder_id.as_deref(), Some("fastembed:model-a"));
+        assert_eq!(
+            read_marker_json(&dir).get("adopted_from"),
+            None,
+            "a store created fresh under an identity was never adopted"
+        );
+        let _ = std::fs::remove_file(&dir);
+        let _ = std::fs::remove_file(width_marker_path(&dir));
+    }
+
+    #[test]
+    fn pre_change_marker_still_parses() {
+        let dir = std::env::temp_dir().join(format!("ladybug-pre-change-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let database = dir.join("fixture.store");
+        std::fs::write(&database, b"disposable database fixture").unwrap();
+        // A marker written before adoption provenance existed has no field.
+        let legacy = b"{\"version\":1,\"dimensions\":4,\"embedder_id\":\"fastembed:model-a\"}";
+        std::fs::write(width_marker_path(&database), legacy).unwrap();
+        let (marker, adopted_from) =
+            read_width_marker_with_provenance(&database, &[], Some("fastembed:model-a"))
+                .expect("pre-change marker still loads")
+                .expect("pre-change marker exists");
+        assert_eq!(marker.dimensions, 4);
+        assert_eq!(marker.embedder_id.as_deref(), Some("fastembed:model-a"));
+        assert_eq!(adopted_from, None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn adoption_provenance_is_sticky() {
+        let dir =
+            std::env::temp_dir().join(format!("ladybug-adopt-sticky-{}", uuid::Uuid::new_v4()));
+        let limits = StoreLimits::default();
+        {
+            let store =
+                LadybugStore::new_with_identity_limits(&dir, 4, "fastembed:model-a".into(), limits)
+                    .expect("open model A");
+            store.init("probe").await.expect("create schema");
+        }
+        std::fs::write(
+            width_marker_path(&dir),
+            serde_json::to_vec(&json!({"version": 1, "dimensions": 4})).unwrap(),
+        )
+        .unwrap();
+        {
+            let _store =
+                LadybugStore::new_with_identity_limits(&dir, 4, "fastembed:model-a".into(), limits)
+                    .expect("model A adopts the width-only store");
+        }
+        assert_eq!(
+            read_marker_json(&dir).get("adopted_from"),
+            Some(&json!("width-only"))
+        );
+        // A later open is a normal marked open — no adoption branch runs —
+        // but the open path rewrites the marker and must not drop the record.
+        {
+            let _store =
+                LadybugStore::new_with_identity_limits(&dir, 4, "fastembed:model-a".into(), limits)
+                    .expect("adopted store reopens under the adopted identity");
+        }
+        let marker: EmbeddingMarker =
+            serde_json::from_slice(&std::fs::read(width_marker_path(&dir)).unwrap()).unwrap();
+        assert_eq!(marker.embedder_id.as_deref(), Some("fastembed:model-a"));
+        assert_eq!(
+            read_marker_json(&dir).get("adopted_from"),
+            Some(&json!("width-only")),
+            "provenance survives the marker rewrite on a later open"
+        );
+        let _ = std::fs::remove_file(&dir);
+        let _ = std::fs::remove_file(width_marker_path(&dir));
+    }
+    /// Child worker for `profile_cap_refusal_fires_at_reduced_cap`:
+    /// grows a store at an 8 MiB max-DB cap on incompressible rows,
+    /// checkpointing after each upsert — a
+    /// transaction's rows only reach the data file, and the capped page
+    /// accounting, when a checkpoint merges the WAL — until the engine
+    /// refuses. Asserts the refusal is the engine's max-DB-size error and
+    /// that the seeded row still reads back after it, prints the PASS
+    /// marker the parent asserts on, then exits directly: running the
+    /// store's destructor would run the checkpoint-on-close that
+    /// segfaults on lbug 0.20.4 after a cap refusal (see the parent
+    /// test's comment).
+    ///
+    /// Marked `#[ignore]`: the body ends in `std::process::exit`, so it
+    /// must never run as part of the suite proper — not even if the gate
+    /// variable leaks into the suite's own environment. The parent
+    /// spawns it by name with `--ignored`.
+    ///
+    /// Row math: at an 8 MiB cap the engine's VM region holds exactly
+    /// two frame groups — one shadow, one data — so the data file has
+    /// 1024 pages (4 MiB). Row WIDTH decides which engine limit fires
+    /// first (CI fix loop round 4, probed against the lbug 0.20.4 wheel
+    /// at this test's exact cadence): 32 KiB rows starved the buffer
+    /// pool during checkpoint merges — "the buffer pool is full and no
+    /// memory could be freed" at ~33 rows — because this repo's
+    /// `StoreLimits::validate` couples the pool to at most the cap, so
+    /// the pool cannot be given the headroom wide-row merges want; the
+    /// same starvation recurred at a 64 MiB cap/pool (~512 rows). With
+    /// 4 KiB incompressible rows the per-checkpoint merge working set
+    /// stays small enough that the frame-group accounting — the cap
+    /// itself — fires first: the engine's max-DB-size refusal was
+    /// observed at ~208 rows in a two-column probe table, and at 310
+    /// rows (2 KiB rows) and 122 rows (8 KiB rows), so the window is
+    /// wide, not a knife's edge. This table's rows are somewhat wider
+    /// than the probe's (vector + metadata alongside the content), so
+    /// the refusal is expected no later; the 1024-row bound is ~5x
+    /// headroom over the probe's 208 and is unreachable unless the cap
+    /// is not enforced at all.
+    #[tokio::test]
+    #[ignore = "child worker: spawned by profile_cap_refusal_fires_at_reduced_cap"]
+    async fn profile_cap_refusal_child_worker() {
+        let Ok(db) = std::env::var("NEUROSTRATA_TEST_PROFILE_CAP_DB") else {
+            return;
+        };
+        let db = PathBuf::from(db);
+        // The pool rides at the cap rather than at the profile's 64 MiB:
+        // this repo's StoreLimits::validate refuses a buffer pool larger
+        // than the max-DB ceiling ("the buffer-pool ceiling cannot
+        // exceed the database-size ceiling"), a coupling the engine
+        // itself does not impose — its verifySizeParams checks each
+        // value on its own. The pool size plays no part in the cap
+        // mechanism under test (frame-group accounting on the data
+        // file); the profile's pool pairs with the profile's 2 GiB cap,
+        // which satisfies the same validation.
+        let limits = StoreLimits {
+            buffer_pool_bytes: 8 * 1024 * 1024,
+            max_db_bytes: 8 * 1024 * 1024,
+        };
+        let payload = |content: String| MemoryPayload {
+            content,
+            user_id: "agent".into(),
+            memory_type: "fact".into(),
+            agent_name: None,
+            location: "fixture.json".into(),
+            location_lines: "1".into(),
+            metadata: json!({"evidence": "cap"}),
+        };
+        let store = LadybugStore::new_with_identity_limits(
+            &db,
+            4,
+            "fastembed:BGESmallENV15Q".into(),
+            limits,
+        )
+        .expect("open a new store at the reduced cap");
+        store.init("profile-cap").await.expect("create schema");
+        store
+            .upsert(
+                "profile-cap",
+                "profile-cap::seed",
+                vec![0.11, 0.22, 0.33, 0.44],
+                payload("seed row".into()),
+            )
+            .await
+            .expect("seed insert under the cap");
+        let mut refusal = None;
+        for i in 0..1024u64 {
+            let inserted = store
+                .upsert(
+                    "profile-cap",
+                    &format!("profile-cap::row-{i}"),
+                    vec![0.11, 0.22, 0.33, 0.44],
+                    payload(incompressible_filler(i)),
+                )
+                .await;
+            // The checkpoint is part of the growth mechanism, not an
+            // afterthought: upserts only mark the store dirty, and the
+            // merge is what allocates data-file pages against the cap.
+            let step = match inserted {
+                Ok(_) => store.checkpoint().await,
+                Err(error) => Err(error),
+            };
+            match step {
+                Ok(()) => continue,
+                Err(error) => {
+                    refusal = Some(error);
+                    break;
+                }
+            }
+        }
+        let refusal = refusal.expect(
+            "a store grown to its max-DB cap must refuse further growth",
+        );
+        // The refusal must be the engine's size-cap error, not any loud
+        // error: an identity, marker, schema, or WAL failure along the
+        // way must fail this test, not satisfy it. Rounds 1–2 of the CI
+        // fix loop verified the engine's exact text ("Maximum database
+        // size of {} bytes has been reached. Reopen the database with a
+        // larger max_db_size to continue."), so the assertion names that
+        // family directly instead of the broader alternation the
+        // unverified text once required.
+        let message = format!("{refusal:#}");
+        let lowered = message.to_lowercase();
+        assert!(
+            lowered.contains("maximum database size") && lowered.contains("has been reached"),
+            "the refusal must be the engine's max-DB-size error, got: {message}"
+        );
+        for other_path in ["model identity", "marker", "checksum", "width"] {
+            assert!(
+                !lowered.contains(other_path),
+                "the refusal came from the {other_path} path, not the size cap: {message}"
+            );
+        }
+        // The refusal is clean: the store stays readable afterwards
+        // (round 2 probe — a post-refusal scan returned the row count).
+        let seed = store
+            .get("profile-cap", "profile-cap::seed")
+            .await
+            .expect("a read after the refusal must still succeed")
+            .expect("the seed row must survive the refusal");
+        assert_eq!(seed.1.content, "seed row");
+        println!("PROFILE_CAP_REFUSAL_PASS refusal: {message}");
+        {
+            use std::io::Write as _;
+            let _ = std::io::stdout().flush();
+        }
+        // Exit without unwinding: dropping the store would run the
+        // engine's checkpoint-on-close, which is exactly the path that
+        // segfaults after a cap refusal on lbug 0.20.4 (documented on
+        // the parent test, not exercised here).
+        std::process::exit(0);
+    }
+
+    /// Deterministic incompressible filler: xorshift64* output, hex
+    /// encoded — 256 words become a 4 KiB string. Hex of pseudo-random
+    /// bytes carries 4 bits of entropy per stored character, so even
+    /// ideal entropy coding could at best halve it — where
+    /// repeated-character filler compresses ~1000:1 and plateaus at
+    /// ~2.2 MB, never approaching any cap (CI fix loop round 2 probe).
+    /// The width is deliberately narrow: at 32 KiB per row the buffer
+    /// pool starved during checkpoint merges before the size cap could
+    /// fire (round 4 probe — see the child worker's row math). The
+    /// growth loop's row bound is sized to survive the halving.
+    fn incompressible_filler(seed: u64) -> String {
+        let mut state = 0x9E37_79B9_7F4A_7C15u64 ^ seed.wrapping_mul(0xD1B5_4A32_D192_ED03);
+        let mut out = String::with_capacity(4 * 1024);
+        for _ in 0..256 {
+            state ^= state >> 12;
+            state ^= state << 25;
+            state ^= state >> 27;
+            let word = state.wrapping_mul(0x2545_F491_4F6C_DD1D);
+            out.push_str(&format!("{word:016x}"));
+        }
+        out
+    }
+
+    /// Spec Feature 1 AC7, reduced-cap subprocess form (Pratik's
+    /// decision, 2026-10-24 — CI fix loop round 3). A real store opened
+    /// through the production path refuses further growth with the
+    /// engine's max-DB-size error once it reaches its configured cap.
+    /// The growth runs in a child process (the
+    /// `profile_cap_refusal_child_worker` test above, spawned the same
+    /// way the publication crash-recovery tests spawn theirs); this
+    /// parent asserts on the child's exit status and output.
+    ///
+    /// Why a reduced cap: the cap under test is 8 MiB, the smallest
+    /// value the engine admits — `BufferManager::verifySizeParams` (lbug
+    /// v0.20.4, src/storage/buffer_manager/buffer_manager.cpp) requires
+    /// at least two page groups, one for the main data file and one for
+    /// the shadow file: 2 * 4096 * 1024 = 8 MiB. The limit reaches the
+    /// engine through the same `StoreLimits` -> `SystemConfig::
+    /// max_db_size` flow as any other value (fix loop round 1 verified
+    /// that leg end to end), with one repo-level qualification:
+    /// `StoreLimits::validate` requires the buffer pool to be no larger
+    /// than the max-DB ceiling, so at this reduced cap the child's pool
+    /// rides at the cap instead of the profile's 64 MiB. The profile-low
+    /// value itself, 2 GiB, is pinned by
+    /// `profile_values_are_the_spec_starting_values` in src/config.rs.
+    ///
+    /// Why a subprocess, and why the 2 GiB end-to-end form is BLOCKED:
+    /// lbug 0.20.4 has a FileHandle exception-safety defect — a file
+    /// handle claims page capacity *before* allocating the frame group
+    /// that capacity describes, so when the allocation throws at the
+    /// cap the handle is left claiming capacity for a group that was
+    /// never recorded, and the next checkpoint, or the checkpoint on
+    /// database close, indexes the frame-group table out of bounds and
+    /// segfaults the process (fix loop round 2,
+    /// reproduced against the engine in both growth modes). The refusal
+    /// itself is clean, and the refusal is what this test exercises; the
+    /// defect is documented here rather than exercised — the child
+    /// asserts the refusal, prints its marker, and exits via
+    /// `std::process::exit`, never running the destructor checkpoint
+    /// that would crash. A 2 GiB end-to-end variant cannot do that
+    /// inside the test harness: it would segfault in teardown and fail
+    /// the suite over an engine defect this repo does not own. It stays
+    /// blocked on an upstream engine fix.
+    ///
+    /// Growth is natural only — no file pre-grow (round 2: the pre-grow
+    /// was an accelerant, never the cause), and the filler is
+    /// incompressible (see `incompressible_filler`).
+    #[tokio::test]
+    async fn profile_cap_refusal_fires_at_reduced_cap() {
+        use std::io::Read as _;
+        let db =
+            std::env::temp_dir().join(format!("ladybug-profile-cap-{}", uuid::Uuid::new_v4()));
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("store::ladybug::tests::profile_cap_refusal_child_worker")
+            .arg("--nocapture")
+            .arg("--ignored")
+            .env("NEUROSTRATA_TEST_PROFILE_CAP_DB", &db)
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let started = std::time::Instant::now();
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if started.elapsed() >= std::time::Duration::from_secs(120) {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("profile cap child did not finish before the watchdog");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        let mut output = String::new();
+        child
+            .stdout
+            .take()
+            .unwrap()
+            .read_to_string(&mut output)
+            .unwrap();
+        assert!(
+            status.success(),
+            "profile cap child failed: {status}; child output:\n{output}"
+        );
+        assert!(
+            output.contains("PROFILE_CAP_REFUSAL_PASS"),
+            "child never reported the cap refusal; child output:\n{output}"
+        );
+        assert!(
+            output.contains("Maximum database size"),
+            "child's refusal was not the engine's max-DB-size error; child output:\n{output}"
+        );
+        let _ = std::fs::remove_file(&db);
+        let _ = std::fs::remove_file(width_marker_path(&db));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn database_file_symlink_cannot_bypass_embedding_identity_marker() {
+        let root =
+            std::env::temp_dir().join(format!("ladybug-identity-alias-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let original = root.join("primary.store");
+        let alias = root.join("alias.store");
+        let parent_alias = root.join("through-parent");
+        std::os::unix::fs::symlink(&root, &parent_alias).unwrap();
+        let limits = StoreLimits::default();
+        {
+            let store = LadybugStore::new_with_identity_limits(
+                &original,
+                4,
+                "fastembed:model-a".into(),
+                limits,
+            )
+            .unwrap();
+            store.init("alias-identity-fixture").await.unwrap();
+            store
+                .upsert(
+                    "model-fixture",
+                    "model-fixture::row",
+                    vec![0.11, 0.22, 0.33, 0.44],
+                    MemoryPayload {
+                        content: "identity evidence".into(),
+                        user_id: "agent".into(),
+                        memory_type: "fact".into(),
+                        agent_name: None,
+                        location: "fixture.json".into(),
+                        location_lines: "1".into(),
+                        metadata: json!({"evidence": "preserve"}),
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        let original_marker = width_marker_path(&original);
+        let marker_before = std::fs::read(&original_marker).unwrap();
+        let vector_before = {
+            let store = LadybugStore::new_with_identity_limits(
+                &original,
+                4,
+                "fastembed:model-a".into(),
+                limits,
+            )
+            .unwrap();
+            store
+                .with_conn(|conn| {
+                    let mut rows = conn.query(
+                        "MATCH (m:Memory) WHERE m.id = 'model-fixture::row' RETURN m.embedding",
+                    )?;
+                    let row = rows
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("seed vector missing"))?;
+                    Ok(format!("{}", row[0]))
+                })
+                .await
+                .unwrap()
+        };
+        std::os::unix::fs::symlink(&original, &alias).unwrap();
+        {
+            let _store = LadybugStore::new_with_identity_limits(
+                &alias,
+                4,
+                "fastembed:model-a".into(),
+                limits,
+            )
+            .expect("matching model identity opens through the symlink alias");
+        }
+
+        let error = match LadybugStore::new_with_identity_limits(
+            &alias,
+            4,
+            "fastembed:model-b".into(),
+            limits,
+        ) {
+            Ok(_) => {
+                panic!("opening an existing DB through a symlink must retain its model identity")
+            }
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("model identity"), "{error:#}");
+        assert_eq!(std::fs::read(&original_marker).unwrap(), marker_before);
+        assert!(!raw_database_sibling(&alias, ".embedding").exists());
+        for supported_alias in [parent_alias.join("primary.store")] {
+            {
+                let _store = LadybugStore::new_with_identity_limits(
+                    &supported_alias,
+                    4,
+                    "fastembed:model-a".into(),
+                    limits,
+                )
+                .expect("aliases resolve to the original database identity");
+            }
+            let error = LadybugStore::new_with_identity_limits(
+                &supported_alias,
+                8,
+                "fastembed:model-a".into(),
+                limits,
+            )
+            .err()
+            .expect("wrong width through alias is refused");
+            assert!(error.to_string().contains("width 4"), "{error:#}");
+            assert_eq!(std::fs::read(&original_marker).unwrap(), marker_before);
+        }
+        let new_via_parent = parent_alias.join("new-through-parent.store");
+        {
+            let store = LadybugStore::new_with_identity_limits(
+                &new_via_parent,
+                4,
+                "fastembed:model-a".into(),
+                limits,
+            )
+            .expect("new DB beneath a symlinked parent uses canonical identity");
+            assert_eq!(
+                store.local_path,
+                std::fs::canonicalize(&root)
+                    .unwrap()
+                    .join("new-through-parent.store")
+            );
+        }
+        assert!(root.join("new-through-parent.store.embedding").is_file());
+        let error = LadybugStore::new_with_identity_limits(
+            &root.join("new-through-parent.store"),
+            4,
+            "fastembed:model-b".into(),
+            limits,
+        )
+        .err()
+        .expect("canonical path sees the identity created through parent alias");
+        assert!(error.to_string().contains("model identity"));
+        let _cwd_guard = TEST_CWD_MUTEX.lock().unwrap();
+        let previous_directory = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&root).unwrap();
+        {
+            let _store = LadybugStore::new_with_identity_limits(
+                Path::new("primary.store"),
+                4,
+                "fastembed:model-a".into(),
+                limits,
+            )
+            .expect("relative DB path uses the canonical identity");
+        }
+        let relative_width_error = LadybugStore::new_with_identity_limits(
+            Path::new("primary.store"),
+            8,
+            "fastembed:model-a".into(),
+            limits,
+        )
+        .err()
+        .expect("relative alias cannot bypass width validation");
+        std::env::set_current_dir(previous_directory).unwrap();
+        assert!(relative_width_error.to_string().contains("width 4"));
+        assert_eq!(std::fs::read(&original_marker).unwrap(), marker_before);
+        let original_store = LadybugStore::new_with_identity_limits(
+            &original,
+            4,
+            "fastembed:model-a".into(),
+            limits,
+        )
+        .unwrap();
+        let record = original_store
+            .get("model-fixture", "model-fixture::row")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.1.content, "identity evidence");
+        assert_eq!(record.1.metadata, json!({"evidence": "preserve"}));
+        let vector = original_store
+            .with_conn(|conn| {
+                let mut rows = conn.query(
+                    "MATCH (m:Memory) WHERE m.id = 'model-fixture::row' RETURN m.embedding",
+                )?;
+                let row = rows
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("seed vector disappeared"))?;
+                Ok(format!("{}", row[0]))
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            vector, vector_before,
+            "rejected alias open preserves exact vector data"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Refusal Standard at the alias site (Spec Feature 3 AC1, the
+    /// substantive fix): the alias refusal names both canonicalized
+    /// identities, both widths (equal here — the width check has already
+    /// passed), and the reference remediation wording.
+    #[cfg(unix)]
+    #[test]
+    fn alias_identity_refusal_meets_the_refusal_standard() {
+        let root =
+            std::env::temp_dir().join(format!("ladybug-alias-standard-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let original = root.join("primary.store");
+        let alias = root.join("alias.store");
+        let limits = StoreLimits::default();
+        {
+            let _store = LadybugStore::new_with_identity_limits(
+                &original,
+                4,
+                "fastembed:model-a".into(),
+                limits,
+            )
+            .expect("open model A");
+        }
+        std::os::unix::fs::symlink(&original, &alias).unwrap();
+        let error = match LadybugStore::new_with_identity_limits(
+            &alias,
+            4,
+            "fastembed:model-b".into(),
+            limits,
+        ) {
+            Ok(_) => panic!("opening an existing DB through a symlink must retain its model identity"),
+            Err(error) => error,
+        };
+        let message = error.to_string();
+        assert!(message.contains("database path alias"), "the alias site fired: {message}");
+        for element in [
+            "fastembed:model-a",
+            "fastembed:model-b",
+            "recorded embedding width is 4",
+            "configured embedding width is 4",
+            "Keep the database intact",
+            "original embedder",
+            "separate database path",
+            "no in-place re-embedding migration is available",
+        ] {
+            assert!(message.contains(element), "alias refusal element {element:?} missing: {message}");
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn marker_preflight_stays_bound_to_resolved_db_if_supplied_alias_retargets() {
+        let root =
+            std::env::temp_dir().join(format!("ladybug-marker-retarget-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let resolved_db = root.join("resolved.store");
+        let other_db = root.join("other.store");
+        let supplied_alias = root.join("alias.store");
+        std::fs::write(&resolved_db, b"resolved database fixture").unwrap();
+        std::fs::write(&other_db, b"other database fixture").unwrap();
+        write_width_marker(&resolved_db, 4, Some("fastembed:model-a")).unwrap();
+        write_width_marker(&other_db, 4, Some("fastembed:model-b")).unwrap();
+        std::os::unix::fs::symlink(&other_db, &supplied_alias).unwrap();
+
+        // Models the alias being retargeted after the constructor resolved and
+        // locked `resolved_db`, but before it inspects the caller's old spelling.
+        let marker = read_width_marker(
+            &resolved_db,
+            std::slice::from_ref(&supplied_alias),
+            Some("fastembed:model-a"),
+        )
+        .expect("resolved database marker should be authoritative")
+        .expect("resolved marker exists");
+        assert_eq!(marker.dimensions, 4);
+        assert_eq!(marker.embedder_id.as_deref(), Some("fastembed:model-a"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn alias_retarget_after_resolution_fails_before_marker_adoption() {
+        let root = std::env::temp_dir().join(format!(
+            "ladybug-alias-retarget-preflight-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let primary_a = root.join("primary-a.store");
+        let primary_b = root.join("primary-b.store");
+        let historical = root.join("historical.store");
+        let outer = root.join("outer.store");
+        let limits = StoreLimits::default();
+        {
+            let store = LadybugStore::new_with_identity_limits(
+                &primary_a,
+                4,
+                "fastembed:model-a".into(),
+                limits,
+            )
+            .unwrap();
+            store.init("retarget-fixture").await.unwrap();
+            store
+                .upsert(
+                    "retarget-fixture",
+                    "retarget-fixture::row",
+                    vec![0.11, 0.22, 0.33, 0.44],
+                    MemoryPayload {
+                        content: "retargeted alias evidence".into(),
+                        user_id: "agent".into(),
+                        memory_type: "fact".into(),
+                        agent_name: None,
+                        location: "fixture.json".into(),
+                        location_lines: "1".into(),
+                        metadata: json!({"keep": true}),
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        {
+            let store = LadybugStore::new_with_identity_limits(
+                &primary_b,
+                4,
+                "fastembed:model-b".into(),
+                limits,
+            )
+            .unwrap();
+            store.init("other-retarget-fixture").await.unwrap();
+        }
+        let primary_marker = raw_database_sibling(&primary_a, ".embedding");
+        let primary_marker_original = std::fs::read(&primary_marker).unwrap();
+        std::fs::remove_file(&primary_marker).unwrap();
+        let historical_marker = raw_database_sibling(&historical, ".embedding");
+        let identity_a = serde_json::to_vec(&EmbeddingMarker {
+            version: 1,
+            dimensions: 4,
+            embedder_id: Some("fastembed:model-a".into()),
+        })
+        .unwrap();
+        std::fs::write(&historical_marker, &identity_a).unwrap();
+        std::os::unix::fs::symlink(&primary_a, &historical).unwrap();
+        std::os::unix::fs::symlink(&historical, &outer).unwrap();
+
+        let resolved = resolve_database_path(&outer).unwrap();
+        std::fs::remove_file(&historical).unwrap();
+        std::os::unix::fs::symlink(&primary_b, &historical).unwrap();
+
+        let error = discover_database_path_aliases(&resolved, &outer)
+            .expect_err("a retarget between resolution and alias discovery must fail closed");
+        assert!(error
+            .to_string()
+            .contains("changed while it was being inspected"));
+        assert_eq!(std::fs::read(&historical_marker).unwrap(), identity_a);
+        assert!(!primary_marker.exists());
+
+        let store = LadybugStore::new_with_identity_limits(
+            &primary_a,
+            4,
+            "fastembed:model-a".into(),
+            limits,
+        )
+        .unwrap();
+        let row = store
+            .get("retarget-fixture", "retarget-fixture::row")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.1.content, "retargeted alias evidence");
+        assert_eq!(row.1.metadata, json!({"keep": true}));
+        assert_eq!(row.0, vec![0.11, 0.22, 0.33, 0.44]);
+        assert_eq!(
+            std::fs::read(&primary_marker).unwrap(),
+            serde_json::to_vec_pretty(&PersistedEmbeddingMarker {
+                version: 1,
+                dimensions: 4,
+                embedder_id: Some("fastembed:model-a".into()),
+                adopted_from: Some("schema-only".into()),
+            })
+            .unwrap()
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn database_path_keeps_parent_components_after_symlink_resolution() {
+        let root = std::env::temp_dir().join(format!(
+            "ladybug-symlink-parent-component-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let real_subdir = root.join("real/subdir");
+        let entry = root.join("entry");
+        std::fs::create_dir_all(&real_subdir).unwrap();
+        std::fs::create_dir_all(&entry).unwrap();
+        let primary_a = root.join("real/db.store");
+        let lexical_b = entry.join("db.store");
+        let link = entry.join("link");
+        std::os::unix::fs::symlink("../real/subdir", &link).unwrap();
+        let requested = entry.join("link/../db.store");
+        let limits = StoreLimits::default();
+        for (path, model, namespace, content, vector) in [
+            (
+                &primary_a,
+                "fastembed:model-a",
+                "symlink-parent-a",
+                "database reached through symlink then parent traversal",
+                vec![0.1, 0.2, 0.3, 0.4],
+            ),
+            (
+                &lexical_b,
+                "fastembed:model-b",
+                "lexical-parent-b",
+                "database reached by lexical collapse only",
+                vec![0.4, 0.3, 0.2, 0.1],
+            ),
+        ] {
+            let store =
+                LadybugStore::new_with_identity_limits(path, 4, model.into(), limits).unwrap();
+            store.init(namespace).await.unwrap();
+            store
+                .upsert(
+                    namespace,
+                    &format!("{namespace}::sentinel"),
+                    vector,
+                    MemoryPayload {
+                        content: content.into(),
+                        user_id: "agent".into(),
+                        memory_type: "fact".into(),
+                        agent_name: None,
+                        location: "sentinel.json".into(),
+                        location_lines: "1".into(),
+                        metadata: json!({"database": namespace}),
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        let marker_a = raw_database_sibling(&primary_a, ".embedding");
+        let marker_b = raw_database_sibling(&lexical_b, ".embedding");
+        let marker_a_before = std::fs::read(&marker_a).unwrap();
+        let marker_b_before = std::fs::read(&marker_b).unwrap();
+        assert_eq!(
+            resolve_database_path(&requested).unwrap(),
+            std::fs::canonicalize(&primary_a).unwrap()
+        );
+
+        let error = LadybugStore::new_with_identity_limits(
+            &requested,
+            4,
+            "fastembed:model-b".into(),
+            limits,
+        )
+        .err()
+        .expect("the actual symlink-resolved database A must reject model B");
+        assert!(error.to_string().contains("model identity"));
+        assert_eq!(std::fs::read(&marker_a).unwrap(), marker_a_before);
+        assert_eq!(std::fs::read(&marker_b).unwrap(), marker_b_before);
+
+        let store_a = LadybugStore::new_with_identity_limits(
+            &primary_a,
+            4,
+            "fastembed:model-a".into(),
+            limits,
+        )
+        .unwrap();
+        let row_a = store_a
+            .get("symlink-parent-a", "symlink-parent-a::sentinel")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            row_a.1.content,
+            "database reached through symlink then parent traversal"
+        );
+        assert_eq!(row_a.0, vec![0.1, 0.2, 0.3, 0.4]);
+        let store_b = LadybugStore::new_with_identity_limits(
+            &lexical_b,
+            4,
+            "fastembed:model-b".into(),
+            limits,
+        )
+        .unwrap();
+        let row_b = store_b
+            .get("lexical-parent-b", "lexical-parent-b::sentinel")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row_b.1.content, "database reached by lexical collapse only");
+        assert_eq!(row_b.0, vec![0.4, 0.3, 0.2, 0.1]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn marker_write_failure_is_returned_and_existing_evidence_is_preserved() {
+        let root = std::env::temp_dir().join(format!(
+            "ladybug-marker-write-failure-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let database = root.join("fixture.store");
+        std::fs::write(&database, b"disposable database bytes").unwrap();
+        let marker = width_marker_path(&database);
+        std::fs::create_dir(&marker).unwrap();
+        let sentinel = marker.join("preserve-this-evidence");
+        std::fs::write(&sentinel, b"existing marker evidence").unwrap();
+
+        let error = write_width_marker(&database, 4, Some("fastembed:model-a"))
+            .expect_err("the existing marker directory must make atomic replacement fail");
+        assert!(error
+            .to_string()
+            .contains("could not persist the embedding marker"));
+        assert_eq!(
+            std::fs::read(&sentinel).unwrap(),
+            b"existing marker evidence"
+        );
+        assert!(!std::fs::read_dir(&root).unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("fixture.store.embedding.")
+        }));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn creating_database_from_bare_relative_path_uses_canonical_parent() {
+        let root =
+            std::env::temp_dir().join(format!("ladybug-relative-new-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let _cwd_guard = TEST_CWD_MUTEX.lock().unwrap();
+        let previous_directory = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&root).unwrap();
+        {
+            let _store = LadybugStore::new_with_identity_limits(
+                Path::new("relative.store"),
+                4,
+                "fastembed:model-a".into(),
+                StoreLimits::default(),
+            )
+            .expect("a bare relative path resolves through the current directory");
+        }
+        std::env::set_current_dir(previous_directory).unwrap();
+        assert!(root.join("relative.store").is_file());
+        let marker: EmbeddingMarker =
+            serde_json::from_slice(&std::fs::read(root.join("relative.store.embedding")).unwrap())
+                .unwrap();
+        assert_eq!(marker.embedder_id.as_deref(), Some("fastembed:model-a"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn alias_opened_database_exports_resolved_database_and_marker() {
+        let root =
+            std::env::temp_dir().join(format!("ladybug-alias-export-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let original = root.join("primary.store");
+        let alias = root.join("alias.store");
+        let snapshot = root.join("snapshot");
+        let limits = StoreLimits::default();
+        {
+            let store = LadybugStore::new_with_identity_limits(
+                &original,
+                4,
+                "fastembed:model-a".into(),
+                limits,
+            )
+            .unwrap();
+            store.init("alias-export").await.unwrap();
+            store
+                .upsert(
+                    "alias-export",
+                    "alias-export::first",
+                    vec![0.1, 0.2, 0.3, 0.4],
+                    MemoryPayload {
+                        content: "written before alias open".into(),
+                        user_id: "agent".into(),
+                        memory_type: "fact".into(),
+                        agent_name: None,
+                        location: "fixture".into(),
+                        location_lines: "1".into(),
+                        metadata: json!({"preserve": true}),
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        std::os::unix::fs::symlink(&original, &alias).unwrap();
+        let alias_store =
+            LadybugStore::new_with_identity_limits(&alias, 4, "fastembed:model-a".into(), limits)
+                .unwrap();
+        assert_eq!(
+            alias_store.local_path,
+            std::fs::canonicalize(&original).unwrap()
+        );
+        alias_store
+            .export_database(snapshot.to_str().unwrap())
+            .await
+            .unwrap();
+        let snapshot_db = snapshot.join("ladybug.store");
+        let snapshot_store = LadybugStore::new_with_identity_limits(
+            &snapshot_db,
+            4,
+            "fastembed:model-a".into(),
+            limits,
+        )
+        .unwrap();
+        snapshot_store.init("alias-export-restored").await.unwrap();
+        let restored = snapshot_store
+            .get("alias-export", "alias-export::first")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored.1.content, "written before alias open");
+        assert_eq!(restored.1.metadata, json!({"preserve": true}));
+        let marker: EmbeddingMarker =
+            serde_json::from_slice(&std::fs::read(width_marker_path(&snapshot_db)).unwrap())
+                .unwrap();
+        assert_eq!(marker.embedder_id.as_deref(), Some("fastembed:model-a"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn matching_legacy_alias_marker_is_preserved_without_weakening_canonical_identity() {
+        let root =
+            std::env::temp_dir().join(format!("ladybug-legacy-alias-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let original = root.join("primary.store");
+        let alias = root.join("alias.store");
+        let limits = StoreLimits::default();
+        {
+            let store = LadybugStore::new_with_identity_limits(
+                &original,
+                4,
+                "fastembed:model-a".into(),
+                limits,
+            )
+            .unwrap();
+            store.init("legacy-alias-fixture").await.unwrap();
+        }
+        let canonical_marker = width_marker_path(&original);
+        std::fs::remove_file(&canonical_marker).unwrap();
+        std::os::unix::fs::symlink(&original, &alias).unwrap();
+        let alias_marker = raw_database_sibling(&alias, ".embedding");
+        std::fs::write(&alias_marker, "4\n").unwrap();
+        {
+            let _store = LadybugStore::new_with_identity_limits(
+                &alias,
+                4,
+                "fastembed:model-a".into(),
+                limits,
+            )
+            .expect("matching legacy alias width remains compatible");
+        }
+        let canonical: EmbeddingMarker =
+            serde_json::from_slice(&std::fs::read(&canonical_marker).unwrap()).unwrap();
+        assert_eq!(canonical.embedder_id.as_deref(), Some("fastembed:model-a"));
+        assert_eq!(std::fs::read_to_string(&alias_marker).unwrap(), "4\n");
+        let error = LadybugStore::new_with_identity_limits(
+            &original,
+            4,
+            "fastembed:model-b".into(),
+            limits,
+        )
+        .err()
+        .expect("canonical identity cannot be weakened by numeric alias marker");
+        assert!(error.to_string().contains("model identity"));
+        assert_eq!(std::fs::read_to_string(&alias_marker).unwrap(), "4\n");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn conflicting_alias_marker_fails_before_open_without_rewriting_evidence() {
+        let root =
+            std::env::temp_dir().join(format!("ladybug-conflict-alias-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let original = root.join("primary.store");
+        let alias = root.join("alias.store");
+        let limits = StoreLimits::default();
+        {
+            let store = LadybugStore::new_with_identity_limits(
+                &original,
+                4,
+                "fastembed:model-a".into(),
+                limits,
+            )
+            .unwrap();
+            store.init("conflicting-alias-fixture").await.unwrap();
+            store
+                .upsert(
+                    "conflict-fixture",
+                    "conflict-fixture::row",
+                    vec![0.15, 0.25, 0.35, 0.45],
+                    MemoryPayload {
+                        content: "conflict evidence".into(),
+                        user_id: "agent".into(),
+                        memory_type: "fact".into(),
+                        agent_name: Some("fixture-agent".into()),
+                        location: "fixture.json".into(),
+                        location_lines: "2".into(),
+                        metadata: json!({"keep": "all"}),
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        let before_vector = {
+            let store = LadybugStore::new_with_identity_limits(
+                &original,
+                4,
+                "fastembed:model-a".into(),
+                limits,
+            )
+            .unwrap();
+            store
+                .with_conn(|conn| {
+                    let mut rows = conn.query(
+                        "MATCH (m:Memory) WHERE m.id = 'conflict-fixture::row' RETURN m.embedding",
+                    )?;
+                    let row = rows
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("fixture vector missing"))?;
+                    Ok(format!("{}", row[0]))
+                })
+                .await
+                .unwrap()
+        };
+        let canonical_marker = width_marker_path(&original);
+        let canonical_before = std::fs::read(&canonical_marker).unwrap();
+        std::os::unix::fs::symlink(&original, &alias).unwrap();
+        let alias_marker = raw_database_sibling(&alias, ".embedding");
+        let conflict = serde_json::to_vec(&EmbeddingMarker {
+            version: 1,
+            dimensions: 4,
+            embedder_id: Some("fastembed:model-b".into()),
+        })
+        .unwrap();
+        std::fs::write(&alias_marker, &conflict).unwrap();
+        let wal = raw_database_sibling(&original, ".wal");
+        let wal_bytes = b"unopened WAL sentinel";
+        std::fs::write(&wal, wal_bytes).unwrap();
+        let error =
+            LadybugStore::new_with_identity_limits(&alias, 4, "fastembed:model-a".into(), limits)
+                .err()
+                .expect("conflicting alias evidence is refused");
+        assert!(error.to_string().contains("Conflicting embedding markers"));
+        assert_eq!(std::fs::read(&canonical_marker).unwrap(), canonical_before);
+        assert_eq!(std::fs::read(&alias_marker).unwrap(), conflict);
+        assert_eq!(std::fs::read(&wal).unwrap(), wal_bytes);
+        assert!(!raw_database_sibling(&original, ".wal.unclean").exists());
+        let width_conflict = serde_json::to_vec(&EmbeddingMarker {
+            version: 1,
+            dimensions: 8,
+            embedder_id: Some("fastembed:model-a".into()),
+        })
+        .unwrap();
+        std::fs::write(&alias_marker, &width_conflict).unwrap();
+        let error =
+            LadybugStore::new_with_identity_limits(&alias, 4, "fastembed:model-a".into(), limits)
+                .err()
+                .expect("alias width conflicts fail closed");
+        assert!(error.to_string().contains("Conflicting embedding markers"));
+        assert_eq!(std::fs::read(&canonical_marker).unwrap(), canonical_before);
+        assert_eq!(std::fs::read(&alias_marker).unwrap(), width_conflict);
+        std::fs::remove_file(wal).unwrap();
+        let store = LadybugStore::new_with_identity_limits(
+            &original,
+            4,
+            "fastembed:model-a".into(),
+            limits,
+        )
+        .unwrap();
+        let row = store
+            .get("conflict-fixture", "conflict-fixture::row")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.1.content, "conflict evidence");
+        assert_eq!(row.1.agent_name.as_deref(), Some("fixture-agent"));
+        assert_eq!(row.1.location_lines, "2");
+        assert_eq!(row.1.metadata, json!({"keep": "all"}));
+        let after_vector = store
+            .with_conn(|conn| {
+                let mut rows = conn.query(
+                    "MATCH (m:Memory) WHERE m.id = 'conflict-fixture::row' RETURN m.embedding",
+                )?;
+                let row = rows
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("fixture vector missing"))?;
+                Ok(format!("{}", row[0]))
+            })
+            .await
+            .unwrap();
+        assert_eq!(after_vector, before_vector);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn chained_file_alias_markers_are_all_checked_before_open() {
+        let root =
+            std::env::temp_dir().join(format!("ladybug-chained-alias-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let primary = root.join("primary.store");
+        let historical = root.join("historical.store");
+        let outer = root.join("outer.store");
+        let limits = StoreLimits::default();
+        {
+            let store = LadybugStore::new_with_identity_limits(
+                &primary,
+                4,
+                "fastembed:model-a".into(),
+                limits,
+            )
+            .unwrap();
+            store.init("chained-alias-fixture").await.unwrap();
+            store
+                .upsert(
+                    "chained-alias-fixture",
+                    "chained-alias-fixture::row",
+                    vec![0.12, 0.23, 0.34, 0.45],
+                    MemoryPayload {
+                        content: "chained alias evidence".into(),
+                        user_id: "agent".into(),
+                        memory_type: "fact".into(),
+                        agent_name: Some("alias-fixture".into()),
+                        location: "fixture.json".into(),
+                        location_lines: "7".into(),
+                        metadata: json!({"preserve": "exact"}),
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        std::os::unix::fs::symlink(&primary, &historical).unwrap();
+        std::os::unix::fs::symlink(&historical, &outer).unwrap();
+        let resolved = resolve_database_path(&outer).unwrap();
+        let discovered = discover_database_path_aliases(&resolved, &outer).unwrap();
+        assert!(
+            discovered
+                .iter()
+                .any(|alias| alias.file_name() == historical.file_name()),
+            "historical alias missing from {discovered:?}"
+        );
+        let canonical_marker = raw_database_sibling(&primary, ".embedding");
+        let historical_marker = raw_database_sibling(&historical, ".embedding");
+        let outer_marker = raw_database_sibling(&outer, ".embedding");
+        let canonical_original = std::fs::read(&canonical_marker).unwrap();
+        std::fs::remove_file(&canonical_marker).unwrap();
+
+        let legacy_identity = serde_json::to_vec(&EmbeddingMarker {
+            version: 1,
+            dimensions: 4,
+            embedder_id: Some("fastembed:model-a".into()),
+        })
+        .unwrap();
+        std::fs::write(&historical_marker, &legacy_identity).unwrap();
+        let error =
+            LadybugStore::new_with_identity_limits(&outer, 4, "fastembed:model-b".into(), limits)
+                .err()
+                .expect("intermediate file-alias identity must block same-width model B");
+        assert!(error.to_string().contains("model identity"));
+        assert_eq!(std::fs::read(&historical_marker).unwrap(), legacy_identity);
+        assert!(!canonical_marker.exists());
+        assert!(!outer_marker.exists());
+
+        std::fs::write(&canonical_marker, &canonical_original).unwrap();
+        let intermediate_conflict = serde_json::to_vec(&EmbeddingMarker {
+            version: 1,
+            dimensions: 4,
+            embedder_id: Some("fastembed:model-b".into()),
+        })
+        .unwrap();
+        std::fs::write(&historical_marker, &intermediate_conflict).unwrap();
+        let error =
+            LadybugStore::new_with_identity_limits(&outer, 4, "fastembed:model-a".into(), limits)
+                .err()
+                .expect("conflicting intermediate marker must fail before engine open");
+        assert!(error.to_string().contains("Conflicting embedding markers"));
+        assert_eq!(
+            std::fs::read(&canonical_marker).unwrap(),
+            canonical_original
+        );
+        assert_eq!(
+            std::fs::read(&historical_marker).unwrap(),
+            intermediate_conflict
+        );
+
+        let store =
+            LadybugStore::new_with_identity_limits(&primary, 4, "fastembed:model-a".into(), limits)
+                .unwrap();
+        let row = store
+            .get("chained-alias-fixture", "chained-alias-fixture::row")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.1.content, "chained alias evidence");
+        assert_eq!(row.1.agent_name.as_deref(), Some("alias-fixture"));
+        assert_eq!(row.1.location_lines, "7");
+        assert_eq!(row.1.metadata, json!({"preserve": "exact"}));
+        assert_eq!(row.0, vec![0.12, 0.23, 0.34, 0.45]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn chained_alias_parent_is_frozen_for_stage_recovery() {
+        let root =
+            std::env::temp_dir().join(format!("ladybug-chained-parent-{}", uuid::Uuid::new_v4()));
+        let real_a = root.join("real-a");
+        let real_b = root.join("real-b");
+        std::fs::create_dir_all(&real_a).unwrap();
+        std::fs::create_dir_all(&real_b).unwrap();
+        let parent_alias = root.join("parent-alias");
+        let primary_a = real_a.join("primary.store");
+        let historical_a = real_a.join("historical.store");
+        let primary_b = real_b.join("primary.store");
+        let historical_b = real_b.join("historical.store");
+        let outer = root.join("outer.store");
+        let limits = StoreLimits::default();
+        {
+            let store = LadybugStore::new_with_identity_limits(
+                &primary_a,
+                4,
+                "fastembed:model-a".into(),
+                limits,
+            )
+            .unwrap();
+            store.init("parent-alias-a").await.unwrap();
+        }
+        {
+            let store = LadybugStore::new_with_identity_limits(
+                &primary_b,
+                4,
+                "fastembed:model-b".into(),
+                limits,
+            )
+            .unwrap();
+            store.init("parent-alias-b").await.unwrap();
+        }
+        std::os::unix::fs::symlink(&primary_a, &historical_a).unwrap();
+        std::os::unix::fs::symlink(&primary_b, &historical_b).unwrap();
+        std::os::unix::fs::symlink(&real_a, &parent_alias).unwrap();
+        std::os::unix::fs::symlink(parent_alias.join("historical.store"), &outer).unwrap();
+        let store =
+            LadybugStore::new_with_identity_limits(&outer, 4, "fastembed:model-a".into(), limits)
+                .unwrap();
+
+        let other_generation = uuid::Uuid::new_v4().to_string();
+        let other_alias_lease =
+            raw_database_sibling(&historical_b, &format!(".stage-{other_generation}.lock"));
+        std::fs::write(&other_alias_lease, b"other database lease").unwrap();
+        let other_marker = width_marker_path(&primary_b);
+        let other_marker_before = std::fs::read(&other_marker).unwrap();
+
+        std::fs::remove_file(&parent_alias).unwrap();
+        std::os::unix::fs::symlink(&real_b, &parent_alias).unwrap();
+        store.recover_interrupted_ingest_stages().await.unwrap();
+
+        assert_eq!(
+            std::fs::read(&other_alias_lease).unwrap(),
+            b"other database lease",
+            "recovery must not follow a retargeted intermediate parent alias"
+        );
+        assert_eq!(std::fs::read(&other_marker).unwrap(), other_marker_before);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dangling_alias_marker_fails_closed_before_engine_open() {
+        let root =
+            std::env::temp_dir().join(format!("ladybug-dangling-alias-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let original = root.join("primary.store");
+        let alias = root.join("alias.store");
+        let limits = StoreLimits::default();
+        {
+            let store = LadybugStore::new_with_identity_limits(
+                &original,
+                4,
+                "fastembed:model-a".into(),
+                limits,
+            )
+            .unwrap();
+            store.init("dangling-marker-fixture").await.unwrap();
+        }
+        let marker = width_marker_path(&original);
+        let before = std::fs::read(&marker).unwrap();
+        std::os::unix::fs::symlink(&original, &alias).unwrap();
+        let dangling = raw_database_sibling(&alias, ".embedding");
+        std::os::unix::fs::symlink(root.join("missing-marker-target"), &dangling).unwrap();
+        let error =
+            LadybugStore::new_with_identity_limits(&alias, 4, "fastembed:model-a".into(), limits)
+                .err()
+                .expect("dangling alias marker is not equivalent to absent evidence");
+        assert!(error
+            .to_string()
+            .contains("Cannot inspect the embedding marker"));
+        assert_eq!(std::fs::read(&marker).unwrap(), before);
+        assert!(std::fs::symlink_metadata(&dangling).is_ok());
+        std::fs::remove_file(&dangling).unwrap();
+        let malformed = b"{\"version\":1,\"dimensions\":4,\"embedder_id\":\"sensitive-endpoint\"";
+        std::fs::write(&dangling, malformed).unwrap();
+        let error =
+            LadybugStore::new_with_identity_limits(&alias, 4, "fastembed:model-a".into(), limits)
+                .err()
+                .expect("malformed alias marker fails closed");
+        assert!(error.to_string().contains("malformed"));
+        assert!(!error.to_string().contains("sensitive-endpoint"));
+        assert_eq!(std::fs::read(&dangling).unwrap(), malformed);
+        assert_eq!(std::fs::read(&marker).unwrap(), before);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_database_symlink_is_not_treated_as_a_new_database() {
+        let root =
+            std::env::temp_dir().join(format!("ladybug-dangling-db-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let alias = root.join("alias.store");
+        let missing_target = root.join("missing.store");
+        std::os::unix::fs::symlink(&missing_target, &alias).unwrap();
+        let alias_marker = raw_database_sibling(&alias, ".embedding");
+        let marker_bytes = serde_json::to_vec(&EmbeddingMarker {
+            version: 1,
+            dimensions: 4,
+            embedder_id: Some("fastembed:model-a".into()),
+        })
+        .unwrap();
+        std::fs::write(&alias_marker, &marker_bytes).unwrap();
+        let error = resolve_database_path(&alias).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("cannot resolve existing database path"));
+        assert!(
+            !missing_target.exists(),
+            "dangling link must not create a new DB target"
+        );
+        assert_eq!(std::fs::read(&alias_marker).unwrap(), marker_bytes);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn legacy_remote_identity_is_upgraded_and_mismatch_errors_redact_it() {
+        let dir = std::env::temp_dir().join(format!("ladybug-remote-id-{}", uuid::Uuid::new_v4()));
+        let legacy = "remote:https://user:top-secret@example.test/v1:embed-v2";
+        let current =
+            crate::embed::remote_embedder_id("https://user:top-secret@example.test/v1", "embed-v2");
+        let marker_path = width_marker_path(&dir);
+        {
+            let store = LadybugStore::new_with_identity_limits(
+                &dir,
+                4,
+                current.clone(),
+                StoreLimits::default(),
+            )
+            .expect("create database using the matching runtime identity");
+            store.init("legacy-remote-marker-fixture").await.unwrap();
+        }
+        std::fs::write(
+            &marker_path,
+            serde_json::to_vec(&EmbeddingMarker {
+                version: 1,
+                dimensions: 4,
+                embedder_id: Some(legacy.to_string()),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        {
+            let _store = LadybugStore::new_with_identity_limits(
+                &dir,
+                4,
+                current.clone(),
+                StoreLimits::default(),
+            )
+            .expect("matching legacy remote marker is accepted");
+        }
+        let rewritten: EmbeddingMarker =
+            serde_json::from_slice(&std::fs::read(&marker_path).unwrap()).unwrap();
+        assert_eq!(rewritten.embedder_id.as_deref(), Some(current.as_str()));
+        let serialized = std::fs::read_to_string(&marker_path).unwrap();
+        assert!(!serialized.contains("top-secret"));
+        assert!(!serialized.contains("https://"));
+
+        #[cfg(unix)]
+        {
+            let alias = dir.with_extension("alias.store");
+            std::os::unix::fs::symlink(&dir, &alias).unwrap();
+            let alias_marker = raw_database_sibling(&alias, ".embedding");
+            std::fs::write(
+                &alias_marker,
+                serde_json::to_vec(&EmbeddingMarker {
+                    version: 1,
+                    dimensions: 4,
+                    embedder_id: Some(legacy.to_string()),
+                })
+                .unwrap(),
+            )
+            .unwrap();
+            let _store = LadybugStore::new_with_identity_limits(
+                &alias,
+                4,
+                current.clone(),
+                StoreLimits::default(),
+            )
+            .expect(
+                "legacy alias identity that canonicalizes to the configured remote is accepted",
+            );
+            assert!(
+                std::fs::read_to_string(&alias_marker)
+                    .unwrap()
+                    .contains("top-secret"),
+                "historical alias evidence is preserved rather than rewritten"
+            );
+            let error = LadybugStore::new_with_identity_limits(
+                &alias,
+                4,
+                crate::embed::remote_embedder_id(
+                    "https://other:top-secret@example.test/v1",
+                    "embed-v2",
+                ),
+                StoreLimits::default(),
+            )
+            .err()
+            .expect("alias endpoint mismatch is refused");
+            assert!(error.to_string().contains("model identity"));
+            assert!(!error.to_string().contains("top-secret"));
+            assert!(!error.to_string().contains("https://"));
+            let _ = std::fs::remove_file(alias_marker);
+            let _ = std::fs::remove_file(alias);
+        }
+
+        std::fs::write(
+            &marker_path,
+            serde_json::to_vec(&EmbeddingMarker {
+                version: 1,
+                dimensions: 4,
+                embedder_id: Some(legacy.to_string()),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let error = match LadybugStore::new_with_identity_limits(
+            &dir,
+            4,
+            crate::embed::remote_embedder_id(
+                "https://other:top-secret@example.test/v1",
+                "embed-v2",
+            ),
+            StoreLimits::default(),
+        ) {
+            Ok(_) => panic!("a different endpoint must be rejected"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("model identity"));
+        assert!(!error.to_string().contains("top-secret"));
+        assert!(!error.to_string().contains("https://"));
+
+        let _ = std::fs::remove_file(&dir);
+        let _ = std::fs::remove_file(marker_path);
+    }
+
+    /// Refusal Standard element 6 (Spec Feature 3 AC2): a legacy persisted
+    /// identity embedding a credential-bearing URL must appear in NO
+    /// refusal string from any site — width, marker-identity, or alias.
+    /// Only canonicalized identities may enter message text; a legacy
+    /// identity that cannot be canonicalized against the configured one
+    /// is never printed raw.
+    #[tokio::test]
+    async fn credential_bearing_legacy_identity_never_appears() {
+        let legacy = "remote:https://user:top-secret@example.test/v1:embed-v2";
+        let other = crate::embed::remote_embedder_id(
+            "https://other:top-secret@example.test/v1",
+            "embed-v2",
+        );
+        let assert_redacted = |error: &anyhow::Error, site: &str| {
+            let message = format!("{error:#}");
+            for leaked in [legacy, "top-secret", "https://", "example.test"] {
+                assert!(
+                    !message.contains(leaked),
+                    "{site} refusal leaked {leaked:?}: {message}"
+                );
+            }
+        };
+
+        // Width site: the legacy identity canonicalizes to the configured
+        // (hashed) remote identity, so the width check is the refusal that
+        // fires; its message may carry only the canonicalized form.
+        let dir = std::env::temp_dir().join(format!("ladybug-cred-width-{}", uuid::Uuid::new_v4()));
+        let marker_path = width_marker_path(&dir);
+        let matching = crate::embed::remote_embedder_id(
+            "https://user:top-secret@example.test/v1",
+            "embed-v2",
+        );
+        {
+            let store = LadybugStore::new_with_identity_limits(
+                &dir,
+                4,
+                matching.clone(),
+                StoreLimits::default(),
+            )
+            .expect("create database using the matching runtime identity");
+            store.init("credential-width-fixture").await.unwrap();
+        }
+        std::fs::write(
+            &marker_path,
+            serde_json::to_vec(&EmbeddingMarker {
+                version: 1,
+                dimensions: 4,
+                embedder_id: Some(legacy.to_string()),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let error = LadybugStore::new_with_identity_limits(&dir, 8, matching.clone(), StoreLimits::default())
+            .err()
+            .expect("width mismatch with a legacy identity is refused");
+        assert_redacted(&error, "width");
+        assert!(
+            format!("{error:#}").contains(&matching),
+            "the width refusal names the canonicalized identity only: {error:#}"
+        );
+
+        // Marker-identity site: same width, mismatched configured endpoint.
+        // The refusal that surfaces is the canonicalization bail (via
+        // read_width_marker, which precedes the ladybug identity bails);
+        // pin its upgraded Refusal Standard content positively, not only
+        // its redaction.
+        let error = LadybugStore::new_with_identity_limits(&dir, 4, other.clone(), StoreLimits::default())
+            .err()
+            .expect("endpoint mismatch with a legacy identity is refused");
+        assert_redacted(&error, "marker-identity");
+        let message = format!("{error:#}");
+        for element in [
+            other.as_str(),
+            "Keep the database intact",
+            "original endpoint and model",
+            "separate database path",
+            "no in-place re-embedding migration is available",
+        ] {
+            assert!(message.contains(element), "canonicalization refusal element {element:?} missing: {message}");
+        }
+        let _ = std::fs::remove_file(&dir);
+        let _ = std::fs::remove_file(&marker_path);
+
+        // Alias site: the legacy identity is reached through a symlink.
+        #[cfg(unix)]
+        {
+            let root = std::env::temp_dir()
+                .join(format!("ladybug-cred-alias-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&root).unwrap();
+            let original = root.join("primary.store");
+            let alias = root.join("alias.store");
+            {
+                let _store = LadybugStore::new_with_identity_limits(
+                    &original,
+                    4,
+                    crate::embed::remote_embedder_id(
+                        "https://user:top-secret@example.test/v1",
+                        "embed-v2",
+                    ),
+                    StoreLimits::default(),
+                )
+                .expect("create database using the matching runtime identity");
+            }
+            std::fs::write(
+                width_marker_path(&original),
+                serde_json::to_vec(&EmbeddingMarker {
+                    version: 1,
+                    dimensions: 4,
+                    embedder_id: Some(legacy.to_string()),
+                })
+                .unwrap(),
+            )
+            .unwrap();
+            std::os::unix::fs::symlink(&original, &alias).unwrap();
+            let error = LadybugStore::new_with_identity_limits(
+                &alias,
+                4,
+                other.clone(),
+                StoreLimits::default(),
+            )
+            .err()
+            .expect("alias endpoint mismatch with a legacy identity is refused");
+            assert_redacted(&error, "alias");
+            let message = format!("{error:#}");
+            for element in [
+                other.as_str(),
+                "no in-place re-embedding migration is available",
+            ] {
+                assert!(message.contains(element), "alias canonicalization refusal element {element:?} missing: {message}");
+            }
+            let _ = std::fs::remove_dir_all(root);
+        }
+    }
 
     /// The resolution rule as every caller now reaches it: build the index
     /// once, then ask it.
@@ -2715,6 +8920,198 @@ mod tests {
             out.join("manifest.json").exists(),
             "the snapshot carries a manifest"
         );
+        let snapshot_marker = width_marker_path(&out.join("ladybug.store"));
+        let marker: EmbeddingMarker =
+            serde_json::from_slice(&std::fs::read(snapshot_marker).unwrap()).unwrap();
+        assert_eq!(
+            marker.dimensions, 4,
+            "the snapshot stays paired with its width"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_init_keeps_schema_exclusion_until_engine_work_finishes() {
+        let root = std::env::temp_dir().join(format!("init-cancel-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = root.join("fixture.store");
+        let store = Arc::new(LadybugStore::for_testing(&db, 4).unwrap());
+        let barrier = root.join("init-entered");
+        set_test_snapshot_operation_barrier("init", db.clone(), barrier.clone());
+
+        let init_store = store.clone();
+        let init = tokio::spawn(async move { init_store.init("init-cancel").await });
+        wait_for_test_barrier(&barrier).await;
+        init.abort();
+        assert!(init.await.unwrap_err().is_cancelled());
+
+        let output = root.join("snapshot");
+        let export_output = output.clone();
+        let export_store = store.clone();
+        let export = tokio::spawn(async move {
+            export_store
+                .export_database(&export_output.to_string_lossy())
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            !export.is_finished(),
+            "export must wait for detached schema initialization"
+        );
+        release_test_barrier(&barrier);
+        export.await.unwrap().unwrap();
+        assert!(output.join("manifest.json").is_file());
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn cancelled_checkpoint_keeps_snapshot_exclusion_until_flush_finishes() {
+        let root = std::env::temp_dir().join(format!("checkpoint-cancel-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = root.join("fixture.store");
+        let store = Arc::new(LadybugStore::for_testing(&db, 4).unwrap());
+        store.init("checkpoint-cancel").await.unwrap();
+        store
+            .upsert(
+                "checkpoint-cancel",
+                "checkpoint-row",
+                vec![0.5; 4],
+                MemoryPayload {
+                    content: "checkpoint fixture".into(),
+                    user_id: "owner".into(),
+                    memory_type: "fact".into(),
+                    agent_name: None,
+                    location: String::new(),
+                    location_lines: String::new(),
+                    metadata: json!({}),
+                },
+            )
+            .await
+            .unwrap();
+        let barrier = root.join("checkpoint-entered");
+        set_test_snapshot_operation_barrier("checkpoint", db.clone(), barrier.clone());
+
+        let checkpoint_store = store.clone();
+        let checkpoint = tokio::spawn(async move { checkpoint_store.checkpoint().await });
+        wait_for_test_barrier(&barrier).await;
+        checkpoint.abort();
+        assert!(checkpoint.await.unwrap_err().is_cancelled());
+
+        let output = root.join("snapshot");
+        let export_output = output.clone();
+        let export_store = store.clone();
+        let export = tokio::spawn(async move {
+            export_store
+                .export_database(&export_output.to_string_lossy())
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            !export.is_finished(),
+            "export must wait for detached checkpoint"
+        );
+        release_test_barrier(&barrier);
+        export.await.unwrap().unwrap();
+        assert!(output.join("manifest.json").is_file());
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn cancelled_export_keeps_the_snapshot_cut_locked_until_bundle_is_complete() {
+        let root = std::env::temp_dir().join(format!("export-cancel-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = root.join("fixture.store");
+        let store = Arc::new(LadybugStore::for_testing(&db, 4).unwrap());
+        store.init("export-cancel").await.unwrap();
+        store
+            .upsert(
+                "export-cancel",
+                "before-export",
+                vec![0.5; 4],
+                MemoryPayload {
+                    content: "committed before snapshot".into(),
+                    user_id: "owner".into(),
+                    memory_type: "fact".into(),
+                    agent_name: None,
+                    location: String::new(),
+                    location_lines: String::new(),
+                    metadata: json!({}),
+                },
+            )
+            .await
+            .unwrap();
+        let barrier = root.join("export-entered");
+        set_test_snapshot_operation_barrier("export", db.clone(), barrier.clone());
+
+        let output = root.join("snapshot");
+        let export_store = store.clone();
+        let export_output = output.clone();
+        let export = tokio::spawn(async move {
+            export_store
+                .export_database(&export_output.to_string_lossy())
+                .await
+        });
+        wait_for_test_barrier(&barrier).await;
+        export.abort();
+        assert!(export.await.unwrap_err().is_cancelled());
+
+        let write_store = store.clone();
+        let write = tokio::spawn(async move {
+            write_store
+                .upsert(
+                    "export-cancel",
+                    "after-export",
+                    vec![0.25; 4],
+                    MemoryPayload {
+                        content: "written after snapshot".into(),
+                        user_id: "owner".into(),
+                        memory_type: "fact".into(),
+                        agent_name: None,
+                        location: String::new(),
+                        location_lines: String::new(),
+                        metadata: json!({}),
+                    },
+                )
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            !write.is_finished(),
+            "a writer must remain queued until the detached snapshot bundle is complete"
+        );
+        release_test_barrier(&barrier);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while !output.join("manifest.json").is_file() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "export worker did not finish"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        write.await.unwrap().unwrap();
+
+        let snapshot_db = output.join("ladybug.store");
+        let snapshot = LadybugStore::for_testing(&snapshot_db, 4).unwrap();
+        snapshot.init("export-cancel-check").await.unwrap();
+        assert_eq!(
+            snapshot
+                .get("export-cancel", "before-export")
+                .await
+                .unwrap()
+                .unwrap()
+                .1
+                .content,
+            "committed before snapshot"
+        );
+        assert!(snapshot
+            .get("export-cancel", "after-export")
+            .await
+            .unwrap()
+            .is_none());
+        drop(snapshot);
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -2848,6 +9245,292 @@ eurostrata\src\daemon.rs",
     }
 
     #[tokio::test]
+    async fn cancelling_a_queued_write_does_not_dispatch_or_mark_dirty() {
+        use std::future::Future;
+
+        struct NoopWake;
+        impl std::task::Wake for NoopWake {
+            fn wake(self: std::sync::Arc<Self>) {}
+        }
+
+        let root =
+            std::env::temp_dir().join(format!("queued-write-cancel-{}", uuid::Uuid::new_v4()));
+        let store = LadybugStore::for_testing(&root, 4).expect("open DB");
+        store.init("queued-write-cancel").await.unwrap();
+        store.checkpoint().await.unwrap();
+        assert!(!store.is_dirty());
+
+        let held_turn = store.write_lock.clone().lock_owned().await;
+        let dispatched = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let dispatched_by_write = dispatched.clone();
+        let mut write = Box::pin(store.write_with_deadline("queued cancellation", move |_| {
+            dispatched_by_write.store(true, std::sync::atomic::Ordering::Release);
+            Ok(())
+        }));
+        let waker = std::task::Waker::from(std::sync::Arc::new(NoopWake));
+        let mut context = std::task::Context::from_waker(&waker);
+        assert!(
+            write.as_mut().poll(&mut context).is_pending(),
+            "write must be queued behind the held turn"
+        );
+        drop(write);
+        drop(held_turn);
+
+        assert!(
+            !dispatched.load(std::sync::atomic::Ordering::Acquire),
+            "cancellation before dispatch must not run the write closure"
+        );
+        assert!(!store.is_dirty(), "a queued cancellation is not a mutation");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn a_dispatched_write_marks_dirty_after_its_caller_is_cancelled() {
+        let root =
+            std::env::temp_dir().join(format!("dispatched-write-cancel-{}", uuid::Uuid::new_v4()));
+        let db = root.join("fixture.store");
+        std::fs::create_dir_all(&root).unwrap();
+        let store = std::sync::Arc::new(LadybugStore::for_testing(&db, 4).expect("open DB"));
+        store.init("dispatched-write-cancel").await.unwrap();
+        store.checkpoint().await.unwrap();
+        assert!(!store.is_dirty());
+
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let release_rx = std::sync::Arc::new(std::sync::Mutex::new(release_rx));
+        let writer_store = store.clone();
+        let writer = tokio::spawn(async move {
+            writer_store
+                .write_with_deadline("cancelled dispatched write", move |conn| {
+                    conn.query("BEGIN TRANSACTION")?;
+                    conn.query("CREATE (m:Memory {pk: 'dispatched-write-cancel\u{1}dispatched-write-cancel::row', id: 'dispatched-write-cancel::row', namespace: 'dispatched-write-cancel', content: 'committed', user_id: 'owner', memory_type: 'fact', agent_name: 'fixture', location: 'fixture.rs', location_lines: '1', metadata: '{}', embedding: [0.1, 0.2, 0.3, 0.4]})")?;
+                    started_tx.send(()).expect("signal dispatched write");
+                    release_rx.lock().unwrap().recv().expect("release write");
+                    conn.query("COMMIT")?;
+                    Ok(())
+                })
+                .await
+        });
+        tokio::task::spawn_blocking(move || started_rx.recv().expect("write dispatched"))
+            .await
+            .unwrap();
+        writer.abort();
+        assert!(writer.await.unwrap_err().is_cancelled());
+        release_tx.send(()).expect("release detached engine write");
+
+        let lock_path = db.clone();
+        let drained_writer =
+            tokio::task::spawn_blocking(move || acquire_database_writer_lock(&lock_path))
+                .await
+                .expect("writer-lock waiter completes")
+                .expect("dispatched write releases its writer lock");
+        assert!(store.is_dirty(), "the blocking write worker marks dirty");
+        drop(drained_writer);
+
+        let row: Option<String> = store
+            .with_conn(|conn| {
+                let mut rows = conn.query(
+                    "MATCH (m:Memory) WHERE m.id = 'dispatched-write-cancel::row' RETURN m.content",
+                )?;
+                Ok(rows.next().map(|row| format!("{}", row[0])))
+            })
+            .await
+            .unwrap();
+        assert_eq!(row.as_deref(), Some("committed"));
+        store.checkpoint().await.unwrap();
+        assert!(!store.is_dirty(), "checkpoint clears the completed write");
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn a_timed_out_dispatched_write_marks_dirty_when_it_finishes() {
+        let _guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let root =
+            std::env::temp_dir().join(format!("dispatched-write-timeout-{}", uuid::Uuid::new_v4()));
+        let db = root.join("fixture.store");
+        std::fs::create_dir_all(&root).unwrap();
+        let store = std::sync::Arc::new(LadybugStore::for_testing(&db, 4).expect("open DB"));
+        store.init("dispatched-write-timeout").await.unwrap();
+        store.checkpoint().await.unwrap();
+        assert!(!store.is_dirty());
+
+        std::env::set_var("NEUROSTRATA_WRITE_TIMEOUT_SECS", "1");
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let release_rx = std::sync::Arc::new(std::sync::Mutex::new(release_rx));
+        let writer_store = store.clone();
+        let writer = tokio::spawn(async move {
+            writer_store
+                .write_with_deadline("timed out dispatched write", move |conn| {
+                    conn.query("BEGIN TRANSACTION")?;
+                    conn.query("CREATE (m:Memory {pk: 'dispatched-write-timeout\u{1}dispatched-write-timeout::row', id: 'dispatched-write-timeout::row', namespace: 'dispatched-write-timeout', content: 'committed', user_id: 'owner', memory_type: 'fact', agent_name: 'fixture', location: 'fixture.rs', location_lines: '1', metadata: '{}', embedding: [0.1, 0.2, 0.3, 0.4]})")?;
+                    started_tx.send(()).expect("signal dispatched write");
+                    release_rx.lock().unwrap().recv().expect("release write");
+                    conn.query("COMMIT")?;
+                    Ok(())
+                })
+                .await
+        });
+        tokio::task::spawn_blocking(move || started_rx.recv().expect("write dispatched"))
+            .await
+            .unwrap();
+        let timeout = writer.await.expect("deadline returns to the caller");
+        std::env::remove_var("NEUROSTRATA_WRITE_TIMEOUT_SECS");
+        assert!(timeout
+            .unwrap_err()
+            .to_string()
+            .contains("may still be running"));
+        assert!(
+            !store.is_dirty(),
+            "the pending transaction has not finished"
+        );
+        release_tx.send(()).expect("release detached engine write");
+
+        let lock_path = db.clone();
+        let drained_writer =
+            tokio::task::spawn_blocking(move || acquire_database_writer_lock(&lock_path))
+                .await
+                .expect("writer-lock waiter completes")
+                .expect("timed-out write releases its writer lock");
+        assert!(store.is_dirty(), "the completed blocking write marks dirty");
+        drop(drained_writer);
+
+        let row: Option<String> = store
+            .with_conn(|conn| {
+                let mut rows = conn.query("MATCH (m:Memory) WHERE m.id = 'dispatched-write-timeout::row' RETURN m.content")?;
+                Ok(rows.next().map(|row| format!("{}", row[0])))
+            })
+            .await
+            .unwrap();
+        assert_eq!(row.as_deref(), Some("committed"));
+        store.checkpoint().await.unwrap();
+        assert!(!store.is_dirty(), "checkpoint clears the completed write");
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn a_write_error_after_mutation_keeps_the_store_dirty() {
+        let root =
+            std::env::temp_dir().join(format!("partial-write-dirty-{}", uuid::Uuid::new_v4()));
+        let store = LadybugStore::for_testing(&root, 4).expect("open DB");
+        store.init("partial-write-dirty").await.unwrap();
+        store.checkpoint().await.unwrap();
+        assert!(!store.is_dirty());
+
+        let result: anyhow::Result<()> = store
+            .write_with_deadline("partial write fixture", move |conn| {
+                conn.query("CREATE (m:Memory {pk: 'partial-write-dirty\u{1}partial-write-dirty::row', id: 'partial-write-dirty::row', namespace: 'partial-write-dirty', content: 'partially written', user_id: 'owner', memory_type: 'fact', agent_name: 'fixture', location: 'partial.rs', location_lines: '1', metadata: '{}', embedding: [0.1, 0.2, 0.3, 0.4]})")?;
+                anyhow::bail!("simulated failure after mutation")
+            })
+            .await;
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("simulated failure"));
+        assert!(
+            store.is_dirty(),
+            "an error after a possibly committed statement remains checkpoint-visible"
+        );
+        let row: Option<String> = store
+            .with_conn(|conn| {
+                let mut rows = conn.query(
+                    "MATCH (m:Memory) WHERE m.id = 'partial-write-dirty::row' RETURN m.content",
+                )?;
+                Ok(rows.next().map(|row| format!("{}", row[0])))
+            })
+            .await
+            .unwrap();
+        assert_eq!(row.as_deref(), Some("partially written"));
+        store.checkpoint().await.unwrap();
+        assert!(!store.is_dirty());
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn a_write_queued_behind_checkpoint_marks_dirty_after_checkpoint_clears() {
+        let root =
+            std::env::temp_dir().join(format!("checkpoint-queued-write-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = root.join("fixture.store");
+        let store = std::sync::Arc::new(LadybugStore::for_testing(&db, 4).expect("open DB"));
+        store.init("checkpoint-queued-write").await.unwrap();
+        store
+            .upsert(
+                "checkpoint-queued-write",
+                "checkpoint-queued-write::seed",
+                vec![0.0; 4],
+                MemoryPayload {
+                    content: "seed".into(),
+                    user_id: "owner".into(),
+                    memory_type: "fact".into(),
+                    agent_name: None,
+                    location: "seed.rs".into(),
+                    location_lines: "1".into(),
+                    metadata: json!({}),
+                },
+            )
+            .await
+            .unwrap();
+        store.checkpoint().await.unwrap();
+        assert!(!store.is_dirty(), "staging work was checkpointed first");
+
+        let checkpoint_barrier = root.join("checkpoint-entered");
+        set_test_snapshot_operation_barrier("checkpoint", db.clone(), checkpoint_barrier.clone());
+        let checkpoint_store = store.clone();
+        let checkpoint = tokio::spawn(async move { checkpoint_store.checkpoint().await });
+        wait_for_test_barrier(&checkpoint_barrier).await;
+        assert!(!store.is_dirty(), "checkpoint took the previous dirty flag");
+
+        let write_lock_attempt = root.join("write-lock-attempted");
+        set_test_write_lock_attempt(db.clone(), write_lock_attempt.clone());
+        let write_store = store.clone();
+        let write = tokio::spawn(async move {
+            write_store
+                .upsert(
+                    "checkpoint-queued-write",
+                    "checkpoint-queued-write::queued",
+                    vec![0.4; 4],
+                    MemoryPayload {
+                        content: "queued behind checkpoint".into(),
+                        user_id: "owner".into(),
+                        memory_type: "fact".into(),
+                        agent_name: None,
+                        location: "queued.rs".into(),
+                        location_lines: "2".into(),
+                        metadata: json!({}),
+                    },
+                )
+                .await
+        });
+        wait_for_test_barrier(&write_lock_attempt).await;
+        assert!(
+            !write.is_finished(),
+            "the write cannot pass the checkpoint's writer lock"
+        );
+        release_test_barrier(&checkpoint_barrier);
+        checkpoint.await.unwrap().unwrap();
+        write.await.unwrap().unwrap();
+        assert!(
+            store.is_dirty(),
+            "the queued write marks dirty after checkpoint cleared the prior flag"
+        );
+        let row = store
+            .get("checkpoint-queued-write", "checkpoint-queued-write::queued")
+            .await
+            .unwrap();
+        assert_eq!(row.unwrap().1.content, "queued behind checkpoint");
+        store.checkpoint().await.unwrap();
+        assert!(!store.is_dirty());
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
     async fn waiting_a_turn_to_write_counts_against_the_deadline() {
         // The shape write_with_deadline uses: the queue for the single writer
         // sits inside the bound, so a caller stuck behind a stalled write is
@@ -2924,6 +9607,9 @@ eurostrata\src\daemon.rs",
 
     #[test]
     fn the_write_deadline_can_be_overridden() {
+        let _guard = crate::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         std::env::set_var("NEUROSTRATA_WRITE_TIMEOUT_SECS", "90");
         assert_eq!(write_timeout(), std::time::Duration::from_secs(90));
 
@@ -3284,6 +9970,1077 @@ eurostrata\src\daemon.rs",
     }
 
     #[tokio::test]
+    async fn ingest_publication_rolls_back_rows_and_rule_edges_on_store_failure() {
+        let dir = std::env::temp_dir().join(format!("atomic-ingest-{}", uuid::Uuid::new_v4()));
+        let store = LadybugStore::for_testing(&dir, 4).expect("open temporary database");
+        store.init("atomic").await.expect("create schema");
+        let old_id = format!("atomic{}old.rs", crate::parser::ingest::NAMESPACE_SEPARATOR);
+        store
+            .upsert(
+                "atomic",
+                &old_id,
+                vec![0.0; 4],
+                MemoryPayload {
+                    content: "Path: old.rs".into(),
+                    user_id: "auto-ingestor".into(),
+                    memory_type: "file".into(),
+                    agent_name: None,
+                    location: "old.rs".into(),
+                    location_lines: String::new(),
+                    metadata: serde_json::json!({}),
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .upsert(
+                "atomic",
+                "rule-atomic",
+                vec![0.0; 4],
+                MemoryPayload {
+                    content: "rule".into(),
+                    user_id: "agent".into(),
+                    memory_type: "rule".into(),
+                    agent_name: None,
+                    location: String::new(),
+                    location_lines: String::new(),
+                    metadata: serde_json::json!({"governs": [old_id]}),
+                },
+            )
+            .await
+            .unwrap();
+
+        let staged_namespace = format!("{}{}", INTERNAL_INGEST_STAGE_PREFIX, uuid::Uuid::new_v4());
+        let _stage_lease = store
+            .begin_ingest_stage(&staged_namespace)
+            .await
+            .expect("acquire staging lease");
+        let staged_id = format!(
+            "{}{}new.rs",
+            staged_namespace,
+            crate::parser::ingest::NAMESPACE_SEPARATOR
+        );
+        store
+            .upsert(
+                &staged_namespace,
+                &staged_id,
+                vec![0.0; 4],
+                MemoryPayload {
+                    content: "Path: new.rs".into(),
+                    user_id: "auto-ingestor".into(),
+                    memory_type: "file".into(),
+                    agent_name: None,
+                    location: "new.rs".into(),
+                    location_lines: String::new(),
+                    metadata: serde_json::json!({}),
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .with_conn({
+                let staged_namespace = staged_namespace.clone();
+                let staged_id = staged_id.clone();
+                move |conn| {
+                    conn.query(&format!(
+                        "MATCH (m:Memory) WHERE m.namespace = '{}' AND m.id = '{}' SET m.metadata = '{{'",
+                        escape_ladybug_string(&staged_namespace),
+                        escape_ladybug_string(&staged_id)
+                    ))?;
+                    Ok(())
+                }
+            })
+            .await
+            .unwrap();
+        let result = store.publish_ingested("atomic", &staged_namespace).await;
+        assert!(
+            result.is_err(),
+            "malformed staged metadata aborts the transaction"
+        );
+        assert!(store.get("atomic", &old_id).await.unwrap().is_some());
+        assert!(store
+            .get(&staged_namespace, &staged_id)
+            .await
+            .unwrap()
+            .is_some());
+        let graph = store
+            .export_graph(false, false, &std::collections::HashMap::new(), None)
+            .await
+            .unwrap();
+        assert!(graph["links"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|link| { link["source"] == "rule-atomic" && link["target"] == old_id }));
+        assert!(
+            !store
+                .list_namespaces()
+                .await
+                .unwrap()
+                .contains(&staged_namespace),
+            "private staging is excluded from namespace listings"
+        );
+        assert!(
+            graph["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|node| node["namespace"] != staged_namespace),
+            "private staging is excluded from graph exports"
+        );
+
+        let interrupted_namespace = "atomic".to_string();
+        let interrupted: Result<()> = store
+            .with_conn(move |conn| -> Result<()> {
+                conn.query("BEGIN TRANSACTION")?;
+                conn.query(&format!(
+                    "MATCH (m:Memory) WHERE m.namespace = '{}' AND m.user_id = 'auto-ingestor' DETACH DELETE m",
+                    interrupted_namespace
+                ))?;
+                anyhow::bail!("simulated process interruption before commit");
+            })
+            .await;
+        assert!(interrupted.is_err());
+        assert!(
+            store.get("atomic", &old_id).await.unwrap().is_some(),
+            "disconnecting before COMMIT leaves the last committed generation intact"
+        );
+
+        let _ = std::fs::remove_file(&dir);
+    }
+
+    #[tokio::test]
+    async fn atomic_publication_promotes_database_rows_and_disposes_stage_together() {
+        let dir = std::env::temp_dir().join(format!("atomic-promote-{}", uuid::Uuid::new_v4()));
+        let store = LadybugStore::for_testing(&dir, 4).expect("open temporary database");
+        store.init("atomic-promote").await.unwrap();
+        let old_id = format!(
+            "atomic-promote{}old.rs",
+            crate::parser::ingest::NAMESPACE_SEPARATOR
+        );
+        store
+            .upsert(
+                "atomic-promote",
+                &old_id,
+                vec![0.0; 4],
+                MemoryPayload {
+                    content: "old".into(),
+                    user_id: "auto-ingestor".into(),
+                    memory_type: "file".into(),
+                    agent_name: None,
+                    location: "old.rs".into(),
+                    location_lines: String::new(),
+                    metadata: json!({}),
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .upsert(
+                "atomic-promote",
+                "rule-promote",
+                vec![0.0; 4],
+                MemoryPayload {
+                    content: "rule".into(),
+                    user_id: "agent".into(),
+                    memory_type: "rule".into(),
+                    agent_name: None,
+                    location: String::new(),
+                    location_lines: String::new(),
+                    metadata: json!({ "governs": ["new.rs"] }),
+                },
+            )
+            .await
+            .unwrap();
+
+        let staged_namespace = format!("{}{}", INTERNAL_INGEST_STAGE_PREFIX, uuid::Uuid::new_v4());
+        let _stage_lease = store.begin_ingest_stage(&staged_namespace).await.unwrap();
+        let staged_id = format!(
+            "{}{}new.rs",
+            staged_namespace,
+            crate::parser::ingest::NAMESPACE_SEPARATOR
+        );
+        store
+            .upsert(
+                &staged_namespace,
+                &staged_id,
+                vec![0.25, 0.5, 0.75, 1.0],
+                MemoryPayload {
+                    content: "new".into(),
+                    user_id: "auto-ingestor".into(),
+                    memory_type: "file".into(),
+                    agent_name: None,
+                    location: "new.rs".into(),
+                    location_lines: String::new(),
+                    metadata: json!({}),
+                },
+            )
+            .await
+            .unwrap();
+
+        store
+            .publish_ingested("atomic-promote", &staged_namespace)
+            .await
+            .unwrap();
+        let new_id = format!(
+            "atomic-promote{}new.rs",
+            crate::parser::ingest::NAMESPACE_SEPARATOR
+        );
+        assert!(store
+            .get("atomic-promote", &old_id)
+            .await
+            .unwrap()
+            .is_none());
+        let promoted = store
+            .get("atomic-promote", &new_id)
+            .await
+            .unwrap()
+            .expect("new generation is visible after commit");
+        assert_eq!(promoted.0, vec![0.25, 0.5, 0.75, 1.0]);
+        assert_eq!(promoted.1.content, "new");
+        assert!(store
+            .get(&staged_namespace, &staged_id)
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(governs_edges_from(&store, "rule-promote").await, 1);
+
+        let _ = std::fs::remove_file(&dir);
+    }
+
+    #[tokio::test]
+    async fn publication_rejects_reserved_destination_without_touching_active_stages() {
+        let db = std::env::temp_dir().join(format!("reserved-publish-{}", uuid::Uuid::new_v4()));
+        let store = LadybugStore::for_testing(&db, 4).unwrap();
+        store.init("reserved-publish").await.unwrap();
+        let destination = format!("{INTERNAL_INGEST_STAGE_PREFIX}{}", uuid::Uuid::new_v4());
+        let source = format!("{INTERNAL_INGEST_STAGE_PREFIX}{}", uuid::Uuid::new_v4());
+        let fresh_destination = format!("{INTERNAL_INGEST_STAGE_PREFIX}{}", uuid::Uuid::new_v4());
+        let _destination_lease = store.begin_ingest_stage(&destination).await.unwrap();
+        let _source_lease = store.begin_ingest_stage(&source).await.unwrap();
+        let destination_id = format!(
+            "{destination}{}target.rs",
+            crate::parser::ingest::NAMESPACE_SEPARATOR
+        );
+        let source_id = format!(
+            "{source}{}source.rs",
+            crate::parser::ingest::NAMESPACE_SEPARATOR
+        );
+        for (namespace, id, content, vector) in [
+            (
+                &destination,
+                &destination_id,
+                "held destination",
+                vec![0.1, 0.2, 0.3, 0.4],
+            ),
+            (
+                &source,
+                &source_id,
+                "publish source",
+                vec![0.4, 0.3, 0.2, 0.1],
+            ),
+        ] {
+            store
+                .upsert(
+                    namespace,
+                    id,
+                    vector,
+                    MemoryPayload {
+                        content: content.into(),
+                        user_id: "auto-ingestor".into(),
+                        memory_type: "file".into(),
+                        agent_name: None,
+                        location: format!("{content}.rs"),
+                        location_lines: String::new(),
+                        metadata: json!({"preserve": content}),
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        async fn snapshot(store: &LadybugStore, namespace: String) -> Vec<Vec<String>> {
+            store.with_conn(move |conn| {
+                let safe = escape_ladybug_string(&namespace);
+                let mut rows = conn.query(&format!(
+                    "MATCH (m:Memory) WHERE m.namespace = '{}' RETURN m.id, m.content, m.user_id, m.memory_type, m.agent_name, m.location, m.location_lines, m.metadata, m.embedding ORDER BY m.id",
+                    safe
+                ))?;
+                let mut values = Vec::new();
+                while let Some(row) = rows.next() {
+                    values.push((0..9).map(|i| format!("{}", row[i])).collect::<Vec<_>>());
+                }
+                Ok(values)
+            }).await.unwrap()
+        }
+        async fn edge_snapshot(store: &LadybugStore) -> Vec<Vec<String>> {
+            store.with_conn(|conn| {
+                let mut rows = conn.query(
+                    "MATCH (a:Memory)-[r]->(b:Memory) RETURN a.id, label(r), b.id ORDER BY a.id, label(r), b.id",
+                )?;
+                let mut values = Vec::new();
+                while let Some(row) = rows.next() {
+                    values.push((0..3).map(|i| format!("{}", row[i])).collect::<Vec<_>>());
+                }
+                Ok(values)
+            }).await.unwrap()
+        }
+        async fn catalog_snapshot(store: &LadybugStore) -> Vec<(String, String)> {
+            store
+                .with_conn(|conn| {
+                    let mut rows = conn.query(
+                    "MATCH (s:IngestStage) RETURN s.namespace, s.generation ORDER BY s.namespace",
+                )?;
+                    let mut values = Vec::new();
+                    while let Some(row) = rows.next() {
+                        values.push((format!("{}", row[0]), format!("{}", row[1])));
+                    }
+                    Ok(values)
+                })
+                .await
+                .unwrap()
+        }
+        store
+            .with_conn({
+                let edge = (destination_id.clone(), source_id.clone());
+                move |conn| {
+                    create_missing_edges(conn, "RELATES_TO", &[edge])?;
+                    Ok(())
+                }
+            })
+            .await
+            .unwrap();
+        let destination_before = snapshot(&store, destination.clone()).await;
+        let source_before = snapshot(&store, source.clone()).await;
+        let edges_before = edge_snapshot(&store).await;
+        assert!(edges_before.contains(&vec![
+            destination_id.clone(),
+            "RELATES_TO".into(),
+            source_id.clone(),
+        ]));
+        let catalog_before = catalog_snapshot(&store).await;
+        assert!(catalog_before.iter().any(|(ns, generation)| {
+            ns == &destination
+                && generation == destination.trim_start_matches(INTERNAL_INGEST_STAGE_PREFIX)
+        }));
+        assert!(catalog_before.iter().any(|(ns, generation)| {
+            ns == &source && generation == source.trim_start_matches(INTERNAL_INGEST_STAGE_PREFIX)
+        }));
+        assert!(!has_ingest_stage_lease(
+            &store.local_path,
+            &store.path_aliases,
+            &fresh_destination
+        ));
+
+        for invalid in [
+            destination.as_str(),
+            fresh_destination.as_str(),
+            "__neurostrata_ingest_stage__malformed",
+            INTERNAL_INGEST_STAGE_PREFIX,
+        ] {
+            let error = store.publish_ingested(invalid, &source).await.unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("reserved internal staging namespace"));
+            assert_eq!(
+                snapshot(&store, destination.clone()).await,
+                destination_before
+            );
+            assert_eq!(snapshot(&store, source.clone()).await, source_before);
+            assert_eq!(edge_snapshot(&store).await, edges_before);
+            assert_eq!(catalog_snapshot(&store).await, catalog_before);
+        }
+
+        let same_error = store
+            .publish_ingested(&source, &source)
+            .await
+            .expect_err("source cannot also be the destination");
+        assert!(same_error
+            .to_string()
+            .contains("reserved internal staging namespace"));
+        assert_eq!(
+            snapshot(&store, destination.clone()).await,
+            destination_before
+        );
+        assert_eq!(snapshot(&store, source.clone()).await, source_before);
+        assert_eq!(edge_snapshot(&store).await, edges_before);
+        assert!(has_ingest_stage_lease(
+            &store.local_path,
+            &store.path_aliases,
+            &destination
+        ));
+        assert!(has_ingest_stage_lease(
+            &store.local_path,
+            &store.path_aliases,
+            &source
+        ));
+        assert!(!has_ingest_stage_lease(
+            &store.local_path,
+            &store.path_aliases,
+            &fresh_destination
+        ));
+
+        store
+            .publish_ingested("published-source", &source)
+            .await
+            .unwrap();
+        store
+            .publish_ingested("published-destination", &destination)
+            .await
+            .unwrap();
+        assert!(store
+            .get("published-source", "published-source::source.rs")
+            .await
+            .unwrap()
+            .is_some());
+        assert!(store
+            .get("published-destination", "published-destination::target.rs")
+            .await
+            .unwrap()
+            .is_some());
+        let _ = std::fs::remove_file(&db);
+    }
+
+    #[tokio::test]
+    async fn stage_recovery_requires_lease_provenance_and_preserves_lookalike_namespaces() {
+        let dir = std::env::temp_dir().join(format!("ingest-recovery-{}", uuid::Uuid::new_v4()));
+        let store = LadybugStore::for_testing(&dir, 4).expect("open temporary database");
+        store.init("recovery").await.unwrap();
+
+        let active_namespace = format!("{}{}", INTERNAL_INGEST_STAGE_PREFIX, uuid::Uuid::new_v4());
+        let active_lease = store.begin_ingest_stage(&active_namespace).await.unwrap();
+        let active_id = format!(
+            "{}{}active.rs",
+            active_namespace,
+            crate::parser::ingest::NAMESPACE_SEPARATOR
+        );
+        store
+            .upsert(
+                &active_namespace,
+                &active_id,
+                vec![0.0; 4],
+                MemoryPayload {
+                    content: "active stage".into(),
+                    user_id: "auto-ingestor".into(),
+                    memory_type: "file".into(),
+                    agent_name: None,
+                    location: "active.rs".into(),
+                    location_lines: String::new(),
+                    metadata: json!({}),
+                },
+            )
+            .await
+            .unwrap();
+
+        // Model a process that wrote stage provenance and rows, then exited:
+        // the lease remains on disk but is unlocked.
+        let orphan_namespace = format!("{}{}", INTERNAL_INGEST_STAGE_PREFIX, uuid::Uuid::new_v4());
+        let orphan_lease = store.begin_ingest_stage(&orphan_namespace).await.unwrap();
+        let orphan_lease_path = ingest_stage_lease_path(&dir, &orphan_namespace).unwrap();
+        let orphan_id = format!(
+            "{}{}orphan.rs",
+            orphan_namespace,
+            crate::parser::ingest::NAMESPACE_SEPARATOR
+        );
+        store
+            .upsert(
+                &orphan_namespace,
+                &orphan_id,
+                vec![0.0; 4],
+                MemoryPayload {
+                    content: "interrupted stage".into(),
+                    user_id: "auto-ingestor".into(),
+                    memory_type: "file".into(),
+                    agent_name: None,
+                    location: "orphan.rs".into(),
+                    location_lines: String::new(),
+                    metadata: json!({}),
+                },
+            )
+            .await
+            .unwrap();
+        let dropped_provenance_namespace = orphan_namespace.clone();
+        store
+            .write_with_deadline("simulating a pre-catalog stage", move |conn| {
+                let safe = escape_ladybug_string(&dropped_provenance_namespace);
+                conn.query(&format!(
+                    "MATCH (s:IngestStage) WHERE s.namespace = '{}' DELETE s",
+                    safe
+                ))?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        drop(orphan_lease);
+        let legacy_namespace = format!("project-ingest-stage-{}", uuid::Uuid::new_v4());
+        let legacy_id = format!(
+            "{}{}legacy.rs",
+            legacy_namespace,
+            crate::parser::ingest::NAMESPACE_SEPARATOR
+        );
+        store
+            .upsert(
+                &legacy_namespace,
+                &legacy_id,
+                vec![0.0; 4],
+                MemoryPayload {
+                    content: "legacy interrupted stage".into(),
+                    user_id: "auto-ingestor".into(),
+                    memory_type: "file".into(),
+                    agent_name: None,
+                    location: "legacy.rs".into(),
+                    location_lines: String::new(),
+                    metadata: json!({}),
+                },
+            )
+            .await
+            .unwrap();
+
+        // These namespaces have no stage lease. Their spelling alone must
+        // never hide or authorize deletion, even when the name parses as a
+        // generated stage ID or starts with the reserved prefix malformed.
+        let lookalike_namespace =
+            format!("{}{}", INTERNAL_INGEST_STAGE_PREFIX, uuid::Uuid::new_v4());
+        let lookalike_system_id = format!("{}::system-row", lookalike_namespace);
+        let lookalike_user_id = format!("{}::user-row", lookalike_namespace);
+        seed_raw_reserved_namespace_row(
+            &store,
+            &lookalike_namespace,
+            &lookalike_system_id,
+            "system",
+        )
+        .await;
+        seed_raw_reserved_namespace_row(&store, &lookalike_namespace, &lookalike_user_id, "user-1")
+            .await;
+        let lookalike_lease_path = ingest_stage_lease_path(&dir, &lookalike_namespace).unwrap();
+        std::fs::write(
+            &lookalike_lease_path,
+            "legacy sidecar without catalog ownership",
+        )
+        .unwrap();
+        let malformed_namespace = format!("{}notes", INTERNAL_INGEST_STAGE_PREFIX);
+        let malformed_id = format!("{}::user-row", malformed_namespace);
+        seed_raw_reserved_namespace_row(&store, &malformed_namespace, &malformed_id, "user-2")
+            .await;
+        let legacy_user_namespace = format!("project-ingest-stage-{}", uuid::Uuid::new_v4());
+        let legacy_user_id = format!("{}::user-row", legacy_user_namespace);
+        store
+            .upsert(
+                &legacy_user_namespace,
+                &legacy_user_id,
+                vec![0.0; 4],
+                MemoryPayload {
+                    content: "legacy user data".into(),
+                    user_id: "user-3".into(),
+                    memory_type: "fact".into(),
+                    agent_name: None,
+                    location: String::new(),
+                    location_lines: String::new(),
+                    metadata: json!({}),
+                },
+            )
+            .await
+            .unwrap();
+        let rejected_reserved_write = store
+            .upsert(
+                &malformed_namespace,
+                "new-user-write",
+                vec![0.0; 4],
+                MemoryPayload {
+                    content: "must not write".into(),
+                    user_id: "system".into(),
+                    memory_type: "fact".into(),
+                    agent_name: None,
+                    location: String::new(),
+                    location_lines: String::new(),
+                    metadata: json!({}),
+                },
+            )
+            .await;
+        assert!(rejected_reserved_write.is_err());
+        assert!(store
+            .begin_ingest_stage(&lookalike_namespace)
+            .await
+            .is_err());
+        assert!(store
+            .upsert(
+                &lookalike_namespace,
+                "lookalike-public-write",
+                vec![0.0; 4],
+                MemoryPayload {
+                    content: "must not write".into(),
+                    user_id: "system".into(),
+                    memory_type: "fact".into(),
+                    agent_name: None,
+                    location: String::new(),
+                    location_lines: String::new(),
+                    metadata: json!({}),
+                },
+            )
+            .await
+            .is_err());
+
+        let visible_names = store.list_namespaces().await.unwrap();
+        assert!(!visible_names.contains(&active_namespace));
+        assert!(!visible_names.contains(&orphan_namespace));
+        assert!(visible_names.contains(&legacy_namespace));
+        assert!(visible_names.contains(&legacy_user_namespace));
+        assert!(visible_names.contains(&lookalike_namespace));
+        assert!(visible_names.contains(&malformed_namespace));
+        let exported = store
+            .export_graph(false, false, &std::collections::HashMap::new(), None)
+            .await
+            .unwrap();
+        let exported_nodes = exported["nodes"].as_array().unwrap();
+        assert!(exported_nodes.iter().all(|node| {
+            node["namespace"] != active_namespace && node["namespace"] != orphan_namespace
+        }));
+        for namespace in [
+            legacy_namespace.as_str(),
+            legacy_user_namespace.as_str(),
+            lookalike_namespace.as_str(),
+            malformed_namespace.as_str(),
+        ] {
+            assert!(exported_nodes
+                .iter()
+                .any(|node| node["namespace"] == namespace));
+        }
+
+        let new_namespace = format!("{}{}", INTERNAL_INGEST_STAGE_PREFIX, uuid::Uuid::new_v4());
+        let new_lease = store.begin_ingest_stage(&new_namespace).await.unwrap();
+        assert!(store
+            .get(&active_namespace, &active_id)
+            .await
+            .unwrap()
+            .is_some());
+        assert!(store
+            .get(&orphan_namespace, &orphan_id)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(store
+            .get(&legacy_namespace, &legacy_id)
+            .await
+            .unwrap()
+            .is_some());
+        for (namespace, id) in [
+            (&lookalike_namespace, &lookalike_system_id),
+            (&lookalike_namespace, &lookalike_user_id),
+            (&malformed_namespace, &malformed_id),
+            (&legacy_user_namespace, &legacy_user_id),
+        ] {
+            assert!(store.get(namespace, id).await.unwrap().is_some());
+        }
+        assert!(!orphan_lease_path.exists());
+        assert!(
+            lookalike_lease_path.exists(),
+            "mixed user/system rows with a lookalike sidecar remain preserved"
+        );
+        let new_lease_path = ingest_stage_lease_path(&dir, &new_namespace).unwrap();
+        drop(new_lease);
+        drop(active_lease);
+
+        let recovery_namespace =
+            format!("{}{}", INTERNAL_INGEST_STAGE_PREFIX, uuid::Uuid::new_v4());
+        let recovery_lease = store.begin_ingest_stage(&recovery_namespace).await.unwrap();
+        assert!(store
+            .get(&active_namespace, &active_id)
+            .await
+            .unwrap()
+            .is_none());
+        let recovery_lease_path = ingest_stage_lease_path(&dir, &recovery_namespace).unwrap();
+        drop(recovery_lease);
+        let _ = std::fs::remove_file(new_lease_path);
+        let _ = std::fs::remove_file(recovery_lease_path);
+
+        let _ = std::fs::remove_file(&dir);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn recovery_checks_legacy_alias_and_canonical_stage_leases() {
+        let root = std::env::temp_dir().join(format!("stage-alias-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let database = root.join("database.store");
+        let alias = root.join("database-alias.store");
+        {
+            let target_store = LadybugStore::for_testing(&database, 4).unwrap();
+            target_store.init("stage-alias-target").await.unwrap();
+        }
+        std::os::unix::fs::symlink(&database, &alias).unwrap();
+        let store = LadybugStore::for_testing(&alias, 4).unwrap();
+        store.init("stage-alias").await.unwrap();
+
+        let namespace = format!("{}{}", INTERNAL_INGEST_STAGE_PREFIX, uuid::Uuid::new_v4());
+        let lease = store.begin_ingest_stage(&namespace).await.unwrap();
+        let canonical_lease = ingest_stage_lease_path(&alias, &namespace).unwrap();
+        let alias_lease = raw_database_sibling(
+            &alias,
+            &format!(
+                ".stage-{}.lock",
+                namespace
+                    .strip_prefix(INTERNAL_INGEST_STAGE_PREFIX)
+                    .unwrap()
+            ),
+        );
+        std::fs::write(&alias_lease, "stale alias lease").unwrap();
+        let id = format!("{}::file.rs", namespace);
+        store
+            .upsert(
+                &namespace,
+                &id,
+                vec![0.25; 4],
+                MemoryPayload {
+                    content: "active alias generation".into(),
+                    user_id: "auto-ingestor".into(),
+                    memory_type: "file".into(),
+                    agent_name: None,
+                    location: "file.rs".into(),
+                    location_lines: String::new(),
+                    metadata: json!({}),
+                },
+            )
+            .await
+            .unwrap();
+
+        store.recover_interrupted_ingest_stages().await.unwrap();
+        assert_eq!(
+            store.get(&namespace, &id).await.unwrap().unwrap().1.content,
+            "active alias generation",
+            "a stale alias cannot hide an actively locked canonical generation"
+        );
+
+        drop(lease);
+        store.recover_interrupted_ingest_stages().await.unwrap();
+        assert!(store.get(&namespace, &id).await.unwrap().is_none());
+        assert!(!canonical_lease.exists());
+        assert!(!alias_lease.exists());
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn relative_file_alias_is_anchored_for_legacy_lease_recovery_after_cwd_changes() {
+        let root =
+            std::env::temp_dir().join(format!("relative-stage-alias-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let database = root.join("database.store");
+        let alias = root.join("database-alias.store");
+        {
+            let target = LadybugStore::for_testing(&database, 4).unwrap();
+            target.init("relative-alias-target").await.unwrap();
+        }
+        std::os::unix::fs::symlink(&database, &alias).unwrap();
+        let _cwd_guard = TEST_CWD_MUTEX.lock().unwrap();
+        let previous_directory = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&root).unwrap();
+        let relative_alias = Path::new("database-alias.store");
+        let store = LadybugStore::for_testing(relative_alias, 4).unwrap();
+        store.init("relative-alias-stage").await.unwrap();
+        let namespace = format!("{INTERNAL_INGEST_STAGE_PREFIX}{}", uuid::Uuid::new_v4());
+        let lease = store.begin_ingest_stage(&namespace).await.unwrap();
+        let id = format!("{namespace}::legacy.rs");
+        store
+            .upsert(
+                &namespace,
+                &id,
+                vec![0.2, 0.3, 0.4, 0.5],
+                MemoryPayload {
+                    content: "relative legacy stage".into(),
+                    user_id: "auto-ingestor".into(),
+                    memory_type: "file".into(),
+                    agent_name: None,
+                    location: "legacy.rs".into(),
+                    location_lines: String::new(),
+                    metadata: json!({}),
+                },
+            )
+            .await
+            .unwrap();
+        let canonical_lease = ingest_stage_lease_path(&database, &namespace).unwrap();
+        // Keep the alias sidecar anchored to the directory used at open time;
+        // this test deliberately changes cwd before recovery.
+        let alias_lease = raw_database_sibling(
+            &alias,
+            &format!(
+                ".stage-{}.lock",
+                namespace
+                    .strip_prefix(INTERNAL_INGEST_STAGE_PREFIX)
+                    .unwrap()
+            ),
+        );
+        drop(lease);
+        std::fs::remove_file(&canonical_lease).unwrap();
+        std::fs::write(&alias_lease, "legacy relative alias lease").unwrap();
+        let namespace_for_delete = namespace.clone();
+        store
+            .write_with_deadline("seeding legacy alias stage", move |conn| {
+                let safe = escape_ladybug_string(&namespace_for_delete);
+                conn.query(&format!(
+                    "MATCH (s:IngestStage) WHERE s.namespace = '{}' DELETE s",
+                    safe
+                ))?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        std::env::set_current_dir(&previous_directory).unwrap();
+
+        assert!(
+            !store.list_namespaces().await.unwrap().contains(&namespace),
+            "anchored relative alias still hides its legacy stage after cwd changes"
+        );
+        store.recover_interrupted_ingest_stages().await.unwrap();
+        assert!(store.get(&namespace, &id).await.unwrap().is_none());
+        assert!(!alias_lease.exists());
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn retargeted_parent_alias_cannot_remove_other_database_stage_sidecars() {
+        let root =
+            std::env::temp_dir().join(format!("stage-parent-retarget-{}", uuid::Uuid::new_v4()));
+        let original_parent = root.join("original");
+        let replacement_parent = root.join("replacement");
+        let parent_alias = root.join("parent-alias");
+        std::fs::create_dir_all(&original_parent).unwrap();
+        std::fs::create_dir_all(&replacement_parent).unwrap();
+        let database = original_parent.join("database.store");
+        {
+            let store = LadybugStore::for_testing(&database, 4).unwrap();
+            store.init("parent-retarget-fixture").await.unwrap();
+        }
+        std::os::unix::fs::symlink(&original_parent, &parent_alias).unwrap();
+        let store = LadybugStore::for_testing(parent_alias.join("database.store"), 4).unwrap();
+        store.init("parent-retarget-fixture").await.unwrap();
+
+        std::fs::remove_file(&parent_alias).unwrap();
+        std::os::unix::fs::symlink(&replacement_parent, &parent_alias).unwrap();
+        let generation = uuid::Uuid::new_v4().to_string();
+        let other_database_sidecar = raw_database_sibling(
+            &replacement_parent.join("database.store"),
+            &format!(".stage-{generation}.lock"),
+        );
+        std::fs::write(&other_database_sidecar, "other database provenance").unwrap();
+
+        store.recover_interrupted_ingest_stages().await.unwrap();
+        assert_eq!(
+            std::fs::read(&other_database_sidecar).unwrap(),
+            b"other database provenance",
+            "recovery stays within the database parent captured at open"
+        );
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn symlinked_parent_lease_candidates_are_deduplicated_and_recovered() {
+        let root =
+            std::env::temp_dir().join(format!("stage-parent-alias-{}", uuid::Uuid::new_v4()));
+        let alias_parent = root.with_extension("alias");
+        std::fs::create_dir_all(&root).unwrap();
+        std::os::unix::fs::symlink(&root, &alias_parent).unwrap();
+        let alias_db = alias_parent.join("database.store");
+        let store = LadybugStore::for_testing(&alias_db, 4).unwrap();
+        store.init("stage-parent-alias").await.unwrap();
+
+        let namespace = format!("{}{}", INTERNAL_INGEST_STAGE_PREFIX, uuid::Uuid::new_v4());
+        let lease = store.begin_ingest_stage(&namespace).await.unwrap();
+        store
+            .upsert(
+                &namespace,
+                &format!("{namespace}::src/recovered.rs"),
+                vec![0.25; 4],
+                MemoryPayload {
+                    content: "legacy stage under symlinked parent".into(),
+                    user_id: "auto-ingestor".into(),
+                    memory_type: "file".into(),
+                    agent_name: None,
+                    location: "src/recovered.rs".into(),
+                    location_lines: String::new(),
+                    metadata: json!({}),
+                },
+            )
+            .await
+            .unwrap();
+        drop(lease);
+        assert_eq!(
+            ingest_stage_lease_candidates(&alias_db, &namespace)
+                .unwrap()
+                .len(),
+            1,
+            "symlinked parent spellings refer to one lease identity"
+        );
+        store.recover_interrupted_ingest_stages().await.unwrap();
+        assert!(store
+            .get(&namespace, &format!("{namespace}::src/recovered.rs"))
+            .await
+            .unwrap()
+            .is_none());
+        assert!(!ingest_stage_lease_path(&alias_db, &namespace)
+            .unwrap()
+            .exists());
+        drop(store);
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_file(&alias_parent);
+    }
+
+    #[tokio::test]
+    async fn readers_keep_seeing_the_old_ingest_until_atomic_commit() {
+        let dir = std::env::temp_dir().join(format!("atomic-reader-{}", uuid::Uuid::new_v4()));
+        let store = std::sync::Arc::new(LadybugStore::for_testing(&dir, 4).expect("open DB"));
+        store.init("atomic-reader").await.unwrap();
+        let old_id = format!(
+            "atomic-reader{}old.rs",
+            crate::parser::ingest::NAMESPACE_SEPARATOR
+        );
+        store
+            .upsert(
+                "atomic-reader",
+                &old_id,
+                vec![0.0; 4],
+                MemoryPayload {
+                    content: "Path: old.rs".into(),
+                    user_id: "auto-ingestor".into(),
+                    memory_type: "file".into(),
+                    agent_name: None,
+                    location: "old.rs".into(),
+                    location_lines: String::new(),
+                    metadata: serde_json::json!({}),
+                },
+            )
+            .await
+            .unwrap();
+
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let release_rx = std::sync::Arc::new(std::sync::Mutex::new(release_rx));
+        let writer_store = store.clone();
+        let namespace = "atomic-reader".to_string();
+        let writer = tokio::spawn(async move {
+            writer_store
+                .write_with_deadline("test atomic publication", move |conn| {
+                    conn.query("BEGIN TRANSACTION")?;
+                    conn.query(&format!(
+                        "MATCH (m:Memory) WHERE m.namespace = '{}' AND m.user_id = 'auto-ingestor' DETACH DELETE m",
+                        namespace
+                    ))?;
+                    started_tx
+                        .clone()
+                        .send(())
+                        .expect("signal uncommitted delete");
+                    release_rx.lock().unwrap().recv().expect("release transaction");
+                    conn.query("COMMIT")?;
+                    Ok(())
+                })
+                .await
+        });
+        tokio::task::spawn_blocking(move || started_rx.recv().expect("writer began transaction"))
+            .await
+            .unwrap();
+
+        let visible = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            store.get("atomic-reader", &old_id),
+        )
+        .await;
+        let _ = release_tx.send(());
+        writer.await.unwrap().unwrap();
+        assert!(
+            visible
+                .expect("reader should not block behind the uncommitted writer")
+                .unwrap()
+                .is_some(),
+            "the old generation stays visible until commit"
+        );
+        assert!(store.get("atomic-reader", &old_id).await.unwrap().is_none());
+        let _ = std::fs::remove_file(&dir);
+    }
+
+    #[tokio::test]
+    async fn publication_deadline_waits_for_transaction_resolution() {
+        let dir = std::env::temp_dir().join(format!("atomic-deadline-{}", uuid::Uuid::new_v4()));
+        let store = std::sync::Arc::new(LadybugStore::for_testing(&dir, 4).expect("open DB"));
+        store.init("atomic-deadline").await.unwrap();
+        let old_id = format!(
+            "atomic-deadline{}old.rs",
+            crate::parser::ingest::NAMESPACE_SEPARATOR
+        );
+        store
+            .upsert(
+                "atomic-deadline",
+                &old_id,
+                vec![0.0; 4],
+                MemoryPayload {
+                    content: "old".into(),
+                    user_id: "auto-ingestor".into(),
+                    memory_type: "file".into(),
+                    agent_name: None,
+                    location: "old.rs".into(),
+                    location_lines: String::new(),
+                    metadata: json!({}),
+                },
+            )
+            .await
+            .unwrap();
+
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let release_rx = std::sync::Arc::new(std::sync::Mutex::new(release_rx));
+        let writer_store = store.clone();
+        let namespace = "atomic-deadline".to_string();
+        let old_id_for_query = old_id.clone();
+        let writer = tokio::spawn(async move {
+            writer_store
+                .write_to_completion(
+                    "test publication deadline",
+                    std::time::Duration::from_millis(40),
+                    move |conn| {
+                        conn.query("BEGIN TRANSACTION")?;
+                        conn.query(&format!(
+                            "MATCH (m:Memory) WHERE m.namespace = '{}' AND m.id = '{}' DETACH DELETE m",
+                            escape_ladybug_string(&namespace),
+                            escape_ladybug_string(&old_id_for_query)
+                        ))?;
+                        started_tx.send(()).expect("signal uncommitted delete");
+                        release_rx.lock().unwrap().recv().expect("release transaction");
+                        conn.query("COMMIT")?;
+                        Ok(())
+                    },
+                )
+                .await
+        });
+        tokio::task::spawn_blocking(move || started_rx.recv().expect("transaction began"))
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            !writer.is_finished(),
+            "deadline expiration must not be reported as a completed failed write"
+        );
+        assert!(store
+            .get("atomic-deadline", &old_id)
+            .await
+            .unwrap()
+            .is_some());
+        release_tx.send(()).expect("release publication");
+        writer
+            .await
+            .expect("publication worker finishes")
+            .expect("publication reports its resolved result");
+        assert!(store
+            .get("atomic-deadline", &old_id)
+            .await
+            .unwrap()
+            .is_none());
+
+        let _ = std::fs::remove_file(&dir);
+    }
+
+    #[tokio::test]
     async fn upsert_reports_unresolved_edge_target_and_declaration_index() {
         let store = retired_test_store().await;
         let report = store
@@ -3340,6 +11097,69 @@ eurostrata\src\daemon.rs",
             .unwrap();
 
         assert_eq!(governs_edges_from(&store, "rule").await, 1);
+    }
+
+    #[tokio::test]
+    async fn qualified_cli_root_id_relinks_same_namespace_governs_edge_exactly() {
+        let store = retired_test_store().await;
+        let root = std::env::temp_dir().join(format!("cli-id-contract-{}", uuid::Uuid::new_v4()));
+        let source_root = root.join("project");
+        std::fs::create_dir_all(source_root.join("src")).unwrap();
+        let file_path = source_root.join("src/core.rs");
+        std::fs::write(&file_path, "pub fn core() {}\n").unwrap();
+
+        let local_id = crate::parser::ingest::node_id_for(&source_root, &file_path);
+        assert_eq!(local_id, "src/core.rs");
+        let namespace = "synthetic-validation";
+        let target_id = crate::parser::ingest::qualified_id(namespace, &local_id);
+        let rule_id = crate::parser::ingest::qualified_id(namespace, "rule");
+        let stage = format!("{}{}", INTERNAL_INGEST_STAGE_PREFIX, uuid::Uuid::new_v4());
+        let lease = store.begin_ingest_stage(&stage).await.unwrap();
+        store
+            .upsert(
+                &stage,
+                &format!("{stage}::src/core.rs"),
+                vec![0.0; 4],
+                retired_test_payload("file", "auto-ingestor", json!({})),
+            )
+            .await
+            .unwrap();
+        store
+            .upsert(
+                namespace,
+                &rule_id,
+                vec![0.0; 4],
+                retired_test_payload("rule", "owner", json!({"governs": [target_id.clone()]})),
+            )
+            .await
+            .unwrap();
+        drop(lease);
+        store.publish_ingested(namespace, &stage).await.unwrap();
+
+        let actual = store
+            .with_conn(|conn| {
+                let mut rows =
+                    conn.query("MATCH (a:Memory)-[:GOVERNS]->(b:Memory) RETURN a.id, b.id")?;
+                let mut edges = HashSet::new();
+                while let Some(row) = rows.next() {
+                    edges.insert((format!("{}", row[0]), format!("{}", row[1])));
+                }
+                Ok(edges)
+            })
+            .await
+            .unwrap();
+        assert_eq!(actual, HashSet::from([(rule_id, target_id)]));
+        assert_eq!(
+            store
+                .get(namespace, "synthetic-validation::src/core.rs")
+                .await
+                .unwrap()
+                .unwrap()
+                .1
+                .content,
+            "a file row"
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     /// Moving used to be "write to the target, delete from the source". upsert
@@ -3425,6 +11245,178 @@ eurostrata\src\daemon.rs",
         );
     }
 
+    /// Create one edge of `rel` between two rows addressed by pk, raw —
+    /// for graph shapes the metadata declarations cannot express (a
+    /// self-edge; an incoming edge in a second table).
+    async fn t7_create_edge(store: &LadybugStore, rel: &str, from_pk: &str, to_pk: &str) {
+        let query = format!(
+            "MATCH (a:Memory {{pk: '{}'}}), (b:Memory {{pk: '{}'}}) CREATE (a)-[:{}]->(b)",
+            escape_ladybug_string(from_pk),
+            escape_ladybug_string(to_pk),
+            rel,
+        );
+        store
+            .with_conn(move |conn| {
+                conn.query(&query)?;
+                Ok(())
+            })
+            .await
+            .expect("create the edge");
+    }
+
+    /// Every (from_pk, to_pk) pair joined by an edge of `rel`, sorted.
+    async fn t7_edge_pairs(store: &LadybugStore, rel: &str) -> Vec<(String, String)> {
+        let query = format!("MATCH (a:Memory)-[:{}]->(b:Memory) RETURN a.pk, b.pk", rel);
+        let mut pairs = store
+            .with_conn(move |conn| {
+                let mut rows = conn.query(&query)?;
+                let mut out = Vec::new();
+                while let Some(row) = rows.next() {
+                    out.push((format!("{}", row[0]), format!("{}", row[1])));
+                }
+                Ok(out)
+            })
+            .await
+            .expect("read the edge pairs");
+        pairs.sort();
+        pairs
+    }
+
+    /// The fresh-table fallback (pk IS the primary key, so the in-place
+    /// SET is refused) recreates before it deletes, and a self-edge —
+    /// matched by both the outgoing and the incoming capture pass — must
+    /// be replayed exactly once, remapped onto the new key.
+    #[tokio::test]
+    async fn relocate_on_a_fresh_table_keeps_a_self_edge_exactly_once() {
+        let store = t7_store().await;
+        store
+            .upsert("probe", "mover", vec![0.0; 4], t7_payload("mover"))
+            .await
+            .unwrap();
+        store
+            .upsert("probe", "subject", vec![0.0; 4], t7_payload("subject"))
+            .await
+            .unwrap();
+        let old_pk = memory_pk("probe", "mover");
+        t7_create_edge(&store, "RELATES_TO", &old_pk, &old_pk).await;
+        t7_create_edge(
+            &store,
+            "GOVERNS",
+            &old_pk,
+            &memory_pk("probe", "subject"),
+        )
+        .await;
+
+        assert_eq!(
+            store.relocate("mover", "probe", "global").await.unwrap(),
+            RelocateOutcome::Moved
+        );
+
+        let new_pk = memory_pk("global", "mover");
+        assert!(
+            store.get("global", "mover").await.unwrap().is_some(),
+            "the row is in its new namespace"
+        );
+        assert!(
+            store.get("probe", "mover").await.unwrap().is_none(),
+            "and no copy is left behind"
+        );
+        assert_eq!(
+            t7_edge_pairs(&store, "RELATES_TO").await,
+            vec![(new_pk.clone(), new_pk.clone())],
+            "exactly one self-edge survives, bound to the new pk"
+        );
+        assert_eq!(
+            t7_edge_pairs(&store, "GOVERNS").await,
+            vec![(new_pk, memory_pk("probe", "subject"))],
+            "the ordinary outgoing edge came along exactly once"
+        );
+    }
+
+    /// The fallback's replay covers both directions across all four rel
+    /// tables; every edge survives the move exactly once.
+    #[tokio::test]
+    async fn relocate_on_a_fresh_table_keeps_edges_in_both_directions_across_tables() {
+        let store = t7_store().await;
+        for id in ["mover", "north", "south"] {
+            store
+                .upsert("probe", id, vec![0.0; 4], t7_payload(id))
+                .await
+                .unwrap();
+        }
+        let mover = memory_pk("probe", "mover");
+        let north = memory_pk("probe", "north");
+        let south = memory_pk("probe", "south");
+        // Outgoing in two tables, incoming in two more.
+        t7_create_edge(&store, "RELATES_TO", &mover, &north).await;
+        t7_create_edge(&store, "GOVERNS", &mover, &south).await;
+        t7_create_edge(&store, "CONTAINS", &north, &mover).await;
+        t7_create_edge(&store, "EXTRACTED_FROM", &south, &mover).await;
+
+        assert_eq!(
+            store.relocate("mover", "probe", "global").await.unwrap(),
+            RelocateOutcome::Moved
+        );
+
+        let moved = memory_pk("global", "mover");
+        assert_eq!(
+            t7_edge_pairs(&store, "RELATES_TO").await,
+            vec![(moved.clone(), north.clone())]
+        );
+        assert_eq!(
+            t7_edge_pairs(&store, "GOVERNS").await,
+            vec![(moved.clone(), south.clone())]
+        );
+        assert_eq!(
+            t7_edge_pairs(&store, "CONTAINS").await,
+            vec![(north, moved.clone())]
+        );
+        assert_eq!(
+            t7_edge_pairs(&store, "EXTRACTED_FROM").await,
+            vec![(south, moved)]
+        );
+        assert_eq!(
+            t7_count_where(&store, "m.id = 'mover'").await,
+            1,
+            "one mover row, in the new namespace"
+        );
+    }
+
+    /// Relocate validates its identity inputs at the store boundary: an
+    /// illegal destination namespace or a NUL-bearing id is refused
+    /// before any mutation, and the row stays where it was.
+    #[tokio::test]
+    async fn relocate_refuses_an_illegal_destination_and_a_nul_id() {
+        let store = t7_store().await;
+        store
+            .upsert("probe", "stayer", vec![0.0; 4], t7_payload("stayer"))
+            .await
+            .unwrap();
+
+        let err = store
+            .relocate("stayer", "probe", "bad ns")
+            .await
+            .expect_err("a destination namespace with a space is refused");
+        assert!(
+            err.to_string().contains("ERROR [NAMESPACE]"),
+            "the refusal names the violated rule: {err}"
+        );
+        let err = store
+            .relocate("sta\u{0}yer", "probe", "global")
+            .await
+            .expect_err("a NUL-bearing id is refused");
+        assert!(
+            err.to_string().contains("ERROR [NUL]"),
+            "the refusal names the refused byte: {err}"
+        );
+
+        assert!(
+            store.get("probe", "stayer").await.unwrap().is_some(),
+            "the row is unmoved"
+        );
+        assert_eq!(t7_count_where(&store, "m.id = 'stayer'").await, 1);
+    }
+
     #[test]
     fn each_metadata_key_maps_to_its_edge_table() {
         let specs = edge_specs(&json!({
@@ -3474,7 +11466,8 @@ eurostrata\src\daemon.rs",
 
         let seed = |id: &str, metadata: &str| {
             format!(
-                "CREATE (m:Memory {{id: '{}', namespace: 'probe', content: 'c', user_id: 'u', memory_type: 't', agent_name: 'a', location: '', location_lines: '', metadata: '{}', embedding: [0.0,0.0,0.0,0.0]}})",
+                "CREATE (m:Memory {{pk: '{}', id: '{}', namespace: 'probe', content: 'c', user_id: 'u', memory_type: 't', agent_name: 'a', location: '', location_lines: '', metadata: '{}', embedding: [0.0,0.0,0.0,0.0]}})",
+                escape_ladybug_string(&format!("seed-pk:{id}")),
                 escape_ladybug_string(id),
                 escape_ladybug_string(metadata)
             )
@@ -3627,7 +11620,7 @@ eurostrata\src\daemon.rs",
         store.init("probe").await.expect("create the schema");
 
         let row = format!(
-            "CREATE (m:Memory {{id: 'rule', namespace: 'probe', content: 'c', user_id: 'u', memory_type: 't', agent_name: 'a', location: '', location_lines: '', metadata: '{}', embedding: [0.0,0.0,0.0,0.0]}})",
+            "CREATE (m:Memory {{pk: 'seed-pk:rule', id: 'rule', namespace: 'probe', content: 'c', user_id: 'u', memory_type: 't', agent_name: 'a', location: '', location_lines: '', metadata: '{}', embedding: [0.0,0.0,0.0,0.0]}})",
             escape_ladybug_string(r#"{"governs": ["src/never-ingested.rs"]}"#)
         );
         store
@@ -7047,7 +15040,10 @@ eurostrata\src\daemon.rs",
                     results.iter().map(|r| r.id.as_str()).collect::<Vec<_>>()
                 )
             });
-        let evidence = file.evidence.as_ref().expect("the expansion row carries evidence");
+        let evidence = file
+            .evidence
+            .as_ref()
+            .expect("the expansion row carries evidence");
         assert!(
             evidence
                 .iter()
@@ -7259,10 +15255,653 @@ eurostrata\src\daemon.rs",
             .await
             .unwrap();
 
-        let results = store.search("probe", query_vec, 10, false, false).await.unwrap();
+        let results = store
+            .search("probe", query_vec, 10, false, false)
+            .await
+            .unwrap();
         assert!(
             !results.iter().any(|r| r.id == registry_id),
             "the registry row must never appear in search results"
         );
+    }
+
+    // ── Task 7 (C5): (namespace, id) row identity, audit/quarantine, ────────
+    // ── escaping ladder. RED for the remediation program's Phase B. ─────────
+
+    fn t7_payload(content: &str) -> MemoryPayload {
+        MemoryPayload {
+            content: content.to_string(),
+            user_id: "agent".to_string(),
+            memory_type: "fact".to_string(),
+            agent_name: None,
+            location: String::new(),
+            location_lines: String::new(),
+            metadata: json!({}),
+        }
+    }
+
+    async fn t7_store() -> LadybugStore {
+        let dir = std::env::temp_dir().join(format!("ns-t7-{}", uuid::Uuid::new_v4()));
+        let store = LadybugStore::for_testing(&dir, 4).expect("open temp database");
+        store.init("probe").await.expect("create the schema");
+        store
+    }
+
+    async fn t7_count_where(store: &LadybugStore, where_clause: &str) -> i64 {
+        let query = format!("MATCH (m:Memory) WHERE {} RETURN count(m)", where_clause);
+        store
+            .with_conn(move |conn| {
+                let mut rows = conn.query(&query)?;
+                let n = rows
+                    .next()
+                    .map(|row| format!("{}", row[0]).parse::<i64>().unwrap_or(-1))
+                    .unwrap_or(-1);
+                Ok(n)
+            })
+            .await
+            .expect("count rows")
+    }
+
+    /// The DDL the pre-Task-7 binary creates: PRIMARY KEY (id), namespace a
+    /// plain property set ON CREATE. Seeding with it builds a genuine
+    /// old-binary store, not a caricature of one.
+    const T7_OLD_DDL: &str = "CREATE NODE TABLE Memory (id STRING, namespace STRING, content STRING, user_id STRING, memory_type STRING, agent_name STRING, location STRING, location_lines STRING, metadata STRING, embedding FLOAT[4], PRIMARY KEY (id))";
+
+    // Returns the Database alone: a Connection borrows its Database, so a
+    // (Database, Connection) pair can never be returned from one function
+    // (E0515/E0505). Call sites bind the Database first (keep-alive; drops
+    // last) and build their own Connection from it.
+    fn t7_raw_db(path: &std::path::Path) -> Database {
+        let cfg = SystemConfig::default()
+            .max_db_size(512 * 1024 * 1024)
+            .buffer_pool_size(64 * 1024 * 1024);
+        Database::new(path, cfg).expect("raw open")
+    }
+
+    /// Seed one row the way the OLD upsert writes it: MERGE on {id} alone,
+    /// namespace assigned ON CREATE.
+    fn t7_old_shape_insert(conn: &Connection, namespace: &str, id: &str, content: &str) {
+        let query = format!(
+            "MERGE (m:Memory {{id: '{}'}}) ON CREATE SET m.namespace = '{}', m.content = '{}', m.user_id = 'agent', m.memory_type = 'fact', m.agent_name = 'a', m.location = '', m.location_lines = '', m.metadata = '{{}}', m.embedding = [0.0,0.0,0.0,0.0] ON MATCH SET m.content = '{}'",
+            escape_ladybug_string(id),
+            escape_ladybug_string(namespace),
+            escape_ladybug_string(content),
+            escape_ladybug_string(content),
+        );
+        conn.query(&query).expect("old-shape insert");
+    }
+
+    #[tokio::test]
+    async fn same_id_two_namespaces_coexist() {
+        let store = t7_store().await;
+        store
+            .upsert("ns-a", "shared-id", vec![0.0; 4], t7_payload("content-a"))
+            .await
+            .expect("upsert in ns-a");
+        store
+            .upsert("ns-b", "shared-id", vec![0.0; 4], t7_payload("content-b"))
+            .await
+            .expect("the same id in ns-b is a different row, not an overwrite");
+
+        let (_, a) = store
+            .get("ns-a", "shared-id")
+            .await
+            .unwrap()
+            .expect("ns-a row exists");
+        let (_, b) = store
+            .get("ns-b", "shared-id")
+            .await
+            .unwrap()
+            .expect("ns-b row exists");
+        assert_eq!(a.content, "content-a");
+        assert_eq!(b.content, "content-b");
+        assert_eq!(
+            t7_count_where(&store, "m.id = 'shared-id'").await,
+            2,
+            "two rows carry the shared id, one per namespace"
+        );
+
+        // Re-writing ns-a must leave ns-b byte-identical.
+        let mut a2 = t7_payload("content-a2");
+        a2.metadata = json!({"round": 2});
+        store
+            .upsert("ns-a", "shared-id", vec![0.0; 4], a2)
+            .await
+            .unwrap();
+        let (_, b_after) = store
+            .get("ns-b", "shared-id")
+            .await
+            .unwrap()
+            .expect("ns-b row still exists");
+        assert_eq!(b_after.content, "content-b");
+        assert_eq!(b_after.metadata, json!({}));
+    }
+
+    #[tokio::test]
+    async fn old_binary_rows_are_found_not_duplicated() {
+        let path = std::env::temp_dir().join(format!("ns-t7-old-{}", uuid::Uuid::new_v4()));
+        {
+            let _db = t7_raw_db(&path);
+            let conn = Connection::new(&_db).expect("raw connection");
+            conn.query(T7_OLD_DDL).expect("old DDL");
+            t7_old_shape_insert(&conn, "legacy-ns", "legacy-id", "old content");
+        }
+        let store = LadybugStore::for_testing(&path, 4).expect("open old store");
+        store.init("legacy-ns").await.expect("init over old store");
+
+        store
+            .upsert(
+                "legacy-ns",
+                "legacy-id",
+                vec![0.0; 4],
+                t7_payload("new content"),
+            )
+            .await
+            .expect("upsert matches the old row");
+        assert_eq!(
+            t7_count_where(&store, "m.id = 'legacy-id'").await,
+            1,
+            "the old row was found, not duplicated"
+        );
+        let (_, got) = store
+            .get("legacy-ns", "legacy-id")
+            .await
+            .unwrap()
+            .expect("row readable");
+        assert_eq!(got.content, "new content");
+    }
+
+    #[tokio::test]
+    async fn legacy_table_gains_pk_backfill_and_fails_loud_across_namespaces() {
+        // A store built by the pre-re-plan binary: PRIMARY KEY (id), no pk
+        // column, one row. Reopening through init must add the column and
+        // backfill the derived pk — never brick the open.
+        let path = std::env::temp_dir().join(format!("ns-t7-legacy-{}", uuid::Uuid::new_v4()));
+        {
+            let _db = t7_raw_db(&path);
+            let conn = Connection::new(&_db).expect("raw connection");
+            conn.query(T7_OLD_DDL).expect("old DDL");
+            t7_old_shape_insert(&conn, "legacy-ns", "legacy-id", "old content");
+        }
+        let store = LadybugStore::for_testing(&path, 4).expect("open old store");
+        store.init("legacy-ns").await.expect("init over old store");
+        assert!(
+            store.pk_ready(),
+            "init must give the legacy table a working pk column"
+        );
+
+        // The row is readable, and its stored pk is the derived key.
+        let (_, got) = store
+            .get("legacy-ns", "legacy-id")
+            .await
+            .unwrap()
+            .expect("row readable");
+        assert_eq!(got.content, "old content");
+        let stored_pk = store
+            .with_conn(|conn| {
+                let mut rows = conn.query(
+                    "MATCH (m:Memory) WHERE m.id = 'legacy-id' RETURN m.pk",
+                )?;
+                let pk = rows
+                    .next()
+                    .map(|row| format!("{}", row[0]))
+                    .unwrap_or_default();
+                Ok(pk)
+            })
+            .await
+            .expect("read the stored pk");
+        assert_eq!(stored_pk, memory_pk("legacy-ns", "legacy-id"));
+
+        // An upsert by (namespace, id) matches the backfilled row.
+        store
+            .upsert(
+                "legacy-ns",
+                "legacy-id",
+                vec![0.0; 4],
+                t7_payload("matched"),
+            )
+            .await
+            .expect("upsert matches the backfilled row");
+        assert_eq!(
+            t7_count_where(&store, "m.id = 'legacy-id'").await,
+            1,
+            "the backfilled row was matched, not duplicated"
+        );
+
+        // The legacy table's PRIMARY KEY is still (id), so the same id in
+        // another namespace cannot become a second row: the write fails
+        // LOUD at the engine rather than silently aliasing onto the
+        // existing row, and the existing row is untouched.
+        let res = store
+            .upsert(
+                "other-ns",
+                "legacy-id",
+                vec![0.0; 4],
+                t7_payload("alias attempt"),
+            )
+            .await;
+        assert!(
+            res.is_err(),
+            "a cross-namespace same-id write on a legacy table must fail loud"
+        );
+        assert_eq!(
+            t7_count_where(&store, "m.id = 'legacy-id'").await,
+            1,
+            "the failed write created nothing"
+        );
+        let (_, got) = store
+            .get("legacy-ns", "legacy-id")
+            .await
+            .unwrap()
+            .expect("row still readable");
+        assert_eq!(got.content, "matched", "the existing row was not aliased");
+    }
+
+    #[tokio::test]
+    async fn null_namespace_rows_backfill_or_quarantine_never_block() {
+        let path = std::env::temp_dir().join(format!("ns-t7-null-{}", uuid::Uuid::new_v4()));
+        // Phase 1: seed two rows whose namespace property is NULL (omitted
+        // at CREATE) — one carries its namespace in metadata, one carries
+        // nothing — then drop the store so the reopen runs the audit.
+        {
+            let seed_store = LadybugStore::for_testing(&path, 4).expect("open temp database");
+            seed_store.init("probe").await.expect("create the schema");
+            for (id, metadata) in [
+                ("orphan-with-meta", r#"{"namespace":"recovered-ns"}"#),
+                ("orphan-no-meta", "{}"),
+            ] {
+                // The pk is bound, not interpolated: the with-meta row's
+                // key is the derived key of the namespace its metadata
+                // claims (as an upsert would have written it before the
+                // namespace property was lost), and a derived key carries
+                // the U+0001 separator, which travels as a parameter.
+                let pk = if id == "orphan-with-meta" {
+                    memory_pk("recovered-ns", id)
+                } else {
+                    format!("seed-pk:{id}")
+                };
+                let create = format!(
+                    "CREATE (m:Memory {{pk: $pk, id: '{}', content: 'c', user_id: 'u', memory_type: 'note', agent_name: 'a', location: '', location_lines: '', metadata: '{}', embedding: [0.0,0.0,0.0,0.0]}})",
+                    id,
+                    escape_ladybug_string(metadata),
+                );
+                seed_store
+                    .with_conn(move |conn| {
+                        let mut stmt = conn.prepare(&create)?;
+                        conn.execute(
+                            &mut stmt,
+                            vec![("pk", lbug::Value::String(pk))],
+                        )?;
+                        Ok(())
+                    })
+                    .await
+                    .expect("seed a null-namespace row");
+            }
+            assert_eq!(
+                t7_count_where(&seed_store, "m.namespace IS NULL").await,
+                2,
+                "both seeded rows are null-namespace before the audit"
+            );
+        }
+        // Phase 2: reopen. Init runs the audit; the store opens regardless.
+        let store = LadybugStore::for_testing(&path, 4).expect("reopen the store");
+        store.init("probe").await.expect("init must not be blocked");
+
+        // The backfilled row is a normal row now: readable, and a fresh
+        // upsert matches it instead of duplicating it.
+        let (_, got) = store
+            .get("recovered-ns", "orphan-with-meta")
+            .await
+            .unwrap()
+            .expect("backfilled row is readable in its namespace");
+        assert_eq!(got.content, "c");
+        store
+            .upsert(
+                "recovered-ns",
+                "orphan-with-meta",
+                vec![0.0; 4],
+                t7_payload("updated"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            t7_count_where(&store, "m.id = 'orphan-with-meta'").await,
+            1,
+            "upsert after backfill matched, not duplicated"
+        );
+
+        // The quarantined row never blocks anything, but a write aimed at
+        // its id refuses loudly instead of forking the identity.
+        let res = store
+            .upsert("any-ns", "orphan-no-meta", vec![0.0; 4], t7_payload("fork"))
+            .await;
+        assert!(res.is_err(), "a write to a quarantined id must refuse");
+        let err = res.err().unwrap().to_string();
+        assert!(
+            err.contains("quarantine"),
+            "refusal names the quarantine: {err}"
+        );
+        assert_eq!(
+            t7_count_where(&store, "m.namespace IS NULL").await,
+            1,
+            "the quarantined row itself is untouched"
+        );
+    }
+
+    #[tokio::test]
+    async fn audit_at_init_never_blocks_open() {
+        let path = std::env::temp_dir().join(format!("ns-t7-init-{}", uuid::Uuid::new_v4()));
+        {
+            let _db = t7_raw_db(&path);
+            let conn = Connection::new(&_db).expect("raw connection");
+            conn.query(T7_OLD_DDL).expect("old DDL");
+            conn.query(
+                "CREATE (m:Memory {id: 'pre-orphan', content: 'c', user_id: 'u', memory_type: 'note', agent_name: 'a', location: '', location_lines: '', metadata: '{}', embedding: [0.0,0.0,0.0,0.0]})",
+            )
+            .expect("seed a null-namespace row before first init");
+        }
+        let store = LadybugStore::for_testing(&path, 4).expect("open store");
+        // Init runs the audit; a store holding an unclassifiable row opens.
+        store.init("probe").await.expect("init must not be blocked");
+        // The quarantined row refuses writes by id, and ordinary work
+        // proceeds on the same store.
+        let res = store
+            .upsert("any-ns", "pre-orphan", vec![0.0; 4], t7_payload("fork"))
+            .await;
+        assert!(res.is_err(), "a write to a quarantined id must refuse");
+        assert!(
+            res.err().unwrap().to_string().contains("quarantine"),
+            "refusal names the quarantine"
+        );
+        store
+            .upsert("probe", "fresh", vec![0.0; 4], t7_payload("fine"))
+            .await
+            .expect("the store works with a quarantined row present");
+    }
+
+    #[tokio::test]
+    async fn rollback_drill_old_merge_against_dual_namespace_store() {
+        let store = t7_store().await;
+        store
+            .upsert("ns-a", "shared-id", vec![0.0; 4], t7_payload("content-a"))
+            .await
+            .unwrap();
+        store
+            .upsert("ns-b", "shared-id", vec![0.0; 4], t7_payload("content-b"))
+            .await
+            .unwrap();
+
+        // The drill: an old binary's upsert statement, verbatim shape,
+        // against a store where the id legitimately exists twice. Which
+        // row it binds (or that it errors) is OBSERVED and printed for the
+        // rollback record — the assertions below only pin that the drill
+        // cannot create or destroy rows.
+        let drill = format!(
+            "MERGE (m:Memory {{id: 'shared-id'}}) ON CREATE SET m.namespace = 'ns-a', m.content = 'drill-write', m.user_id = 'agent', m.memory_type = 'fact', m.agent_name = 'a', m.location = '', m.location_lines = '', m.metadata = '{{}}', m.embedding = [0.0,0.0,0.0,0.0] ON MATCH SET m.content = 'drill-write'"
+        );
+        let outcome = store
+            .with_conn(move |conn| {
+                conn.query(&drill)?;
+                Ok(())
+            })
+            .await;
+        let (_, a) = store.get("ns-a", "shared-id").await.unwrap().unwrap();
+        let (_, b) = store.get("ns-b", "shared-id").await.unwrap().unwrap();
+        eprintln!(
+            "ROLLBACK DRILL: old-shape MERGE outcome={:?} ns-a content={:?} ns-b content={:?}",
+            outcome.as_ref().map(|_| "ok"),
+            a.content,
+            b.content
+        );
+        assert_eq!(
+            t7_count_where(&store, "m.id = 'shared-id'").await,
+            2,
+            "the drill neither created nor destroyed a row"
+        );
+    }
+
+    #[tokio::test]
+    async fn adversarial_content_round_trips_byte_identical() {
+        let store = t7_store().await;
+        let cases = [
+            "it's a test",
+            "back\\slash and C:\\path\\to",
+            "'}'); DETACH DELETE (m) //",
+            "line one\nline two\r\nline three\ttabbed",
+            "unicode: héllo → 世界 ✓",
+            "trailing backslash\\",
+            "' OR '1'='1",
+        ];
+        for (i, content) in cases.iter().enumerate() {
+            let id = format!("adv-{i}");
+            let mut payload = t7_payload(content);
+            payload.metadata = json!({"note": "meta 'quoted'\nnewline \\ backslash"});
+            store
+                .upsert("vault", &id, vec![0.0; 4], payload)
+                .await
+                .unwrap_or_else(|e| panic!("upsert of case {i} must not error: {e}"));
+            let (_, got) = store
+                .get("vault", &id)
+                .await
+                .unwrap()
+                .unwrap_or_else(|| panic!("case {i} must be readable"));
+            assert_eq!(&got.content, content, "case {i} round-trips byte-identical");
+            assert_eq!(
+                got.metadata["note"],
+                json!("meta 'quoted'\nnewline \\ backslash"),
+                "case {i} metadata round-trips byte-identical"
+            );
+        }
+        assert_eq!(
+            t7_count_where(&store, "m.namespace = 'vault'").await,
+            cases.len() as i64,
+            "no injected statement created or destroyed rows"
+        );
+    }
+
+    #[tokio::test]
+    async fn adversarial_ids_refuse_or_round_trip() {
+        let store = t7_store().await;
+        // Legal-but-tricky ids round-trip byte-identical, including the
+        // engine-minted qualified shape (namespace::path, with slashes).
+        for id in ["a:b.c-d_e", "probe::src/a.rs::run", "a:", "..x"] {
+            store
+                .upsert("probe", id, vec![0.0; 4], t7_payload("ok"))
+                .await
+                .unwrap_or_else(|e| panic!("legal id {id:?} must be accepted: {e}"));
+            let (_, got) = store
+                .get("probe", id)
+                .await
+                .unwrap()
+                .unwrap_or_else(|| panic!("legal id {id:?} must be readable"));
+            assert_eq!(got.content, "ok");
+        }
+        // Illegal ids are refused by the DR-2 allowlist before any query.
+        for id in [
+            "bad id",
+            "bad'id",
+            "bad\\id",
+            "bad\nid",
+            "",
+            "üñï",
+            &"a".repeat(129),
+        ] {
+            let res = store.upsert("probe", id, vec![0.0; 4], t7_payload("no")).await;
+            assert!(res.is_err(), "illegal id {id:?} must be refused");
+            let err = res.err().unwrap().to_string();
+            assert!(
+                err.contains("ERROR [ID]"),
+                "refusal for {id:?} names the id rule: {err}"
+            );
+        }
+        // Illegal namespaces are refused by DR-1 the same way.
+        for ns in ["bad ns", ".lead", "a/b", "", &"a".repeat(65)] {
+            let res = store.upsert(ns, "fine-id", vec![0.0; 4], t7_payload("no")).await;
+            assert!(res.is_err(), "illegal namespace {ns:?} must be refused");
+            let err = res.err().unwrap().to_string();
+            assert!(
+                err.contains("ERROR [NAMESPACE]"),
+                "refusal for namespace {ns:?} names the rule: {err}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn nul_is_refused_at_the_store_boundary() {
+        let store = t7_store().await;
+        let res = store
+            .upsert("probe", "nul-content", vec![0.0; 4], t7_payload("a\u{0}b"))
+            .await;
+        assert!(res.is_err(), "NUL in content must be refused");
+        let err = res.err().unwrap().to_string();
+        assert!(err.contains("NUL"), "refusal names the NUL: {err}");
+        assert!(
+            store.get("probe", "nul-content").await.unwrap().is_none(),
+            "nothing was written"
+        );
+        let mut payload = t7_payload("clean");
+        payload.metadata = json!({"k": "a\u{0}b"});
+        let res = store.upsert("probe", "nul-meta", vec![0.0; 4], payload).await;
+        assert!(res.is_err(), "NUL in metadata must be refused");
+        let err = res.err().unwrap().to_string();
+        assert!(err.contains("NUL"), "refusal names the NUL: {err}");
+        let res = store.get("probe", "a\u{0}b").await;
+        assert!(res.is_err(), "NUL in a lookup id must be refused");
+        let err = res.err().unwrap().to_string();
+        assert!(err.contains("NUL"), "refusal names the NUL: {err}");
+    }
+
+    #[tokio::test]
+    async fn edge_merge_binds_within_namespace() {
+        let store = t7_store().await;
+        store
+            .upsert("ns-a", "shared", vec![0.0; 4], t7_payload("a-target"))
+            .await
+            .unwrap();
+        store
+            .upsert("ns-b", "shared", vec![0.0; 4], t7_payload("b-target"))
+            .await
+            .unwrap();
+        let mut rule = t7_payload("the rule");
+        rule.metadata = json!({"governs": ["shared"]});
+        store.upsert("ns-a", "rule-a", vec![0.0; 4], rule).await.unwrap();
+
+        // Exactly one GOVERNS edge leaves rule-a, and it lands on ns-a's
+        // row — never on the same-id twin in ns-b.
+        let targets = store
+            .with_conn(|conn| {
+                let mut rows = conn.query(
+                    "MATCH (a:Memory {id: 'rule-a'})-[:GOVERNS]->(b:Memory) RETURN b.namespace",
+                )?;
+                let mut out = Vec::new();
+                while let Some(row) = rows.next() {
+                    out.push(format!("{}", row[0]));
+                }
+                Ok(out)
+            })
+            .await
+            .expect("read the edges back");
+        assert_eq!(targets, vec!["ns-a".to_string()]);
+    }
+
+    // ── Engine capability probes (Task 7 Step A). Each probe ASSERTS the ────
+    // ── capability it tests, so the verdict IS the test result: pass means ──
+    // ── supported, and failure carries the engine's own error text. (The ───
+    // ── print-form originals were unreadable in CI, which discards the ──────
+    // ── output of passing tests.) The verdicts decide which rung of the ────
+    // ── escaping ladder and which DDL the implementation takes. ────────────
+    //
+    // The second Step A probe — composite PRIMARY KEY (namespace, id) —
+    // was retired on 2026-10-25: it FAILED as designed (run 40164691714),
+    // proving lbug 0.20.4's parser rejects a multi-column PRIMARY KEY in
+    // CREATE NODE TABLE. That verdict is the reason fresh tables key on
+    // the derived single-column pk (see memory_pk); the probe's work is
+    // done and its record lives in the plan's Decisions Register.
+
+    #[test]
+    fn probe_lbug_param_binding_merge_and_array() {
+        use lbug::{LogicalType, Value};
+        let path = std::env::temp_dir().join(format!("ns-t7-probe-bind-{}", uuid::Uuid::new_v4()));
+        let _db = t7_raw_db(&path);
+        let conn = Connection::new(&_db).expect("raw connection");
+        conn.query(
+            "CREATE NODE TABLE Probe (id STRING, namespace STRING, content STRING, embedding FLOAT[4], PRIMARY KEY (id))",
+        )
+        .expect("PROBE BINDING unsupported: probe DDL failed");
+        let emb = || {
+            Value::Array(
+                LogicalType::Float,
+                vec![
+                    Value::Float(0.5),
+                    Value::Float(0.25),
+                    Value::Float(0.0),
+                    Value::Float(1.0),
+                ],
+            )
+        };
+        // The capability under test, end to end: a MERGE whose pattern key
+        // and SET values are all bound $parameters, executed twice (ON
+        // CREATE, then ON MATCH), including a FLOAT[4] array parameter —
+        // then read back through a bound WHERE parameter.
+        let run = (|| -> Result<Vec<Vec<Value>>, lbug::Error> {
+            let mut merge = conn.prepare(
+                "MERGE (m:Probe {id: $id}) ON CREATE SET m.namespace = $ns, m.content = $content, m.embedding = $emb ON MATCH SET m.content = $content, m.embedding = $emb",
+            )?;
+            conn.execute(
+                &mut merge,
+                vec![
+                    ("id", Value::String("x".to_string())),
+                    ("ns", Value::String("probe".to_string())),
+                    ("content", Value::String("bound 'quoted' content".to_string())),
+                    ("emb", emb()),
+                ],
+            )?;
+            conn.execute(
+                &mut merge,
+                vec![
+                    ("id", Value::String("x".to_string())),
+                    ("ns", Value::String("probe".to_string())),
+                    ("content", Value::String("second write".to_string())),
+                    ("emb", emb()),
+                ],
+            )?;
+            let mut read = conn.prepare(
+                "MATCH (m:Probe) WHERE m.id = $id RETURN m.content, m.embedding",
+            )?;
+            let mut rows = Vec::new();
+            for row in conn.execute(&mut read, vec![("id", Value::String("x".to_string()))])? {
+                rows.push(row);
+            }
+            Ok(rows)
+        })();
+        let rows = run.expect("PROBE BINDING unsupported");
+        assert_eq!(
+            rows.len(),
+            1,
+            "PROBE BINDING: the second bound MERGE must MATCH the first row, not create a second"
+        );
+        let row = &rows[0];
+        assert!(
+            matches!(&row[0], Value::String(s) if s == "second write"),
+            "PROBE BINDING: ON MATCH SET must carry the second bound content, got {:?}",
+            row[0]
+        );
+        let floats: Vec<f32> = match &row[1] {
+            Value::Array(_, vals) | Value::List(_, vals) => vals
+                .iter()
+                .map(|v| match v {
+                    Value::Float(f) => *f,
+                    Value::Double(d) => *d as f32,
+                    other => panic!("PROBE BINDING: embedding element not numeric: {other:?}"),
+                })
+                .collect(),
+            other => panic!("PROBE BINDING: embedding did not round-trip as an array: {other:?}"),
+        };
+        assert_eq!(
+            floats,
+            vec![0.5, 0.25, 0.0, 1.0],
+            "PROBE BINDING: FLOAT[4] array parameter must round-trip element-for-element"
+        );
+        eprintln!("PROBE BINDING: supported — asserted via bound MERGE + FLOAT[4] round-trip");
     }
 }

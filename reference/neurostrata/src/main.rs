@@ -1,3 +1,6 @@
+// Increase recursion limit for large JSON literals in tools/list
+#![recursion_limit = "256"]
+
 mod attempt;
 mod buffer;
 mod config;
@@ -21,6 +24,8 @@ mod source_context;
 mod store;
 mod synaptic_mesh;
 mod task;
+#[cfg(test)]
+mod test_support;
 mod tools;
 mod traits;
 
@@ -30,6 +35,7 @@ use anyhow::Context;
 use clap::{Parser, Subcommand};
 use config::Config;
 use embed::build_embedder;
+use std::collections::HashSet;
 use std::sync::Arc;
 use store::LadybugStore;
 
@@ -331,7 +337,8 @@ pub(crate) enum TaskCommands {
 
 #[derive(Subcommand, Debug, Clone, PartialEq)]
 pub(crate) enum HooksCommands {
-    /// Write .git/hooks/pre-push: the only hook the task system keeps
+    /// Write the pre-push hook into the directory git runs hooks from
+    /// (core.hooksPath honored): the only hook the task system keeps
     Install {
         /// Replace a pre-push hook NeuroStrata did not write
         #[arg(long)]
@@ -365,6 +372,97 @@ fn classify_probe(reached: bool, refused: bool) -> DaemonProbe {
     } else {
         DaemonProbe::Silent
     }
+}
+
+/// Human-readable byte count for the startup summary: whole GiB/MiB
+/// render as such, anything else falls back to raw bytes.
+fn format_bytes_human(bytes: u64) -> String {
+    const GIB: u64 = 1024 * 1024 * 1024;
+    const MIB: u64 = 1024 * 1024;
+    if bytes % GIB == 0 {
+        format!("{} GiB", bytes / GIB)
+    } else if bytes % MIB == 0 {
+        format!("{} MiB", bytes / MIB)
+    } else {
+        format!("{bytes} bytes")
+    }
+}
+
+/// The startup summary line (Spec Feature 1): the resolved embedder and
+/// both store limits, each with the layer that supplied it, so an
+/// operator can always answer "why this model, why these limits?".
+/// Task 4 extends this same surface with the idle-unload segment rather
+/// than growing a second summary mechanism.
+fn format_startup_summary(
+    resolution: &embed::ResolvedModel,
+    profile: Option<config::CapacityProfile>,
+    limits: crate::store::StoreLimits,
+    sources: &config::StoreLimitSources,
+    idle_unload: Option<std::time::Duration>,
+) -> String {
+    let embedder_source = match resolution.source {
+        embed::ModelSource::Profile => match profile {
+            Some(profile) => format!("profile={}", profile.name()),
+            None => embed::ModelSource::Profile.label().to_string(),
+        },
+        source => source.label().to_string(),
+    };
+    format!(
+        "embedder: {} (source: {}) \u{b7} store: pool {} (source: {}), max DB {} (source: {}) \u{b7} {}",
+        resolution.model.model_name,
+        embedder_source,
+        format_bytes_human(limits.buffer_pool_bytes),
+        sources.pool.label(),
+        format_bytes_human(limits.max_db_bytes),
+        sources.max_db.label(),
+        embed::format_idle_unload_segment(idle_unload),
+    )
+}
+
+/// The outcome of startup resolution: everything a startup path needs to
+/// open its store consistently with what the summary line reported. The
+/// resolved model is carried, not discarded: the embedder is built from
+/// it (`embed::build_embedder_for`), so the printed provenance describes
+/// the constructed embedder by construction and resolution runs exactly
+/// once at startup.
+struct StartupResolution {
+    resolution: embed::ResolvedModel,
+    limits: crate::store::StoreLimits,
+}
+
+/// Resolve the capacity profile, the embedder, and the store limits once
+/// at startup; print the summary line (always, profile or not) and, on a
+/// profile/model disagreement, the single warning. This is a
+/// profile-consuming surface: an invalid `NEUROSTRATA_PROFILE` fails
+/// here, at embedder construction / store opening -- never on commands
+/// that do neither (Spec AC6).
+fn resolve_startup(config: &Config) -> anyhow::Result<StartupResolution> {
+    let profile = crate::config::CapacityProfile::from_env()?;
+    let resolution = embed::configured_resolution()?;
+    let (limits, sources) = config.store_limits_resolved(profile)?;
+    // Read here for the summary segment; embedder construction reads
+    // the same env-only setting through the same helper, so the line
+    // and the constructed embedder cannot disagree.
+    let idle_unload = embed::idle_unload_threshold()?;
+    println!(
+        "{}",
+        format_startup_summary(&resolution, profile, limits, &sources, idle_unload)
+    );
+    if let Some(disagreement) = embed::profile_disagreement(&resolution, profile) {
+        eprintln!("{}", embed::format_disagreement_warning(&disagreement));
+    }
+    Ok(StartupResolution {
+        resolution,
+        limits,
+    })
+}
+
+/// Store limits for a store-opening surface that is not a startup path:
+/// the profile is parsed by this caller and passed in, so
+/// `Config::store_limits()` itself stays profile-free.
+fn profiled_store_limits(config: &Config) -> anyhow::Result<crate::store::StoreLimits> {
+    let profile = crate::config::CapacityProfile::from_env()?;
+    config.store_limits_with_profile(profile)
 }
 
 /// Whether the answering daemon runs the build the binary on disk holds.
@@ -402,8 +500,41 @@ fn skew_verdict(info: Option<&serde_json::Value>, own: (u64, u64)) -> Skew {
     }
 }
 
+/// The gate's identity check (Task 1, J9): before the gate trusts a
+/// /tasks/gate answer, the answering process's build fingerprint must
+/// match the build this binary expects. /health answering proves only
+/// that *something* is listening on the fixed port -- a squatter
+/// answers it too. So the gate fetches /info and compares the build
+/// fingerprint before any gate request is made. On mismatch the
+/// refusal names the expected and reported fingerprints, because
+/// "an old daemon" and "another process on the port" need different
+/// operator actions.
+///
+/// What the fingerprint proves, and what it does not: the comparison
+/// proves build identity only -- the fingerprint is computable from
+/// the readable binary; it is not a secret. The /info probe itself
+/// carries the bearer (fetch_daemon_info sends it), so the probe MAY
+/// expose the bearer to a squatter before the comparison runs. That
+/// exposure is accepted because the bearer alone unlocks nothing
+/// destructive (DR-5 leak containment).
+/// INVARIANT: the operator token is never sent to a daemon whose
+/// fingerprint has not been verified; the bearer is expendable by
+/// design (DR-5 leak containment).
+fn gate_verify_daemon(info: Option<&serde_json::Value>, own: (u64, u64)) -> Result<(), String> {
+    match skew_verdict(info, own) {
+        Skew::InSync(_) => Ok(()),
+        Skew::Stale(detail) => Err(format!(
+            "refusing to trust the daemon on 127.0.0.1:34343: this binary's build \
+             fingerprint is {:016x}/{}, and the answering process is a different \
+             build ({}) -- it may be a stale daemon or another process squatting \
+             on the port",
+            own.0, own.1, detail
+        )),
+    }
+}
+
 async fn fetch_daemon_info() -> Option<serde_json::Value> {
-    let res = reqwest::Client::new()
+    let res = daemon_http_client()
         .get("http://127.0.0.1:34343/info")
         .send()
         .await
@@ -499,7 +630,7 @@ fn lock_path_for(db_path: &str) -> std::path::PathBuf {
 }
 
 async fn probe_daemon() -> DaemonProbe {
-    match reqwest::Client::new()
+    match daemon_http_client()
         .get("http://127.0.0.1:34343/health")
         .timeout(std::time::Duration::from_millis(500))
         .send()
@@ -577,39 +708,6 @@ fn daemon_busy(probe: DaemonProbe, lock_held: bool) -> bool {
     lock_held && probe != DaemonProbe::Responsive
 }
 
-/// The pre-push hook, section 5.2 verbatim. Installed by `hooks install`.
-///
-/// One hook is the whole enforcement surface: tasks live in LadybugDB, never
-/// in the repo, so there is nothing to commit, sync, or rebuild. Blocks only
-/// on exit 1 -- an unavailable database (exit 2) passes here; `task gate
-/// --strict` maps its own infra failure to exit 1 instead of 2 (section 5.1).
-///
-/// Mesh piggyback (spec §"Hooks"), slice 7 decision: the mesh enqueue is
-/// deliberately NOT installed into this hook. Hooks are unreliable (spec:
-/// not inherited by clones, conflict with hook managers), rewriting this
-/// const would not retrofit already-installed hooks, and the gate stays
-/// single-purpose. `neurostrata-mcp mesh sync-enqueue` (hidden CLI,
-/// pull-then-push, one line, always exit 0) is the hook TARGET for sites
-/// that opt in; manual wiring line, if wanted:
-///   printf '\nneurostrata-mcp mesh sync-enqueue >/dev/null 2>&1 || true\n' >> .git/hooks/pre-push
-/// Manual push/pull remains first-class either way.
-const PRE_PUSH_HOOK: &str = r#"#!/bin/bash
-# NeuroStrata task gate. One hook is the whole enforcement surface:
-# tasks live in LadybugDB, never in the repo, so there is nothing to
-# commit, sync, or rebuild.
-command -v neurostrata-mcp >/dev/null || exit 0
-[ -n "$NEUROSTRATA_SKIP_GATE" ] && exit 0
-
-NAMESPACE=$(basename "$(git rev-parse --show-toplevel)")
-neurostrata-mcp task gate "$NAMESPACE" --strict
-code=$?
-if [ $code -eq 1 ]; then
-    echo "Push blocked: resolve the tasks above, or NEUROSTRATA_SKIP_GATE=1 git push" >&2
-    exit 1
-fi
-exit 0   # 0 and 2 both pass here unless --strict flips 2 to blocking
-"#;
-
 /// The gate's exit code: verdict known -> 0/1; verdict unavailable -> strict
 /// blocks (1), otherwise 2 (section 5.1). The hook only blocks on 1, so the
 /// non-strict infra path warns and lets the push through.
@@ -625,6 +723,15 @@ fn gate_exit_code(ok: Option<bool>, strict: bool) -> i32 {
             }
         }
     }
+}
+
+/// The gate CLI's half of the SKIP_GATE definition: the escape hatch is
+/// honored only for the exact value "1" — "0", "false", "yes", and empty
+/// all run the gate. The installed pre-push hook carries the same
+/// definition in shell; the two homes must never drift (the Task 4 tests
+/// pin both).
+fn skip_gate_value_skips(value: Option<&str>) -> bool {
+    value == Some("1")
 }
 
 /// The enclosing git work tree, or None outside one.
@@ -658,9 +765,17 @@ async fn direct_report(
             e
         )
     })?;
+    let embedder_id = embed::configured_embedder_id()
+        .map_err(|e| format!("the configured embedding identity could not be read: {}", e))?;
     let store: Arc<dyn VectorStore> = Arc::new(
-        LadybugStore::new(config.db_path.to_string_lossy().to_string(), dimensions)
-            .map_err(|e| format!("the database could not be opened: {}", e))?,
+        LadybugStore::new_with_identity_limits(
+            config.db_path.to_string_lossy().to_string(),
+            dimensions,
+            embedder_id,
+            profiled_store_limits(config)
+                .map_err(|e| format!("store limits are invalid: {}", e))?,
+        )
+        .map_err(|e| format!("the database could not be opened: {}", e))?,
     );
     store
         .init(namespace)
@@ -692,6 +807,48 @@ fn cli_ingest_root(dir: &str) -> String {
 }
 
 const DAEMON_BUSY_MESSAGE: &str = "A NeuroStrata daemon holds the database but did not answer within 500ms, so it is busy rather than gone, and opening the database from here would contend with it. Retry in a moment, or run `neurostrata-mcp shutdown` and let it finish.";
+
+/// What `hooks install` writes, and where: the scaffolded hook text — the
+/// same bytes the task-setup payload ships — into the directory git
+/// actually runs hooks from (`git_hooks_dir`, which honors
+/// `core.hooksPath`). One hook text, one resolution; there is no second
+/// copy in this binary. Returns the installed hook's path; `Err` carries
+/// the user-facing refusal (a pre-push hook NeuroStrata did not write,
+/// and no `--force`).
+///
+/// Mesh piggyback (spec §"Hooks"), slice 7 decision: the mesh enqueue is
+/// deliberately NOT installed into this hook. Hooks are unreliable (spec:
+/// not inherited by clones, conflict with hook managers), rewriting the
+/// hook would not retrofit already-installed hooks, and the gate stays
+/// single-purpose. `neurostrata-mcp mesh sync-enqueue` (hidden CLI,
+/// pull-then-push, one line, always exit 0) is the hook TARGET for sites
+/// that opt in; manual wiring line, if wanted:
+///   printf '\nneurostrata-mcp mesh sync-enqueue >/dev/null 2>&1 || true\n' >> .git/hooks/pre-push
+/// Manual push/pull remains first-class either way.
+fn install_pre_push_hook(
+    root: &std::path::Path,
+    force: bool,
+) -> anyhow::Result<std::path::PathBuf> {
+    let hooks_dir = crate::task::git_hooks_dir(root);
+    if !hooks_dir.is_dir() {
+        std::fs::create_dir_all(&hooks_dir)?;
+    }
+    let target = hooks_dir.join("pre-push");
+    // Overwriting our own hook needs no flag: --force is for
+    // a pre-push somebody else wrote.
+    let ours = std::fs::read_to_string(&target)
+        .map(|content| content.contains("NeuroStrata task gate"))
+        .unwrap_or(false);
+    if target.exists() && !ours && !force {
+        anyhow::bail!(
+            "{} already exists and was not written by NeuroStrata.\nRe-run with --force to replace it with the NeuroStrata task gate:\n  neurostrata-mcp hooks install --force",
+            target.display()
+        );
+    }
+    std::fs::write(&target, crate::task::SCAFFOLDED_PRE_PUSH_HOOK)?;
+    set_hook_executable(&target)?;
+    Ok(target)
+}
 
 /// Mark a freshly-written hook file as executable. Git on POSIX runs a hook
 /// only when the mode bit is set; on Windows it uses the filename
@@ -737,7 +894,7 @@ impl ReadSource {
         match self {
             ReadSource::Direct(s) => s.list_namespaces().await,
             ReadSource::Daemon => {
-                let res = reqwest::Client::new()
+                let res = daemon_http_client()
                     .post("http://127.0.0.1:34343/cli/read")
                     .json(&serde_json::json!({ "op": "namespaces" }))
                     .send()
@@ -750,9 +907,9 @@ impl ReadSource {
 
     async fn list(&self, namespace: &str) -> anyhow::Result<Vec<SearchResult>> {
         match self {
-            ReadSource::Direct(s) => s.list(namespace, None).await,
+            ReadSource::Direct(s) => s.list(namespace, None, None).await,
             ReadSource::Daemon => {
-                let res = reqwest::Client::new()
+                let res = daemon_http_client()
                     .post("http://127.0.0.1:34343/cli/read")
                     .json(&serde_json::json!({ "op": "list", "namespace": namespace }))
                     .send()
@@ -944,6 +1101,541 @@ async fn run_list(read: &ReadSource, namespace: &str) -> anyhow::Result<()> {
 mod tests {
     use super::*;
 
+    static STRICT_WAL_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct StrictWalTestEnvironment {
+        strict: Option<std::ffi::OsString>,
+        allow: Option<std::ffi::OsString>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl StrictWalTestEnvironment {
+        fn force_strict() -> Self {
+            let lock = STRICT_WAL_TEST_LOCK.lock().unwrap();
+            let strict = std::env::var_os("NEUROSTRATA_STRICT_WAL");
+            let allow = std::env::var_os("NEUROSTRATA_ALLOW_UNVERIFIED_WAL");
+            std::env::set_var("NEUROSTRATA_STRICT_WAL", "1");
+            std::env::remove_var("NEUROSTRATA_ALLOW_UNVERIFIED_WAL");
+            Self {
+                strict,
+                allow,
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for StrictWalTestEnvironment {
+        fn drop(&mut self) {
+            if let Some(value) = &self.strict {
+                std::env::set_var("NEUROSTRATA_STRICT_WAL", value);
+            } else {
+                std::env::remove_var("NEUROSTRATA_STRICT_WAL");
+            }
+            if let Some(value) = &self.allow {
+                std::env::set_var("NEUROSTRATA_ALLOW_UNVERIFIED_WAL", value);
+            } else {
+                std::env::remove_var("NEUROSTRATA_ALLOW_UNVERIFIED_WAL");
+            }
+        }
+    }
+
+    // Task 2 (capacity profiles): the startup summary line is the
+    // operator's answer to "why this model, why these limits" (Spec AC8).
+
+    #[test]
+    fn summary_line_reports_provenance() {
+        let resolution = embed::ResolvedModel {
+            model: embed::AcceptableEmbedder {
+                model_name: "BGESmallENV15Q".to_string(),
+                dimensions: 384,
+                base_url: None,
+                api_key_env: None,
+                api_model: None,
+                generated_by: None,
+                artifact_pin: None,
+            },
+            source: embed::ModelSource::Profile,
+        };
+        let profile = Some(config::CapacityProfile::Low);
+        let limits = crate::store::StoreLimits {
+            buffer_pool_bytes: config::CapacityProfile::Low.buffer_pool_bytes(),
+            max_db_bytes: config::CapacityProfile::Low.max_db_bytes(),
+        };
+        let sources = config::StoreLimitSources {
+            pool: config::StoreLimitSource::Profile,
+            max_db: config::StoreLimitSource::Profile,
+        };
+        let line = format_startup_summary(&resolution, profile, limits, &sources, None);
+        assert!(line.contains("BGESmallENV15Q"), "{line}");
+        assert!(line.contains("idle unload: off"), "{line}");
+        assert!(line.contains("profile=low"), "{line}");
+        assert!(line.contains("64 MiB"), "{line}");
+        assert!(line.contains("2 GiB"), "{line}");
+        assert!(line.contains("source: profile"), "{line}");
+
+        // No profile, no explicit config: the sources name the
+        // auto-generated file and the built-in defaults.
+        let resolution = embed::ResolvedModel {
+            model: embed::AcceptableEmbedder {
+                model_name: "NomicEmbedTextV15".to_string(),
+                dimensions: 768,
+                base_url: None,
+                api_key_env: None,
+                api_model: None,
+                generated_by: None,
+                artifact_pin: None,
+            },
+            source: embed::ModelSource::AutoGeneratedFile,
+        };
+        let sources = config::StoreLimitSources {
+            pool: config::StoreLimitSource::BuiltInDefault,
+            max_db: config::StoreLimitSource::BuiltInDefault,
+        };
+        let line = format_startup_summary(
+            &resolution,
+            None,
+            crate::store::StoreLimits::default(),
+            &sources,
+            None,
+        );
+        assert!(line.contains("file (auto-generated)"), "{line}");
+        assert!(line.contains("built-in default"), "{line}");
+        assert!(line.contains("idle unload: off"), "{line}");
+    }
+
+    /// Task 4 (idle unload): the summary line reports the opt-in idle
+    /// unload setting in the same surface as the embedder provenance.
+    #[test]
+    fn summary_line_reports_idle_unload_threshold() {
+        let resolution = embed::ResolvedModel {
+            model: embed::AcceptableEmbedder {
+                model_name: "BGESmallENV15Q".to_string(),
+                dimensions: 384,
+                base_url: None,
+                api_key_env: None,
+                api_model: None,
+                generated_by: None,
+                artifact_pin: None,
+            },
+            source: embed::ModelSource::Profile,
+        };
+        let limits = crate::store::StoreLimits {
+            buffer_pool_bytes: config::CapacityProfile::Low.buffer_pool_bytes(),
+            max_db_bytes: config::CapacityProfile::Low.max_db_bytes(),
+        };
+        let sources = config::StoreLimitSources {
+            pool: config::StoreLimitSource::Profile,
+            max_db: config::StoreLimitSource::Profile,
+        };
+        let line = format_startup_summary(
+            &resolution,
+            Some(config::CapacityProfile::Low),
+            limits,
+            &sources,
+            Some(std::time::Duration::from_secs(300)),
+        );
+        assert!(
+            line.contains("idle unload: on (threshold 300s)"),
+            "{line}"
+        );
+    }
+
+    /// Task 4 (idle unload), Spec GT-7: status never loads, reloads, or
+    /// touches the embedding session and never resets the idle clock.
+    /// The pin is structural, as with the profile pin above: neither
+    /// Status arm (dedicated or fallback) may gain a call into the
+    /// embedder, the session container, or the idle-unload setting.
+    /// Session state is reported, if at all, only from a lock-free
+    /// snapshot elsewhere -- never via the session.
+    #[test]
+    fn status_arms_never_touch_the_session() {
+        let source = include_str!("main.rs");
+        let dedicated_start = source
+            .find("\n            Commands::Status => {")
+            .expect("the dedicated Status arm exists");
+        let dedicated_end = source[dedicated_start..]
+            .find("Commands::Backup")
+            .map(|offset| dedicated_start + offset)
+            .expect("the Status arm is followed by the Backup arm");
+        let fallback_start = source
+            .find("\n                    Commands::Status => {")
+            .expect("the fallback Status arm exists");
+        let fallback_end = source[fallback_start..]
+            .find("Commands::Ingest")
+            .map(|offset| fallback_start + offset)
+            .expect("the fallback Status arm is followed by the Ingest arm");
+        for (label, arm) in [
+            ("dedicated", &source[dedicated_start..dedicated_end]),
+            ("fallback", &source[fallback_start..fallback_end]),
+        ] {
+            for needle in [
+                "session_loaded_snapshot",
+                "IdleSession",
+                "idle_unload",
+                "NEUROSTRATA_EMBEDDER_IDLE_UNLOAD_SECS",
+                "build_embedder",
+            ] {
+                assert!(
+                    !arm.contains(needle),
+                    "the {label} Status arm must not touch the embedding session ({needle})"
+                );
+            }
+        }
+    }
+
+    /// Spec AC6: the CLI Status path succeeds with an invalid
+    /// `NEUROSTRATA_PROFILE` set because it never consults the profile.
+    /// Status calls `std::process::exit`, so it cannot be exercised
+    /// in-process; the pin is structural -- the dedicated Status arm's
+    /// source must not reference the profile parser, the profile env var,
+    /// or embedder resolution. (A behavioral complement lives in
+    /// embed::tests::invalid_profile_scoped_error: the same invalid value
+    /// DOES fail the embedder-construction surface.)
+    #[test]
+    fn status_path_never_consults_the_profile_parser() {
+        let source = include_str!("main.rs");
+        // The leading newline + arm indentation keeps this search from
+        // matching this test's own literals.
+        let status_start = source
+            .find("\n            Commands::Status => {")
+            .expect("the dedicated Status arm exists");
+        let status_end = source[status_start..]
+            .find("Commands::Backup")
+            .map(|offset| status_start + offset)
+            .expect("the Status arm is followed by the Backup arm");
+        let status_arm = &source[status_start..status_end];
+        assert!(
+            !status_arm.contains("CapacityProfile"),
+            "the Status arm must not parse the capacity profile"
+        );
+        assert!(
+            !status_arm.contains("NEUROSTRATA_PROFILE"),
+            "the Status arm must not read NEUROSTRATA_PROFILE"
+        );
+        assert!(
+            !status_arm.contains("configured_resolution"),
+            "the Status arm must not resolve the embedder"
+        );
+        assert!(
+            !status_arm.contains("store_limits_with_profile"),
+            "the Status arm must not apply the profile to store limits"
+        );
+    }
+
+    /// Extract one top-level fn's body from this file's source, for the
+    /// structural routing pins below.
+    fn source_fn_body<'a>(source: &'a str, signature: &str) -> &'a str {
+        // Anchored to a line start so a signature named inside another
+        // test's string literals is not matched instead of the definition.
+        let anchored = format!("\n{signature}");
+        let start = source
+            .find(&anchored)
+            .unwrap_or_else(|| panic!("{signature} must exist"))
+            + 1;
+        let rest = &source[start + signature.len()..];
+        let end = [rest.find("\nfn "), rest.find("\nasync fn ")]
+            .into_iter()
+            .flatten()
+            .min()
+            .unwrap_or(rest.len());
+        &rest[..end]
+    }
+
+    /// Fix round 1 (Finding 1): the gate report and snapshot restore are
+    /// store-opening surfaces whose model resolution already goes through
+    /// the profile; their store limits must come from the profiled
+    /// resolution too, not plain `store_limits()`.
+    #[test]
+    fn gate_and_restore_store_opens_route_through_profiled_limits() {
+        let source = include_str!("main.rs");
+        for signature in ["async fn direct_report(", "async fn restore_snapshot_bundle("] {
+            let body = source_fn_body(source, signature);
+            assert!(
+                body.contains("profiled_store_limits(config)"),
+                "{signature} must resolve store limits through the profile"
+            );
+            assert!(
+                !body.contains(".store_limits()"),
+                "{signature} must not use plain store_limits()"
+            );
+        }
+    }
+
+    /// Fix round 1 (Finding 2): resolution runs once at startup -- the
+    /// `StartupResolution` carries the resolved model and both startup
+    /// arms build the embedder from that carried model, so the printed
+    /// summary describes the constructed embedder by construction.
+    #[test]
+    fn startup_paths_build_the_embedder_from_the_carried_resolution() {
+        let source = include_str!("main.rs");
+        assert!(
+            source.contains("resolution: embed::ResolvedModel,"),
+            "StartupResolution must carry the resolved model"
+        );
+        // Assembled from fragments so this test's own text is not counted.
+        let needle = ["build_embedder_for(&startup", ".resolution.model)"].concat();
+        assert_eq!(
+            source.matches(&needle).count(),
+            2,
+            "both startup arms must build from the carried resolution"
+        );
+    }
+
+    fn release_test_barrier(path: &std::path::Path) {
+        let mut release = path.as_os_str().to_os_string();
+        release.push(".release");
+        std::fs::write(std::path::PathBuf::from(release), "continue").unwrap();
+    }
+
+    async fn verify_wal_snapshot_restore(
+        snapshot: &std::path::Path,
+        target: &std::path::Path,
+        root: &std::path::Path,
+        stage: &str,
+        abandoned_stage: &str,
+        legacy_stage: &str,
+        lookalike: &str,
+        malformed: &str,
+    ) {
+        use serde_json::json;
+
+        let config: Config = serde_json::from_value(json!({})).unwrap();
+        let visible = restore_snapshot_bundle(snapshot, target, &config)
+            .await
+            .unwrap();
+        assert!(visible.contains(&"ordinary".to_string()));
+        assert!(visible.contains(&lookalike.to_string()));
+        assert!(visible.contains(&malformed.to_string()));
+        assert!(!visible.contains(&stage.to_string()));
+        assert!(!visible.contains(&abandoned_stage.to_string()));
+        assert!(!visible.contains(&legacy_stage.to_string()));
+        assert!(
+            crate::store::ladybug::ingest_stage_lease_path(target, stage)
+                .unwrap()
+                .is_file()
+        );
+        assert!(
+            crate::store::ladybug::ingest_stage_lease_path(target, abandoned_stage)
+                .unwrap()
+                .is_file()
+        );
+        assert!(
+            crate::store::ladybug::ingest_stage_lease_path(target, legacy_stage)
+                .unwrap()
+                .is_file()
+        );
+
+        let dimensions = embed::configured_dimensions().unwrap();
+        let restored = LadybugStore::new_with_identity_limits(
+            target,
+            dimensions,
+            embed::configured_embedder_id().unwrap(),
+            config.store_limits().unwrap(),
+        )
+        .unwrap();
+        restored.init("restore-recovery-test").await.unwrap();
+        for (namespace, id, expected) in [
+            (lookalike, "legacy-row", "legacy user-owned lookalike"),
+            (malformed, "malformed-row", "malformed prefix user content"),
+            ("ordinary", "ordinary-row", "ordinary memory"),
+            ("ordinary", "saved-fact", "preserved fact"),
+            ("ordinary", "saved-task", "preserved task"),
+            ("ordinary", "saved-procedure", "preserved procedure"),
+            ("ordinary", "saved-history", "preserved history"),
+        ] {
+            assert_eq!(
+                restored
+                    .get(namespace, id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .1
+                    .content,
+                expected
+            );
+        }
+        let graph = restored
+            .export_graph(false, false, &std::collections::HashMap::new(), None)
+            .await
+            .unwrap();
+        assert!(graph["links"].as_array().unwrap().iter().any(|link| {
+            link["source"] == "ordinary-rule"
+                && link["target"] == "ordinary-row"
+                && link["type"] == "GOVERNS"
+        }));
+
+        let next_stage = format!(
+            "{}{}",
+            crate::traits::INTERNAL_INGEST_STAGE_PREFIX,
+            uuid::Uuid::new_v4()
+        );
+        let _next_stage_lease = restored.begin_ingest_stage(&next_stage).await.unwrap();
+        assert!(restored.get(stage, "stage-row").await.unwrap().is_none());
+        assert!(restored
+            .get(abandoned_stage, "abandoned-row")
+            .await
+            .unwrap()
+            .is_none());
+        assert!(restored
+            .get(legacy_stage, &format!("{legacy_stage}::src/old.rs"))
+            .await
+            .unwrap()
+            .is_none());
+        assert!(restored
+            .get(lookalike, "legacy-row")
+            .await
+            .unwrap()
+            .is_some());
+        assert!(restored
+            .get(malformed, "malformed-row")
+            .await
+            .unwrap()
+            .is_some());
+
+        let corrupt_snapshot = root.join("corrupt-snapshot");
+        std::fs::create_dir(&corrupt_snapshot).unwrap();
+        std::fs::copy(
+            snapshot.join("ladybug.store"),
+            corrupt_snapshot.join("ladybug.store"),
+        )
+        .unwrap();
+        std::fs::copy(
+            snapshot.join("ladybug.store.embedding"),
+            corrupt_snapshot.join("ladybug.store.embedding"),
+        )
+        .unwrap();
+        let snapshot_wal = appended_path(&snapshot.join("ladybug.store"), ".wal");
+        if snapshot_wal.exists() {
+            std::fs::copy(
+                snapshot_wal,
+                appended_path(&corrupt_snapshot.join("ladybug.store"), ".wal"),
+            )
+            .unwrap();
+        }
+        let mut corrupt_manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(snapshot.join("manifest.json")).unwrap())
+                .unwrap();
+        corrupt_manifest["stage_generations"] = json!(["../escape"]);
+        std::fs::write(
+            corrupt_snapshot.join("manifest.json"),
+            serde_json::to_vec(&corrupt_manifest).unwrap(),
+        )
+        .unwrap();
+        let rejected_target = root.join("rejected.store");
+        assert!(
+            restore_snapshot_bundle(&corrupt_snapshot, &rejected_target, &config)
+                .await
+                .is_err()
+        );
+        assert!(!rejected_target.exists());
+        assert!(!crate::store::ladybug::restore_in_progress_path(&rejected_target).exists());
+
+        let stale_sidecar_target = root.join("stale-sidecar.store");
+        std::fs::write(appended_path(&stale_sidecar_target, ".wal"), b"stale").unwrap();
+        assert!(
+            restore_snapshot_bundle(snapshot, &stale_sidecar_target, &config)
+                .await
+                .is_err()
+        );
+        assert!(!stale_sidecar_target.exists());
+        std::fs::remove_file(appended_path(&stale_sidecar_target, ".wal")).unwrap();
+        drop(restored);
+    }
+
+    #[tokio::test]
+    async fn restore_holds_target_open_lock_until_database_and_provenance_are_installed() {
+        use crate::traits::MemoryPayload;
+        use serde_json::json;
+
+        let root = std::env::temp_dir().join(format!("restore-open-lock-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let source_db = root.join("source.store");
+        let dimensions = embed::configured_dimensions().unwrap();
+        let embedder_id = embed::configured_embedder_id().unwrap();
+        let test_config: Config = serde_json::from_value(json!({})).unwrap();
+        let limits = test_config.store_limits().unwrap();
+        let source = LadybugStore::new_with_identity_limits(
+            &source_db,
+            dimensions,
+            embedder_id.clone(),
+            limits,
+        )
+        .unwrap();
+        source.init("restore-lock-source").await.unwrap();
+        source
+            .upsert(
+                "preserved",
+                "exact-row",
+                vec![0.125; dimensions],
+                MemoryPayload {
+                    content: "complete restored content".into(),
+                    user_id: "owner".into(),
+                    memory_type: "fact".into(),
+                    agent_name: None,
+                    location: String::new(),
+                    location_lines: String::new(),
+                    metadata: json!({}),
+                },
+            )
+            .await
+            .unwrap();
+        let snapshot = root.join("snapshot");
+        source
+            .export_database(&snapshot.to_string_lossy())
+            .await
+            .unwrap();
+        drop(source);
+
+        let target = root.join("restored.store");
+        let barrier = root.join("restore-lock-entered");
+        set_test_restore_target_lock_barrier(target.clone(), barrier.clone());
+        let snapshot_for_thread = snapshot.clone();
+        let target_for_thread = target.clone();
+        let restore = std::thread::spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(restore_snapshot_bundle(
+                    &snapshot_for_thread,
+                    &target_for_thread,
+                    &serde_json::from_value(json!({})).unwrap(),
+                ))
+        });
+        let started = std::time::Instant::now();
+        while !barrier.exists() {
+            assert!(started.elapsed() < std::time::Duration::from_secs(15));
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+
+        let open_target = target.clone();
+        let open_identity = embedder_id.clone();
+        let opener = tokio::task::spawn_blocking(move || {
+            LadybugStore::new_with_identity_limits(open_target, dimensions, open_identity, limits)
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            !opener.is_finished(),
+            "constructor must wait while restore owns the destination writer lock"
+        );
+        release_test_barrier(&barrier);
+        let visible = restore.join().unwrap().unwrap();
+        assert!(visible.contains(&"preserved".to_string()));
+        let opened = opener.await.unwrap().unwrap();
+        assert_eq!(
+            opened
+                .get("preserved", "exact-row")
+                .await
+                .unwrap()
+                .unwrap()
+                .1
+                .content,
+            "complete restored content"
+        );
+        drop(opened);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn a_mistyped_subcommand_is_an_error_not_an_execution() {
         let parsed = Cli::try_parse_from(["neurostrata-mcp", "lsit"]);
@@ -951,6 +1643,576 @@ mod tests {
             parsed.is_err(),
             "a typo must never reach std::process::Command"
         );
+    }
+
+    #[tokio::test]
+    async fn snapshot_restore_preserves_stage_provenance_and_legacy_lookalikes() {
+        use crate::traits::MemoryPayload;
+        use serde_json::json;
+        let _strict_wal = StrictWalTestEnvironment::force_strict();
+
+        let root = std::env::temp_dir().join(format!("snapshot-restore-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let source = root.join("source.store");
+        let snapshot = root.join("snapshot");
+        let target = root.join("restored.store");
+        let dimensions = embed::configured_dimensions().unwrap();
+        let source_store = LadybugStore::new_with_identity_limits(
+            &source,
+            dimensions,
+            embed::configured_embedder_id().unwrap(),
+            crate::store::StoreLimits::default(),
+        )
+        .unwrap();
+        source_store.init("snapshot-test").await.unwrap();
+
+        let stage = format!(
+            "{}{}",
+            crate::traits::INTERNAL_INGEST_STAGE_PREFIX,
+            uuid::Uuid::new_v4()
+        );
+        let _active_stage_lease = source_store.begin_ingest_stage(&stage).await.unwrap();
+        let abandoned_stage = format!(
+            "{}{}",
+            crate::traits::INTERNAL_INGEST_STAGE_PREFIX,
+            uuid::Uuid::new_v4()
+        );
+        let abandoned_lease = source_store
+            .begin_ingest_stage(&abandoned_stage)
+            .await
+            .unwrap();
+        let lookalike = format!(
+            "{}{}",
+            crate::traits::INTERNAL_INGEST_STAGE_PREFIX,
+            uuid::Uuid::new_v4()
+        );
+        let malformed = format!("{}not-a-uuid", crate::traits::INTERNAL_INGEST_STAGE_PREFIX);
+        let legacy_stage = format!(
+            "{}{}",
+            crate::traits::INTERNAL_INGEST_STAGE_PREFIX,
+            uuid::Uuid::new_v4()
+        );
+        let ordinary = "ordinary".to_string();
+        for (namespace, id, content, user_id) in [
+            (
+                &stage,
+                "stage-row",
+                "active staged content",
+                "auto-ingestor",
+            ),
+            (
+                &abandoned_stage,
+                "abandoned-row",
+                "abandoned stage content",
+                "auto-ingestor",
+            ),
+            (&ordinary, "ordinary-row", "ordinary memory", "owner"),
+        ] {
+            source_store
+                .upsert(
+                    namespace,
+                    id,
+                    vec![0.25; dimensions],
+                    MemoryPayload {
+                        content: content.into(),
+                        user_id: user_id.into(),
+                        memory_type: "note".into(),
+                        agent_name: None,
+                        location: String::new(),
+                        location_lines: String::new(),
+                        metadata: json!({}),
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        for (id, memory_type, content) in [
+            ("saved-fact", "fact", "preserved fact"),
+            ("saved-task", "task", "preserved task"),
+            ("saved-procedure", "procedure", "preserved procedure"),
+            ("saved-history", "history", "preserved history"),
+        ] {
+            source_store
+                .upsert(
+                    "ordinary",
+                    id,
+                    vec![0.25; dimensions],
+                    MemoryPayload {
+                        content: content.into(),
+                        user_id: "owner".into(),
+                        memory_type: memory_type.into(),
+                        agent_name: None,
+                        location: String::new(),
+                        location_lines: String::new(),
+                        metadata: json!({}),
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        source_store
+            .upsert(
+                "ordinary",
+                "ordinary-rule",
+                vec![0.25; dimensions],
+                MemoryPayload {
+                    content: "ordinary rule".into(),
+                    user_id: "owner".into(),
+                    memory_type: "rule".into(),
+                    agent_name: None,
+                    location: String::new(),
+                    location_lines: String::new(),
+                    metadata: json!({"governs": ["ordinary-row"]}),
+                },
+            )
+            .await
+            .unwrap();
+        for (namespace, id, content) in [
+            (&lookalike, "legacy-row", "legacy user-owned lookalike"),
+            (&malformed, "malformed-row", "malformed prefix user content"),
+        ] {
+            source_store
+                .seed_legacy_memory_for_test(
+                    namespace,
+                    id,
+                    vec![0.5; dimensions],
+                    MemoryPayload {
+                        content: content.into(),
+                        user_id: "owner".into(),
+                        memory_type: "note".into(),
+                        agent_name: None,
+                        location: String::new(),
+                        location_lines: String::new(),
+                        metadata: json!({}),
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        let legacy_lease_path =
+            crate::store::ladybug::ingest_stage_lease_path(&source, &legacy_stage).unwrap();
+        let legacy_lease = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&legacy_lease_path)
+            .unwrap();
+        legacy_lease.try_lock().unwrap();
+        source_store
+            .seed_legacy_memory_for_test(
+                &legacy_stage,
+                &format!("{legacy_stage}::src/old.rs"),
+                vec![0.375; dimensions],
+                MemoryPayload {
+                    content: "pre-catalog active staged file".into(),
+                    user_id: "auto-ingestor".into(),
+                    memory_type: "file".into(),
+                    agent_name: None,
+                    location: "src/old.rs".into(),
+                    location_lines: String::new(),
+                    metadata: json!({}),
+                },
+            )
+            .await
+            .unwrap();
+        drop(source_store);
+        let source_store = LadybugStore::new_with_identity_limits(
+            &source,
+            dimensions,
+            embed::configured_embedder_id().unwrap(),
+            crate::store::StoreLimits::default(),
+        )
+        .unwrap();
+        assert!(!source_store
+            .list_namespaces()
+            .await
+            .unwrap()
+            .contains(&legacy_stage));
+        let reopened_graph = source_store
+            .export_graph(false, false, &std::collections::HashMap::new(), None)
+            .await
+            .unwrap();
+        assert!(!reopened_graph["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|node| node["namespace"] == legacy_stage));
+        assert_eq!(
+            source_store
+                .get(&legacy_stage, &format!("{legacy_stage}::src/old.rs"))
+                .await
+                .unwrap()
+                .unwrap()
+                .1
+                .content,
+            "pre-catalog active staged file",
+            "visibility filtering must not delete legacy data"
+        );
+        let recovery_trigger = format!(
+            "{}{}",
+            crate::traits::INTERNAL_INGEST_STAGE_PREFIX,
+            uuid::Uuid::new_v4()
+        );
+        let recovery_lease = source_store
+            .begin_ingest_stage(&recovery_trigger)
+            .await
+            .unwrap();
+        assert!(!source_store
+            .ingest_stage_namespaces()
+            .await
+            .unwrap()
+            .contains(&legacy_stage));
+        assert!(!source_store
+            .list_namespaces()
+            .await
+            .unwrap()
+            .contains(&legacy_stage));
+        let graph_before_snapshot = source_store
+            .export_graph(false, false, &std::collections::HashMap::new(), None)
+            .await
+            .unwrap();
+        assert!(!graph_before_snapshot["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|node| node["namespace"] == legacy_stage));
+        drop(recovery_lease);
+        let active_legacy_snapshot_error = source_store
+            .export_database(&snapshot.to_string_lossy())
+            .await
+            .expect_err("snapshot must refuse an active pre-catalog stage")
+            .to_string();
+        assert!(active_legacy_snapshot_error.contains("legacy ingest generation"));
+        assert!(!snapshot.exists());
+        assert_eq!(
+            source_store
+                .get(&legacy_stage, &format!("{legacy_stage}::src/old.rs"))
+                .await
+                .unwrap()
+                .unwrap()
+                .1
+                .content,
+            "pre-catalog active staged file"
+        );
+        drop(legacy_lease);
+        drop(abandoned_lease);
+        // Copy the open engine's database and active WAL outside the snapshot
+        // API. This is deliberately an unverified, potentially inconsistent
+        // crash-state pair, not a supported snapshot. Strict restore must fail
+        // closed and leave both source and destination state unchanged.
+        std::fs::create_dir(&snapshot).unwrap();
+        let snapshot_db = snapshot.join("ladybug.store");
+        std::fs::copy(&source, &snapshot_db).unwrap();
+        let source_wal = appended_path(&source, ".wal");
+        let snapshot_wal = appended_path(&snapshot_db, ".wal");
+        assert!(
+            source_wal.is_file() && std::fs::metadata(&source_wal).unwrap().len() > 0,
+            "restore regression requires a nonempty source WAL"
+        );
+        let source_wal_copy = std::fs::read(&source_wal).unwrap();
+        std::fs::copy(&source_wal, &snapshot_wal).unwrap();
+        let mut corrupted_wal = std::fs::read(&snapshot_wal).unwrap();
+        assert!(
+            corrupted_wal.len() > 16,
+            "WAL fixture must have payload and framing"
+        );
+        let corrupt_offset = corrupted_wal.len() / 2;
+        corrupted_wal[corrupt_offset] ^= 0x80;
+        std::fs::write(&snapshot_wal, &corrupted_wal).unwrap();
+        assert_ne!(std::fs::read(&snapshot_wal).unwrap(), source_wal_copy);
+        std::fs::copy(
+            crate::store::ladybug::width_marker_path(&source),
+            crate::store::ladybug::width_marker_path(&snapshot_db),
+        )
+        .unwrap();
+        std::fs::write(
+            snapshot.join("manifest.json"),
+            serde_json::to_vec_pretty(&json!({
+                "format": "neurostrata-snapshot",
+                "version": 2,
+                "created_at": chrono::Utc::now().to_rfc3339(),
+                "bytes": std::fs::metadata(&snapshot_db).unwrap().len(),
+                "stage_generations": [stage, abandoned_stage],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let source_db_before = std::fs::read(&source).unwrap();
+        let source_wal_before = std::fs::read(&source_wal).unwrap();
+        let source_marker_path = crate::store::ladybug::width_marker_path(&source);
+        let source_marker_before = std::fs::read(&source_marker_path).unwrap();
+        let active_lease_path =
+            crate::store::ladybug::ingest_stage_lease_path(&source, &stage).unwrap();
+        let abandoned_lease_path =
+            crate::store::ladybug::ingest_stage_lease_path(&source, &abandoned_stage).unwrap();
+        let legacy_lease_before = std::fs::read(&legacy_lease_path).unwrap();
+        let active_lease_before = std::fs::read(&active_lease_path).unwrap();
+        let abandoned_lease_before = std::fs::read(&abandoned_lease_path).unwrap();
+        let rejected_wal_target = root.join("rejected-wal.store");
+        let config: Config = serde_json::from_value(json!({})).unwrap();
+        let rejected_wal_error = restore_snapshot_bundle(&snapshot, &rejected_wal_target, &config)
+            .await
+            .expect_err("the engine's checksum-rejected nonempty WAL must fail closed")
+            .to_string();
+        assert!(
+            rejected_wal_error.contains("write-ahead log did not verify"),
+            "expected strict checksum rejection, got: {rejected_wal_error}"
+        );
+        assert!(!rejected_wal_target.exists());
+        assert!(!appended_path(&rejected_wal_target, ".wal").exists());
+        assert!(!crate::store::ladybug::width_marker_path(&rejected_wal_target).exists());
+        assert!(!crate::store::ladybug::restore_in_progress_path(&rejected_wal_target).exists());
+        assert_eq!(std::fs::read(&source).unwrap(), source_db_before);
+        assert_eq!(std::fs::read(&source_wal).unwrap(), source_wal_before);
+        assert_eq!(
+            std::fs::read(&source_marker_path).unwrap(),
+            source_marker_before
+        );
+        assert_eq!(
+            std::fs::read(&active_lease_path).unwrap(),
+            active_lease_before
+        );
+        assert_eq!(
+            std::fs::read(&abandoned_lease_path).unwrap(),
+            abandoned_lease_before
+        );
+        assert_eq!(
+            std::fs::read(&legacy_lease_path).unwrap(),
+            legacy_lease_before
+        );
+
+        let api_snapshot = root.join("api-snapshot");
+        source_store
+            .export_database(&api_snapshot.to_string_lossy())
+            .await
+            .unwrap();
+        verify_wal_snapshot_restore(
+            &api_snapshot,
+            &target,
+            &root,
+            &stage,
+            &abandoned_stage,
+            &legacy_stage,
+            &lookalike,
+            &malformed,
+        )
+        .await;
+        drop(_active_stage_lease);
+        drop(source_store);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn strict_restore_rejects_or_exactly_replays_unverified_wal_capture() {
+        use crate::traits::MemoryPayload;
+        use serde_json::json;
+
+        let _strict_wal = StrictWalTestEnvironment::force_strict();
+        let root = std::env::temp_dir().join(format!("live-wal-capture-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let source = root.join("source.store");
+        let snapshot = root.join("snapshot");
+        let target = root.join("restored.store");
+        let config: Config = serde_json::from_value(json!({})).unwrap();
+        let dimensions = embed::configured_dimensions().unwrap();
+        let limits = config.store_limits().unwrap();
+        let source_store = LadybugStore::new_with_identity_limits(
+            &source,
+            dimensions,
+            embed::configured_embedder_id().unwrap(),
+            limits,
+        )
+        .unwrap();
+        source_store.init("live-wal-source").await.unwrap();
+
+        let fact_id = "wal-data::stable-fact";
+        source_store
+            .upsert(
+                "wal-data",
+                fact_id,
+                vec![0.125; dimensions],
+                MemoryPayload {
+                    content: "fact committed before unclean snapshot".into(),
+                    user_id: "owner".into(),
+                    memory_type: "fact".into(),
+                    agent_name: None,
+                    location: "facts/stable.json".into(),
+                    location_lines: "1".into(),
+                    metadata: json!({"stable": true}),
+                },
+            )
+            .await
+            .unwrap();
+        let rule_id = "wal-data::rule";
+        source_store
+            .upsert(
+                "wal-data",
+                rule_id,
+                vec![0.25; dimensions],
+                MemoryPayload {
+                    content: "rule declaration".into(),
+                    user_id: "owner".into(),
+                    memory_type: "rule".into(),
+                    agent_name: None,
+                    location: String::new(),
+                    location_lines: String::new(),
+                    metadata: json!({"governs": [fact_id]}),
+                },
+            )
+            .await
+            .unwrap();
+        source_store.relink_edges("wal-data").await.unwrap();
+
+        let stage = format!(
+            "{}{}",
+            crate::traits::INTERNAL_INGEST_STAGE_PREFIX,
+            uuid::Uuid::new_v4()
+        );
+        let _stage_lease = source_store.begin_ingest_stage(&stage).await.unwrap();
+        let stage_row_id = format!("{stage}::src/pending.rs");
+        source_store
+            .upsert(
+                &stage,
+                &stage_row_id,
+                vec![0.5; dimensions],
+                MemoryPayload {
+                    content: "staged row from unverified WAL capture".into(),
+                    user_id: "auto-ingestor".into(),
+                    memory_type: "file".into(),
+                    agent_name: None,
+                    location: "src/pending.rs".into(),
+                    location_lines: String::new(),
+                    metadata: json!({}),
+                },
+            )
+            .await
+            .unwrap();
+
+        std::fs::create_dir(&snapshot).unwrap();
+        let snapshot_db = snapshot.join("ladybug.store");
+        std::fs::copy(&source, &snapshot_db).unwrap();
+        let source_wal = appended_path(&source, ".wal");
+        let snapshot_wal = appended_path(&snapshot_db, ".wal");
+        assert!(source_wal.is_file());
+        assert!(
+            std::fs::metadata(&source_wal).unwrap().len() > 0,
+            "live WAL capture must contain uncheckpointed writes"
+        );
+        std::fs::copy(&source_wal, &snapshot_wal).unwrap();
+        let source_marker = crate::store::ladybug::width_marker_path(&source);
+        let snapshot_marker = crate::store::ladybug::width_marker_path(&snapshot_db);
+        std::fs::copy(&source_marker, &snapshot_marker).unwrap();
+        std::fs::write(
+            snapshot.join("manifest.json"),
+            serde_json::to_vec_pretty(&json!({
+                "format": "neurostrata-snapshot",
+                "version": 2,
+                "created_at": chrono::Utc::now().to_rfc3339(),
+                "bytes": std::fs::metadata(&snapshot_db).unwrap().len(),
+                "stage_generations": [stage],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let source_db_before = std::fs::read(&source).unwrap();
+        let source_wal_before = std::fs::read(&source_wal).unwrap();
+        let source_marker_before = std::fs::read(&source_marker).unwrap();
+        let source_lease = crate::store::ladybug::ingest_stage_lease_path(&source, &stage).unwrap();
+        let source_lease_before = std::fs::read(&source_lease).unwrap();
+        let visible = match restore_snapshot_bundle(&snapshot, &target, &config).await {
+            Ok(visible) => visible,
+            Err(error) => {
+                assert!(
+                    error.to_string().contains("write-ahead log did not verify"),
+                    "strict mode may reject an unverified active-copy WAL, got: {error:#}"
+                );
+                assert!(
+                    !target.exists(),
+                    "failed validation must not install a database"
+                );
+                assert!(!appended_path(&target, ".wal").exists());
+                assert!(!crate::store::ladybug::width_marker_path(&target).exists());
+                assert!(!crate::store::ladybug::restore_in_progress_path(&target).exists());
+                assert_eq!(std::fs::read(&source).unwrap(), source_db_before);
+                assert_eq!(std::fs::read(&source_wal).unwrap(), source_wal_before);
+                assert_eq!(std::fs::read(&source_marker).unwrap(), source_marker_before);
+                assert_eq!(std::fs::read(&source_lease).unwrap(), source_lease_before);
+                drop(source_store);
+                let _ = std::fs::remove_dir_all(root);
+                return;
+            }
+        };
+        assert_eq!(visible, vec!["wal-data".to_string()]);
+
+        let restored = LadybugStore::new_with_identity_limits(
+            &target,
+            dimensions,
+            embed::configured_embedder_id().unwrap(),
+            limits,
+        )
+        .unwrap();
+        restored.init("live-wal-restored").await.unwrap();
+        let (fact_vector, fact) = restored.get("wal-data", fact_id).await.unwrap().unwrap();
+        assert_eq!(fact_vector, vec![0.125; dimensions]);
+        assert_eq!(fact.content, "fact committed before unclean snapshot");
+        assert_eq!(fact.memory_type, "fact");
+        assert_eq!(fact.metadata, json!({"stable": true}));
+        let (rule_vector, rule) = restored.get("wal-data", rule_id).await.unwrap().unwrap();
+        assert_eq!(rule_vector, vec![0.25; dimensions]);
+        assert_eq!(rule.content, "rule declaration");
+        assert_eq!(rule.metadata, json!({"governs": [fact_id]}));
+        let graph = restored
+            .export_graph(false, false, &std::collections::HashMap::new(), None)
+            .await
+            .unwrap();
+        assert!(graph["links"].as_array().unwrap().iter().any(|edge| {
+            edge["source"] == rule_id && edge["target"] == fact_id && edge["type"] == "GOVERNS"
+        }));
+        let (stage_vector, stage_payload) = restored
+            .get(&stage, &stage_row_id)
+            .await
+            .unwrap()
+            .expect("accepted WAL replay retains the staged file row");
+        assert_eq!(stage_vector, vec![0.5; dimensions]);
+        assert_eq!(
+            stage_payload.content,
+            "staged row from unverified WAL capture"
+        );
+        assert_eq!(stage_payload.user_id, "auto-ingestor");
+        assert_eq!(stage_payload.memory_type, "file");
+        assert_eq!(stage_payload.location, "src/pending.rs");
+        assert_eq!(stage_payload.metadata, json!({}));
+        assert!(!restored.list_namespaces().await.unwrap().contains(&stage));
+
+        let next_stage = format!(
+            "{}{}",
+            crate::traits::INTERNAL_INGEST_STAGE_PREFIX,
+            uuid::Uuid::new_v4()
+        );
+        let _next_lease = restored.begin_ingest_stage(&next_stage).await.unwrap();
+        assert!(restored.get(&stage, &stage_row_id).await.unwrap().is_none());
+        assert_eq!(
+            restored
+                .get("wal-data", fact_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .1
+                .content,
+            "fact committed before unclean snapshot"
+        );
+        assert_eq!(
+            std::fs::read(&source).unwrap(),
+            source_db_before,
+            "strict WAL handling must not mutate the source database"
+        );
+        assert_eq!(std::fs::read(&source_wal).unwrap(), source_wal_before);
+        assert_eq!(std::fs::read(&source_marker).unwrap(), source_marker_before);
+        assert_eq!(std::fs::read(&source_lease).unwrap(), source_lease_before);
+        drop(restored);
+        drop(source_store);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -1234,24 +2496,485 @@ mod tests {
         );
     }
 
-    /// Section 5.2 verbatim: blocks on violations only, skips on the escape
-    /// hatch, and lets 0 and 2 pass.
-    #[test]
-    fn the_pre_push_hook_is_the_documented_script() {
-        assert!(PRE_PUSH_HOOK.starts_with("#!/bin/bash\n"));
-        assert!(PRE_PUSH_HOOK.contains("command -v neurostrata-mcp >/dev/null || exit 0"));
-        assert!(PRE_PUSH_HOOK.contains("[ -n \"$NEUROSTRATA_SKIP_GATE\" ] && exit 0"));
+    // ── Task 4: one hook installer, honest SKIP_GATE ─────────────────────
+    //
+    // The five tests below pin the unified gate/hook enforcement chain:
+    // `hooks install` writes the scaffolded hook text (the one the
+    // task-setup payload ships) into the directory git actually runs
+    // hooks from, SKIP_GATE skips only for exactly "1" in both of its
+    // homes, and a missing gate binary is announced, never silent.
+
+    /// Run git in `root`, isolated from the developer's own global/system
+    /// config so a personal `core.hooksPath` cannot change what is
+    /// asserted. Returns the command's output.
+    #[cfg(unix)]
+    fn t4_git(root: &std::path::Path, args: &[&str]) -> std::process::Output {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .output()
+            .expect("git runs")
+    }
+
+    #[cfg(unix)]
+    fn t4_git_ok(root: &std::path::Path, args: &[&str]) {
+        let out = t4_git(root, args);
         assert!(
-            PRE_PUSH_HOOK.contains("NAMESPACE=$(basename \"$(git rev-parse --show-toplevel)\")")
+            out.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
         );
-        assert!(PRE_PUSH_HOOK.contains("neurostrata-mcp task gate \"$NAMESPACE\" --strict"));
-        assert!(PRE_PUSH_HOOK.contains("code=$?"));
-        assert!(PRE_PUSH_HOOK.contains("if [ $code -eq 1 ]; then"));
-        assert!(PRE_PUSH_HOOK.contains("NEUROSTRATA_SKIP_GATE=1 git push"));
-        assert!(PRE_PUSH_HOOK
-            .contains("exit 0   # 0 and 2 both pass here unless --strict flips 2 to blocking"));
+    }
+
+    /// A fresh git repo in a temp dir, with a commit-ready identity.
+    #[cfg(unix)]
+    fn t4_repo(tag: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!("ns-t4-{}-{}", tag, std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        t4_git_ok(&root, &["init", "-q", "-b", "main"]);
+        t4_git_ok(&root, &["config", "user.email", "t4@example.invalid"]);
+        t4_git_ok(&root, &["config", "user.name", "Task 4 Test"]);
+        root
+    }
+
+    /// `t4_repo` plus a bare remote and one seed commit, ready to push.
+    #[cfg(unix)]
+    fn t4_repo_with_remote(tag: &str) -> std::path::PathBuf {
+        let root = t4_repo(tag);
+        let remote = root.join("remote.git");
+        t4_git_ok(&root, &["init", "-q", "--bare", remote.to_str().unwrap()]);
+        t4_git_ok(&root, &["remote", "add", "origin", remote.to_str().unwrap()]);
+        std::fs::write(root.join("file.txt"), "task 4\n").unwrap();
+        t4_git_ok(&root, &["add", "file.txt"]);
+        t4_git_ok(&root, &["commit", "-q", "-m", "task 4 seed"]);
+        root
+    }
+
+    /// A stub `neurostrata-mcp` whose exit code is STUB_GATE_EXIT; every
+    /// invocation appends a line to the marker file, so a test can prove
+    /// the hook actually ran the gate.
+    #[cfg(unix)]
+    fn t4_stub_bin(root: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = root.join("stub-bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let marker = root.join("gate-ran.marker");
+        let stub = format!(
+            "#!/bin/sh\necho ran >> \"{}\"\nexit ${{STUB_GATE_EXIT:-0}}\n",
+            marker.display()
+        );
+        let stub_path = bin.join("neurostrata-mcp");
+        std::fs::write(&stub_path, stub).unwrap();
+        let mut perms = std::fs::metadata(&stub_path).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&stub_path, perms).unwrap();
+        (bin, marker)
+    }
+
+    /// Push `main` to origin with `path` as the push process's PATH.
+    #[cfg(unix)]
+    fn t4_push(
+        root: &std::path::Path,
+        path: &str,
+        stub_gate_exit: Option<&str>,
+    ) -> std::process::Output {
+        let mut cmd = std::process::Command::new("git");
+        cmd.args(["push", "origin", "main"])
+            .current_dir(root)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .env("PATH", path);
+        if let Some(code) = stub_gate_exit {
+            cmd.env("STUB_GATE_EXIT", code);
+        }
+        cmd.output().expect("git push runs")
+    }
+
+    /// `t4_push` with `NEUROSTRATA_SKIP_GATE` set on the push process
+    /// (the hook inherits it), or explicitly removed when `None`.
+    #[cfg(unix)]
+    fn t4_push_with_skip(
+        root: &std::path::Path,
+        path: &str,
+        stub_gate_exit: Option<&str>,
+        skip_gate: Option<&str>,
+    ) -> std::process::Output {
+        let mut cmd = std::process::Command::new("git");
+        cmd.args(["push", "origin", "main"])
+            .current_dir(root)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .env("PATH", path);
+        if let Some(code) = stub_gate_exit {
+            cmd.env("STUB_GATE_EXIT", code);
+        }
+        match skip_gate {
+            Some(value) => {
+                cmd.env("NEUROSTRATA_SKIP_GATE", value);
+            }
+            None => {
+                cmd.env_remove("NEUROSTRATA_SKIP_GATE");
+            }
+        }
+        cmd.output().expect("git push runs")
+    }
+
+    /// The CLI binary `cargo test` builds beside the test profile dir:
+    /// unit tests run from `<profile>/deps/<test-binary>`, the CLI itself
+    /// is at `<profile>/neurostrata-mcp`.
+    #[cfg(unix)]
+    fn t4_cli_binary() -> std::path::PathBuf {
+        let exe = std::env::current_exe().expect("the test binary has a path");
+        exe.parent()
+            .and_then(|deps| deps.parent())
+            .map(|profile| profile.join("neurostrata-mcp"))
+            .expect("the CLI binary path derives from the test binary path")
+    }
+
+    /// Task 4, Step 1: with `core.hooksPath` set, `hooks install` writes
+    /// the hook there — and git actually runs it from there on push; with
+    /// it unset, the hook lands in `.git/hooks`.
+    #[cfg(unix)]
+    #[test]
+    fn hooks_install_honors_hooks_path() {
+        let root = t4_repo_with_remote("hookspath");
+        t4_git_ok(&root, &["config", "core.hooksPath", ".githooks"]);
+        let target = install_pre_push_hook(&root, false).expect("install succeeds");
+        assert_eq!(target, root.join(".githooks").join("pre-push"));
+        assert!(target.is_file(), "the hook lands where git looks for it");
         assert!(
-            !PRE_PUSH_HOOK.contains("$code -eq 2"),
+            !root.join(".git").join("hooks").join("pre-push").exists(),
+            "with core.hooksPath set, .git/hooks is not git's hooks dir"
+        );
+
+        // git runs the installed hook on push: a failing stub gate
+        // blocks the push (and leaves its marker); a passing one lets
+        // the same push through.
+        let (stub_bin, marker) = t4_stub_bin(&root);
+        let path = format!("{}:/usr/bin:/bin", stub_bin.display());
+        let blocked = t4_push(&root, &path, Some("1"));
+        assert!(
+            !blocked.status.success(),
+            "a failing gate must fail the push: {}",
+            String::from_utf8_lossy(&blocked.stderr)
+        );
+        assert!(marker.exists(), "the hook ran the gate on push");
+        assert!(
+            String::from_utf8_lossy(&blocked.stderr).contains("Push blocked"),
+            "the hook's verdict reaches the pusher: {}",
+            String::from_utf8_lossy(&blocked.stderr)
+        );
+        let clean = t4_push(&root, &path, Some("0"));
+        assert!(
+            clean.status.success(),
+            "a passing gate lets the push through: {}",
+            String::from_utf8_lossy(&clean.stderr)
+        );
+        let _ = std::fs::remove_dir_all(&root);
+
+        // Unset: the default .git/hooks. (Skipped where the ambient
+        // config already sets a hooksPath — git_hooks_dir would be
+        // right to honor it, exactly as the installer honors it.)
+        let root = t4_repo("hooksdefault");
+        let ambient = std::process::Command::new("git")
+            .args(["config", "--get", "core.hooksPath"])
+            .current_dir(&root)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !ambient {
+            let target = install_pre_push_hook(&root, false).expect("install succeeds");
+            assert_eq!(target, root.join(".git").join("hooks").join("pre-push"));
+            assert!(target.is_file());
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Task 4, Step 1: the installed bytes ARE the scaffolded hook — the
+    /// text the task-setup payload ships — in both install locations.
+    #[cfg(unix)]
+    #[test]
+    fn installed_hook_is_the_scaffolded_one() {
+        use std::os::unix::fs::PermissionsExt;
+        for (tag, hooks_path) in [("bytes-default", None), ("bytes-custom", Some(".githooks"))] {
+            let root = t4_repo(tag);
+            if let Some(hp) = hooks_path {
+                t4_git_ok(&root, &["config", "core.hooksPath", hp]);
+            }
+            let target = install_pre_push_hook(&root, false).expect("install succeeds");
+            let bytes = std::fs::read(&target).unwrap();
+            assert_eq!(
+                bytes,
+                crate::task::SCAFFOLDED_PRE_PUSH_HOOK.as_bytes(),
+                "hooks install must write the scaffolded hook text byte for byte ({})",
+                tag
+            );
+            let mode = std::fs::metadata(&target).unwrap().permissions().mode();
+            assert!(
+                mode & 0o111 != 0,
+                "the installed hook is executable ({})",
+                tag
+            );
+            let _ = std::fs::remove_dir_all(&root);
+        }
+    }
+
+    /// Task 4, Step 1: SKIP_GATE has ONE definition in both homes — the
+    /// gate CLI's predicate and the installed hook's shell test: only the
+    /// exact value "1" skips; "0", "false", "yes", and empty all run the
+    /// gate. (That the CLI *logs* the skip — stderr plus its stdout
+    /// report line — is pinned behaviorally by
+    /// `gate_cli_skip_is_logged_to_stderr_and_report`; the hook's legs
+    /// through real pushes by `skip_gate_hook_legs_on_real_pushes`.)
+    #[test]
+    fn skip_gate_only_exactly_one() {
+        assert!(!skip_gate_value_skips(None), "unset runs the gate");
+        assert!(!skip_gate_value_skips(Some("")), "empty runs the gate");
+        assert!(!skip_gate_value_skips(Some("0")), "\"0\" runs the gate");
+        assert!(
+            !skip_gate_value_skips(Some("false")),
+            "\"false\" runs the gate"
+        );
+        assert!(!skip_gate_value_skips(Some("yes")), "\"yes\" runs the gate");
+        assert!(!skip_gate_value_skips(Some("01")), "\"01\" is not \"1\"");
+        assert!(
+            !skip_gate_value_skips(Some(" 1")),
+            "whitespace is not trimmed into a skip"
+        );
+        assert!(skip_gate_value_skips(Some("1")), "exactly \"1\" skips");
+
+        let hook = crate::task::SCAFFOLDED_PRE_PUSH_HOOK;
+        assert!(
+            hook.contains("[ \"$NEUROSTRATA_SKIP_GATE\" = \"1\" ]"),
+            "the hook's skip test is the exact-match form"
+        );
+        assert!(
+            !hook.contains("[ -n \"$NEUROSTRATA_SKIP_GATE\" ]"),
+            "the hook must not skip on any non-empty value"
+        );
+    }
+
+    /// Task 4 fix round (I-1): the CLI half of the skip contract, pinned
+    /// behaviorally against the real binary. With
+    /// `NEUROSTRATA_SKIP_GATE=1` the gate arm logs the skip to stderr AND
+    /// prints it in its stdout report, exiting before any store work;
+    /// with "yes" it does neither — the gate actually runs (against the
+    /// fresh default store under the isolated HOME it reports clean, or
+    /// refuses *as a gate*, never as a skip).
+    #[cfg(unix)]
+    #[test]
+    fn gate_cli_skip_is_logged_to_stderr_and_report() {
+        let bin = t4_cli_binary();
+        assert!(
+            bin.is_file(),
+            "cargo test builds the CLI binary at {}",
+            bin.display()
+        );
+        let home = std::env::temp_dir().join(format!("ns-t4-clihome-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+
+        let run_gate = |skip: &str| {
+            std::process::Command::new(&bin)
+                .args(["task", "gate", "t4cli"])
+                .current_dir(&home)
+                .env("HOME", &home)
+                .env("NEUROSTRATA_SKIP_GATE", skip)
+                .output()
+                .expect("the CLI runs")
+        };
+
+        let skipped = run_gate("1");
+        assert!(
+            skipped.status.success(),
+            "a skipped gate exits cleanly: {}",
+            String::from_utf8_lossy(&skipped.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&skipped.stderr).contains(
+                "[neurostrata:gate] NEUROSTRATA_SKIP_GATE=1 is set; skipping the gate for 't4cli'."
+            ),
+            "the skip is logged to stderr: {}",
+            String::from_utf8_lossy(&skipped.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&skipped.stdout).contains(
+                "Task gate: skipped in 't4cli' (NEUROSTRATA_SKIP_GATE=1)."
+            ),
+            "the skip appears in the stdout gate report: {}",
+            String::from_utf8_lossy(&skipped.stdout)
+        );
+
+        let ran = run_gate("yes");
+        assert!(
+            !String::from_utf8_lossy(&ran.stderr).contains("skipping the gate"),
+            "SKIP_GATE=yes must not take the skip branch: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+        assert!(
+            !String::from_utf8_lossy(&ran.stdout).contains("Task gate: skipped"),
+            "SKIP_GATE=yes must not report a skip: {}",
+            String::from_utf8_lossy(&ran.stdout)
+        );
+        assert!(
+            String::from_utf8_lossy(&ran.stdout).contains("Task gate: clean in 't4cli'.")
+                || String::from_utf8_lossy(&ran.stderr)
+                    .contains("[neurostrata:gate] the task gate could not run for 't4cli'"),
+            "the gate actually ran (reported, or refused as a gate): stdout={} stderr={}",
+            String::from_utf8_lossy(&ran.stdout),
+            String::from_utf8_lossy(&ran.stderr)
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Task 4 fix round (I-1): the hook half of the skip contract,
+    /// driven through real pushes. Only exactly "1" skips — announced on
+    /// stderr, gate not run; "yes" is not a skip: the gate runs and its
+    /// verdict governs the push.
+    #[cfg(unix)]
+    #[test]
+    fn skip_gate_hook_legs_on_real_pushes() {
+        let root = t4_repo_with_remote("skiplegs");
+        install_pre_push_hook(&root, false).expect("install succeeds");
+        let (stub_bin, marker) = t4_stub_bin(&root);
+        let path = format!("{}:/usr/bin:/bin", stub_bin.display());
+
+        // "yes" is not a skip: the gate runs, and its failing verdict
+        // blocks the push.
+        let ran = t4_push_with_skip(&root, &path, Some("1"), Some("yes"));
+        assert!(
+            !ran.status.success(),
+            "SKIP_GATE=yes must not skip: the failing gate blocks the push: {}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
+        assert!(marker.exists(), "the gate ran under SKIP_GATE=yes");
+        std::fs::remove_file(&marker).unwrap();
+
+        // Exactly "1" skips: the push proceeds despite the failing gate,
+        // the gate never runs, and the skip is announced on stderr.
+        let skipped = t4_push_with_skip(&root, &path, Some("1"), Some("1"));
+        assert!(
+            skipped.status.success(),
+            "SKIP_GATE=1 skips the gate, so the push proceeds: {}",
+            String::from_utf8_lossy(&skipped.stderr)
+        );
+        assert!(!marker.exists(), "the gate did not run under SKIP_GATE=1");
+        assert!(
+            String::from_utf8_lossy(&skipped.stderr)
+                .contains("NeuroStrata task gate: skipped (NEUROSTRATA_SKIP_GATE=1)"),
+            "the hook announces its skip, never silent: {}",
+            String::from_utf8_lossy(&skipped.stderr)
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Task 4, Step 1: the installed hook, when `neurostrata-mcp` is not
+    /// on PATH, announces that the gate did NOT run and lets the push
+    /// proceed — never the old silent `exit 0`.
+    #[cfg(unix)]
+    #[test]
+    fn missing_binary_warns_loudly() {
+        let root = t4_repo_with_remote("nobinary");
+        install_pre_push_hook(&root, false).expect("install succeeds");
+        // A PATH with git but no neurostrata-mcp anywhere on it.
+        let out = t4_push(&root, "/usr/bin:/bin", None);
+        assert!(
+            out.status.success(),
+            "a missing gate binary must not block the push: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stderr)
+                .contains("warning: neurostrata-mcp not found — gate NOT run for this push"),
+            "the skip-by-absence is announced, never silent: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Task 4 fix round (F5): a gate that exits 2 — could-not-check,
+    /// never a verdict (under --strict the gate CLI itself exits only 0
+    /// or 1, so a 2 means the binary that answered was stale, foreign,
+    /// or died before reporting) — is announced on stderr, and the push
+    /// still proceeds. Before the fix round this was the one silent
+    /// pass left in the hook's own paths.
+    #[cfg(unix)]
+    #[test]
+    fn gate_exit_two_is_announced_and_passes() {
+        let root = t4_repo_with_remote("exittwo");
+        install_pre_push_hook(&root, false).expect("install succeeds");
+        let (stub_bin, marker) = t4_stub_bin(&root);
+        let path = format!("{}:/usr/bin:/bin", stub_bin.display());
+        let out = t4_push(&root, &path, Some("2"));
+        assert!(
+            out.status.success(),
+            "an exit 2 never blocks the push: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(marker.exists(), "the gate was invoked");
+        assert!(
+            String::from_utf8_lossy(&out.stderr)
+                .contains("warning: neurostrata-mcp task gate exited 2"),
+            "the could-not-run is announced, never silent: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Task 4, Step 1: the parallel PRE_PUSH_HOOK const is removed by
+    /// this task; the scaffolded hook (the surviving text) must carry
+    /// every behavior the const had, so the removal loses nothing. The
+    /// list below is the const's complete behavior inventory at the Task
+    /// 4 branch point. Two const behaviors are deliberately NOT in it —
+    /// they are the defects this task removes, replaced and pinned by
+    /// their own tests: silent exit when the binary is missing (now the
+    /// loud warning, `missing_binary_warns_loudly`) and skip on any
+    /// non-empty SKIP_GATE (now exactly "1", `skip_gate_only_exactly_one`).
+    /// Everything else must be present in the scaffold verbatim.
+    #[test]
+    fn const_and_scaffold_diff_is_empty_or_ported() {
+        let hook = crate::task::SCAFFOLDED_PRE_PUSH_HOOK;
+        assert!(
+            hook.starts_with("#!/bin/bash\n"),
+            "the scaffold starts with the bash shebang, as the removed const did"
+        );
+        for behavior in [
+            "command -v neurostrata-mcp",
+            "NAMESPACE=$(basename \"$(git rev-parse --show-toplevel)\")",
+            "neurostrata-mcp task gate \"$NAMESPACE\" --strict",
+            "code=$?",
+            "if [ $code -eq 1 ]; then",
+            "echo \"Push blocked: resolve the tasks above, or NEUROSTRATA_SKIP_GATE=1 git push\" >&2",
+            "exit 0   # 0 and 2 both pass here unless --strict flips 2 to blocking",
+        ] {
+            assert!(
+                hook.contains(behavior),
+                "behavior the removed const had is missing from the scaffold: {}",
+                behavior
+            );
+        }
+        // Fix round (F5): an exit 2 is announced, never silent — and
+        // still never blocks. (Under --strict the gate CLI itself exits
+        // only 0 or 1, so a 2 is never a verdict: a stale, foreign, or
+        // dying binary.) The announcement branch must say so and must
+        // not exit 1.
+        let two_branch = hook
+            .split("if [ $code -eq 2 ]; then")
+            .nth(1)
+            .expect("the exit-2 announcement branch exists")
+            .split("fi")
+            .next()
+            .unwrap();
+        assert!(
+            two_branch.contains("gate could NOT run for this push"),
+            "an exit 2 is announced as a could-not-run, never silent"
+        );
+        assert!(
+            !two_branch.contains("exit 1"),
             "2 never blocks in the hook itself"
         );
     }
@@ -1612,11 +3335,236 @@ mod tests {
         assert!(matches!(skew_verdict(Some(&info), (7, 9)), Skew::Stale(_)));
         assert!(matches!(skew_verdict(Some(&info), (6, 8)), Skew::Stale(_)));
     }
+
+    /// Task 1 (J9): the gate trusts a daemon only when /info reports the
+    /// build fingerprint of the binary on disk. A foreign fingerprint is
+    /// refused with a message naming both, and a daemon that cannot
+    /// identify itself at all is refused too -- /health answering is not
+    /// identity, and a squatter answers /health.
+    #[test]
+    fn the_gate_verifies_daemon_identity_before_trusting_it() {
+        let own = (7u64, 8u64);
+        let good = serde_json::json!({ "version": "1.11.0", "exe_hash": 7u64, "exe_len": 8u64, "started_at": 1 });
+        assert!(gate_verify_daemon(Some(&good), own).is_ok());
+
+        let foreign = serde_json::json!({ "version": "9.9.9", "exe_hash": 0xdeadu64, "exe_len": 1u64, "started_at": 2 });
+        let err = gate_verify_daemon(Some(&foreign), own).unwrap_err();
+        assert!(
+            err.contains("000000000000dead") && err.contains("0000000000000007"),
+            "the refusal must name the reported and expected fingerprints: {err}"
+        );
+
+        assert!(gate_verify_daemon(None, own).is_err());
+    }
+
+    // ---- Task 19 (J26): the tracing subscriber these tests presume ----
+    //
+    // Until this task the crate declared `tracing` and emitted through
+    // ~50 call sites with no subscriber installed anywhere: every event
+    // went nowhere. The production seam is `init_tracing()` at the top
+    // of `main()`: it builds the subscriber via
+    // `tracing_fmt_subscriber(std::io::stderr, tracing_env_filter())`
+    // and installs it as the global default. The writer slot is stderr
+    // because stdout is the MCP stdio channel — a log line there would
+    // corrupt the protocol. These tests drive the same builder with a
+    // capture writer standing in the stderr slot, installed as a scoped
+    // default so they never contend for the process-global one.
+
+    /// An in-memory `Write` sink handed to the fmt layer through its
+    /// `MakeWriter` closure; cloning shares the one buffer.
+    #[derive(Clone, Default)]
+    struct CapturedLog(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl CapturedLog {
+        fn text(&self) -> String {
+            String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+        }
+    }
+
+    impl std::io::Write for CapturedLog {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Serializes the tests that set `RUST_LOG` (env is process-global)
+    /// and restores the caller's prior value on drop.
+    struct RustLogRestore {
+        prior: Option<std::ffi::OsString>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl RustLogRestore {
+        fn set(value: Option<&str>) -> Self {
+            let lock = crate::test_support::ENV_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let prior = std::env::var_os("RUST_LOG");
+            match value {
+                Some(v) => std::env::set_var("RUST_LOG", v),
+                None => std::env::remove_var("RUST_LOG"),
+            }
+            Self { prior, _lock: lock }
+        }
+    }
+
+    impl Drop for RustLogRestore {
+        fn drop(&mut self) {
+            match &self.prior {
+                Some(v) => std::env::set_var("RUST_LOG", v),
+                None => std::env::remove_var("RUST_LOG"),
+            }
+        }
+    }
+
+    #[test]
+    fn tracing_output_reaches_stderr() {
+        // The production entry point itself runs, and running it twice
+        // in one process is not an error (a re-exec'd helper or an
+        // embedded caller must never panic on the one-shot global).
+        init_tracing();
+        init_tracing();
+
+        let _env = RustLogRestore::set(None); // default filter: info
+        let captured = CapturedLog::default();
+        let sink = captured.clone();
+        let subscriber = tracing_fmt_subscriber(move || sink.clone(), tracing_env_filter());
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!("tracing_output_reaches_stderr marker");
+        });
+        let text = captured.text();
+        assert!(
+            text.contains("tracing_output_reaches_stderr marker"),
+            "the info event lands in the stderr slot: {text}"
+        );
+        assert!(
+            text.contains("INFO"),
+            "the default filter admits info, formatted with its level: {text}"
+        );
+    }
+
+    #[test]
+    fn stdout_carries_no_log_output() {
+        let _env = RustLogRestore::set(None);
+        let captured = CapturedLog::default();
+        let sink = captured.clone();
+        let subscriber = tracing_fmt_subscriber(move || sink.clone(), tracing_env_filter());
+        // Stand-ins for the stdio mode's two channels: `captured` plays
+        // the stderr role (the writer production hands the fmt layer);
+        // a plain buffer plays stdout, written the way the stdio loop
+        // writes a protocol frame.
+        let mut stdout_role: Vec<u8> = Vec::new();
+        tracing::subscriber::with_default(subscriber, || {
+            stdout_role.extend_from_slice(b"{\"jsonrpc\":\"2.0\",\"id\":1}\n");
+            tracing::info!("stdout_carries_no_log_output marker");
+        });
+        assert_eq!(
+            String::from_utf8(stdout_role).unwrap(),
+            "{\"jsonrpc\":\"2.0\",\"id\":1}\n",
+            "stdout carries protocol bytes only — no log output"
+        );
+        assert!(
+            captured.text().contains("stdout_carries_no_log_output marker"),
+            "the log line went to the stderr slot instead"
+        );
+    }
+
+    #[test]
+    fn rust_log_filter_is_honored() {
+        let _env = RustLogRestore::set(Some("error"));
+        let captured = CapturedLog::default();
+        let sink = captured.clone();
+        let subscriber = tracing_fmt_subscriber(move || sink.clone(), tracing_env_filter());
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!("rust_log_filter_is_honored info marker");
+            tracing::error!("rust_log_filter_is_honored error marker");
+        });
+        let text = captured.text();
+        assert!(
+            text.contains("rust_log_filter_is_honored error marker"),
+            "the error event passes the RUST_LOG=error filter: {text}"
+        );
+        assert!(
+            !text.contains("rust_log_filter_is_honored info marker"),
+            "the info event is suppressed by RUST_LOG=error: {text}"
+        );
+    }
+
+    #[test]
+    fn unparsable_rust_log_falls_back_to_info() {
+        // `lolwut` is not a level, so the directive is invalid and
+        // `try_from_env` errors: the fallback must yield the `info`
+        // default — not a bricked startup, and not a permissive
+        // filter that lets everything through.
+        let _env = RustLogRestore::set(Some("neurostrata_mcp=lolwut"));
+        let captured = CapturedLog::default();
+        let sink = captured.clone();
+        let subscriber = tracing_fmt_subscriber(move || sink.clone(), tracing_env_filter());
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!("unparsable_rust_log_falls_back_to_info info marker");
+            tracing::debug!("unparsable_rust_log_falls_back_to_info debug marker");
+        });
+        let text = captured.text();
+        assert!(
+            text.contains("unparsable_rust_log_falls_back_to_info info marker"),
+            "the info event passes the fallback filter: {text}"
+        );
+        assert!(
+            !text.contains("unparsable_rust_log_falls_back_to_info debug marker"),
+            "the debug event is suppressed — the fallback is info, not trace: {text}"
+        );
+    }
 }
 
 /// Where every CLI HTTP call goes. A constant because `bus-metrics` names it
 /// in a refusal an operator has to be able to copy.
 const DAEMON_ADDR: &str = "127.0.0.1:34343";
+
+/// The auth headers every CLI HTTP call carries: the daemon bearer, and
+/// -- for the destructive-class commands -- the operator token (DR-5).
+fn daemon_auth_headers(with_operator: bool) -> reqwest::header::HeaderMap {
+    let mut headers = reqwest::header::HeaderMap::new();
+    if let Some(token) = daemon::read_token_file("daemon.token") {
+        if let Ok(val) = reqwest::header::HeaderValue::from_str(&format!("Bearer {}", token)) {
+            headers.insert(reqwest::header::AUTHORIZATION, val);
+        }
+    }
+    if with_operator {
+        if let Some(operator) = daemon::read_token_file("operator.token") {
+            if let Ok(val) = reqwest::header::HeaderValue::from_str(&operator) {
+                headers.insert(
+                    reqwest::header::HeaderName::from_static("x-neurostrata-operator"),
+                    val,
+                );
+            }
+        }
+    }
+    headers
+}
+
+/// Build an HTTP client that carries the daemon's bearer token (if available)
+/// in its default headers, so CLI proxy calls authenticate against the daemon.
+fn daemon_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .default_headers(daemon_auth_headers(false))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
+/// The daemon HTTP client plus the operator token, for the CLI commands
+/// whose routes are destructive-class (/shutdown, /backup): the daemon
+/// refuses those with the bearer alone.
+fn daemon_operator_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .default_headers(daemon_auth_headers(true))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
 
 /// How long `bus-metrics` waits for the daemon's answer. Same ten seconds the
 /// other POSTs in this file use, and for the same reason an unbound port on
@@ -1688,7 +3636,7 @@ async fn run_bus_metrics(
         return Ok(BUS_METRICS_FAILURE_EXIT);
     }
 
-    let res = match reqwest::Client::new()
+    let res = match daemon_http_client()
         .post(format!("http://{addr}/bus/metrics"))
         .timeout(BUS_METRICS_TIMEOUT)
         .send()
@@ -1722,6 +3670,268 @@ async fn run_bus_metrics(
     Ok(0)
 }
 
+async fn restore_snapshot_bundle(
+    snapshot_dir: &std::path::Path,
+    target: &std::path::Path,
+    config: &Config,
+) -> anyhow::Result<Vec<String>> {
+    let snapshot = snapshot_dir.join("ladybug.store");
+    let manifest_path = snapshot_dir.join("manifest.json");
+    if !snapshot.is_file() || !manifest_path.is_file() {
+        anyhow::bail!("snapshot is incomplete: database or manifest is missing");
+    }
+    let manifest: serde_json::Value = serde_json::from_slice(&std::fs::read(&manifest_path)?)?;
+    if manifest.get("format").and_then(|v| v.as_str()) != Some("neurostrata-snapshot") {
+        anyhow::bail!("snapshot manifest has an unsupported format");
+    }
+    let version = manifest
+        .get("version")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| anyhow::anyhow!("snapshot manifest has no valid version"))?;
+    if version != 1 && version != 2 {
+        anyhow::bail!("snapshot manifest version {version} is unsupported");
+    }
+    if let Some(bytes) = manifest.get("bytes").and_then(|v| v.as_u64()) {
+        if std::fs::metadata(&snapshot)?.len() != bytes {
+            anyhow::bail!("snapshot database size does not match its manifest");
+        }
+    }
+    let manifest_stages = if version == 2 {
+        let entries = manifest
+            .get("stage_generations")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| anyhow::anyhow!("snapshot stage provenance is missing"))?;
+        let mut names = Vec::with_capacity(entries.len());
+        let mut unique = HashSet::new();
+        for entry in entries {
+            let name = entry
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("snapshot stage identifier is not a string"))?;
+            if !crate::traits::is_internal_ingest_stage_namespace(name)
+                || !unique.insert(name.to_string())
+            {
+                anyhow::bail!("snapshot contains invalid or duplicate stage provenance");
+            }
+            names.push(name.to_string());
+        }
+        Some(names)
+    } else {
+        None
+    };
+
+    let dimensions = embed::configured_dimensions()?;
+    let embedder_id = embed::configured_embedder_id()?;
+    let limits = profiled_store_limits(config)?;
+    let parent = target.parent().unwrap_or_else(|| std::path::Path::new("."));
+    std::fs::create_dir_all(parent)?;
+    let writer_target = target.to_path_buf();
+    let _restore_writer = tokio::task::spawn_blocking(move || {
+        crate::store::ladybug::acquire_database_writer_lock(&writer_target)
+    })
+    .await??;
+    #[cfg(test)]
+    test_restore_target_lock_barrier(target);
+    let target_wal = appended_path(target, ".wal");
+    let target_marker = crate::store::ladybug::width_marker_path(target);
+    let restore_marker = crate::store::ladybug::restore_in_progress_path(target);
+    if target.exists() || target_wal.exists() || target_marker.exists() || restore_marker.exists() {
+        anyhow::bail!("restore destination or a sibling sidecar already exists");
+    }
+    let target_name = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("database");
+    let temp_dir = parent.join(format!(".{target_name}.restore-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&temp_dir)?;
+
+    let marker_file = match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&restore_marker)
+    {
+        Ok(file) => file,
+        Err(error) => {
+            let _ = std::fs::remove_dir_all(&temp_dir);
+            return Err(error.into());
+        }
+    };
+    drop(marker_file);
+    let temp_db = temp_dir.join("ladybug.store");
+    let temp_wal = appended_path(&temp_db, ".wal");
+    let temp_marker = crate::store::ladybug::width_marker_path(&temp_db);
+    let snapshot_wal = appended_path(&snapshot, ".wal");
+    let snapshot_marker = crate::store::ladybug::width_marker_path(&snapshot);
+    let mut restored_leases = Vec::new();
+    let mut target_wal_installed = false;
+    let mut target_marker_installed = false;
+    let mut target_db_installed = false;
+
+    let outcome = async {
+        std::fs::copy(&snapshot, &temp_db)?;
+        if snapshot_wal.exists() {
+            std::fs::copy(&snapshot_wal, &temp_wal)?;
+        }
+        if snapshot_marker.exists() {
+            std::fs::copy(&snapshot_marker, &temp_marker)?;
+        }
+        let candidate = LadybugStore::new_with_identity_limits(
+            &temp_db,
+            dimensions,
+            embedder_id.clone(),
+            limits,
+        )?;
+        candidate.init("restore-validation").await?;
+        let mut db_stages = candidate.ingest_stage_namespaces().await?;
+        db_stages.sort();
+        if let Some(mut listed) = manifest_stages.clone() {
+            listed.sort();
+            if listed != db_stages {
+                anyhow::bail!(
+                    "snapshot manifest and database stage provenance do not match (manifest: {:?}; database: {:?})",
+                    listed,
+                    db_stages
+                );
+            }
+        }
+        drop(candidate);
+
+        restored_leases = crate::store::ladybug::create_restored_stage_leases(target, &db_stages)?;
+        // Opening the temporary bundle above may replay its WAL and the
+        // validation init may update the catalog. Install the WAL that now
+        // belongs to the validated temporary database; pairing that database
+        // with the pre-validation snapshot WAL can replay changes twice or
+        // apply offsets against a different DB image.
+        if temp_wal.exists() {
+            std::fs::copy(&temp_wal, &target_wal)?;
+            target_wal_installed = true;
+        }
+        if temp_marker.exists() {
+            std::fs::copy(&temp_marker, &target_marker)?;
+            target_marker_installed = true;
+        }
+        std::fs::rename(&temp_db, target)?;
+        target_db_installed = true;
+        std::fs::remove_file(&restore_marker)?;
+        // The complete DB, WAL, marker, and fresh lease provenance are now
+        // visible. Release the installation lock before the normal constructor
+        // below reacquires it for post-restore validation.
+        drop(_restore_writer);
+
+        // The database plus all sibling provenance is now complete. Verify the
+        // installed copy after removing the interlock; a failure leaves a
+        // complete, inspectable restore rather than deleting the snapshot data.
+        let restored =
+            LadybugStore::new_with_identity_limits(target, dimensions, embedder_id, limits)?;
+        restored.init("restore-validation").await?;
+        restored.list_namespaces().await
+    }
+    .await;
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    if outcome.is_err() && !target_db_installed {
+        for path in restored_leases {
+            let _ = std::fs::remove_file(path);
+        }
+        if target_wal_installed {
+            let _ = std::fs::remove_file(&target_wal);
+        }
+        if target_marker_installed {
+            let _ = std::fs::remove_file(&target_marker);
+        }
+        let _ = std::fs::remove_file(&restore_marker);
+    }
+    outcome
+}
+
+#[cfg(test)]
+static TEST_RESTORE_TARGET_LOCK_BARRIER: std::sync::OnceLock<
+    std::sync::Mutex<Option<(std::path::PathBuf, std::path::PathBuf)>>,
+> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+fn set_test_restore_target_lock_barrier(target: std::path::PathBuf, barrier: std::path::PathBuf) {
+    *TEST_RESTORE_TARGET_LOCK_BARRIER
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .unwrap() = Some((target, barrier));
+}
+
+#[cfg(test)]
+fn test_restore_target_lock_barrier(target: &std::path::Path) {
+    let barrier = {
+        let mut state = TEST_RESTORE_TARGET_LOCK_BARRIER
+            .get_or_init(|| std::sync::Mutex::new(None))
+            .lock()
+            .unwrap();
+        match state.as_ref() {
+            Some((expected, _)) if expected == target => state.take().unwrap().1,
+            _ => return,
+        }
+    };
+    std::fs::write(&barrier, "entered").unwrap();
+    let mut release = barrier.as_os_str().to_os_string();
+    release.push(".release");
+    let release = std::path::PathBuf::from(release);
+    let started = std::time::Instant::now();
+    while !release.exists() {
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(15),
+            "restore target-lock test barrier timed out"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+fn appended_path(path: &std::path::Path, suffix: &str) -> std::path::PathBuf {
+    let mut value = path.as_os_str().to_os_string();
+    value.push(suffix);
+    std::path::PathBuf::from(value)
+}
+
+/// Install the process-wide `tracing` subscriber — until this existed,
+/// the crate's ~50 `tracing::` call sites emitted into the void (J26):
+/// `tracing` was declared, call sites assumed a subscriber, and none
+/// was ever installed. Called once at the top of `main()`, before the
+/// runtime and every mode dispatch, so the daemon, the stdio proxy,
+/// and every CLI command all log through the one subscriber.
+///
+/// The fmt layer writes to **stderr**: stdout is the MCP stdio channel,
+/// and a log line there would corrupt the protocol.
+fn init_tracing() {
+    let subscriber = tracing_fmt_subscriber(std::io::stderr, tracing_env_filter());
+    // The global default can be installed only once per process. A
+    // second call — an embedded caller, a re-exec'd helper — must
+    // never panic, so the already-installed error is dropped.
+    let _ = tracing::subscriber::set_global_default(subscriber);
+}
+
+/// The filter for the startup subscriber: `RUST_LOG` when it is set and
+/// parses, the `info` default otherwise. An unparsable `RUST_LOG`
+/// falls back to the default rather than bricking startup on a typo.
+fn tracing_env_filter() -> tracing_subscriber::EnvFilter {
+    tracing_subscriber::EnvFilter::try_from_env("RUST_LOG")
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"))
+}
+
+/// The fmt subscriber over an arbitrary writer: production passes
+/// `std::io::stderr`; the tests pass a capture buffer in the same
+/// slot. ANSI escapes are off — the readers are operators tailing a
+/// terminal, a log file, or the daemon's captured stderr, and plain
+/// text serves all three.
+fn tracing_fmt_subscriber<W>(
+    writer: W,
+    filter: tracing_subscriber::EnvFilter,
+) -> impl tracing::Subscriber + Send + Sync + 'static
+where
+    W: for<'a> tracing_subscriber::fmt::MakeWriter<'a> + Send + Sync + 'static,
+{
+    tracing_subscriber::fmt()
+        .with_writer(writer)
+        .with_ansi(false)
+        .with_env_filter(filter)
+        .finish()
+}
+
 /// The tokio runtime, built by hand rather than by `#[tokio::main]`.
 ///
 /// The only reason to build it by hand is the crash handler. `SA_ONSTACK`
@@ -1740,6 +3950,7 @@ fn runtime() -> anyhow::Result<tokio::runtime::Runtime> {
 }
 
 fn main() -> anyhow::Result<()> {
+    init_tracing();
     let runtime = runtime()?;
     runtime.block_on(run())
 }
@@ -1795,7 +4006,7 @@ async fn run() -> anyhow::Result<()> {
                 eprintln!(
                     "NeuroStrata daemon is starting (lock held); waiting for it to answer..."
                 );
-                let client = reqwest::Client::new();
+                let client = daemon_http_client();
                 for _ in 0..1200 {
                     // up to 2 minutes
                     if client
@@ -1836,7 +4047,7 @@ async fn run() -> anyhow::Result<()> {
             // refusing -- the behaviour DaemonProbe exists to describe -- so an
             // untimed send here could spend the whole "30 seconds max" inside
             // one call.
-            let client = reqwest::Client::new();
+            let client = daemon_http_client();
             for _ in 0..300 {
                 // 30 seconds max
                 if client
@@ -1877,11 +4088,15 @@ async fn run() -> anyhow::Result<()> {
                 // Taken before the database opens. `shutdown` waits for this lock
                 // to be released rather than for the port to close.
                 let _ = DAEMON_LOCK.set(take_daemon_lock(&config.db_path)?);
-                let embedder = build_embedder()?;
-                let vector_store: Arc<dyn VectorStore> = Arc::new(LadybugStore::new(
-                    config.db_path.to_string_lossy().to_string(),
-                    embedder.dimensions(),
-                )?);
+                let startup = resolve_startup(&config)?;
+                let embedder = embed::build_embedder_for(&startup.resolution.model)?;
+                let vector_store: Arc<dyn VectorStore> =
+                    Arc::new(LadybugStore::new_with_identity_limits(
+                        config.db_path.to_string_lossy().to_string(),
+                        embedder.dimensions(),
+                        embedder.embedder_id().to_string(),
+                        startup.limits,
+                    )?);
                 vector_store.init("global").await?;
                 let outcome = daemon::start_daemon(
                     embedder,
@@ -1950,7 +4165,9 @@ async fn run() -> anyhow::Result<()> {
                     DaemonProbe::Responsive => {}
                 }
 
-                let client = reqwest::Client::new();
+                // /shutdown is destructive-class: the operator client, or
+                // the daemon refuses the request (DR-5).
+                let client = daemon_operator_client();
                 // A busy daemon may not answer this either. That is not a
                 // failure: the request is queued, so fall through to the wait.
                 if probe != DaemonProbe::Absent {
@@ -2094,7 +4311,8 @@ async fn run() -> anyhow::Result<()> {
                 // The database is single-writer. When a daemon holds it, ask the
                 // daemon to do the work rather than fighting it for the lock.
                 if daemon_running {
-                    let res = reqwest::Client::new()
+                    // /backup is destructive-class: bearer + operator (DR-5).
+                    let res = daemon_operator_client()
                         .post("http://127.0.0.1:34343/backup")
                         .json(&serde_json::json!({ "dir": dir }))
                         .send()
@@ -2115,19 +4333,18 @@ async fn run() -> anyhow::Result<()> {
                     std::process::exit(1);
                 }
                 // The width opens the store; exporting never embeds anything.
-                let vector_store: Arc<dyn VectorStore> = Arc::new(LadybugStore::new(
-                    config.db_path.to_string_lossy().to_string(),
-                    embed::configured_dimensions()?,
-                )?);
+                let vector_store: Arc<dyn VectorStore> =
+                    Arc::new(LadybugStore::new_with_identity_limits(
+                        config.db_path.to_string_lossy().to_string(),
+                        embed::configured_dimensions()?,
+                        embed::configured_embedder_id()?,
+                        profiled_store_limits(&config)?,
+                    )?);
                 vector_store.export_database(&dir).await?;
                 println!("Backed up to {}", dir);
                 return Ok(());
             }
             Commands::Restore { dir, into } => {
-                // A snapshot is a file copy, so restoring means copying it into
-                // place BEFORE any engine opens it -- an open engine maps the
-                // file it was created with, and copying under a live handle is
-                // exactly the memory-unsafety class the backup bug came from.
                 let config = Config::from_default_path()?;
                 let target = into
                     .map(std::path::PathBuf::from)
@@ -2139,36 +4356,8 @@ async fn run() -> anyhow::Result<()> {
                     eprintln!("Then point db_path in ~/.config/neurostrata/config.json at it once you have checked it.");
                     std::process::exit(1);
                 }
-                if let Some(parent) = target.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-
-                let snapshot = std::path::Path::new(&dir).join("ladybug.store");
-                if !snapshot.exists() {
-                    eprintln!(
-                        "{:?} does not look like a snapshot: no ladybug.store inside it.",
-                        dir
-                    );
-                    std::process::exit(1);
-                }
-                std::fs::copy(&snapshot, &target)?;
-                let mut wal = snapshot.clone().into_os_string();
-                wal.push(".wal");
-                let wal = std::path::PathBuf::from(wal);
-                if wal.exists() {
-                    let mut target_wal = target.clone().into_os_string();
-                    target_wal.push(".wal");
-                    std::fs::copy(&wal, std::path::PathBuf::from(target_wal))?;
-                }
-
-                // Opened only after the copy, to verify the restored store
-                // reads back and to report what it holds.
-                let vector_store: Arc<dyn VectorStore> = Arc::new(LadybugStore::new(
-                    target.to_string_lossy().to_string(),
-                    embed::configured_dimensions()?,
-                )?);
-
-                let namespaces = vector_store.list_namespaces().await.unwrap_or_default();
+                let namespaces =
+                    restore_snapshot_bundle(std::path::Path::new(&dir), &target, &config).await?;
                 println!("Restored {} into {:?}", dir, target);
                 if !namespaces.is_empty() {
                     println!(
@@ -2225,12 +4414,15 @@ async fn run() -> anyhow::Result<()> {
                     }
 
                     // Both policies print the escape hatch (section 5.1).
-                    if std::env::var("NEUROSTRATA_SKIP_GATE")
-                        .map(|v| !v.is_empty())
-                        .unwrap_or(false)
-                    {
+                    if skip_gate_value_skips(
+                        std::env::var("NEUROSTRATA_SKIP_GATE").ok().as_deref(),
+                    ) {
                         eprintln!(
-                            "[neurostrata:gate] NEUROSTRATA_SKIP_GATE is set; skipping the gate for '{}'.",
+                            "[neurostrata:gate] NEUROSTRATA_SKIP_GATE=1 is set; skipping the gate for '{}'.",
+                            namespace
+                        );
+                        println!(
+                            "Task gate: skipped in '{}' (NEUROSTRATA_SKIP_GATE=1).",
                             namespace
                         );
                         return Ok(());
@@ -2239,30 +4431,52 @@ async fn run() -> anyhow::Result<()> {
                     let outcome: Result<serde_json::Value, String> = if probe
                         == DaemonProbe::Responsive
                     {
-                        match reqwest::Client::new()
-                            .post("http://127.0.0.1:34343/tasks/gate")
-                            .json(&serde_json::json!({
-                                "namespace": namespace,
-                                "strict": strict,
-                            }))
-                            .timeout(std::time::Duration::from_secs(10))
-                            .send()
-                            .await
-                        {
-                            Ok(resp) if resp.status().is_success() => match resp.text().await {
-                                Ok(body) => serde_json::from_str::<serde_json::Value>(&body)
-                                    .map_err(|e| {
-                                        format!("the daemon's gate reply could not be read: {}", e)
-                                    }),
+                        // Identity before trust (Task 1, J9): verify the
+                        // answering process is the expected daemon build
+                        // via /info before sending the gate request or
+                        // believing its answer -- a squatter on the port
+                        // answers /health too, and would harvest the
+                        // bearer token the gate request carries.
+                        match gate_verify_daemon(
+                            fetch_daemon_info().await.as_ref(),
+                            daemon::exe_fingerprint(),
+                        ) {
+                            Err(e) => Err(e),
+                            Ok(()) => match daemon_http_client()
+                                .post("http://127.0.0.1:34343/tasks/gate")
+                                .json(&serde_json::json!({
+                                    "namespace": namespace,
+                                    "strict": strict,
+                                }))
+                                .timeout(std::time::Duration::from_secs(10))
+                                .send()
+                                .await
+                            {
+                                Ok(resp) if resp.status().is_success() => {
+                                    match resp.text().await {
+                                        Ok(body) => {
+                                            serde_json::from_str::<serde_json::Value>(&body)
+                                                .map_err(|e| {
+                                                    format!(
+                                                        "the daemon's gate reply could not be read: {}",
+                                                        e
+                                                    )
+                                                })
+                                        }
+                                        Err(e) => Err(format!(
+                                            "the daemon's gate reply could not be read: {}",
+                                            e
+                                        )),
+                                    }
+                                }
+                                Ok(resp) => Err(format!(
+                                    "the daemon answered {} on /tasks/gate",
+                                    resp.status()
+                                )),
                                 Err(e) => {
-                                    Err(format!("the daemon's gate reply could not be read: {}", e))
+                                    Err(format!("the request to the daemon failed: {}", e))
                                 }
                             },
-                            Ok(resp) => Err(format!(
-                                "the daemon answered {} on /tasks/gate",
-                                resp.status()
-                            )),
-                            Err(e) => Err(format!("the request to the daemon failed: {}", e)),
                         }
                     } else {
                         match Config::from_default_path() {
@@ -2338,7 +4552,7 @@ async fn run() -> anyhow::Result<()> {
                 // Advisory twin of the gate (section 4): always exits 0.
                 TaskCommands::Validate { namespace } => {
                     let fetched = if probe == DaemonProbe::Responsive {
-                        match reqwest::Client::new()
+                        match daemon_http_client()
                             .post("http://127.0.0.1:34343/mcp")
                             .json(&serde_json::json!({
                                 "jsonrpc": "2.0",
@@ -2415,7 +4629,7 @@ async fn run() -> anyhow::Result<()> {
                     from_beads,
                 } => {
                     let summary_json: serde_json::Value = if daemon_running {
-                        let res = reqwest::Client::new()
+                        let res = daemon_http_client()
                             .post("http://127.0.0.1:34343/tasks/import")
                             .json(&serde_json::json!({ "namespace": namespace, "from_beads": from_beads }))
                             .send()
@@ -2434,10 +4648,13 @@ async fn run() -> anyhow::Result<()> {
                             std::process::exit(1);
                         }
                         let embedder = build_embedder()?;
-                        let vector_store: Arc<dyn VectorStore> = Arc::new(LadybugStore::new(
-                            config.db_path.to_string_lossy().to_string(),
-                            embedder.dimensions(),
-                        )?);
+                        let vector_store: Arc<dyn VectorStore> =
+                            Arc::new(LadybugStore::new_with_identity_limits(
+                                config.db_path.to_string_lossy().to_string(),
+                                embedder.dimensions(),
+                                embedder.embedder_id().to_string(),
+                                profiled_store_limits(&config)?,
+                            )?);
                         match crate::task::import_beads(
                             vector_store,
                             embedder.clone(),
@@ -2507,34 +4724,19 @@ async fn run() -> anyhow::Result<()> {
                         );
                         std::process::exit(1);
                     }
-                    let hooks_dir = root.join(".git/hooks");
-                    if !hooks_dir.is_dir() {
-                        std::fs::create_dir_all(&hooks_dir)?;
+                    match install_pre_push_hook(&root, force) {
+                        Ok(target) => {
+                            println!(
+                                "Installed the NeuroStrata task gate at {}.",
+                                target.display()
+                            );
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            eprintln!("{}", e);
+                            std::process::exit(1);
+                        }
                     }
-                    let target = hooks_dir.join("pre-push");
-                    // Overwriting our own hook needs no flag: --force is for
-                    // a pre-push somebody else wrote.
-                    let ours = std::fs::read_to_string(&target)
-                        .map(|content| content.contains("NeuroStrata task gate"))
-                        .unwrap_or(false);
-                    if target.exists() && !ours && !force {
-                        eprintln!(
-                            "{} already exists and was not written by NeuroStrata.",
-                            target.display()
-                        );
-                        eprintln!(
-                            "Re-run with --force to replace it with the NeuroStrata task gate:"
-                        );
-                        eprintln!("  neurostrata-mcp hooks install --force");
-                        std::process::exit(1);
-                    }
-                    std::fs::write(&target, PRE_PUSH_HOOK)?;
-                    set_hook_executable(&target)?;
-                    println!(
-                        "Installed the NeuroStrata task gate at {}.",
-                        target.display()
-                    );
-                    return Ok(());
                 }
             },
             other => {
@@ -2606,7 +4808,7 @@ async fn run() -> anyhow::Result<()> {
                                     .append_pair("source_id", &anchor.source_id);
                             }
                         }
-                        let res = reqwest::Client::new().get(url).send().await?;
+                        let res = daemon_http_client().get(url).send().await?;
                         let status = res.status();
                         let body = res.text().await.unwrap_or_default();
                         if !status.is_success() {
@@ -2655,11 +4857,15 @@ async fn run() -> anyhow::Result<()> {
                     eprintln!("{}", DAEMON_BUSY_MESSAGE);
                     std::process::exit(1);
                 }
-                let embedder = build_embedder()?;
-                let vector_store: Arc<dyn VectorStore> = Arc::new(LadybugStore::new(
-                    config.db_path.to_string_lossy().to_string(),
-                    embedder.dimensions(),
-                )?);
+                let startup = resolve_startup(&config)?;
+                let embedder = embed::build_embedder_for(&startup.resolution.model)?;
+                let vector_store: Arc<dyn VectorStore> =
+                    Arc::new(LadybugStore::new_with_identity_limits(
+                        config.db_path.to_string_lossy().to_string(),
+                        embedder.dimensions(),
+                        embedder.embedder_id().to_string(),
+                        startup.limits,
+                    )?);
                 let read = ReadSource::Direct(vector_store.clone());
 
                 match other {
