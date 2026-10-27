@@ -104,6 +104,18 @@ class VerificationResult:
             and not self.timed_out
             and not self.survivors_remaining
             and self.tests_collected != 0
+            # A Python leg whose collected count is unproven
+            # (None — e.g. a pytest run whose junitxml report
+            # channel produced nothing, issue #53 round 2) fails
+            # the gate exactly like a proven zero: the gate's
+            # question is whether the leg PROVED it collected
+            # tests, and an absent proof is not a pass. For
+            # non-Python commands the count never applies —
+            # _count_collected returns None for them by design.
+            and not (
+                self.command.id in _PYTHON_LEG_IDS
+                and self.tests_collected is None
+            )
         )
 
 
@@ -1483,9 +1495,10 @@ def _count_collected(
     by _pytest_summary_count. This is no longer the count of
     record for a real run: run_verification composes it with the
     run's junitxml report (see _pytest_collected_count), and this
-    channel is what the composition falls back to when the
-    report channel abstains, and the cross-check a present
-    report is judged against. A transcript with no summary line
+    channel is the cross-check a present report is judged
+    against. It never carries the count on its own: when the
+    report channel abstains, the composed count is unproven
+    (None), not this channel's number (issue #53, round 2). A transcript with no summary line
     at all (dots only, or quiet levels stacked past what
     PYTEST_ARGV's net verbosity preserves — Codex P2, round 5)
     parses to 0 here: verbosity-independent evidence was
@@ -1563,45 +1576,65 @@ def _junitxml_count(report_path: Path) -> int | None:
 
 def _pytest_collected_count(
     report_count: int | None, stdout: str, stderr: str
-) -> int:
+) -> int | None:
     """The pytest leg's collected count of record (issue #53),
     composed from the run's two evidence channels:
 
     - the junitxml report the same run wrote to a tempfile
       outside the tree (*report_count*, None when the report
-      channel abstains — the plugin was blocked, the path was
-      redirected, or the file is not a parseable report), and
+      channel abstains — the file is missing, empty, oversized,
+      unparseable, or not a junit report), and
     - the transcript summary (_pytest_summary_count, None when
       verbosity suppressed it).
 
-    A present report is the count — verbosity cannot stack it
-    away, and passive project config cannot redirect or inflate
-    it (the verifier's --junitxml is a command-line option: it
-    beats the same option in addopts, which are prepended). When
-    a summary survived verbosity it must AGREE with the report:
-    the two channels describe the same run, and a contradiction
-    means at least one was written by something other than the
-    runner's own accounting, so the count is 0 and the leg fails
-    closed. The report stands alone only when no summary exists
-    — exactly the stacked-quiet case whose absence of evidence
-    was the defect. With no report at all, the transcript
-    channel decides exactly as _count_collected always has.
+    The composition, by which channels the run produced:
+
+    - Report present: its count is the count — verbosity cannot
+      stack it away, and passive project config cannot redirect
+      or inflate it (the verifier's --junitxml is a
+      command-line option: it beats the same option in addopts,
+      which are prepended). When a summary survived verbosity
+      it must AGREE with the report: the two channels describe
+      the same run, and a contradiction means at least one was
+      written by something other than the runner's own
+      accounting, so the count is 0 and the leg fails closed.
+      The report stands alone only when no summary exists —
+      exactly the stacked-quiet case whose absence of evidence
+      was the defect.
+    - Report absent: the count is UNPROVEN (None) and the leg
+      fails the count gate (round 2) — the transcript is never
+      believed on its own. A completed pytest session writes
+      its report unconditionally, zero-collection sessions
+      included, so an absent report after a completed run
+      means the tree's own bound config switched the evidence
+      channel off (a passive `addopts = -p no:junitxml` line
+      suffices) or in-tree code interfered with it; either way
+      the run produced none of the evidence the verifier chose,
+      and a channel the tree can switch off cannot be replaced
+      by the transcript, whose summary line in-tree code can
+      print verbatim (the fd-2 forgery). Suppression is
+      self-defeating: it buys a failed gate, never a pass.
+      Runs the exit status already fails are unaffected in
+      outcome — a spawn error produced no run at all, and a
+      killed or usage-error run wrote no report either; for
+      those, the absent report is not what fails them.
 
     Trust level, stated plainly: both channels are produced
-    inside the runner process, and a tree-supplied hook running
-    there (a conftest session-finish overwrite of the report
-    file; a fake summary written to fd 2 at terminal-summary
-    time) can forge either one ALONE — that is the transcript's
-    long-standing trust level (issue #54's family: in-process
-    hooks and reporter plugins are trusted like the interpreter
-    itself, and the forging code is digest-bound in the sealed
-    tree). The composition raises the bar to forging both
-    channels consistently in the same run; it does not claim a
-    same-run channel can do more.
+    inside the runner process, and in-tree code running there
+    sits at the interpreter's own trust level (issue #54's
+    family; the forging code is digest-bound in the sealed
+    tree). When both channels are present, defeating the count
+    requires forging both to the same number in the same run.
+    In the report-alone case (a quiet tree) the count rests on
+    the report channel by itself, and a tree whose own code
+    overwrites that report defeats it — the same exposure
+    class as a conftest monkeypatching assertions. No same-run
+    channel can do better, and the composition claims nothing
+    stronger.
     """
     summary = _pytest_summary_count(stdout, stderr)
     if report_count is None:
-        return summary if summary is not None else 0
+        return None
     if summary is not None and summary != report_count:
         return 0
     return report_count
@@ -2149,6 +2182,11 @@ def run_all(
                 print("VERIFY: survivors remain after reap bound")
             if result.tests_collected == 0:
                 print("VERIFY: zero tests collected")
+            if (
+                result.tests_collected is None
+                and command.id in _PYTHON_LEG_IDS
+            ):
+                print("VERIFY: collected count unproven")
             print(f"VERIFY: stopped at first failure ({command.id})")
             return 1
         if between_commands is not None:

@@ -34,6 +34,41 @@ def write(root: Path, name: str, content: str = "") -> Path:
     return path
 
 
+def _fake_pytest_command(
+    transcript: str, report_count: int | None, exit_code: int = 0
+) -> VerificationCommand:
+    """A stand-in pytest leg producing BOTH evidence channels a
+    real run produces (issue #53): it prints *transcript* and —
+    unless *report_count* is None — writes a junitxml report with
+    that many testcases to the --junitxml path run_verification
+    appends to the executed argv. A fake that only prints a
+    transcript simulates a suppressed report channel, not a real
+    run: since the round-2 fix such a leg's count is unproven and
+    the count gate fails it, so gate-logic fixtures must write
+    the report to stand for a genuine pytest leg.
+    """
+    lines = [f"print({transcript!r})"]
+    if report_count is not None:
+        body = (
+            '<testsuites><testsuite tests="%d">' % report_count
+            + "<testcase classname='x' name='y'/>" * report_count
+            + "</testsuite></testsuites>"
+        )
+        lines += [
+            "import sys",
+            "_p = next(a.split('=', 1)[1] for a in sys.argv"
+            " if a.startswith('--junitxml='))",
+            f"open(_p, 'w').write({body!r})",
+        ]
+    if exit_code:
+        lines += ["import sys", f"sys.exit({exit_code})"]
+    return VerificationCommand(
+        "pytest",
+        "Python tests",
+        (sys.executable, "-c", "\n".join(lines)),
+    )
+
+
 def _pytest_on_path() -> bool:
     # Local twin of _path_pytest_available (defined later in the
     # file) for the early DiscoveryTests class: the verifier's
@@ -2315,11 +2350,7 @@ class CollectedCountTests(unittest.TestCase):
                         "file=sys.stderr)",
                     ),
                 ),
-                VerificationCommand(
-                    "pytest",
-                    "Python tests",
-                    (sys.executable, "-c", "print('1 passed in 0.01s')"),
-                ),
+                _fake_pytest_command("1 passed in 0.01s", 1),
             ]
             results = []
             stdout = io.StringIO()
@@ -2351,11 +2382,7 @@ class CollectedCountTests(unittest.TestCase):
                         "file=sys.stderr)",
                     ),
                 ),
-                VerificationCommand(
-                    "pytest",
-                    "Python tests",
-                    (sys.executable, "-c", "print('no tests ran')"),
-                ),
+                _fake_pytest_command("no tests ran", 0),
             ]
             results = []
             stdout = io.StringIO()
@@ -2390,11 +2417,7 @@ class CollectedCountTests(unittest.TestCase):
                         "file=sys.stderr); sys.exit(5)",
                     ),
                 ),
-                VerificationCommand(
-                    "pytest",
-                    "Python tests",
-                    (sys.executable, "-c", "print('1 passed in 0.01s')"),
-                ),
+                _fake_pytest_command("1 passed in 0.01s", 1),
             ]
             results = []
             stdout = io.StringIO()
@@ -2431,11 +2454,7 @@ class CollectedCountTests(unittest.TestCase):
                         "file=sys.stderr); sys.exit(5)",
                     ),
                 ),
-                VerificationCommand(
-                    "pytest",
-                    "Python tests",
-                    (sys.executable, "-c", "print('no tests ran')"),
-                ),
+                _fake_pytest_command("no tests ran", 0),
             ]
             results = []
             stdout = io.StringIO()
@@ -2598,20 +2617,21 @@ class CollectedCountTests(unittest.TestCase):
 
     def test_zero_or_unparseable_count_fails_despite_zero_exit(self):
         # The count verdict rides on VerificationResult, consulted by
-        # run_all exactly like survivors_killed: exit 0 with no
-        # parseable count is a failure, for both Python runners.
+        # run_all exactly like survivors_killed: exit 0 without a
+        # proven count is a failure, for both Python runners. For
+        # pytest the unproven presentation is an honest None (issue
+        # #53, round 2): a leg whose report channel produced
+        # nothing has no count of record — never a transcript-only
+        # number, and never a fabricated 0 standing in for evidence
+        # that does not exist.
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             result = run_verification(
                 root,
-                VerificationCommand(
-                    "pytest",
-                    "Python tests",
-                    (sys.executable, "-c", "print('no summary here')"),
-                ),
+                _fake_pytest_command("no summary here", None),
             )
             self.assertEqual(result.exit_code, 0)
-            self.assertEqual(result.tests_collected, 0)
+            self.assertIsNone(result.tests_collected)
             self.assertFalse(result.passed)
             result = run_verification(
                 root,
@@ -2749,22 +2769,18 @@ class CollectedCountTests(unittest.TestCase):
 
     def test_pytest_leg_with_diagnostic_phrase_passes_count_gate(self):
         # Run-level shape of the same finding: pytest exits 0, the
-        # diagnostic phrase appears in test output, the summary
-        # reports 1 passed — the leg collects 1 and passes.
+        # diagnostic phrase appears in test output, and both
+        # evidence channels report 1 collected (summary and
+        # junitxml report, as a real run produces) — the leg
+        # collects 1 and passes.
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             result = run_verification(
                 root,
-                VerificationCommand(
-                    "pytest",
-                    "Python tests",
-                    (
-                        sys.executable,
-                        "-c",
-                        "print('diagnostic: no tests ran in the "
-                        "legacy suite'); "
-                        "print('1 passed in 0.00s')",
-                    ),
+                _fake_pytest_command(
+                    "diagnostic: no tests ran in the legacy suite\n"
+                    "1 passed in 0.00s",
+                    1,
                 ),
             )
             self.assertEqual(result.exit_code, 0)
@@ -2778,8 +2794,9 @@ class PytestJunitXmlCountTests(unittest.TestCase):
     the same run writes to a tempfile outside the tree, cross-checked
     against the transcript summary whenever verbosity left one: the
     two channels of the same run must agree, or the count is 0
-    (fail closed). A missing/unparseable report degrades to the
-    transcript channel exactly as before."""
+    (fail closed). A missing report makes the count unproven
+    (None) and fails the gate — the transcript is never believed
+    on its own (round 2)."""
 
     PASS3 = (
         "def test_a():\n    pass\n\n\n"
@@ -2817,10 +2834,12 @@ class PytestJunitXmlCountTests(unittest.TestCase):
         # nothing and the count fails closed — in both directions.
         self.assertEqual(count(999, summary3, ""), 0)
         self.assertEqual(count(3, "", summary999), 0)
-        # No report (channel suppressed): the transcript decides,
-        # exactly as the count parser always has.
-        self.assertEqual(count(None, "2 passed in 0.01s\n", ""), 2)
-        self.assertEqual(count(None, no_summary, ""), 0)
+        # No report (channel suppressed or never written): the
+        # count is unproven whatever the transcript says — the
+        # transcript is never believed on its own (round 2; the
+        # blocked-plugin fixtures below pin it at run level).
+        self.assertIsNone(count(None, "2 passed in 0.01s\n", ""))
+        self.assertIsNone(count(None, no_summary, ""))
 
     def test_junitxml_count_parses_reports(self):
         parse = mechanical_verify._junitxml_count
@@ -2993,13 +3012,17 @@ class PytestJunitXmlCountTests(unittest.TestCase):
             self.assertEqual(results[0].tests_collected, 0)
             self.assertEqual(rc, 1)
 
-    # -- channel suppression degrades, never inflates --------------
+    # -- channel suppression is self-defeating (round 2) -----------
 
     @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
-    def test_blocked_junitxml_plugin_degrades_to_transcript_count(self):
-        # addopts blocks the junitxml plugin: no report is written,
-        # and the count falls back to the transcript channel — the
-        # true count, reached exactly as before this task.
+    def test_blocked_junitxml_plugin_makes_the_count_unproven(self):
+        # Round 2: addopts blocks the junitxml plugin — a passive
+        # bound-config line switches the verifier's evidence
+        # channel off. The run completes honestly (3 pass, true
+        # summary in the transcript), but the count of record is
+        # unproven (None): the transcript is never believed on its
+        # own, so the gate fails the leg. Before round 2 this
+        # degraded to the transcript count 3 and the run passed.
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             write(
@@ -3008,8 +3031,60 @@ class PytestJunitXmlCountTests(unittest.TestCase):
             write(root, "test_ok.py", self.PASS3)
             commands, results, rc, _ = self.run_fixture(root)
             self.assertEqual([c.id for c in commands], ["pytest"])
-            self.assertEqual(rc, 0)
-            self.assertEqual(results[0].tests_collected, 3)
+            self.assertEqual(results[0].exit_code, 0)
+            self.assertIsNone(results[0].tests_collected)
+            self.assertFalse(results[0].passed)
+            self.assertEqual(rc, 1)
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_suppressed_report_plus_forged_summary_seals_no_false_pass(
+        self,
+    ):
+        # The task-9 review's Probe A, verbatim: the report
+        # channel is suppressed by passive addopts, a conftest
+        # deselects all 3 tests (zero execute), writes a fake
+        # '999 passed' summary to fd 2 at terminal-summary, and
+        # forces exit status 0 at session-finish. At the round-1
+        # composition this sealed a false PASS — the transcript
+        # fallback believed the one forged channel (count 999,
+        # rc 0). Round 2: no report, no proven count, gate fails.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root, "pytest.ini", "[pytest]\naddopts = -p no:junitxml\n"
+            )
+            write(
+                root,
+                "conftest.py",
+                "import os\n"
+                "import pytest\n"
+                "\n"
+                "\n"
+                "def pytest_collection_modifyitems(session, config,"
+                " items):\n"
+                "    deselected = list(items)\n"
+                "    items[:] = []\n"
+                "    config.hook.pytest_deselected(items=deselected)\n"
+                "\n"
+                "\n"
+                "@pytest.hookimpl(trylast=True)\n"
+                "def pytest_terminal_summary(terminalreporter,"
+                " exitstatus, config):\n"
+                "    os.write(2, b'======= 999 passed in 0.01s"
+                " =======\\n')\n"
+                "\n"
+                "\n"
+                "@pytest.hookimpl(trylast=True)\n"
+                "def pytest_sessionfinish(session, exitstatus):\n"
+                "    session.exitstatus = 0\n",
+            )
+            write(root, "test_ok.py", self.PASS3)
+            commands, results, rc, _ = self.run_fixture(root)
+            self.assertEqual([c.id for c in commands], ["pytest"])
+            self.assertEqual(results[0].exit_code, 0)
+            self.assertIsNone(results[0].tests_collected)
+            self.assertFalse(results[0].passed)
+            self.assertEqual(rc, 1)
 
     @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
     def test_addopts_cannot_redirect_the_report(self):
@@ -3033,6 +3108,55 @@ class PytestJunitXmlCountTests(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertEqual(results[0].tests_collected, 3)
             self.assertFalse(evil.exists())
+
+    # -- report absent, run already failing: no verdict change ----
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_usage_error_fails_on_exit_code_with_unproven_count(self):
+        # A bogus option in the bound config aborts pytest before
+        # any session exists (exit 4): no report is written and
+        # the count is unproven, but the count gate is not what
+        # fails the run — the exit status is, exactly as before
+        # round 2. (Round 2 changes verdicts only for runs the
+        # count gate itself was carrying.)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "pytest.ini",
+                "[pytest]\naddopts = --definitely-bogus-option\n",
+            )
+            write(root, "test_ok.py", self.PASS3)
+            commands, results, rc, _ = self.run_fixture(root)
+            self.assertEqual([c.id for c in commands], ["pytest"])
+            self.assertEqual(results[0].exit_code, 4)
+            self.assertIsNone(results[0].tests_collected)
+            self.assertFalse(results[0].passed)
+            self.assertEqual(rc, 1)
+
+    def test_killed_pytest_run_fails_on_timeout_not_on_count(self):
+        # A run killed at its timeout never writes a report, so
+        # its count is unproven — but the failure is the timeout,
+        # not the count gate: timed_out alone already fails the
+        # result, exactly as before round 2.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = run_verification(
+                root,
+                VerificationCommand(
+                    "pytest",
+                    "Python tests",
+                    (
+                        sys.executable,
+                        "-c",
+                        "import time; time.sleep(30)",
+                    ),
+                ),
+                timeout_seconds=1,
+            )
+            self.assertTrue(result.timed_out)
+            self.assertIsNone(result.tests_collected)
+            self.assertFalse(result.passed)
 
     # -- equivalence with the summary channel on ordinary shapes ---
 
