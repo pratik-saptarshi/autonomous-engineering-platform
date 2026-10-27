@@ -20,6 +20,7 @@ import hashlib
 import json
 import os
 import re
+import select
 import shlex
 import shutil
 import signal
@@ -3833,7 +3834,10 @@ def _object_format(root: Path) -> str | None:
 
 # The most recent content pass's object-store integrity
 # failure, when it had one: a payload cat-file served that does
-# not hash to the SHA it was requested under. tree_clean resets
+# not hash to the SHA it was requested under, or a batch
+# response that stalled incomplete — framed for more payload
+# than the store ever serves, so no payload can be hashed at
+# all. tree_clean resets
 # this on entry; the gates that surface tree_clean's verdict
 # (verify's cleanliness gate, check_receipts' DIRTY line)
 # append it exactly as they append _repo_local_config_refusal's
@@ -3846,6 +3850,96 @@ def _object_store_failure_detail() -> str | None:
     """The object-store integrity failure the latest content
     pass recorded, or None (see _OBJECT_STORE_FAILURE)."""
     return _OBJECT_STORE_FAILURE
+
+
+# Inactivity bound for the cat-file --batch stream (see
+# _BatchReader): ten seconds in which the batch process
+# produces not one byte. The bound is on SILENCE, not on
+# duration — every chunk that arrives resets it, so a payload
+# of any size streams for as long as it keeps moving, and only
+# a genuine stall fires. The only producer is one local git
+# process inflating objects from local storage: no network is
+# involved (lazy fetch is disabled, see _git_env), no other
+# process can hold the stream, and its inter-chunk gaps are
+# sub-millisecond in practice (a 48 MiB honest blob completes
+# the whole pass in well under a second). Ten seconds of total
+# silence from that producer is a store lying about its
+# framing, never a slow honest tree.
+_BATCH_STALL_SECONDS = 10.0
+
+_BATCH_CHUNK_BYTES = 65536
+
+
+class _BatchStalled(Exception):
+    """The cat-file --batch stream produced no bytes for
+    _BATCH_STALL_SECONDS: the response being framed can never
+    complete (Task 18 review, finding F1)."""
+
+
+class _BatchReader:
+    """Buffered reader over the batch pipe, bounded by
+    inactivity.
+
+    `git cat-file --batch` frames each response with the size
+    taken from the object's own header — delivered state. A
+    loose object whose header declares more bytes than its
+    payload holds makes git serve the short payload and then
+    wait for the next request, while a reader asking for the
+    declared size waits for bytes that can never arrive: the
+    two sides deadlock, and the pass hangs forever where the
+    contract promises a named integrity failure (Task 18
+    review, finding F1). Every chunk here is awaited with
+    select() under _BATCH_STALL_SECONDS; progress resets the
+    clock, silence raises _BatchStalled. EOF before a frame
+    completes reads as None — the short-frame failure the pass
+    already returned for a malformed response — never as a
+    stall, so an honestly dying git is not misreported as a
+    lying store.
+    """
+
+    def __init__(self, fd: int) -> None:
+        self._fd = fd
+        self._buf = bytearray()
+
+    def _fill(self) -> bool:
+        """Buffer the next chunk; False at EOF. Raises
+        _BatchStalled when the stream stays silent for the
+        whole inactivity bound."""
+        ready, _, _ = select.select(
+            [self._fd], [], [], _BATCH_STALL_SECONDS
+        )
+        if not ready:
+            raise _BatchStalled
+        chunk = os.read(self._fd, _BATCH_CHUNK_BYTES)
+        if not chunk:
+            return False
+        self._buf.extend(chunk)
+        return True
+
+    def read_line(self) -> bytes | None:
+        """One newline-terminated line (newline included), or
+        None when EOF cuts it short."""
+        while True:
+            end = self._buf.find(b"\n")
+            if end >= 0:
+                line = bytes(self._buf[: end + 1])
+                del self._buf[: end + 1]
+                return line
+            if not self._fill():
+                return None
+
+    def read_exactly(self, size: int) -> bytes | None:
+        """Exactly *size* bytes, or None when EOF cuts the
+        frame short. A negative size is a framing lie and
+        reads as a short frame."""
+        if size < 0:
+            return None
+        while len(self._buf) < size:
+            if not self._fill():
+                return None
+        out = bytes(self._buf[:size])
+        del self._buf[:size]
+        return out
 
 
 def _tracked_content_matches_head(root: Path, toplevel: Path) -> bool:
@@ -3894,6 +3988,18 @@ def _tracked_content_matches_head(root: Path, toplevel: Path) -> bool:
     mismatch is recorded as an object-store integrity failure
     (see _OBJECT_STORE_FAILURE) and the tree is not clean.
 
+    The reads themselves are bounded by inactivity (see
+    _BatchReader): the size framing a batch response comes
+    from the object's own header — more delivered state — and
+    a store whose header declares more bytes than its payload
+    holds makes git serve the short payload and then wait for
+    the next request, while an unbounded reader waits for the
+    remainder: the named failure this pass owes becomes an
+    indefinite hang (Task 18 review, finding F1). A stall
+    therefore records the same object-store integrity failure,
+    naming the blob it stalled on, and the batch is killed:
+    the failure is named, never silent.
+
     The price, stated as git mode's limit in the docs: the
     comparison is byte-exact, so a tree whose checked-out bytes
     legitimately differ from its blob bytes — attribute-driven
@@ -3940,6 +4046,7 @@ def _tracked_content_matches_head(root: Path, toplevel: Path) -> bool:
         return False
     try:
         assert batch.stdin is not None and batch.stdout is not None
+        reader = _BatchReader(batch.stdout.fileno())
         for mode, sha, rel in blobs:
             target = toplevel / rel
             try:
@@ -3950,8 +4057,11 @@ def _tracked_content_matches_head(root: Path, toplevel: Path) -> bool:
                 return False
             batch.stdin.write((sha + "\n").encode("ascii"))
             batch.stdin.flush()
-            header = (
-                batch.stdout.readline().decode("ascii", errors="replace")
+            header_line = reader.read_line()
+            if header_line is None:
+                return False
+            header = header_line.decode(
+                "ascii", errors="replace"
             ).split()
             if len(header) != 3 or header[1] != "blob":
                 return False
@@ -3959,8 +4069,10 @@ def _tracked_content_matches_head(root: Path, toplevel: Path) -> bool:
                 size = int(header[2])
             except ValueError:
                 return False
-            content = batch.stdout.read(size)
-            if len(content) != size or batch.stdout.read(1) != b"\n":
+            if size < 0:
+                return False
+            content = reader.read_exactly(size)
+            if content is None or reader.read_exactly(1) != b"\n":
                 return False
             # The payload is verified against its claimed SHA
             # before it is compared (see the docstring): the
@@ -3995,6 +4107,22 @@ def _tracked_content_matches_head(root: Path, toplevel: Path) -> bool:
             ).hexdigest():
                 return False
         return True
+    except _BatchStalled:
+        # A stall is only raisable while serving the blob the
+        # loop currently names, so sha and rel are bound here.
+        # The batch is killed, not merely abandoned: it is
+        # waiting for a request this pass will never send.
+        _OBJECT_STORE_FAILURE = (
+            "object store integrity failure: the response "
+            f"served for blob {sha} ({rel}) stalled incomplete "
+            "— the batch framed more payload than the store "
+            "serves, so the payload can never be verified "
+            "against its SHA — the delivered object store is "
+            "corrupt or poisoned, and the bytes it serves are "
+            "not HEAD's"
+        )
+        batch.kill()
+        return False
     except (OSError, ValueError):
         return False
     finally:

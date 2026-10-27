@@ -8,6 +8,8 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 import zipfile
 import zlib
@@ -1884,6 +1886,22 @@ def poison_loose_object(root: Path, sha: str, payload: bytes) -> None:
     obj.write_bytes(zlib.compress(framed))
 
 
+def plant_size_lying_object(
+    root: Path, sha: str, declared: int, payload: bytes
+) -> None:
+    """Replace the loose object at `sha` with a zlib stream
+    whose header declares `declared` bytes over a `payload` of
+    a different length (Task 18 review, finding F1). With
+    declared > len(payload), `git cat-file --batch` frames the
+    response with the declared size, serves only the real
+    bytes, and waits for the next request. With declared <
+    len(payload) the frame desyncs and the pass refuses on
+    its framing check."""
+    obj = root / ".git" / "objects" / sha[:2] / sha[2:]
+    obj.parent.mkdir(parents=True, exist_ok=True)
+    obj.write_bytes(zlib.compress(b"blob %d\x00" % declared + payload))
+
+
 def swap_pack_idx_entries(root: Path, sha_a: str, sha_b: str) -> None:
     """Swap two blobs' offset+CRC entries in the pack index
     (validation 7's packed form of B-A): cat-file then serves
@@ -2160,6 +2178,184 @@ class ObjectStoreIntegrityTests(unittest.TestCase):
             argv[i + 1] for i, a in enumerate(argv[:-1]) if a == "-c"
         }
         self.assertIn("protocol.ext.allow=never", pins)
+
+
+class ObjectStoreStallTests(unittest.TestCase):
+    """Task 19 (Task 18 review, finding F1): the content pass's
+    batch reads are bounded by inactivity. A loose object whose
+    header declares more bytes than its payload holds made
+    `git cat-file --batch` frame the declared size, serve the
+    short payload, and wait for the next request, while the
+    pass's unbounded read waited for the remainder — the pass
+    hung forever (killed at an external timeout, function level
+    and CLI alike) where Task 18's contract promises a named
+    object-store integrity failure. Every chunk of the batch
+    stream is now awaited under an inactivity bound
+    (_BatchReader): progress resets the clock, and silence
+    records the same integrity failure, kills the batch, and
+    refuses — at the verify gate and the audit gate alike."""
+
+    PAYLOAD = b"SHORT"
+
+    def _repo(self, tmp: str) -> tuple[Path, str]:
+        root = Path(tmp) / "repo"
+        root.mkdir()
+        init_git_repo(root)
+        commit_file(root, "data.txt", self.PAYLOAD.decode(), "add data")
+        sha = git(root, "rev-parse", "HEAD:data.txt").stdout.strip()
+        return root, sha
+
+    def test_oversize_declaration_is_named_failure_not_hang(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, sha = self._repo(tmp)
+            plant_size_lying_object(root, sha, 999, self.PAYLOAD)
+            receipts = root / "r.jsonl"
+            # A 1s inactivity bound stands in for the shipped
+            # 10s: what is pinned is the bound's semantics, not
+            # its size.
+            with mock.patch.object(
+                mechanical_verify, "_BATCH_STALL_SECONDS", 1.0
+            ):
+                start = time.monotonic()
+                self.assertFalse(
+                    mechanical_verify.tree_clean(root, receipts)
+                )
+                elapsed = time.monotonic() - start
+            # The refusal arrived via the bound — promptly,
+            # orders of magnitude inside the external timeout
+            # the pre-fix pass had to be killed at.
+            self.assertLess(elapsed, 20)
+            detail = mechanical_verify._object_store_failure_detail()
+            self.assertIsNotNone(detail)
+            self.assertIn("object store integrity failure", detail)
+            self.assertIn("stalled incomplete", detail)
+
+    def test_oversize_declaration_verify_refuses_named(self):
+        # CLI arm at the shipped 10s bound: verify refuses with
+        # the failure named rather than hanging.
+        with tempfile.TemporaryDirectory() as tmp:
+            root, sha = self._repo(tmp)
+            plant_size_lying_object(root, sha, 999, self.PAYLOAD)
+            receipts = root / "r.jsonl"
+            start = time.monotonic()
+            proc = verify(root, "1", receipts)
+            elapsed = time.monotonic() - start
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("object store integrity failure", proc.stdout)
+            # The bound governed (not an instant error) and the
+            # refusal was bounded (not a hang).
+            self.assertGreater(elapsed, 5)
+            self.assertLess(elapsed, 90)
+
+    def test_oversize_post_seal_plant_flips_audit_to_dirty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, sha = self._repo(tmp)
+            receipts = root / "r.jsonl"
+            proc = verify(root, "1", receipts)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            proc = check(receipts, "1")
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            plant_size_lying_object(root, sha, 999, self.PAYLOAD)
+            start = time.monotonic()
+            proc = check(receipts, "1")
+            elapsed = time.monotonic() - start
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            self.assertIn("RECEIPTS: DIRTY", proc.stdout)
+            self.assertIn("object store integrity failure", proc.stdout)
+            self.assertGreater(elapsed, 5)
+            self.assertLess(elapsed, 90)
+
+    def test_undersize_declaration_refuses_promptly(self):
+        # The reverse lie refused via the framing check before
+        # this task (declared 2, served 5: the trailer byte is
+        # payload, not LF). Pin that it still refuses —
+        # promptly, without waiting out any inactivity bound,
+        # and without an integrity detail: the framing spoke,
+        # not the payload hash.
+        with tempfile.TemporaryDirectory() as tmp:
+            root, sha = self._repo(tmp)
+            plant_size_lying_object(root, sha, 2, self.PAYLOAD)
+            receipts = root / "r.jsonl"
+            with mock.patch.object(
+                mechanical_verify, "_BATCH_STALL_SECONDS", 5.0
+            ):
+                start = time.monotonic()
+                self.assertFalse(
+                    mechanical_verify.tree_clean(root, receipts)
+                )
+                elapsed = time.monotonic() - start
+            self.assertLess(elapsed, 4)
+            self.assertIsNone(
+                mechanical_verify._object_store_failure_detail()
+            )
+
+    def test_batch_reader_slow_but_progressing_stream_completes(self):
+        # Inactivity semantics: gaps below the bound, summing
+        # past it, must not trip — progress resets the clock.
+        # (Chunked git-level delivery cannot be staged — git
+        # writes a small object's payload in one write — so
+        # the reader is exercised directly over a pipe.)
+        rfd, wfd = os.pipe()
+        chunks = [b"ab", b"c\nde", b"f\n", b"ghi"]
+
+        def writer() -> None:
+            try:
+                for chunk in chunks:
+                    os.write(wfd, chunk)
+                    time.sleep(0.3)
+            finally:
+                os.close(wfd)
+
+        thread = threading.Thread(target=writer)
+        thread.start()
+        try:
+            reader = mechanical_verify._BatchReader(rfd)
+            with mock.patch.object(
+                mechanical_verify, "_BATCH_STALL_SECONDS", 1.0
+            ):
+                self.assertEqual(reader.read_line(), b"abc\n")
+                self.assertEqual(reader.read_exactly(2), b"de")
+                self.assertEqual(reader.read_line(), b"f\n")
+                self.assertEqual(reader.read_exactly(3), b"ghi")
+        finally:
+            thread.join(timeout=10)
+            os.close(rfd)
+
+    def test_batch_reader_stalled_stream_raises(self):
+        rfd, wfd = os.pipe()
+
+        def writer() -> None:
+            os.write(wfd, b"ab")
+            time.sleep(2.0)
+            os.close(wfd)
+
+        thread = threading.Thread(target=writer)
+        thread.start()
+        try:
+            reader = mechanical_verify._BatchReader(rfd)
+            with mock.patch.object(
+                mechanical_verify, "_BATCH_STALL_SECONDS", 0.5
+            ):
+                start = time.monotonic()
+                with self.assertRaises(mechanical_verify._BatchStalled):
+                    reader.read_exactly(5)
+                self.assertLess(time.monotonic() - start, 1.8)
+        finally:
+            thread.join(timeout=10)
+            os.close(rfd)
+
+    def test_batch_reader_eof_is_short_frame_not_stall(self):
+        # A writer that simply goes away is EOF: reads return
+        # None (the pass's framing failure), never _BatchStalled.
+        rfd, wfd = os.pipe()
+        os.write(wfd, b"ab")
+        os.close(wfd)
+        try:
+            reader = mechanical_verify._BatchReader(rfd)
+            self.assertIsNone(reader.read_exactly(5))
+            self.assertIsNone(reader.read_line())
+        finally:
+            os.close(rfd)
 
 
 class PromisorRefusalTests(unittest.TestCase):
