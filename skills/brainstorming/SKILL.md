@@ -1,85 +1,225 @@
+---
+name: brainstorming
+description: "You MUST use this before any creative work - creating features, building components, adding functionality, modifying behavior, or planning anything new, in software or out of it (a talk, a business, a renovation)."
+---
+
 # Brainstorming
 
-## Decide whether to ask first
+You are very good at building. You build what you believe your human
+partner wants, and that belief is usually thinner than it feels. This
+skill is for finding out what they actually want, and why, before
+anything gets built.
 
-- Before you reply, ask yourself what you actually know about what they want and why.
+People often haven't finished working out what they want. Good questions
+help them think it through. When you understand the why, you make the
+hundred decisions they never mention the way they would have made them.
 
-- If everything that matters is in the request, do the task and say what you did. This skill is done.
+## First: What Do You Actually Know?
 
-- If something non-trivial is missing, start the conversation below instead of building.
+Before you reply, ask yourself: what do I know about what they want, and
+why?
 
-## Send the first message
+- **Everything that matters is in the request** ("make the icon cornflower
+  blue"). This is a quick, clear task. Do it, and say what you did.
+- **Something non-trivial is missing.** Start the conversation.
 
-- Write one line letting them know they can skip the questions and have you just start. If they take you up on it, state any significant how-it-gets-made choice in one plain line, then do the work through the normal workflow.
+## Your First Message
 
-- Follow with one open question that gets them describing a real moment. Ask about a concrete picture, such as the moment they find themselves wishing this existed or who will be in the room when it is used.
+Your first message is two things, in this order:
 
-- Send only those two things, in that order.
+1. One line letting them know that if they'd rather skip the questions and
+   have you just start, they can say so. If they take you up on it, this
+   skill is done: state any significant how-it-gets-made choice
+   (platform, language, medium) in one plain line, then do what they
+   asked through the normal workflow.
+2. One open question that gets them describing. Ask about a real moment
+   or a concrete picture: "What's the moment you find yourself wishing
+   this existed?" or "Tell me about the people who'll be in the room."
 
-## Run the conversation
+That's the whole message.
 
-- End each message with one question, a single sentence with no list of example answers hanging off it.
+## The Conversation
 
-- Use plain language pitched just above where they are. Match their vocabulary and never use process jargon.
+Each message ends with one question: a single sentence with no list of
+example answers hanging off it. Use plain language, pitched just a little
+above where your human partner is. Match their vocabulary; never use
+process jargon.
 
-- Get them describing before you offer options. Open questions come first because their own words carry intent your options cannot. Offer a short menu only when they are stuck. When they say just guess, propose something concrete.
+Be clear and concise. Lead with what matters. Avoid jargon. When you
+report what you found, give them the most important findings and offer
+the rest.
 
-- Settle how it gets made early. Find out which choices about medium, tools, and materials they want to make, which they hand to you, and what they already have. State your defaults in plain words. Build on what already exists. Mark any choice you make as your call, never as something they agreed to.
+**Get them describing.** Open questions come first. Their own words carry
+intent that your options can't. Offer a short menu only when they're
+stuck. When they say "just guess" or "what do you think?", propose
+something concrete.
 
-- Treat this as territory to cover, never as a script to read out. Cover what kind of thing this is and what makes it special, why now and what success looks like, goals plus non-goals plus anti-goals, prior art they loved or hated, the current state and what they have tried, and the details they care about.
+**How it gets made.** Every project rests on choices about medium, tools,
+materials, and resources: the platform, programming language, and
+libraries for an app; the medium for a piece of art. Find out early which
+of those choices they want to make, which they're handing to you, and what
+they already have to work with. Someone with strong views or skills will
+want to talk it through. Someone counting on you needs sensible defaults,
+said in plain words. When there's existing work, build on what it already
+uses. Any choice you make goes in the design as your call, never as
+something they agreed to.
 
-- Anchor questions in specifics. Ask them to walk you through the last time, or which of two things matters more, or what would make them wince if you got it wrong. A guess they can correct often beats a question.
+**Ground to cover.** This is territory, not a script. Never read these
+out as questions:
 
-- Offer recon once you have some grounding and looking would help. Say what you would look at, such as their files, their data, or the web, and let them decide whether you go.
+- what kind of thing this is, and what makes it special
+- why now, and what success looks like to them
+- goals, non-goals, and anti-goals (what would make this a failure even
+  if it technically works)
+- prior art: what they've seen elsewhere, loved or hated
+- current state: what exists now, what they've tried
+- the details they care about
 
-- Think wide privately. Come up with several ideas before you propose anything and drop the weak ones, including any that fight what they told you about why. Show the comparison only when it helps them decide.
+**Questions that work** anchor in specifics: "Walk me through the last
+time...", "If it could only do one of these well, which?", "What would
+make you wince if I got it wrong?" A guess they can correct ("I'm
+guessing this is because X keeps biting you?") often beats a question.
 
-- Offer to show rather than tell whenever seeing would help more than reading. For screens, layouts, flows, side-by-side options, or diagrams, offer to build a quick visual with the artifact tools. Make the offer its own message and wait for a yes before building.
+**Offer recon.** Once you have a bit of grounding and looking would help,
+offer to go look: their codebase or project, their own files and data,
+or the web. Say what you'd look for. They decide whether you go.
 
-- Offer a throwaway spike when building something quick would teach you both what they want or whether an approach works. Spikes get no tests, are not bulletproof, and skip planning. Bring what the spike taught back into the conversation.
+**Think wide privately.** Before you propose anything, come up with
+several ideas and drop the weak ones, including any that fight what
+they've told you about why. Show the comparison only when it helps them
+decide.
 
-## Play it back
+**Show, don't tell.** Offer the visual companion (below) whenever seeing
+would help more than reading:
 
-- As soon as you understand one part well enough to describe it, describe that part back in about 200 to 300 words, then return to questions about the next part. Alternate playback and questions through the whole conversation.
+- something they'll look at: a screen, a page, a printout, a sign
+- a layout or arrangement: of a screen, a room, a schedule
+- a flow or a sequence of steps
+- options that would look different from each other
+- a structure that's easier to see than read: a diagram, a timeline, a map
 
-- Mark anything you are guessing as your guess. Only what they said goes in as theirs. End each chunk by asking what is wrong or missing.
+Once they've accepted, use it for mockups to react to, side-by-side
+options, and throwaway prototypes they can click.
 
-## Size the work
+**Spike to feel things out.** Agentic work is waterfall, but very, very
+fast. A quick throwaway build is often the cheapest way to learn what
+they want or whether something works. Offer one when it would help.
+When they just want to spike, get out of the way. Spikes get no tests
+or minimal ones, aren't bulletproof, and skip the plan, implementation,
+and review process. Bring what the spike taught you back into the
+conversation.
 
-- Once you understand what they want, name the size in plain words and let them override it. A quick clear task gets done directly. A small change gets a short description in chat and then built. A project gets a written design document and then a full plan.
+## Play It Back
 
-- If the work grows mid-task, stop, say so, and step up a size.
+Play back as you go. As soon as you understand one part well enough to
+describe it (what it's for and who it serves, say, or how one piece
+behaves), describe that part back in about 200-300 words, then return to
+questions about the next part. Playback and questions alternate through
+the whole conversation; the last chunk covers whatever is left.
 
-- If this is really several independent projects, say so, agree on an order, and brainstorm them one at a time.
+Mark anything you're guessing as your guess; only what they said goes in
+as theirs. End each chunk by asking what's wrong or missing.
 
-## Write the design
+Before you send a chunk, check it: does it describe something they'll
+look at, like a page, a screen, a schedule, or a printout? If so, and
+they haven't seen the visual companion offer yet, send the offer instead
+(its own message, below) and hold the chunk for the next message. Once
+they've accepted, put a mockup next to the description.
 
-- For a project, write a plain document a talented builder could plan from without going back to them. Cover the intent and the why, goals and non-goals and anti-goals, constraints, the how-decisions they made as they made them, and what is left to the builder.
+## Size the Work
 
-- Ask where the document should live. A good default is the relevant goal workspace under `~/workspace/goals/<goal>/files/` or a document artifact they can keep.
+Once you understand what they want, pick a size and say it in plain
+words. They can override it.
 
-- Before handing it over, dispatch a fresh subagent with `subagent.spawn` to read the document as the builder and list every question it raises. Tell your human partner a reviewer will read it first and you may come back once with questions.
+| Size | The full description | Then |
+|------|----------------------|------|
+| A quick, clear task | the request itself | do it |
+| A small change | in chat | build it through the normal workflow |
+| A project with a written design | a written design document | a full plan (for software: superpowers:writing-plans) |
 
-- Sort the builder questions into three piles. Put answers already in the conversation or project into the document. Settle minor ones yourself where a sensible builder could decide without changing what gets built, and mark them as your call. Bring only the questions that change what gets built back to your human partner in one message, most important first.
+If it grows mid-task, stop, say so, and step up a size.
 
-- Update the document with their answers and hand it over with a short list of the calls you made.
+If this is really several independent projects, say so, agree on an
+order, and brainstorm them one at a time.
 
-## Hold the hard gate
+## The Written Design
 
-- Nothing gets built until they approve the full description. In chat for a small change, the document for a project. Building includes writing code, scaffolding, installing things, creating projects, and running implementation. Reading and exploring are fine.
+For a project, write a plain document a talented builder in the domain
+could plan from without going back to your human partner. Cover:
 
-- Two exceptions end the gate. They opted out of questions at the start, or they said yes to a spike, which stays labeled throwaway. Keeping spike output is a new request that comes back through this gate.
+- intent and the why
+- goals, non-goals, anti-goals
+- constraints
+- the parts of the how they decided, as they decided them
+- what's left to the builder
 
-- After a project design is approved, write the implementation plan with the writing-plans skill and no other skill.
+**Where it goes:** in a software repo,
+`docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md`, committed.
+Otherwise, ask. Your human partner's preferences override both.
 
-## Watch for red flags
+**Builder check:** dispatch a fresh subagent with
+`builder-check-prompt.md` in this directory. When you tell your human
+partner you're writing it up, say a reviewer will read it first and you
+may come back once with a few questions. Don't hand over the document
+until the check is back. Sort what the builder asks into three piles:
 
-- If you catch yourself thinking you will offer options to save them effort, stop. Options steer. Ask them to describe it first.
+- **Answered already** by the conversation or the project: put the answer
+  in the document.
+- **Minor:** a sensible builder could settle it without changing what gets
+  built. Settle it yourself and mark it in the document as your call.
+- **Theirs:** only your human partner can answer it, and the answer changes
+  what gets built.
 
-- If you fill in a sensible default, say it out loud. A default they never heard is one they could not reject.
+Bring the "theirs" pile in one message, most important first. Update the
+document with their answers, then hand it over with a short list of the
+calls you made so they can check those while reading. That's the only
+round of questions the check produces. Without a subagent tool, read the
+document as that builder yourself.
 
-- If you want to explain the process first, ask your question instead. The process shows itself.
+<HARD-GATE>
+Nothing gets built until your human partner approves the full
+description: in chat for a small change, the document for a project.
+Building includes writing product code, scaffolding, installing
+dependencies, creating projects, and invoking an implementation skill.
+Reading and exploring are fine.
 
-- If they said sounds good to the idea, remember approval covers what you showed them. A description you have not written is not approved.
+Two exceptions. If they opted out of the questions, the skill is done
+and the gate goes with it. A spike they said yes to may be built; it
+stays labeled throwaway, and keeping what it produced is a new request
+that comes back through this gate.
 
-- If the spike works and you want to keep building on it, stop. Keeping it is a new request. Back through the gate.
+After a project's document is approved, the next step is the plan. For
+software, invoke superpowers:writing-plans and no other skill.
+</HARD-GATE>
+
+## Red Flags
+
+| Thought | Reality |
+|---------|---------|
+| "I'll offer options to save them effort" | Options steer. Ask them to describe it first. |
+| "I'll fill in sensible defaults" | Good. Say them out loud. A default they never heard is one they couldn't reject. |
+| "I should explain the process first" | Ask your question. The process shows itself. |
+| "They said 'sounds good' to the idea" | Approval covers what you showed them. A description you haven't written isn't approved. |
+| "The spike works, I'll keep building on it" | Keeping it is a new request. Back through the gate. |
+
+## Visual Companion
+
+A browser tab for showing mockups, diagrams, and prototypes. It's a
+tool, not a mode: accepting it doesn't send every question to the
+browser.
+
+**Offer it just-in-time.** Offer it the first time one of the moments
+above comes up, never upfront. The offer is its own message with nothing
+else in it:
+
+> "This might be easier if I show you. Want me to open a browser tab with some mockups?"
+
+If they decline, stay in text and don't offer again unless they raise it.
+
+**Per question, ask: would they understand this better by seeing it?**
+Mockups, layouts, diagrams, and side-by-side designs go in the browser.
+Requirements, scope, tradeoffs, and conceptual choices stay in text. A
+question about a UI topic isn't automatically a visual question.
+
+If they accept, read `visual-companion.md` in this directory before
+starting the server.

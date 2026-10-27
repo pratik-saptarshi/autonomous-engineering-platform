@@ -1,23 +1,12 @@
-# Research
+---
+name: research
+description: Investigate a question against high-trust primary sources and capture the findings as a Markdown file in the repo. Use when the user wants a topic researched, docs or API facts gathered, or reading legwork delegated to a background agent.
+---
 
-Delegate investigation to a background agent so you keep working while it reads.
+Spin up a **background agent** to do the research, so you keep working while it reads.
 
-## Brief the researcher
+Its job:
 
-- Spin up the work with `subagent.spawn`, giving it the exact question and what the findings are for.
-
-- Tell it to investigate against **primary sources** (official docs, source code, specs, first-party APIs), not secondary write-ups. Every claim must trace back to the source that owns it.
-
-- Instruct it to write findings to a single Markdown file, with each claim citing its source.
-
-## Place the findings
-
-- Save the file where such notes already live for the task at hand: a goal's `files/` directory, or `~/workspace/research/<slug>.md` when there is no existing convention.
-
-- Report back the path and a short summary of the key findings, with the strongest sources named.
-
-## What not to do
-
-- Never present un-cited claims as established fact. If the researcher could not verify something, say so plainly.
-
-- Do not use this for facts a quick search or a single page read can settle; reserve it for reading legwork worth delegating.
+1. Investigate the question against **primary sources** (official docs, source code, specs, first-party APIs), not a secondary write-up of them. Follow every claim back to the source that owns it.
+2. Write the findings to a single Markdown file, citing each claim's source.
+3. Save it where the repo already keeps such notes; match the existing convention, and if there is none, put it somewhere sensible and say where.
