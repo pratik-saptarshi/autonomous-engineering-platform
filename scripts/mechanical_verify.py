@@ -901,12 +901,21 @@ def _pytest_config_selected(root: Path) -> Path | None:
     config; the walk returns None. The fallback config carries
     no options and the file is real and in-tree, and the argv
     is identical either way, so nothing can steer through it.
-    (2) An unparseable candidate makes real pytest abort with
-    UsageError rather than skip the file; the walk treats it
-    as non-qualifying and continues. A later selection the
-    abort would have pre-empted is still safe: a real file is
-    bound content, a symlink is insulated, and when nothing
-    later qualifies the unpinned run meets the same abort."""
+    (2) The walk's parsers and pytest's do not judge every
+    candidate alike. An unparseable candidate makes real
+    pytest abort with UsageError rather than skip the file;
+    the walk treats it as non-qualifying and continues. And
+    configparser (strict=False) qualifies a few files
+    iniconfig rejects — duplicate sections or keys, a section
+    header with trailing junk — where the walk stops at a
+    candidate pytest would have aborted on. Both directions
+    resolve to pytest's own outcome, never to unbound
+    steering: a later selection the abort would have
+    pre-empted is still safe (a real file is bound content,
+    a symlink is insulated), a walk-selected candidate that
+    pytest rejects aborts the unpinned run the same way, and
+    when nothing later qualifies the unpinned run meets the
+    same abort."""
     for name in _PYTEST_CONFIG_CANDIDATES:
         candidate = root / name
         if not candidate.is_file():
@@ -1482,6 +1491,21 @@ def _count_collected(
     parses to 0 here: verbosity-independent evidence was
     deliberately NOT taken from e.g. the progress dots, which
     are not a count.
+    Trust level (issue #54, stated where the parser lives):
+    this channel reads what the runner's terminal reporter
+    printed, and whatever shapes that output sits at the
+    parser's trust level — a reporter-replacing plugin (e.g.
+    pytest-sugar) that changes or omits the summary line, like
+    every plugin loaded into the runner's environment, is
+    trusted the way the interpreter itself is trusted. The
+    failure direction is fail-closed: a summary this channel
+    cannot parse yields 0, and a leg that cannot prove it
+    collected anything fails the count gate — never a pass on
+    an inflated number. Since issue #53 the transcript is
+    also the cross-check for the run's junitxml report, so a
+    mangled summary that contradicts the report yields 0 as
+    well; _pytest_collected_count carries the full
+    trust-level statement for the composed count.
     An unparseable count is 0 — a Python command
     that cannot prove it collected anything fails the count gate in
     VerificationResult.passed. Skips count as collected (deliberate
