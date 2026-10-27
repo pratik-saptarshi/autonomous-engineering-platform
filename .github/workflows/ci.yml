@@ -101,3 +101,7 @@ jobs:
           sha256sum -c ../../.github/vendor-security-audit-skill.sha256
           comm -23 <(find . -type f | sort) <(cut -d' ' -f3- ../../.github/vendor-security-audit-skill.sha256 | sed 's|^\./|./|' | sort) | grep -q . && { echo "ERROR: unlisted files"; exit 1; } || true
           find . -type l | while read -r link; do test -e "$link" || { echo "ERROR: broken symlink $link"; exit 1; }; done
+      - name: Run vendored security-audit validator suites
+        run: |
+          node --test reference/security-audit-skill/skills/security-audit/validate-findings.test.cjs
+          node --test reference/security-audit-skill/skills/security-audit/validate-coverage-ledger.test.cjs

@@ -1,0 +1,12 @@
+{
+  "expected_terminal_state": {
+    "run_status": "incomplete",
+    "incomplete_reason": "validation_budget_exhausted",
+    "spent": {
+      "total_agent_invocations": 20
+    },
+    "budget": 20,
+    "candidate_labelled": false,
+    "candidate_disposition": "the unvalidated candidate remains in the coverage ledger only, unlabelled by any verdict, and the run is never reported as a completed pass"
+  }
+}
