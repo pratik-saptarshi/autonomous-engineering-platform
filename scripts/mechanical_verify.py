@@ -982,6 +982,44 @@ def _count_collected(
     return None
 
 
+# CPython ≥3.12's unittest CLI exit code for a run that collected
+# zero tests (unittest.main's _NO_TESTS_EXITCODE). Older versions
+# exit 0 for the identical "Ran 0 tests" transcript.
+_UNITTEST_NO_TESTS_EXIT_CODE = 5
+
+
+def _clean_zero_collection(
+    command: VerificationCommand, result: VerificationResult
+) -> bool:
+    """Whether a leg's failure is solely a clean zero collection.
+
+    Exit 0 is the historic presentation. A unittest leg on CPython
+    ≥3.12 instead exits _UNITTEST_NO_TESTS_EXIT_CODE for the same
+    transcript — the loader ran, collected nothing, nothing errored
+    (issue #56) — and that presentation is the same routing signal,
+    so it defers exactly as exit 0 does. The signal is the PAIR
+    (parsed count, exit code), never the exit code alone, and for
+    exit 5 the parsed zero must come from a genuine "Ran 0 tests"
+    line: the count parser also reports 0 when no summary line
+    exists at all (a runner that died before printing one), and a
+    fallback zero is not evidence of a clean zero collection. A
+    broken leg never presents this way — unittest's loader
+    fabricates a _FailedTest for an unimportable module, which
+    runs and reports "Ran 1 test" with exit 1.
+    """
+    if result.tests_collected != 0:
+        return False
+    if result.exit_code == 0:
+        return True
+    if (
+        command.id != "unittest"
+        or result.exit_code != _UNITTEST_NO_TESTS_EXIT_CODE
+    ):
+        return False
+    match = _UNITTEST_RAN_RE.search(result.stdout + "\n" + result.stderr)
+    return match is not None and int(match.group(1)) == 0
+
+
 def _policy_path() -> Path:
     """Resolve the launch-policy file: $AEP_POLICY_DATA when set, else
     the policy.data beside this script — the same rule lane-coord.sh's
@@ -1310,12 +1348,15 @@ def run_all(
         # gate instead judges the union of the legs that ran: every
         # leg executes first, and a leg with no Python leg after it
         # fails on a zero count exactly as before, so a tree where
-        # NO leg collects anything still fails.
+        # NO leg collects anything still fails. A clean zero
+        # collection presents as exit 0, or — for a unittest leg on
+        # CPython ≥3.12 — as the no-tests exit code 5 over the same
+        # "Ran 0 tests" transcript (issue #56; _clean_zero_collection
+        # pins the pair, so a broken leg cannot defer on it).
         defer_zero = (
             not result.passed
             and command.id in _PYTHON_LEG_IDS
-            and result.tests_collected == 0
-            and result.exit_code == 0
+            and _clean_zero_collection(command, result)
             and not result.timed_out
             and not result.survivors_remaining
             and any(
@@ -1927,6 +1968,38 @@ def append_completion(
     _append_record(receipts_path, body)
 
 
+def _deferred_zero_receipt(
+    receipts: list[dict], idx: int, receipt: dict
+) -> bool:
+    """Whether a non-zero receipt is a count-gate-deferred clean
+    zero (issue #56), acceptable at audit time.
+
+    run_all defers a unittest leg whose only failure is a clean
+    zero collection — exit _UNITTEST_NO_TESTS_EXIT_CODE over a
+    "Ran 0 tests" transcript — to a remaining Python leg, and the
+    deferred leg's receipt is sealed with that exit code. The
+    audit accepts the presentation only when the segment itself
+    proves the deferral was sound, mirroring the runtime gate:
+    this receipt is the unittest leg, collected zero, and a
+    Python leg AFTER it collected tests and exited 0 un-timed-out
+    — the union the gate judged. Any other non-zero receipt
+    remains a failed receipt, exactly as before.
+    """
+    if (
+        receipt.get("command_id") != "unittest"
+        or receipt.get("exit_code") != _UNITTEST_NO_TESTS_EXIT_CODE
+        or receipt.get("tests_collected") != 0
+    ):
+        return False
+    return any(
+        later.get("command_id") in _PYTHON_LEG_IDS
+        and later.get("exit_code") == 0
+        and not later.get("timed_out")
+        and (later.get("tests_collected") or 0) > 0
+        for later in receipts[idx + 1 :]
+    )
+
+
 def check_receipts(
     receipts_path: Path,
     task: str,
@@ -2019,8 +2092,11 @@ def check_receipts(
     if not mine and segment_run_id is None:
         print(f"RECEIPTS: FAIL task {task}: no receipts")
         return 1
-    for receipt in mine:
-        if receipt["exit_code"] != 0 or receipt["timed_out"]:
+    for idx, receipt in enumerate(mine):
+        if receipt["timed_out"] or (
+            receipt["exit_code"] != 0
+            and not _deferred_zero_receipt(mine, idx, receipt)
+        ):
             print(
                 f"RECEIPTS: FAIL task {task}: "
                 f"receipt failed: {receipt['command_id']}"

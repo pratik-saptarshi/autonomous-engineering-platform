@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import mechanical_verify
 from mechanical_verify import (
     VerificationCommand,
+    VerificationResult,
     discover_verification_commands,
     run_all,
     run_verification,
@@ -1207,6 +1208,232 @@ class CollectedCountTests(unittest.TestCase):
             self.assertEqual(len(results), 2)
             self.assertIn("zero tests collected", stdout.getvalue())
 
+    def test_exit5_zero_collect_unittest_leg_defers_to_pytest(self):
+        # Issue #56: on CPython ≥3.12 the unittest CLI exits 5
+        # (_NO_TESTS_EXITCODE) for the same "Ran 0 tests" transcript
+        # older versions exit 0 on. The exit-5 presentation of a
+        # clean zero collection must defer exactly as exit 0 does —
+        # before the fix the run stopped at the unittest leg and
+        # the pytest leg never executed.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            commands = [
+                VerificationCommand(
+                    "unittest",
+                    "Python unittest",
+                    (
+                        sys.executable,
+                        "-c",
+                        "import sys; print('Ran 0 tests in 0.000s', "
+                        "file=sys.stderr); sys.exit(5)",
+                    ),
+                ),
+                VerificationCommand(
+                    "pytest",
+                    "Python tests",
+                    (sys.executable, "-c", "print('1 passed in 0.01s')"),
+                ),
+            ]
+            results = []
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                rc = run_all(
+                    root,
+                    commands,
+                    mem_available_kb=lambda: 10**9,
+                    on_result=results.append,
+                )
+            self.assertEqual(rc, 0)
+            self.assertEqual(len(results), 2)
+            self.assertEqual(results[0].exit_code, 5)
+            self.assertEqual(results[0].tests_collected, 0)
+            self.assertEqual(results[1].tests_collected, 1)
+
+    def test_genuinely_empty_discovery_with_exit5_presentation_still_fails(
+        self,
+    ):
+        # The exit-5 deferral is not a vacuity hole either: when
+        # the remaining Python leg also collects zero, the union is
+        # empty and the run still fails the count gate — the
+        # unittest leg defers, the final leg's zero fails.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            commands = [
+                VerificationCommand(
+                    "unittest",
+                    "Python unittest",
+                    (
+                        sys.executable,
+                        "-c",
+                        "import sys; print('Ran 0 tests in 0.000s', "
+                        "file=sys.stderr); sys.exit(5)",
+                    ),
+                ),
+                VerificationCommand(
+                    "pytest",
+                    "Python tests",
+                    (sys.executable, "-c", "print('no tests ran')"),
+                ),
+            ]
+            results = []
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                rc = run_all(
+                    root,
+                    commands,
+                    mem_available_kb=lambda: 10**9,
+                    on_result=results.append,
+                )
+            self.assertEqual(rc, 1)
+            self.assertEqual(len(results), 2)
+            self.assertIn("zero tests collected", stdout.getvalue())
+
+    def test_unittest_leg_collecting_and_failing_blocks_run(self):
+        # A unittest leg that collected tests and failed is a real
+        # failure, not a routing question: no deferral, the run
+        # stops, the pytest leg never executes.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            commands = [
+                VerificationCommand(
+                    "unittest",
+                    "Python unittest",
+                    (
+                        sys.executable,
+                        "-c",
+                        "import sys; print('Ran 3 tests in 0.001s', "
+                        "file=sys.stderr); sys.exit(1)",
+                    ),
+                ),
+                VerificationCommand(
+                    "pytest",
+                    "Python tests",
+                    (sys.executable, "-c", "print('1 passed in 0.01s')"),
+                ),
+            ]
+            results = []
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                rc = run_all(
+                    root,
+                    commands,
+                    mem_available_kb=lambda: 10**9,
+                    on_result=results.append,
+                )
+            self.assertEqual(rc, 1)
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0].tests_collected, 3)
+
+    def test_unittest_import_error_presentation_does_not_defer(self):
+        # A broken unittest leg never presents as a clean zero:
+        # the loader fabricates a _FailedTest for an unimportable
+        # module, which RUNS — the transcript is "Ran 1 test" with
+        # "FAILED (errors=1)" and exit 1 (verified against CPython
+        # 3.12.3). Count 1 + exit 1 must not defer: the run stops
+        # at the broken leg.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            commands = [
+                VerificationCommand(
+                    "unittest",
+                    "Python unittest",
+                    (
+                        sys.executable,
+                        "-c",
+                        "import sys; print('Ran 1 test in 0.000s', "
+                        "file=sys.stderr); sys.exit(1)",
+                    ),
+                ),
+                VerificationCommand(
+                    "pytest",
+                    "Python tests",
+                    (sys.executable, "-c", "print('1 passed in 0.01s')"),
+                ),
+            ]
+            results = []
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                rc = run_all(
+                    root,
+                    commands,
+                    mem_available_kb=lambda: 10**9,
+                    on_result=results.append,
+                )
+            self.assertEqual(rc, 1)
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0].tests_collected, 1)
+
+    def test_unittest_exit5_with_positive_count_does_not_defer(self):
+        # The parsed count wins over the exit code: a leg that
+        # reports collected tests is judged on what it ran, even
+        # if its process happens to exit 5 — deferral requires the
+        # count to be zero.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            commands = [
+                VerificationCommand(
+                    "unittest",
+                    "Python unittest",
+                    (
+                        sys.executable,
+                        "-c",
+                        "import sys; print('Ran 2 tests in 0.001s', "
+                        "file=sys.stderr); sys.exit(5)",
+                    ),
+                ),
+                VerificationCommand(
+                    "pytest",
+                    "Python tests",
+                    (sys.executable, "-c", "print('1 passed in 0.01s')"),
+                ),
+            ]
+            results = []
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                rc = run_all(
+                    root,
+                    commands,
+                    mem_available_kb=lambda: 10**9,
+                    on_result=results.append,
+                )
+            self.assertEqual(rc, 1)
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0].tests_collected, 2)
+
+    def test_unittest_exit5_without_ran_summary_does_not_defer(self):
+        # Exit 5 alone is not the signal: a unittest leg that dies
+        # before printing its "Ran N tests" summary parses to zero
+        # only via the count parser's no-match fallback, and a
+        # fallback zero is not evidence of a clean zero collection.
+        # The deferral requires the genuinely parsed "Ran 0 tests"
+        # line alongside exit 5.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            commands = [
+                VerificationCommand(
+                    "unittest",
+                    "Python unittest",
+                    (sys.executable, "-c", "import sys; sys.exit(5)"),
+                ),
+                VerificationCommand(
+                    "pytest",
+                    "Python tests",
+                    (sys.executable, "-c", "print('1 passed in 0.01s')"),
+                ),
+            ]
+            results = []
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                rc = run_all(
+                    root,
+                    commands,
+                    mem_available_kb=lambda: 10**9,
+                    on_result=results.append,
+                )
+            self.assertEqual(rc, 1)
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0].tests_collected, 0)
+
     def test_zero_or_unparseable_count_fails_despite_zero_exit(self):
         # The count verdict rides on VerificationResult, consulted by
         # run_all exactly like survivors_killed: exit 0 with no
@@ -1383,6 +1610,186 @@ class CollectedCountTests(unittest.TestCase):
             self.assertTrue(result.passed)
 
 
+class DeferredZeroReceiptTests(unittest.TestCase):
+    # Issue #56, audit side: run_all defers a clean-zero unittest
+    # leg (exit 5 on CPython ≥3.12) and seals its receipt with
+    # that exit code. check_receipts must accept exactly the
+    # segments whose deferral the segment itself proves sound —
+    # a later Python leg collected tests and exited 0 — and keep
+    # rejecting every other non-zero receipt.
+
+    def _result(self, command_id, exit_code, collected, *, timed_out=False):
+        return VerificationResult(
+            command=VerificationCommand(command_id, command_id, ("true",)),
+            exit_code=exit_code,
+            timed_out=timed_out,
+            duration_ms=1,
+            stdout="",
+            stderr="",
+            output_truncated=False,
+            tests_collected=collected,
+        )
+
+    def _seal(self, base: Path, results):
+        root = base / "root"
+        root.mkdir()
+        write(root, "placeholder.txt", "fixture\n")
+        receipts = base / "receipts.jsonl"
+        binding = mechanical_verify.tree_binding(root, receipts)
+        run_id = "deferred-zero-test"
+        mechanical_verify.append_run_start(
+            receipts, "t", run_id, binding=binding
+        )
+        for result in results:
+            mechanical_verify.append_receipt(
+                receipts, "t", result, run_id=run_id
+            )
+        mechanical_verify.append_completion(
+            receipts,
+            "t",
+            [r.command for r in results],
+            run_id=run_id,
+            binding=binding,
+        )
+        return root, receipts
+
+    def _check(self, receipts, root):
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            rc = mechanical_verify.check_receipts(receipts, "t", root)
+        return rc, stdout.getvalue()
+
+    def test_deferred_zero_receipt_passes_check_receipts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, receipts = self._seal(
+                Path(tmp),
+                [
+                    self._result("unittest", 5, 0),
+                    self._result("pytest", 0, 1),
+                ],
+            )
+            rc, output = self._check(receipts, root)
+            self.assertEqual(rc, 0, output)
+            self.assertIn("RECEIPTS: PASS", output)
+
+    def test_exit5_receipt_without_collecting_leg_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, receipts = self._seal(
+                Path(tmp),
+                [
+                    self._result("unittest", 5, 0),
+                    self._result("pytest", 0, 0),
+                ],
+            )
+            rc, output = self._check(receipts, root)
+            self.assertEqual(rc, 1)
+            self.assertIn("receipt failed: unittest", output)
+
+    def test_exit5_receipt_with_positive_count_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, receipts = self._seal(
+                Path(tmp),
+                [
+                    self._result("unittest", 5, 2),
+                    self._result("pytest", 0, 1),
+                ],
+            )
+            rc, output = self._check(receipts, root)
+            self.assertEqual(rc, 1)
+            self.assertIn("receipt failed: unittest", output)
+
+    def test_exit5_pytest_receipt_is_not_a_deferred_zero(self):
+        # The no-tests exit presentation is excused only for the
+        # unittest leg whose deferral run_all performs; a pytest
+        # receipt carrying exit 5 remains a failed receipt.
+        with tempfile.TemporaryDirectory() as tmp:
+            root, receipts = self._seal(
+                Path(tmp),
+                [
+                    self._result("pytest", 5, 0),
+                    self._result("unittest", 0, 1),
+                ],
+            )
+            rc, output = self._check(receipts, root)
+            self.assertEqual(rc, 1)
+            self.assertIn("receipt failed: pytest", output)
+
+    def test_collecting_leg_must_follow_the_deferred_receipt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, receipts = self._seal(
+                Path(tmp),
+                [
+                    self._result("pytest", 0, 1),
+                    self._result("unittest", 5, 0),
+                ],
+            )
+            rc, output = self._check(receipts, root)
+            self.assertEqual(rc, 1)
+            self.assertIn("receipt failed: unittest", output)
+
+    def test_exit5_receipt_with_timed_out_collecting_leg_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, receipts = self._seal(
+                Path(tmp),
+                [
+                    self._result("unittest", 5, 0),
+                    self._result("pytest", 0, 1, timed_out=True),
+                ],
+            )
+            rc, output = self._check(receipts, root)
+            self.assertEqual(rc, 1)
+            self.assertIn("receipt failed: unittest", output)
+
+    @unittest.skipUnless(_path_pytest_available(), "no pytest on PATH")
+    def test_mixed_fixture_seals_and_check_receipts_passes(self):
+        # End to end (the issue's scenario through the CLI path):
+        # the speculative unittest leg collects zero and exits 5,
+        # run_all defers, pytest collects and passes, the segment
+        # seals — and the audit accepts it.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "root"
+            root.mkdir()
+            write(root, "shared_mixin.py", "class Mixin:\n    pass\n")
+            write(
+                root,
+                "test_mixed.py",
+                "from shared_mixin import Mixin\n\n\n"
+                "class TestMixed(Mixin):\n"
+                "    def test_ok(self):\n"
+                "        pass\n",
+            )
+            receipts = base / "receipts.jsonl"
+            stdout = io.StringIO()
+            with mock.patch.object(
+                mechanical_verify, "available_memory_kb", return_value=10**9
+            ):
+                with contextlib.redirect_stdout(stdout):
+                    rc = mechanical_verify.main(
+                        [
+                            "verify",
+                            "--root",
+                            str(root),
+                            "--task",
+                            "t",
+                            "--receipts",
+                            str(receipts),
+                        ]
+                    )
+            self.assertEqual(rc, 0, stdout.getvalue())
+            records = [
+                json.loads(line) for line in receipts.read_text().splitlines()
+            ]
+            unittest_receipts = [
+                r for r in records if r.get("command_id") == "unittest"
+            ]
+            self.assertEqual(len(unittest_receipts), 1)
+            self.assertEqual(unittest_receipts[0]["exit_code"], 5)
+            self.assertEqual(unittest_receipts[0]["tests_collected"], 0)
+            check_rc, check_output = self._check(receipts, root)
+            self.assertEqual(check_rc, 0, check_output)
+
+
 class ClassifierUncertaintyTests(unittest.TestCase):
     """Bucket A2 (panel CLASS-P1): classification uncertainty routes
     to MORE execution, never less. The panel's three variant families
@@ -1402,6 +1809,7 @@ class ClassifierUncertaintyTests(unittest.TestCase):
                 on_result=results.append,
             )
         return commands, results, rc, stdout.getvalue()
+
 
     def test_cross_module_testcase_base_routes_to_unittest(self):
         with tempfile.TemporaryDirectory() as tmp:
