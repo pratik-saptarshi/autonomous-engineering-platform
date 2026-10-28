@@ -1,0 +1,5 @@
+name: "skill_ingestion_gate"
+title: "Screen a Third-Party Skill Through the Security Gate"
+description: "Run a third-party skill through the security gate before installing it, and act on the full scanner findings rather than guessing why it was blocked."
+category: "Learning and customization"
+include_in_prompt: false

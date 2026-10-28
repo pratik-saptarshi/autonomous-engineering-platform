@@ -65,6 +65,7 @@ The 28 paperthin skills are distributed under the upstream MIT license; its copy
 | self_test_gym | Cognilogical/NeuroPlasticity | — | Native binary not built (needs cargo + Podman) |
 | shower | LilMGenius/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | sip | LilMGenius/paperthin | MIT | Vendored verbatim (7d5dc62) |
+| skill_ingestion_gate | Authored locally | MIT | Screen third-party skills through the fail-closed security gate before install; decide from full JSON findings, never from layout inference. |
 | ssotize | LilMGenius/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | subagent-driven-development | obra/superpowers | MIT | |
 | systematic-debugging | obra/superpowers | MIT | Extended locally: inscribes root causes to NeuroStrata |
