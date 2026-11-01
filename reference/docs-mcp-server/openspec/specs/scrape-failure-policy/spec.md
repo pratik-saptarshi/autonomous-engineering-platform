@@ -1,0 +1,122 @@
+# scrape-failure-policy Specification
+
+## Purpose
+Keeps scrape jobs from retrying indefinitely or hanging on unrecoverable failures by bounding
+HTTP fetch retries and defining clear pass/fail thresholds, so a job fails fast instead of
+consuming resources on requests that cannot succeed.
+## Requirements
+### Requirement: Bounded HTTP Fetch Retries
+The scraper SHALL default HTTP fetch retries to 3 retries per page request, in addition to the initial attempt.
+
+#### Scenario: Default retry budget uses four total attempts
+- **WHEN** an HTTP page fetch repeatedly fails with a retryable error and no per-request override is provided
+- **THEN** the fetcher SHALL stop after the initial attempt plus 3 retries
+
+#### Scenario: Permanent HTTP failures do not use retry budget
+- **WHEN** an HTTP page fetch fails with a non-retryable permanent error
+- **THEN** the fetcher SHALL fail the page without consuming additional retries
+
+### Requirement: Bounded HTTP Fetch Duration
+The scraper SHALL bound how long a single HTTP fetch may wait, so that a server which accepts a connection and then stalls cannot hold a worker indefinitely. A fetch that exceeds the bound SHALL be treated as a retryable failure and SHALL NOT stop the crawl from processing the rest of the queue.
+
+#### Scenario: A stalled response does not park the crawl
+- **GIVEN** a page whose server accepts the request and never completes the response
+- **WHEN** the crawl reaches that page
+- **THEN** the fetch is abandoned once the bound elapses
+- **AND** the remaining pages are still fetched and indexed
+
+### Requirement: Throttled Hosts Are Backed Off
+The scraper SHALL treat HTTP 429, and HTTP 503 with a `Retry-After` header, as a request to slow down that applies to the whole host. Until the pause ends, no request of the crawl SHALL be sent to that host, the throttled request's own retry included. The pause SHALL be the `Retry-After` delay, read as delta-seconds or as an HTTP-date, when the response names one, and SHALL otherwise grow with each throttled response in a row. The pause SHALL be bounded, and it SHALL be abortable by cancelling the job. A 429 that carries a bot challenge SHALL NOT be retried over HTTP; it goes to the browser fallback once, after the pause.
+
+#### Scenario: Other pages wait while a host is paused
+- **GIVEN** a crawl fetching several pages of one host at once
+- **WHEN** the host answers one of them with 429 and `Retry-After: 10`
+- **THEN** no page of that host is requested for 10 seconds
+- **AND** pages of other hosts are still fetched
+
+#### Scenario: A challenged 429 costs one HTTP attempt
+- **WHEN** a host answers with 429 and `cf-mitigated: challenge`
+- **THEN** the fetcher SHALL fail the request with a challenge error without retrying
+- **AND** the browser fallback runs once the host's pause ends
+
+### Requirement: Root Page Failures Abort Immediately
+The scraper SHALL fail the scrape job immediately when the root page cannot be processed successfully during a normal scrape and no alternate crawl seeds are available. During refresh, a tracked root page that returns `NOT_FOUND` SHALL be treated as a deletion instead of a hard failure.
+
+#### Scenario: Root page fetch failure aborts the job
+- **WHEN** the initial root page fails during fetch or processing
+- **THEN** the scrape job SHALL terminate with an error
+
+#### Scenario: Root page failure bypasses child failure threshold logic
+- **WHEN** the initial root page fails before any child pages are attempted
+- **THEN** the scraper SHALL abort immediately rather than evaluating the child-page failure threshold
+
+#### Scenario: Root page not found during refresh is treated as deletion
+- **WHEN** a refresh crawl re-processes a tracked root page and that page returns `NOT_FOUND`
+- **THEN** the scraper SHALL report the root page as deleted
+- **AND** the scrape SHALL continue applying refresh deletion handling instead of failing the job
+
+#### Scenario: Root page not found with alternate crawl seeds continues
+- **WHEN** a normal crawl's root page returns `NOT_FOUND`
+- **AND** the root processing result includes alternate crawl seeds from prior metadata discovery such as llms.txt
+- **THEN** the scraper SHALL continue with those alternate seeds instead of failing immediately
+
+#### Scenario: Root page not found without alternate crawl seeds aborts
+- **WHEN** a normal crawl's root page returns `NOT_FOUND`
+- **AND** no alternate crawl seeds are available
+- **THEN** the scrape job SHALL terminate with a root-page-not-found error
+
+### Requirement: Child Page Failure Rate Aborts Unhealthy Targets
+The scraper SHALL track completed child-page attempts and terminal child-page failures, and SHALL abort the crawl when, after a minimum evaluation sample of 10 completed child-page attempts has been reached, the observed child-page failure rate exceeds the configured threshold. Completed child-page attempts SHALL include successful child-page completions and terminal child-page failures, and SHALL exclude refresh deletions and in-flight attempts.
+
+#### Scenario: Isolated child-page failures do not abort before minimum sample
+- **WHEN** a crawl encounters child-page failures before 10 completed child-page attempts have been reached
+- **THEN** the scraper SHALL continue crawling using normal `ignoreErrors` behavior
+
+#### Scenario: Failure rate above threshold aborts the crawl
+- **WHEN** 10 completed child-page attempts have been reached and the observed child-page failure rate exceeds the configured threshold
+- **THEN** the scraper SHALL terminate the crawl with an error indicating that the target exceeded the allowed failure rate
+
+#### Scenario: Failure rate at or below threshold continues the crawl
+- **WHEN** 10 completed child-page attempts have been reached and the observed child-page failure rate is at or below the configured threshold
+- **THEN** the scraper SHALL continue crawling remaining in-scope pages
+
+### Requirement: Refresh Deletions Do Not Count As Failures
+The scraper SHALL exclude expected page deletions detected during refresh from child-page failure-rate accounting.
+
+#### Scenario: Refresh deletion does not increase failure rate
+- **WHEN** a refresh crawl encounters a child page that returns `NOT_FOUND`
+- **THEN** the scraper SHALL mark the page as deleted without incrementing the child-page failure counter
+
+#### Scenario: Refresh cleanup alone cannot trip the threshold
+- **WHEN** a refresh crawl processes multiple deleted child pages and no terminal child-page processing failures occur
+- **THEN** the scraper SHALL not abort due to the child-page failure threshold
+
+#### Scenario: Non-refresh not found counts as a terminal page failure
+- **WHEN** a normal crawl encounters a non-root page that returns `NOT_FOUND`
+- **THEN** the scraper SHALL treat that page as a terminal page failure for failure-rate accounting
+- **AND** the page SHALL not be treated as a refresh deletion
+
+### Requirement: Skipped Content Does Not Count As Failure
+A resource rejected by the queue-time or fetch-time unprocessable-content gates SHALL NOT be counted as a completed child-page attempt and SHALL NOT be counted as a failed child page. Skips SHALL therefore have no effect on the failure rate compared against `scraper.abortOnFailureRate`.
+
+Without this exclusion, a site whose pages link predominantly to images would drive the observed failure rate past the threshold and abort a scrape in which every page that was read succeeded.
+
+#### Scenario: Image-heavy site does not trip the failure threshold
+- **GIVEN** `scraper.abortOnFailureRate` is at its default of 0.5
+- **AND** a crawl in which 900 discovered resources are skipped as unprocessable and 100 pages are fetched successfully
+- **WHEN** the failure rate is evaluated
+- **THEN** the observed failure rate is 0
+- **AND** the scrape continues
+
+#### Scenario: Genuine failures still count alongside skips
+- **GIVEN** a crawl in which resources are skipped as unprocessable
+- **AND** child pages also fail with fetch errors
+- **WHEN** the failure rate is evaluated
+- **THEN** only the fetch errors contribute to both the numerator and the denominator
+- **AND** the skips are absent from both
+
+#### Scenario: Root URL skipped as unprocessable
+- **GIVEN** a user supplies a start URL that responds with a content type no pipeline can process
+- **WHEN** the depth-0 resource is skipped by the fetch-time gate
+- **THEN** the scrape fails with a clear error naming the unprocessable content type
+- **AND** the failure is not silent

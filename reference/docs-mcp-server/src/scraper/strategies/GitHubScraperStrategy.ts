@@ -1,0 +1,701 @@
+import type { ProgressCallback } from "../../types";
+import type { AppConfig } from "../../utils/config";
+import { ChallengeError, HttpStatusError, ScraperError } from "../../utils/errors";
+import { logger } from "../../utils/logger";
+import { MimeTypeUtils } from "../../utils/mimeTypeUtils";
+import { HttpFetcher } from "../fetcher";
+import { FetchStatus } from "../fetcher/types";
+import type { QueueItem, ScraperOptions, ScraperProgressEvent } from "../types";
+import { shouldIncludeUrl } from "../utils/patternMatcher";
+import { BaseScraperStrategy, type ProcessItemResult } from "./BaseScraperStrategy";
+import type {
+  GitHubRepoInfo,
+  GitHubTreeItem,
+  GitHubTreeResponse,
+} from "./GitHubRepoProcessor";
+import { GitHubRepoProcessor } from "./GitHubRepoProcessor";
+import { GitHubWikiProcessor } from "./GitHubWikiProcessor";
+import { resolveGitHubAuth } from "./github-auth";
+
+/** Text-based file extensions recognized for GitHub repository scraping. */
+const TEXT_EXTENSIONS: ReadonlySet<string> = new Set([
+  // Markup
+  ".md",
+  ".markdown",
+  ".mdx",
+  ".gfm",
+  ".mkd",
+  ".mkdn",
+  ".mkdown",
+  ".mdown",
+  ".mdwn",
+  ".ronn",
+  ".txt",
+  ".rst",
+  ".adoc",
+  ".asciidoc",
+  ".textile",
+  ".org",
+  ".pod",
+  ".rdoc",
+  ".wiki",
+  ".rmd",
+  // Web
+  ".html",
+  ".htm",
+  ".xml",
+  ".xsl",
+  ".xslt",
+  ".xsd",
+  ".dtd",
+  ".wsdl",
+  ".xhtml",
+  // Stylesheets
+  ".css",
+  ".scss",
+  ".sass",
+  ".less",
+  // JavaScript/TypeScript
+  ".js",
+  ".jsx",
+  ".mjs",
+  ".cjs",
+  ".ts",
+  ".tsx",
+  ".mts",
+  ".cts",
+  // Python
+  ".py",
+  ".pyw",
+  ".pyi",
+  ".pyx",
+  ".pxd",
+  // JVM
+  ".java",
+  ".kt",
+  ".kts",
+  ".scala",
+  ".groovy",
+  ".gradle",
+  // .NET
+  ".cs",
+  // Systems
+  ".c",
+  ".cpp",
+  ".cc",
+  ".cxx",
+  ".h",
+  ".hpp",
+  ".hxx",
+  ".go",
+  ".rs",
+  ".zig",
+  ".nim",
+  ".v",
+  ".cr",
+  // Apple/Mobile
+  ".swift",
+  ".dart",
+  ".m",
+  ".mm",
+  // Scripting
+  ".rb",
+  ".rake",
+  ".php",
+  ".lua",
+  ".pl",
+  ".pm",
+  ".r",
+  // Functional
+  ".hs",
+  ".lhs",
+  ".elm",
+  ".erl",
+  ".ex",
+  ".exs",
+  ".clj",
+  ".cljs",
+  ".cljc",
+  ".jl",
+  // Web3
+  ".sol",
+  ".move",
+  ".cairo",
+  // Web Frameworks
+  ".vue",
+  ".svelte",
+  ".astro",
+  // Shell
+  ".sh",
+  ".bash",
+  ".zsh",
+  ".fish",
+  ".ps1",
+  ".bat",
+  ".cmd",
+  // Data
+  ".json",
+  ".yaml",
+  ".yml",
+  ".csv",
+  ".tsv",
+  ".sql",
+  ".graphql",
+  ".gql",
+  // Config
+  ".toml",
+  ".ini",
+  ".cfg",
+  ".conf",
+  ".properties",
+  ".env",
+  ".gitignore",
+  ".dockerignore",
+  ".gitattributes",
+  ".editorconfig",
+  // Build Systems
+  ".pom",
+  ".sbt",
+  ".maven",
+  ".cmake",
+  ".make",
+  ".dockerfile",
+  ".containerfile",
+  ".makefile",
+  ".bazel",
+  ".bzl",
+  ".buck",
+  // IaC
+  ".tf",
+  ".tfvars",
+  ".hcl",
+  // Package managers
+  ".mod",
+  ".sum",
+  // Schema/API
+  ".proto",
+  ".prisma",
+  ".thrift",
+  ".avro",
+  // TeX
+  ".tex",
+  ".latex",
+  // Other
+  ".log",
+]);
+
+/** Document extensions supported by DocumentPipeline. */
+const DOCUMENT_EXTENSIONS: ReadonlySet<string> = new Set([
+  ".pdf",
+  ".docx",
+  ".xlsx",
+  ".pptx",
+  ".ipynb",
+  ".doc",
+  ".xls",
+  ".ppt",
+  ".odt",
+  ".ods",
+  ".odp",
+  ".rtf",
+  ".epub",
+  ".fb2",
+]);
+
+/** Well-known filenames (case-insensitive) that are typically text-based. */
+const COMMON_TEXT_FILES: readonly string[] = [
+  "readme",
+  "license",
+  "changelog",
+  "contributing",
+  "authors",
+  "maintainers",
+  "dockerfile",
+  "makefile",
+  "rakefile",
+  "gemfile",
+  "podfile",
+  "cartfile",
+  "brewfile",
+  "procfile",
+  "vagrantfile",
+  "gulpfile",
+  "gruntfile",
+  ".prettierrc",
+  ".eslintrc",
+  ".babelrc",
+  ".nvmrc",
+  ".npmrc",
+];
+
+/**
+ * GitHubScraperStrategy is a discovery strategy that orchestrates the scraping of both
+ * GitHub repository code and wiki pages. When given a GitHub repository URL, it will:
+ *
+ * 1. Attempt to scrape the repository's wiki pages using GitHubWikiProcessor (prioritized)
+ * 2. Discover all repository files using the GitHub Tree API
+ * 3. Create HTTPS blob URLs for each file, which are stored in the database
+ * 4. Process blob URLs directly with GitHubRepoProcessor
+ *
+ * This provides comprehensive documentation coverage by including both wiki documentation
+ * and source code in a single scraping job, with wikis prioritized as they typically
+ * contain higher-quality curated documentation.
+ *
+ * Features:
+ * - Handles base GitHub repository URLs (e.g., https://github.com/owner/repo)
+ * - Handles branch-specific URLs (e.g., https://github.com/owner/repo/tree/branch)
+ * - Handles single file URLs (e.g., https://github.com/owner/repo/blob/branch/path)
+ * - Discovers all files efficiently using GitHub's Tree API
+ * - Generates and processes user-friendly HTTPS blob URLs throughout
+ * - Prioritizes wiki content over repository files for better documentation quality
+ * - Respects maxPages limit across both scraping phases to prevent exceeding quotas
+ * - Automatically discovers and scrapes both wiki and code content
+ * - Graceful handling when wikis don't exist or are inaccessible
+ */
+export class GitHubScraperStrategy extends BaseScraperStrategy {
+  private readonly httpFetcher: HttpFetcher;
+  private readonly wikiProcessor: GitHubWikiProcessor;
+  private readonly repoProcessor: GitHubRepoProcessor;
+  private resolvedAuthHeaders?: Record<string, string>;
+  private resolvedAuthKey?: string;
+
+  constructor(config: AppConfig) {
+    super(config);
+    this.httpFetcher = new HttpFetcher(config.scraper);
+    this.wikiProcessor = new GitHubWikiProcessor(config);
+    this.repoProcessor = new GitHubRepoProcessor(config);
+  }
+
+  /**
+   * Parses a GitHub URL to extract repository information.
+   */
+  private parseGitHubUrl(
+    url: string,
+  ): GitHubRepoInfo & { isBlob?: boolean; filePath?: string } {
+    const parsedUrl = new URL(url);
+    // Extract /<org>/<repo> from github.com/<org>/<repo>/...
+    const match = parsedUrl.pathname.match(/^\/([^/]+)\/([^/]+)/);
+    if (!match) {
+      throw new Error(`Invalid GitHub repository URL: ${url}`);
+    }
+
+    const [, owner, repo] = match;
+
+    // Extract branch and optional subpath from URLs like /tree/<branch>/<subPath>
+    const segments = parsedUrl.pathname.split("/").filter(Boolean);
+
+    // Handle /blob/ URLs for single file indexing
+    if (segments.length >= 4 && segments[2] === "blob") {
+      const branch = segments[3];
+      const filePath = segments.length > 4 ? segments.slice(4).join("/") : undefined;
+      return { owner, repo, branch, filePath, isBlob: true };
+    }
+
+    // Handle /tree/ URLs with branch and optional subpath
+    if (segments.length >= 4 && segments[2] === "tree") {
+      const branch = segments[3];
+      const subPath = segments.length > 4 ? segments.slice(4).join("/") : undefined;
+      return { owner, repo, branch, subPath };
+    }
+
+    // Base repository URL
+    return { owner, repo };
+  }
+
+  private buildAuthCacheKey(explicitHeaders?: Record<string, string>): string {
+    const normalizedHeaders = explicitHeaders
+      ? Object.keys(explicitHeaders)
+          .sort()
+          .map((key) => [key, explicitHeaders[key]])
+      : [];
+    const envKey = `${process.env.GITHUB_TOKEN ?? ""}|${process.env.GH_TOKEN ?? ""}`;
+    return JSON.stringify({ headers: normalizedHeaders, env: envKey });
+  }
+
+  private async getResolvedAuthHeaders(
+    explicitHeaders?: Record<string, string>,
+  ): Promise<Record<string, string>> {
+    const cacheKey = this.buildAuthCacheKey(explicitHeaders);
+    if (this.resolvedAuthHeaders && this.resolvedAuthKey === cacheKey) {
+      return this.resolvedAuthHeaders;
+    }
+
+    const resolved = await resolveGitHubAuth(explicitHeaders);
+    this.resolvedAuthHeaders = resolved;
+    this.resolvedAuthKey = cacheKey;
+    return resolved;
+  }
+
+  /**
+   * Fetches the repository tree structure from GitHub API.
+   */
+  private async fetchRepositoryTree(
+    repoInfo: GitHubRepoInfo,
+    headers?: Record<string, string>,
+    signal?: AbortSignal,
+  ): Promise<{ tree: GitHubTreeResponse; resolvedBranch: string }> {
+    const { owner, repo, branch } = repoInfo;
+
+    // If no branch specified, fetch the default branch first
+    let targetBranch = branch;
+    if (!targetBranch) {
+      const repoUrl = `https://api.github.com/repos/${owner}/${repo}`;
+      logger.debug(`Fetching repository info: ${repoUrl}`);
+
+      let repoContent: Awaited<ReturnType<typeof this.httpFetcher.fetch>>;
+      try {
+        repoContent = await this.httpFetcher.fetch(repoUrl, { signal, headers });
+      } catch (error) {
+        this.rethrowAsGitHubAuthError(error, owner, repo);
+        throw error;
+      }
+
+      // Check for NOT_FOUND status before parsing - repo is inaccessible (private or doesn't exist)
+      if (repoContent.status === FetchStatus.NOT_FOUND) {
+        throw new ScraperError(
+          `Repository "${owner}/${repo}" not found or not accessible. For private repositories, set the GITHUB_TOKEN environment variable.`,
+          false,
+        );
+      }
+
+      // Try to parse the response to get the default branch
+      try {
+        const content =
+          typeof repoContent.content === "string"
+            ? repoContent.content
+            : repoContent.content.toString("utf-8");
+        const repoData = JSON.parse(content) as { default_branch?: string };
+        const defaultBranch =
+          typeof repoData.default_branch === "string"
+            ? repoData.default_branch.trim()
+            : "";
+        if (!defaultBranch) {
+          logger.warn(
+            `⚠️  Repository info missing default_branch for ${owner}/${repo}, using 'main'`,
+          );
+          targetBranch = "main";
+        } else {
+          targetBranch = defaultBranch;
+          logger.debug(`Using default branch: ${targetBranch}`);
+        }
+      } catch (parseError) {
+        // Only fall back to "main" for JSON parse errors (e.g., unexpected API response format)
+        logger.warn(`⚠️  Could not parse repository info, using 'main': ${parseError}`);
+        targetBranch = "main";
+      }
+    }
+
+    const treeUrl = `https://api.github.com/repos/${owner}/${repo}/git/trees/${targetBranch}?recursive=1`;
+    logger.debug(`Fetching repository tree: ${treeUrl}`);
+
+    let rawContent: Awaited<ReturnType<typeof this.httpFetcher.fetch>>;
+    try {
+      rawContent = await this.httpFetcher.fetch(treeUrl, { signal, headers });
+    } catch (error) {
+      this.rethrowAsGitHubAuthError(error, owner, repo);
+      throw error;
+    }
+
+    // Check for NOT_FOUND status before parsing - this indicates repo is inaccessible
+    if (rawContent.status === FetchStatus.NOT_FOUND) {
+      throw new ScraperError(
+        `Repository "${owner}/${repo}" not found or not accessible. For private repositories, set the GITHUB_TOKEN environment variable.`,
+        false,
+      );
+    }
+
+    const content =
+      typeof rawContent.content === "string"
+        ? rawContent.content
+        : rawContent.content.toString("utf-8");
+
+    // Parse JSON with proper error handling
+    let treeData: GitHubTreeResponse;
+    try {
+      treeData = JSON.parse(content) as GitHubTreeResponse;
+    } catch (parseError) {
+      throw new ScraperError(
+        `Failed to parse GitHub API response for "${owner}/${repo}". The repository may be inaccessible or the API returned an unexpected response.`,
+        false,
+        parseError instanceof Error ? parseError : undefined,
+      );
+    }
+
+    if (treeData.truncated) {
+      logger.warn(
+        `⚠️  Repository tree was truncated for ${owner}/${repo}. Some files may be missing.`,
+      );
+    }
+
+    return { tree: treeData, resolvedBranch: targetBranch };
+  }
+
+  /**
+   * Determines if a file should be processed based on its path and type.
+   */
+  private shouldProcessFile(item: GitHubTreeItem, options: ScraperOptions): boolean {
+    if (item.type !== "blob") {
+      return false;
+    }
+
+    const filePath = item.path;
+    const pathLower = filePath.toLowerCase();
+
+    // Extract extension for Set-based lookup
+    const lastDot = pathLower.lastIndexOf(".");
+    const ext = lastDot !== -1 ? pathLower.slice(lastDot) : "";
+
+    const hasTextExtension = ext !== "" && TEXT_EXTENSIONS.has(ext);
+    const hasDocumentExtension = ext !== "" && DOCUMENT_EXTENSIONS.has(ext);
+    const hasCompoundExtension =
+      pathLower.includes(".env.") ||
+      pathLower.endsWith(".env") ||
+      pathLower.includes(".config.") ||
+      pathLower.includes(".lock");
+
+    const fileName = filePath.split("/").pop() || "";
+    const fileNameLower = fileName.toLowerCase();
+
+    const isCommonTextFile = COMMON_TEXT_FILES.some(
+      (name) => fileNameLower === name || fileNameLower.startsWith(`${name}.`),
+    );
+
+    // If file passes known checks, include it
+    if (
+      hasTextExtension ||
+      hasDocumentExtension ||
+      hasCompoundExtension ||
+      isCommonTextFile
+    ) {
+      return shouldIncludeUrl(filePath, options.includePatterns, options.excludePatterns);
+    }
+
+    // Fallback: check if unknown extension has text/* MIME type using MimeTypeUtils
+    const mimeType = MimeTypeUtils.detectMimeTypeFromPath(filePath);
+    if (mimeType?.startsWith("text/")) {
+      logger.debug(`Including file with text MIME type: ${filePath} (${mimeType})`);
+      return shouldIncludeUrl(filePath, options.includePatterns, options.excludePatterns);
+    }
+
+    // Not a text file
+    return false;
+  }
+
+  /**
+   * Checks if a path is within the specified subpath.
+   */
+  private isWithinSubPath(path: string, subPath?: string): boolean {
+    if (!subPath) {
+      return true;
+    }
+
+    const trimmedSubPath = subPath.replace(/^\/+/, "").replace(/\/+$/, "");
+    if (trimmedSubPath.length === 0) {
+      return true;
+    }
+
+    const normalizedPath = path.replace(/^\/+/, "").replace(/\/+$/, "");
+    if (normalizedPath === trimmedSubPath) {
+      return true;
+    }
+
+    return normalizedPath.startsWith(`${trimmedSubPath}/`);
+  }
+
+  /**
+   * Replaces a GitHub API auth failure with a message naming the likely cause.
+   *
+   * Keyed off the response status rather than the message text, which embeds
+   * the API url — a repo named e.g. "error-403" would otherwise make every
+   * failure for it read as access denied.
+   *
+   * GitHub answers a rate limit with 403 rather than 429, so 403 deliberately
+   * covers both permissions and rate limiting here.
+   *
+   * @param error The error the fetch threw.
+   * @param owner Repository owner, for the message.
+   * @param repo Repository name, for the message.
+   * @throws A {@link ScraperError} when the status identifies an auth failure.
+   */
+  private rethrowAsGitHubAuthError(error: unknown, owner: string, repo: string): void {
+    // HttpFetcher raises ChallengeError rather than HttpStatusError for a 403
+    // carrying Cloudflare challenge markers, and it carries a status too.
+    if (!(error instanceof HttpStatusError || error instanceof ChallengeError)) {
+      return;
+    }
+    const { statusCode } = error;
+    if (statusCode === 401) {
+      throw new ScraperError(
+        `GitHub authentication failed for "${owner}/${repo}". Your token is invalid or expired. Please check your GITHUB_TOKEN or GH_TOKEN environment variable.`,
+        false,
+        error,
+      );
+    }
+    if (statusCode === 403) {
+      throw new ScraperError(
+        `GitHub access denied for "${owner}/${repo}". Your token may lack the required permissions, or you may be rate-limited. Please check your GITHUB_TOKEN or GH_TOKEN.`,
+        false,
+        error,
+      );
+    }
+  }
+
+  /**
+   * Measures scope from the repository root rather than the URL the scrape
+   * started from.
+   *
+   * A `/tree/<branch>` URL names a branch, but the files discovered under it
+   * live at `/blob/<branch>/...` and the wiki at `/wiki`, so measured from the
+   * tree URL the default `subpages` scope rejects every one of them.
+   *
+   * @param options Scraper options naming the GitHub URL the scrape started from.
+   * @returns The repository root URL.
+   */
+  protected override getScopeBaseUrl(options: ScraperOptions): URL {
+    const { owner, repo } = this.parseGitHubUrl(options.url);
+    return new URL(`/${owner}/${repo}`, options.url);
+  }
+
+  async processItem(
+    item: QueueItem,
+    options: ScraperOptions,
+    signal?: AbortSignal,
+  ): Promise<ProcessItemResult> {
+    // Handle legacy github-file:// URLs - treat as deleted/not found
+    if (item.url.startsWith("github-file://")) {
+      logger.info(
+        `🗑️  Legacy github-file:// URL detected, marking as deleted: ${item.url}`,
+      );
+      return {
+        url: item.url,
+        links: [],
+        status: FetchStatus.NOT_FOUND,
+      };
+    }
+
+    const headers = await this.getResolvedAuthHeaders(options.headers);
+
+    // Delegate to wiki processor for wiki URLs
+    // Use precise pattern matching: /owner/repo/wiki or /owner/repo/wiki/
+    try {
+      const parsedUrl = new URL(item.url);
+      if (/^\/[^/]+\/[^/]+\/wiki($|\/)/.test(parsedUrl.pathname)) {
+        return await this.wikiProcessor.process(item, options, headers, signal);
+      }
+    } catch {
+      // If URL parsing fails, fall through to other handlers
+    }
+
+    // For the main repository URL (depth 0), perform discovery
+    if (item.depth === 0) {
+      const repoInfo = this.parseGitHubUrl(options.url);
+      const { owner, repo } = repoInfo;
+
+      // A single file (blob) URL is scoped strictly to that file, so the root
+      // item is the file itself. Returning its URL as a link instead would
+      // index nothing: the crawl has already marked the root URL as visited.
+      if (repoInfo.isBlob && repoInfo.filePath) {
+        logger.debug(
+          `Single file URL detected: ${owner}/${repo}/${repoInfo.filePath} - indexing file only`,
+        );
+        return await this.repoProcessor.process(item, options, headers, signal);
+      }
+
+      logger.debug(`Discovering GitHub repository ${owner}/${repo}`);
+
+      const discoveredLinks: string[] = [];
+
+      // The wiki belongs to the repository, not to a branch, so it is built
+      // from the repository root: appended to a tree URL it would name
+      // nothing. A scrape narrowed to a directory leaves the wiki out.
+      if (!repoInfo.subPath) {
+        const wikiUrl = new URL(`/${owner}/${repo}/wiki`, options.url).href;
+        discoveredLinks.push(wikiUrl);
+        logger.debug(`Discovered wiki URL: ${wikiUrl}`);
+      }
+
+      // 3. Discover all files in the repository
+      const { tree, resolvedBranch } = await this.fetchRepositoryTree(
+        repoInfo,
+        headers,
+        signal,
+      );
+
+      const fileItems = tree.tree
+        .filter((treeItem) => this.isWithinSubPath(treeItem.path, repoInfo.subPath))
+        .filter((treeItem) => this.shouldProcessFile(treeItem, options));
+
+      logger.debug(
+        `Discovered ${fileItems.length} processable files in repository (branch: ${resolvedBranch})`,
+      );
+
+      // Create HTTPS blob URLs for storage in database
+      // These are user-friendly, clickable URLs that work outside the system
+      const fileUrls = fileItems.map(
+        (treeItem) =>
+          `https://github.com/${owner}/${repo}/blob/${resolvedBranch}/${treeItem.path}`,
+      );
+
+      discoveredLinks.push(...fileUrls);
+
+      logger.debug(
+        `Discovery complete: ${fileUrls.length} repo file(s), ${discoveredLinks.length} total URLs`,
+      );
+
+      // The repository or tree URL only lists what to index; it is not a page.
+      return {
+        url: item.url,
+        links: discoveredLinks,
+        isContainer: true,
+        status: FetchStatus.SUCCESS,
+      };
+    }
+
+    // Handle HTTPS blob URLs at depth > 0 (from database during refresh or discovered files)
+    // Process blob URLs directly - fetch content and return empty links
+    // Use precise pattern matching: /owner/repo/blob/branch/path
+    try {
+      const parsedUrl = new URL(item.url);
+      if (/^\/[^/]+\/[^/]+\/blob\//.test(parsedUrl.pathname)) {
+        logger.debug(`Processing HTTPS blob URL at depth ${item.depth}: ${item.url}`);
+        return await this.repoProcessor.process(item, options, headers, signal);
+      }
+    } catch (error) {
+      logger.warn(`⚠️  Failed to parse blob URL ${item.url}: ${error}`);
+      return { url: item.url, links: [], status: FetchStatus.SUCCESS };
+    }
+
+    // Neither a file nor a wiki page, so nothing this strategy indexes. Older
+    // versions stored such URLs, such as a wiki URL appended to a tree URL, and
+    // reporting them as gone lets a refresh remove them.
+    logger.debug(`Not a GitHub file or wiki page at depth ${item.depth}: ${item.url}`);
+    return { url: item.url, links: [], status: FetchStatus.NOT_FOUND };
+  }
+
+  async scrape(
+    options: ScraperOptions,
+    progressCallback: ProgressCallback<ScraperProgressEvent>,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const url = new URL(options.url);
+    if (!url.hostname.includes("github.com")) {
+      throw new Error("URL must be a GitHub URL");
+    }
+
+    await this.getResolvedAuthHeaders(options.headers);
+
+    // Use the base class implementation which handles initialQueue properly
+    // The processItem method will discover all wiki and repo file URLs
+    // The base scraper will automatically deduplicate URLs from initialQueue
+    try {
+      await super.scrape(options, progressCallback, signal);
+    } finally {
+      this.resolvedAuthHeaders = undefined;
+      this.resolvedAuthKey = undefined;
+    }
+  }
+
+  async cleanup(): Promise<void> {
+    await Promise.all([this.wikiProcessor.cleanup(), this.repoProcessor.cleanup()]);
+  }
+}

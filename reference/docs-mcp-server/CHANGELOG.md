@@ -1,0 +1,1193 @@
+## [3.4.1](https://github.com/arabold/docs-mcp-server/compare/v3.4.0...v3.4.1) (2026-10-25)
+
+### Bug fixes
+- The CLI recognizes Playwright’s headless shell, installs it with its bundled Playwright when needed, and avoids checking or reinstalling browsers for commands that don’t launch one. Docker images can use their own Chromium without downloading Playwright’s. ([#598](https://github.com/arabold/docs-mcp-server/issues/598), [#549](https://github.com/arabold/docs-mcp-server/issues/549))
+- Scraping now backs off across all requests to a throttled host, honors `Retry-After`, and avoids repeated HTTP retries for Cloudflare challenges before falling back to a browser. ([#600](https://github.com/arabold/docs-mcp-server/issues/600))
+- Crawls request HTML first so sites that provide Markdown responses don’t lose navigation and pages; Markdown responses are still supported when available. ([#599](https://github.com/arabold/docs-mcp-server/issues/599))
+
+# [3.4.0](https://github.com/arabold/docs-mcp-server/compare/v3.3.0...v3.4.0) (2026-10-24)
+
+### Features
+
+- Confirm an embedding model change without a terminal using `--accept-model-change` or `DOCS_MCP_ACCEPT_MODEL_CHANGE=true` with the default command, `mcp`, or `worker`; this deletes the stored vectors and allows startup to continue. Confirmation messages no longer show an assumed dimension count when the new model’s dimensions are unknown. ([#593](https://github.com/arabold/docs-mcp-server/issues/593), [#588](https://github.com/arabold/docs-mcp-server/issues/588))
+
+### Bug fixes
+
+- GitHub scraping indexes files from blob and branch-tree URLs without storing repository or directory listings as empty pages. Refresh removes those unwanted entries, missing wikis no longer appear as repository content, and empty wiki pages keep their HTML titles. ([#590](https://github.com/arabold/docs-mcp-server/issues/590), [#589](https://github.com/arabold/docs-mcp-server/issues/589))
+- The web interface’s search playground resolves “Latest” and version ranges the same way as the `search_docs` MCP tool, so versioned libraries return results instead of searching only the unversioned bucket. ([#592](https://github.com/arabold/docs-mcp-server/issues/592), [#587](https://github.com/arabold/docs-mcp-server/issues/587))
+- Search results include child content and the enclosing declarations and closing braces needed to understand code matches, without pulling in unrelated scopes. JSON matches return their containing object or array with enclosing keys and brackets rather than the whole document. ([#578](https://github.com/arabold/docs-mcp-server/issues/578), [#353](https://github.com/arabold/docs-mcp-server/issues/353), [#469](https://github.com/arabold/docs-mcp-server/issues/469), [#475](https://github.com/arabold/docs-mcp-server/issues/475), [#480](https://github.com/arabold/docs-mcp-server/issues/480))
+- Scrape jobs fail immediately when embeddings cannot be generated instead of reporting completion with no stored content. Fatal worker errors, such as a failed page deletion during refresh, also stop the crawl even when page errors are ignored. ([#595](https://github.com/arabold/docs-mcp-server/issues/595), [#585](https://github.com/arabold/docs-mcp-server/issues/585))
+- Playwright mode reports rendering failures instead of silently storing unrendered HTML; auto mode retains its fallback, and `fetch_url` identifies render failures explicitly. Browser restarts avoid an unnecessary retry through the retiring browser, and dependency updates address security vulnerabilities. ([#597](https://github.com/arabold/docs-mcp-server/issues/597))
+
+### Internal changes
+
+- Consolidate tests and strengthen checks through real CLI, MCP, server, scraper, and store interfaces, while removing unused internal code. GitHub blob-refresh and wiki-title checks move into the strategy suite without losing coverage. ([#579](https://github.com/arabold/docs-mcp-server/issues/579), [#580](https://github.com/arabold/docs-mcp-server/issues/580), [#581](https://github.com/arabold/docs-mcp-server/issues/581), [#582](https://github.com/arabold/docs-mcp-server/issues/582), [#586](https://github.com/arabold/docs-mcp-server/issues/586), [#306](https://github.com/arabold/docs-mcp-server/issues/306), [#311](https://github.com/arabold/docs-mcp-server/issues/311), [#341](https://github.com/arabold/docs-mcp-server/issues/341), [#353](https://github.com/arabold/docs-mcp-server/issues/353), [#418](https://github.com/arabold/docs-mcp-server/issues/418), [#475](https://github.com/arabold/docs-mcp-server/issues/475), [#490](https://github.com/arabold/docs-mcp-server/issues/490), [#503](https://github.com/arabold/docs-mcp-server/issues/503))
+- Make browser and crawl tests more reliable by bypassing request interception for loopback traffic and leaving generated connection headers to Node. ([#591](https://github.com/arabold/docs-mcp-server/issues/591), [#596](https://github.com/arabold/docs-mcp-server/issues/596))
+
+## [3.2.1](https://github.com/arabold/docs-mcp-server/compare/v3.2.0...v3.2.1) (2026-09-27)
+
+
+### Bug Fixes
+
+* **web:** keep add header working when the portal is served over plain http ([3d45d67](https://github.com/arabold/docs-mcp-server/commit/3d45d672984229997e328eeb35b3e1b4c71428b8)), closes [#514](https://github.com/arabold/docs-mcp-server/issues/514)
+
+# [3.2.0](https://github.com/arabold/docs-mcp-server/compare/v3.1.0...v3.2.0) (2026-09-21)
+
+
+### Bug Fixes
+
+* **embeddings:** address PR review comments on spec/code inconsistencies ([7beddd3](https://github.com/arabold/docs-mcp-server/commit/7beddd31f5b956f4feceed4a710b66dfbaf885f2))
+* **embeddings:** match provider prefixes case-insensitively ([ceb51ef](https://github.com/arabold/docs-mcp-server/commit/ceb51efab16742d0a669a0a515234b69e0040866))
+* **embeddings:** recognize namespaced quantized models ([fb43b8b](https://github.com/arabold/docs-mcp-server/commit/fb43b8b4cf4b79b09dec338120cc25b42839bd5e)), closes [#484](https://github.com/arabold/docs-mcp-server/issues/484)
+* **embeddings:** resolve provider prefixes against a known provider list ([232c81b](https://github.com/arabold/docs-mcp-server/commit/232c81b47c107a6baa7fdf204e0c7f4a9f3aa330))
+* **embeddings:** restore the safe credential fallback ([a5f0173](https://github.com/arabold/docs-mcp-server/commit/a5f01736c7fe515d5a49ea2562bc58c12104e170))
+* **embeddings:** withdraw the unimplemented sagemaker provider ([d91d8a2](https://github.com/arabold/docs-mcp-server/commit/d91d8a233686bd859342f2da7bc2ef7883587882))
+* **github:** key auth error messages off the response status ([46625cf](https://github.com/arabold/docs-mcp-server/commit/46625cf5a9507a4bba484295932bf0af7d802cb0))
+* **scraper:** address review findings on outcome and persistence handling ([69d8227](https://github.com/arabold/docs-mcp-server/commit/69d82275c91fc78f0cf6f6b232c035a7a805d1f0)), closes [#490](https://github.com/arabold/docs-mcp-server/issues/490)
+* **scraper:** close data-loss paths found auditing merged work ([8d38c66](https://github.com/arabold/docs-mcp-server/commit/8d38c668a7c54a49454c78972394b2119eb6122c))
+* **scraper:** define scrape progress counter semantics ([eb7ee20](https://github.com/arabold/docs-mcp-server/commit/eb7ee205625bab492583aea69a1c5502c60f3c60)), closes [#490](https://github.com/arabold/docs-mcp-server/issues/490) [#490](https://github.com/arabold/docs-mcp-server/issues/490)
+* **scraper:** detect misfiled script types and cache compiled patterns ([42b4c6a](https://github.com/arabold/docs-mcp-server/commit/42b4c6ac101a90241ea1dc9b93dd5c876d009a5d)), closes [#490](https://github.com/arabold/docs-mcp-server/issues/490)
+* **scraper:** measure the main-region ratio on normalized text ([81acf0a](https://github.com/arabold/docs-mcp-server/commit/81acf0a22a5c016751ef360d55751f7539ddb84f))
+* **scraper:** name the content type when an unprocessable root fails ([211934c](https://github.com/arabold/docs-mcp-server/commit/211934c32ad1828e49130f3e54b93d9fa5ce70a7))
+* **scraper:** record a markdown variant under the page it represents ([ce5220b](https://github.com/arabold/docs-mcp-server/commit/ce5220b478b6bfd499e0febf1e9635b84846dfe3))
+* **scraper:** record the retrieval location of an empty page ([b12625e](https://github.com/arabold/docs-mcp-server/commit/b12625e393b7aef439fd74b19f609f05094e1d44))
+* **scraper:** salvage markdown node by node when conversion fails ([e07296c](https://github.com/arabold/docs-mcp-server/commit/e07296ccb8f9220e1c4c2d157f42e0d9d0f171fa))
+* **scraper:** scope html extraction to the declared main region ([2426a04](https://github.com/arabold/docs-mcp-server/commit/2426a045dba732f7e8d2e8e2d93015430b1b264e)), closes [#504](https://github.com/arabold/docs-mcp-server/issues/504)
+* **scraper:** stop indexing raw HTML when markdown conversion fails ([a338dd0](https://github.com/arabold/docs-mcp-server/commit/a338dd0feef43c2a99ad09c1024062ef0b73ae82)), closes [#496](https://github.com/arabold/docs-mcp-server/issues/496)
+* **scraper:** stop lowercasing URLs, and specify normalization ([98eee82](https://github.com/arabold/docs-mcp-server/commit/98eee8293d9c95b8697e62515bd692d94c99aeed))
+* **scraper:** treat a plain-text markdown alternate as markdown again ([0d8b2ba](https://github.com/arabold/docs-mcp-server/commit/0d8b2bafa47264ee356e2da8d7da367dcac6df86))
+* **search-eval:** fail loudly on a dead Context7 library instead of scoring zero ([7afc239](https://github.com/arabold/docs-mcp-server/commit/7afc2394c5a64f4ee2c5e7ff8b5a080b7f5370ee))
+* **search-eval:** stop the embedding model spec disabling the regression gate ([75c21e1](https://github.com/arabold/docs-mcp-server/commit/75c21e130c001a50b58f3691b393391aa1d737a8))
+* **splitter:** drop heading anchor annotations from indexed text ([4d8bd56](https://github.com/arabold/docs-mcp-server/commit/4d8bd564827e0128534ebdde07597e4bbc973dd2))
+* **splitter:** index real markdown frontmatter instead of "undefined" ([cc275cb](https://github.com/arabold/docs-mcp-server/commit/cc275cbc7c73858be300af26175f4f1670bba07f)), closes [#503](https://github.com/arabold/docs-mcp-server/issues/503)
+* **splitter:** only treat a YAML mapping as markdown frontmatter ([dde63d1](https://github.com/arabold/docs-mcp-server/commit/dde63d11f12a98181e2aedc924b392315603266f))
+* **store:** address the second review round on page identity ([dcb016a](https://github.com/arabold/docs-mcp-server/commit/dcb016a5140483d67f4817d95ef1b95d13ae618d))
+* **store:** apply the version label contract on read as well as write ([c15279e](https://github.com/arabold/docs-mcp-server/commit/c15279ec7769b25b4582eee6c593dd805b6e91c9))
+* **store:** gate version coercion to partial-version shapes ([ab939ab](https://github.com/arabold/docs-mcp-server/commit/ab939abd1e2b9aad25e777deeefac91ede178a7c))
+* **store:** handle compaction size races ([ee0cd03](https://github.com/arabold/docs-mcp-server/commit/ee0cd03b02cb42f956337e3ba2a3cdb92e347ea1))
+* **store:** keep the location a page's content came from ([7ac750f](https://github.com/arabold/docs-mcp-server/commit/7ac750f60f03324ed8e569a8c74f54c5219408b5))
+* **store:** keep version labels distinct when normalizing for matching ([1b72fb0](https://github.com/arabold/docs-mcp-server/commit/1b72fb0696e756f2cfcc281f78cb07e6d921e221))
+* **store:** reclaim sqlite space after documentation removal ([044d881](https://github.com/arabold/docs-mcp-server/commit/044d8815601f410bcf6b124b13481cf0e285d790)), closes [#476](https://github.com/arabold/docs-mcp-server/issues/476)
+* **store:** reduce vacuum memory pressure ([6eba99c](https://github.com/arabold/docs-mcp-server/commit/6eba99c7f5ea9229428722212cc7638c95e70fb6))
+* **store:** resolve competing page representations without losing content ([efd8020](https://github.com/arabold/docs-mcp-server/commit/efd80202b0bc1595a12f8f17214548632f79aaa6))
+* **store:** resolve partial semver versions like "1.20" in findBestVersion ([928c424](https://github.com/arabold/docs-mcp-server/commit/928c4246f981dbf600bafbe0ba7a4794a957fd04)), closes [#475](https://github.com/arabold/docs-mcp-server/issues/475) [#475](https://github.com/arabold/docs-mcp-server/issues/475) [#480](https://github.com/arabold/docs-mcp-server/issues/480)
+* **test:** derive the playwright test config from the real defaults ([24d0151](https://github.com/arabold/docs-mcp-server/commit/24d015136c478faf782a7a920c25c3c0e3799c9d))
+* **test:** make npm run test:live actually run the live suite ([3b592ab](https://github.com/arabold/docs-mcp-server/commit/3b592ab2f92fdd0c9a82bac01e34d9308d861152))
+
+
+### Features
+
+* **scraper:** harden fetch fallbacks and llms.txt parsing ([77a5648](https://github.com/arabold/docs-mcp-server/commit/77a5648e57ffbc4bd89f87ef1ae82c7b1e22af08)), closes [#488](https://github.com/arabold/docs-mcp-server/issues/488)
+* **store:** unify version label handling across write and read paths ([abaf88e](https://github.com/arabold/docs-mcp-server/commit/abaf88e25fa7cd3dabd8c6a2c623dba50e4bf34d)), closes [#475](https://github.com/arabold/docs-mcp-server/issues/475) [#480](https://github.com/arabold/docs-mcp-server/issues/480) [#475](https://github.com/arabold/docs-mcp-server/issues/475) [#480](https://github.com/arabold/docs-mcp-server/issues/480)
+
+
+### Performance Improvements
+
+* **scraper:** skip fetching content no pipeline can process ([8f42d7a](https://github.com/arabold/docs-mcp-server/commit/8f42d7a2ddb18a4b4d6acd5954e8fc2395c791b4)), closes [#490](https://github.com/arabold/docs-mcp-server/issues/490)
+
+# [3.1.0](https://github.com/arabold/docs-mcp-server/compare/v3.0.1...v3.1.0) (2026-08-29)
+
+
+### Bug Fixes
+
+* **mcp:** preserve commas in scrape pattern arguments ([95086f3](https://github.com/arabold/docs-mcp-server/commit/95086f31ac41e0cd2fd659b16141161ba794fa4e))
+* **scraper:** don't abort scrape when only an llms.txt-seeded url 404s ([ea61589](https://github.com/arabold/docs-mcp-server/commit/ea61589ff85ebc7c85741320b9e0e9c506e5e066)), closes [#478](https://github.com/arabold/docs-mcp-server/issues/478)
+* **web:** preserve zero max depth ([6b246aa](https://github.com/arabold/docs-mcp-server/commit/6b246aabb2fa9b275465e572a0455929c053b0c9))
+
+
+### Features
+
+* **mcp:** expose include/exclude patterns as comma-separated strings in scrape_docs ([8506fd6](https://github.com/arabold/docs-mcp-server/commit/8506fd6851348898184a7bb21ed49191c1420ef1))
+* **mcp:** split pattern strings only on top-level commas ([bd1723f](https://github.com/arabold/docs-mcp-server/commit/bd1723f312ad659647ec1db04effa7aefa067275))
+
+## [3.0.1](https://github.com/arabold/docs-mcp-server/compare/v3.0.0...v3.0.1) (2026-08-14)
+
+
+### Bug Fixes
+
+* **embeddings:** request float encoding for openai-compatible providers ([1ba9b46](https://github.com/arabold/docs-mcp-server/commit/1ba9b462394c32ba5518dd7a1e4120a10011684c)), closes [#431](https://github.com/arabold/docs-mcp-server/issues/431) [#469](https://github.com/arabold/docs-mcp-server/issues/469)
+
+# [2.5.0](https://github.com/arabold/docs-mcp-server/compare/v2.4.5...v2.5.0) (2026-08-06)
+
+
+### Bug Fixes
+
+* **scraper:** explain why local file access was blocked ([e8787cd](https://github.com/arabold/docs-mcp-server/commit/e8787cda5ef0b2b7d669e0d0d550060620b0045c)), closes [#459](https://github.com/arabold/docs-mcp-server/issues/459) [#462](https://github.com/arabold/docs-mcp-server/issues/462)
+* **web:** preserve complete remote worker endpoint ([d935d58](https://github.com/arabold/docs-mcp-server/commit/d935d58c9c7d0d8d757689f0d98c3fbaad114959))
+* **web:** preserve empty worker endpoint semantics ([56c77ea](https://github.com/arabold/docs-mcp-server/commit/56c77ea36432c064f62470abd59cc14ff9a9c623))
+
+
+### Features
+
+* **scraper:** migrate document extraction to xberg ([561503f](https://github.com/arabold/docs-mcp-server/commit/561503fd16cf08913c4e81172294a68c55ed5dbb))
+
+
+### Performance Improvements
+
+* **store:** drive hybrid search from candidate set to avoid full-table scan ([e82d0de](https://github.com/arabold/docs-mcp-server/commit/e82d0de08eacc7f83616ae65b0103e8fcc9cd8f3)), closes [#455](https://github.com/arabold/docs-mcp-server/issues/455) [#454](https://github.com/arabold/docs-mcp-server/issues/454)
+* **store:** pin fts_scores cte with materialized ([f7a4f88](https://github.com/arabold/docs-mcp-server/commit/f7a4f88018f159a723079c7a704c21c9acf6ac9a))
+
+## [2.4.5](https://github.com/arabold/docs-mcp-server/compare/v2.4.4...v2.4.5) (2026-07-25)
+
+
+### Bug Fixes
+
+* **store:** materialize vector knn cte to fix search performance regression ([8c460f0](https://github.com/arabold/docs-mcp-server/commit/8c460f0dcc91553a3e0208f7f52e49174637426e)), closes [#454](https://github.com/arabold/docs-mcp-server/issues/454)
+
+## [2.4.4](https://github.com/arabold/docs-mcp-server/compare/v2.4.3...v2.4.4) (2026-07-22)
+
+
+### Bug Fixes
+
+* **ci:** strip inline comments from docker metadata tags block ([2926cc6](https://github.com/arabold/docs-mcp-server/commit/2926cc672c8827aabad00ef01477bf09c0114df1))
+
+## [2.4.3](https://github.com/arabold/docs-mcp-server/compare/v2.4.2...v2.4.3) (2026-07-22)
+
+
+### Bug Fixes
+
+* **scraper:** make browser fetcher robust to non-navigable urls and idle hangs ([8e0a06b](https://github.com/arabold/docs-mcp-server/commit/8e0a06b93e864c62e98b317dcd456865183eef6d))
+* **scraper:** preserve retryable errors and validate redirects in browser fetcher ([20db343](https://github.com/arabold/docs-mcp-server/commit/20db34399970964c75c5624ffd2f2a3008fb7e57)), closes [#442](https://github.com/arabold/docs-mcp-server/issues/442)
+* **scraper:** use RedirectError and consistent headers in browser fetcher ([74e0edf](https://github.com/arabold/docs-mcp-server/commit/74e0edf1a819d2e04155ece4ad1b0a780931753a))
+* **store:** derive vector partition keys during rebuild ([4b010de](https://github.com/arabold/docs-mcp-server/commit/4b010dee0d6f567d41382019071a7772a993f4fb))
+* **store:** handle vector schema variations ([7d900c3](https://github.com/arabold/docs-mcp-server/commit/7d900c36766b6a2afe1263587faa24e911158923))
+* **store:** harden migration workflow ([96b5ce2](https://github.com/arabold/docs-mcp-server/commit/96b5ce2c0f6a305aa0bb332336752c6e60d73632))
+* **store:** migrate vectors to partition keys ([2b4e886](https://github.com/arabold/docs-mcp-server/commit/2b4e886c4dc4e1ccab7ef4f50843fb4557015207))
+* **store:** remove duplicate migration logging ([7890084](https://github.com/arabold/docs-mcp-server/commit/7890084166cd35813963018762cc99c5a007a351))
+
+## [2.4.1](https://github.com/arabold/docs-mcp-server/compare/v2.4.0...v2.4.1) (2026-06-08)
+
+
+### Bug Fixes
+
+* address embedding dimension review feedback ([dbc7da1](https://github.com/arabold/docs-mcp-server/commit/dbc7da15f3be05c0da9ee5e07a17d913b5bff097))
+* address origin review feedback ([e4f1077](https://github.com/arabold/docs-mcp-server/commit/e4f1077240cb12c775cc15ff58042841a44a07c7))
+* correct advertised server origin ([144fcee](https://github.com/arabold/docs-mcp-server/commit/144fcee99d496fa86da8072a6d9d21e23c8bc5b3))
+* resolve embedding dimensions before vector table creation ([32dead5](https://github.com/arabold/docs-mcp-server/commit/32dead556bb8549301c5aa872de4dd1f272ed0bc))
+* reuse stored embedding dimensions ([428c664](https://github.com/arabold/docs-mcp-server/commit/428c664a357c5ab4be921eaa4f2815b1371d1c82))
+* **scraper:** bound playwright cleanup ([52c5651](https://github.com/arabold/docs-mcp-server/commit/52c5651232534cb938b09b8f1311a4ccb223ae4f))
+* **scraper:** guard browser kill failures ([68ec646](https://github.com/arabold/docs-mcp-server/commit/68ec6465e4ee18015a2568d73939a12491cd62a1))
+* **scraper:** refine table splitting fallback ([dd0f971](https://github.com/arabold/docs-mcp-server/commit/dd0f971895404fdd5f41b291f1700735735db5d2))
+* **scraper:** split oversized markdown tables ([dbafb87](https://github.com/arabold/docs-mcp-server/commit/dbafb87ea60cb9d1b8c405b636cbc84d9a0cdf16))
+
+# [2.4.0](https://github.com/arabold/docs-mcp-server/compare/v2.3.0...v2.4.0) (2026-05-19)
+
+
+### Bug Fixes
+
+* **eval:** address copilot review on provider normalisation ([d5ebb40](https://github.com/arabold/docs-mcp-server/commit/d5ebb40b8410478a5a55aeb70b386d378fb83c92))
+* **eval:** address PR review feedback on search-quality benchmark ([18533f3](https://github.com/arabold/docs-mcp-server/commit/18533f35ed53e13d250061dcf0f8ad7209689176))
+* **eval:** work around bash truncation and normalise URL forms ([09684ce](https://github.com/arabold/docs-mcp-server/commit/09684ce12196c63b133186b20ba0ca1ec4621ad3))
+* **scraper:** address Copilot review on Defuddle middleware ([231cbe2](https://github.com/arabold/docs-mcp-server/commit/231cbe238af0ddbeec1a0f0b5ee54bc85ad98e50))
+* **scraper:** continue from llms seeds on root not found ([7ac577a](https://github.com/arabold/docs-mcp-server/commit/7ac577ab7ea9e3c7c9ad55970c335a9427943a15))
+* **scraper:** keep redirect scope anchored to start path ([a9fbca0](https://github.com/arabold/docs-mcp-server/commit/a9fbca06c644fc4f27055741d8023232695f95b6))
+* **scraper:** scope Carbon link rule to srv. host, add Yahoo tracker pixel ([d35fc3e](https://github.com/arabold/docs-mcp-server/commit/d35fc3e21fa6d184c7ef8a0d90bbfd8ad360ad83))
+* **scraper:** skip speculative playwright prefetches ([1e65812](https://github.com/arabold/docs-mcp-server/commit/1e6581231e28bec7f7510dedac04d8fae37b147c))
+* **scraper:** strip ad networks, search widgets, breadcrumbs, and skip-links ([4898ce9](https://github.com/arabold/docs-mcp-server/commit/4898ce96299e98fdd821fc8d33b2c319315adfd1)), closes [#420](https://github.com/arabold/docs-mcp-server/issues/420)
+* **scraper:** tighten llms markdown handling ([1e88418](https://github.com/arabold/docs-mcp-server/commit/1e884180ba636c46836a2eeeb5171786a20ea3fe))
+* **splitter:** preserve code fence balance across chunk boundaries ([06c7f08](https://github.com/arabold/docs-mcp-server/commit/06c7f083f958054d2440bd674ddf33f570dfdb0a)), closes [#418](https://github.com/arabold/docs-mcp-server/issues/418)
+* **splitter:** preserve fenced code-block info strings verbatim ([a5445bb](https://github.com/arabold/docs-mcp-server/commit/a5445bb1a6fa83fff2c4528c68487fbfddac27e2))
+* **store:** harden vector search test isolation ([0dc51a6](https://github.com/arabold/docs-mcp-server/commit/0dc51a61ff19a40c5f47a34031d6e2375abc482e))
+
+
+### Features
+
+* **eval:** add Context7 provider for cross-system benchmark comparison ([4209af4](https://github.com/arabold/docs-mcp-server/commit/4209af442d1bc94c4a4098dce1b23fe13a1c23c7))
+* **eval:** introduce IR-grounded search-quality benchmark ([6755d08](https://github.com/arabold/docs-mcp-server/commit/6755d08adb6d43a444bd2803d34374869f86612b))
+* **scraper:** add Defuddle as opt-in HTML extractor ([#386](https://github.com/arabold/docs-mcp-server/issues/386)) ([5a89f84](https://github.com/arabold/docs-mcp-server/commit/5a89f84cdfc7302401bd30f6d08a5bf049eb4776))
+* **scraper:** discover llms txt and prefer markdown ([4230917](https://github.com/arabold/docs-mcp-server/commit/42309174fca142d513f326453b2ca568ff7da1e5))
+
+
+### Performance Improvements
+
+* **scraper:** lazy-load Defuddle so default cheerio path is free ([729526f](https://github.com/arabold/docs-mcp-server/commit/729526fdf65c0000ccda966914e48ae6fc6974a8))
+
+# [2.3.0](https://github.com/arabold/docs-mcp-server/compare/v2.2.2...v2.3.0) (2026-05-17)
+
+
+### Bug Fixes
+
+* **deps:** pin @kreuzberg/node to 4.4.x and adapt archiver@8 ESM import ([4102163](https://github.com/arabold/docs-mcp-server/commit/4102163fd4f513354cf5d6727661950c1579566e))
+* **docker:** address review feedback on non-root hardening ([3ecd71a](https://github.com/arabold/docs-mcp-server/commit/3ecd71a0760f81e090ec23260bb64809b93366a7))
+* **http:** normalize content-type and content-encoding header types ([840fb86](https://github.com/arabold/docs-mcp-server/commit/840fb86ec65ef036731c7b2c1396da969f51a840))
+* **scraper:** preserve scheme when matching URL patterns ([c3f8913](https://github.com/arabold/docs-mcp-server/commit/c3f8913fb32f48b72eb2f5b48f1265f4f6c9e6ec))
+* **scraper:** preserve user-provided path as scope anchor across depth-0 redirects ([559bda7](https://github.com/arabold/docs-mcp-server/commit/559bda7b65abe041baaae6aef8652143d94f2735)), closes [#381](https://github.com/arabold/docs-mcp-server/issues/381)
+* **store:** avoid vec metadata filters in search ([32050f6](https://github.com/arabold/docs-mcp-server/commit/32050f69421e6895c2f4688f9b3bdabee174f27e))
+
+
+### Features
+
+* **scraper:** add fetch access controls ([333b2ff](https://github.com/arabold/docs-mcp-server/commit/333b2ff2ffd93780dce98ff4f888b3c74dbcd3f1))
+* **scraper:** skip well-known trackers during page rendering ([d67af3c](https://github.com/arabold/docs-mcp-server/commit/d67af3c7a8a80d2198894eab9cdd5478e666a102))
+
+## [2.2.2](https://github.com/arabold/docs-mcp-server/compare/v2.2.1...v2.2.2) (2026-05-16)
+
+
+### Bug Fixes
+
+* address review - add handler tests, deduplicate constants ([905e3ab](https://github.com/arabold/docs-mcp-server/commit/905e3ab94fba9c7059a15fae06fa83c31716c3f1))
+* **auth:** harden OAuth proxy resource pinning, JSON robustness, and RFC 6749 error codes ([0b5516e](https://github.com/arabold/docs-mcp-server/commit/0b5516ef97123d4e9220b5a04f071131663d75b6)), closes [#395](https://github.com/arabold/docs-mcp-server/issues/395)
+* **auth:** validate grant_type/response_type and pin resource on OAuth proxy ([69a9fa3](https://github.com/arabold/docs-mcp-server/commit/69a9fa3b713efa62d1200c68f04f1bc0c4910d81))
+* **docker:** bump base image to bookworm-trixie so Kreuzberg can load ([3a188fb](https://github.com/arabold/docs-mcp-server/commit/3a188fb3dd8c1a9e790944d9e1654ac7cc3f3f50)), closes [#394](https://github.com/arabold/docs-mcp-server/issues/394)
+* **scraper:** add fail-fast threshold for unhealthy targets ([6d346f8](https://github.com/arabold/docs-mcp-server/commit/6d346f8e9ba75e986549aa3851c4159e236520f4))
+* **scraper:** add web UI requirements to hash-routed SPA specs ([ff09422](https://github.com/arabold/docs-mcp-server/commit/ff0942242fc630d16f56c6df828fca1e4531d3d6))
+* **scraper:** align hash-routed SPA spec with MCP support ([#379](https://github.com/arabold/docs-mcp-server/issues/379)) ([1fabc11](https://github.com/arabold/docs-mcp-server/commit/1fabc112304e185452310d74c0e7a9c92550daf1))
+* **scraper:** draft specs for hash-routed SPA support ([#379](https://github.com/arabold/docs-mcp-server/issues/379)) ([92181ae](https://github.com/arabold/docs-mcp-server/commit/92181ae6e907aba30791be531636cf5a412df712))
+* **scraper:** fail strict scrapes on child not found ([9ce3ec1](https://github.com/arabold/docs-mcp-server/commit/9ce3ec104f479aa1c91bf78b6087500faa3e9a6f))
+* **scraper:** revert immediate throw for child 404 to match spec and fix failing tests ([c54b3d9](https://github.com/arabold/docs-mcp-server/commit/c54b3d92dbe2658d79b3443b2965252ea97a0f0a))
+* **scraper:** support hash-routed spa crawling ([a3cb51c](https://github.com/arabold/docs-mcp-server/commit/a3cb51ca445d7b7f65b06c07d5d0a6ca9da9dd2b))
+* **scraper:** surface Kreuzberg failure causes so silent skips become visible ([3015906](https://github.com/arabold/docs-mcp-server/commit/30159066482854680df0a982cb2e9aabe03f9c99)), closes [#394](https://github.com/arabold/docs-mcp-server/issues/394)
+* **scraper:** tighten failure threshold accounting ([dcf68ae](https://github.com/arabold/docs-mcp-server/commit/dcf68ae7d44d528f473cac452138dbfe5bf5588d))
+* **scraper:** tighten hash-routed SPA spec contract ([#379](https://github.com/arabold/docs-mcp-server/issues/379)) ([7db4dc1](https://github.com/arabold/docs-mcp-server/commit/7db4dc14e1ce7906290f04187532cbd03da39de9))
+* **store:** improve embedding failure diagnostics ([3c9e9c3](https://github.com/arabold/docs-mcp-server/commit/3c9e9c3caef07f1906827d41f41e707065ee2668))
+* **store:** use vec0 partition columns directly in search queries ([ed4ebd7](https://github.com/arabold/docs-mcp-server/commit/ed4ebd727d70db7c2d0a34ed0569c987141d205d))
+* **web:** honor preserve hash defaults ([ecc768a](https://github.com/arabold/docs-mcp-server/commit/ecc768a54852411abebe225aec252509df429546))
+
+## [2.2.1](https://github.com/arabold/docs-mcp-server/compare/v2.2.0...v2.2.1) (2026-03-30)
+
+
+### Bug Fixes
+
+* **release:** disable github success issue actions ([efcb946](https://github.com/arabold/docs-mcp-server/commit/efcb94693067b2029705ae68cb37682a0dbcb4cd))
+
+# [2.2.0](https://github.com/arabold/docs-mcp-server/compare/v2.1.1...v2.2.0) (2026-03-30)
+
+
+### Bug Fixes
+
+* **deps:** declare directly imported packages ([36d4374](https://github.com/arabold/docs-mcp-server/commit/36d4374036338d2e22ff6772e072a7c82fe329e9))
+* **scraper:** fall back to browser on tls certificate errors ([30cc6cc](https://github.com/arabold/docs-mcp-server/commit/30cc6ccf9d2778c152c524fe4b46b12667c36315)), closes [#368](https://github.com/arabold/docs-mcp-server/issues/368)
+
+
+### Features
+
+* **store:** add embedding model change safety ([5407360](https://github.com/arabold/docs-mcp-server/commit/5407360d39655b8e0e665ff0d26a165dd289bd39)), closes [#330](https://github.com/arabold/docs-mcp-server/issues/330) [#330](https://github.com/arabold/docs-mcp-server/issues/330)
+* **store:** configurable embedding dimension for documents_vec ([b82fa02](https://github.com/arabold/docs-mcp-server/commit/b82fa0289a7a44f204075cc43993e5374d09e15a))
+
+## [2.1.1](https://github.com/arabold/docs-mcp-server/compare/v2.1.0...v2.1.1) (2026-03-16)
+
+
+### Bug Fixes
+
+* **embeddings:** allow Gemini models with MRL truncation to bypass dimension check ([6f48350](https://github.com/arabold/docs-mcp-server/commit/6f483504ec213368f2551b7ebcefab52044183d1)), closes [#363](https://github.com/arabold/docs-mcp-server/issues/363)
+* **scraper:** preserve standard application/* MIME types for XML formats ([ebb7a48](https://github.com/arabold/docs-mcp-server/commit/ebb7a48af3a8fcb9501eb47495d226ff280eed73))
+* **scraper:** support XSLT and other XML-variant file formats ([#341](https://github.com/arabold/docs-mcp-server/issues/341)) ([c7ab720](https://github.com/arabold/docs-mcp-server/commit/c7ab72036378a34481b42a3ecae05772115d722f))
+
+# [2.1.0](https://github.com/arabold/docs-mcp-server/compare/v2.0.4...v2.1.0) (2026-03-16)
+
+
+### Bug Fixes
+
+* address PR review feedback on llmstxt-discovery spec ([07fd40a](https://github.com/arabold/docs-mcp-server/commit/07fd40a1bbd8c85b6f0706c856c40915b59ce71c))
+* address second-round Copilot review feedback ([835f9f1](https://github.com/arabold/docs-mcp-server/commit/835f9f174f3032bf08490eaabb9c089e419bb60c))
+* **cli:** standardize machine-friendly output and logging ([b82cdce](https://github.com/arabold/docs-mcp-server/commit/b82cdce674aaae1eb26cd309944a679e08f7b351))
+* **cli:** tighten logger defaults and test isolation ([d0b523e](https://github.com/arabold/docs-mcp-server/commit/d0b523e8bd7cabf1058319c7893ccbbee0fe7fbb))
+* **config:** sanitize environment values at startup ([8515428](https://github.com/arabold/docs-mcp-server/commit/8515428c0bcfb6defa6f634385c413193b06a689))
+* correct chunk size warning to compare body only and account for merge separator ([163870a](https://github.com/arabold/docs-mcp-server/commit/163870aec7e6871a48d829c909ce6af3824a67db)), closes [#314](https://github.com/arabold/docs-mcp-server/issues/314)
+* **deps:** add remark-parse runtime dependency ([d25d5fd](https://github.com/arabold/docs-mcp-server/commit/d25d5fdd505549b5ca0cbe574f3e20ac5a584633))
+* **docs:** align content type tracking details ([ff4a91b](https://github.com/arabold/docs-mcp-server/commit/ff4a91ba8120bd7fe2408067807df98f90925808))
+* **scraper:** normalize presentational wrappers inside links ([3b6379e](https://github.com/arabold/docs-mcp-server/commit/3b6379e7e8fbe5c81c76f847477b384671117a67))
+* **scraper:** prevent ZIP-based documents from being treated as archives ([9d4be97](https://github.com/arabold/docs-mcp-server/commit/9d4be97f46ea70a981f3ba17f3b7a477f73a2254))
+* **test:** sync rebased lockfile and logger mocks ([42b1882](https://github.com/arabold/docs-mcp-server/commit/42b18829fe96dc9b07ccc910cbfb491df83ba5a2))
+* **web:** truncate long URLs with ellipsis in library and search views ([c4de706](https://github.com/arabold/docs-mcp-server/commit/c4de70693d8ce57cfba4119670db0fc114a47c14))
+
+
+### Features
+
+* **scraper:** expand default sanitizer exclusion selectors ([e0134b2](https://github.com/arabold/docs-mcp-server/commit/e0134b201dce15f9174c5d30a3f2b3920448bd08))
+* **scraper:** replace markitdown-ts with kreuzberg for document parsing ([f3344b8](https://github.com/arabold/docs-mcp-server/commit/f3344b809124b67b7a2c383027a61066abc3e6a8)), closes [#310](https://github.com/arabold/docs-mcp-server/issues/310)
+
+# [2.1.0](https://github.com/arabold/docs-mcp-server/compare/v2.0.4...v2.1.0) (2026-03-15)
+
+
+### Bug Fixes
+
+* address PR review feedback on llmstxt-discovery spec ([07fd40a](https://github.com/arabold/docs-mcp-server/commit/07fd40a1bbd8c85b6f0706c856c40915b59ce71c))
+* address second-round Copilot review feedback ([835f9f1](https://github.com/arabold/docs-mcp-server/commit/835f9f174f3032bf08490eaabb9c089e419bb60c))
+* **cli:** standardize machine-friendly output and logging ([b82cdce](https://github.com/arabold/docs-mcp-server/commit/b82cdce674aaae1eb26cd309944a679e08f7b351))
+* **cli:** tighten logger defaults and test isolation ([d0b523e](https://github.com/arabold/docs-mcp-server/commit/d0b523e8bd7cabf1058319c7893ccbbee0fe7fbb))
+* **config:** sanitize environment values at startup ([8515428](https://github.com/arabold/docs-mcp-server/commit/8515428c0bcfb6defa6f634385c413193b06a689))
+* correct chunk size warning to compare body only and account for merge separator ([163870a](https://github.com/arabold/docs-mcp-server/commit/163870aec7e6871a48d829c909ce6af3824a67db)), closes [#314](https://github.com/arabold/docs-mcp-server/issues/314)
+* **deps:** add remark-parse runtime dependency ([d25d5fd](https://github.com/arabold/docs-mcp-server/commit/d25d5fdd505549b5ca0cbe574f3e20ac5a584633))
+* **docs:** align content type tracking details ([ff4a91b](https://github.com/arabold/docs-mcp-server/commit/ff4a91ba8120bd7fe2408067807df98f90925808))
+* **scraper:** normalize presentational wrappers inside links ([3b6379e](https://github.com/arabold/docs-mcp-server/commit/3b6379e7e8fbe5c81c76f847477b384671117a67))
+* **scraper:** prevent ZIP-based documents from being treated as archives ([9d4be97](https://github.com/arabold/docs-mcp-server/commit/9d4be97f46ea70a981f3ba17f3b7a477f73a2254))
+* **test:** sync rebased lockfile and logger mocks ([42b1882](https://github.com/arabold/docs-mcp-server/commit/42b18829fe96dc9b07ccc910cbfb491df83ba5a2))
+* **web:** truncate long URLs with ellipsis in library and search views ([c4de706](https://github.com/arabold/docs-mcp-server/commit/c4de70693d8ce57cfba4119670db0fc114a47c14))
+
+
+### Features
+
+* **scraper:** expand default sanitizer exclusion selectors ([e0134b2](https://github.com/arabold/docs-mcp-server/commit/e0134b201dce15f9174c5d30a3f2b3920448bd08))
+* **scraper:** replace markitdown-ts with kreuzberg for document parsing ([f3344b8](https://github.com/arabold/docs-mcp-server/commit/f3344b809124b67b7a2c383027a61066abc3e6a8)), closes [#310](https://github.com/arabold/docs-mcp-server/issues/310)
+
+## [2.0.4](https://github.com/arabold/docs-mcp-server/compare/v2.0.3...v2.0.4) (2026-02-17)
+
+
+### Bug Fixes
+
+* handle playwright route already handled race condition error ([4669029](https://github.com/arabold/docs-mcp-server/commit/4669029a8fb3a5ff6b37cd0308579e0df2df76e1)), closes [#332](https://github.com/arabold/docs-mcp-server/issues/332)
+
+## [2.0.3](https://github.com/arabold/docs-mcp-server/compare/v2.0.2...v2.0.3) (2026-02-10)
+
+
+### Bug Fixes
+
+* relax engines constraint from exact Node 22.0.0 to >=22 ([9c05bcc](https://github.com/arabold/docs-mcp-server/commit/9c05bcc21087686d2e0d27654ee87a03ef7dbc49)), closes [#331](https://github.com/arabold/docs-mcp-server/issues/331)
+
+## [2.0.2](https://github.com/arabold/docs-mcp-server/compare/v2.0.1...v2.0.2) (2026-02-03)
+
+
+### Bug Fixes
+
+* address PR review feedback ([bee5de2](https://github.com/arabold/docs-mcp-server/commit/bee5de2aa27b6402180a3c41895f1b62578fb9af))
+* **scraper:** improve file extension detection for complex URLs ([d873eff](https://github.com/arabold/docs-mcp-server/commit/d873effa2ac46062d83c18432f153a57cf39cd2e))
+
+## [2.0.1](https://github.com/arabold/docs-mcp-server/compare/v2.0.0...v2.0.1) (2026-02-02)
+
+
+### Bug Fixes
+
+* reverted back to Node v22 due to build issues with tree-sitter ([cc44b0b](https://github.com/arabold/docs-mcp-server/commit/cc44b0b0e29b6e296b5b6b3cb57b8bd0dc31b9f3))
+
+# [2.0.0](https://github.com/arabold/docs-mcp-server/compare/v1.37.0...v2.0.0) (2026-02-02)
+
+
+### Bug Fixes
+
+* **config:** address Copilot review comments ([7d4d272](https://github.com/arabold/docs-mcp-server/commit/7d4d272657ddbe205e1eabeb35d12664638bf8f9))
+* **mime:** add comprehensive MIME type mappings for text files ([0a5ae8c](https://github.com/arabold/docs-mcp-server/commit/0a5ae8c912c736bae26686d82aa3b75c62712916)), closes [#311](https://github.com/arabold/docs-mcp-server/issues/311)
+* **pipeline:** handle interrupted job recovery on startup ([23bc920](https://github.com/arabold/docs-mcp-server/commit/23bc920b5af4b997a15957dcccff3f2512bd2cdb)), closes [#317](https://github.com/arabold/docs-mcp-server/issues/317)
+* **scraper:** cache github auth and harden default branch ([db5c811](https://github.com/arabold/docs-mcp-server/commit/db5c81128146d20814192fe19d8a5438a15da39d))
+* **scraper:** ensure browser.close() always reaps zombie processes ([e51023f](https://github.com/arabold/docs-mcp-server/commit/e51023fa3a49522dd7bb008c1c7970426d48b640))
+* **scraper:** isolate strategy state per scrape ([093c740](https://github.com/arabold/docs-mcp-server/commit/093c740e3411e39294dfb4b6533b3923ae04e07a))
+* **scraper:** remove unreachable registry guard ([c75c2e8](https://github.com/arabold/docs-mcp-server/commit/c75c2e80088615be68835981c2d59f7e5d049621))
+* **treesitter:** align MIME types with MimeTypeUtils output ([1e1d6e2](https://github.com/arabold/docs-mcp-server/commit/1e1d6e256e618d8fb76e2b0849edbcb47cab8450))
+
+
+### Features
+
+* **config:** add generic env var support and CLI config commands ([31d8447](https://github.com/arabold/docs-mcp-server/commit/31d8447ac37bfa34603b5a1f44a38f532c1a11b2)), closes [#319](https://github.com/arabold/docs-mcp-server/issues/319)
+* **scraper:** add github auth and root error handling ([99563c7](https://github.com/arabold/docs-mcp-server/commit/99563c7ed1aae1fe634ec2b858b49dbffa718dac))
+
+
+### BREAKING CHANGES
+
+* **config:** document.maxSize has moved to scraper.document.maxSize.
+Update your config files accordingly.
+
+# [1.37.0](https://github.com/arabold/docs-mcp-server/compare/v1.36.0...v1.37.0) (2026-02-01)
+
+
+### Bug Fixes
+
+* **mcp:** isolate SSE sessions with per-connection server instances ([bca3475](https://github.com/arabold/docs-mcp-server/commit/bca3475c23187eba7ae44522e37f225a85afff15)), closes [#312](https://github.com/arabold/docs-mcp-server/issues/312)
+* **test:** update tests to match current implementation and content ([f3896ad](https://github.com/arabold/docs-mcp-server/commit/f3896ad082926b75c88b06aca915da858ff70f6e))
+
+
+### Features
+
+* **cli:** add ascii art banner on server startup ([ac9e9de](https://github.com/arabold/docs-mcp-server/commit/ac9e9de057b6a4034d3c3d54df97a0821d3bf18b))
+
+# [1.36.0](https://github.com/arabold/docs-mcp-server/compare/v1.35.0...v1.36.0) (2026-01-15)
+
+
+### Bug Fixes
+
+* address code review feedback ([8a6a590](https://github.com/arabold/docs-mcp-server/commit/8a6a5909b60699ceebb55657468cc603e76bb082))
+* address review comments (leaks, path normalization, optimization) ([aeba25f](https://github.com/arabold/docs-mcp-server/commit/aeba25f412e7b679680468b853daaa709bb00f42))
+* address security (zip slip) and resource leaks from PR comments ([2f9bea1](https://github.com/arabold/docs-mcp-server/commit/2f9bea1fbc66abe69a1bf9912dc6b2de3b141de7))
+* **config:** properly parse boolean env vars like 'false' ([5094c53](https://github.com/arabold/docs-mcp-server/commit/5094c5319b2c96994835fdf81c3a9b93256b42ff))
+* prevent yauzl from auto-closing fd ([8fdb8e2](https://github.com/arabold/docs-mcp-server/commit/8fdb8e208def04c8a588d1d495e112a85ba20802))
+* remove unused ts-expect-error directives ([690daca](https://github.com/arabold/docs-mcp-server/commit/690dacaa71809a861410e7c4c9e3a5be4b4f0da5))
+* resolve all linter errors (biome) ([373748f](https://github.com/arabold/docs-mcp-server/commit/373748f3724e3b41e3f7b88c3d48f0c838b81aef))
+* resolve syntax error in LocalFileStrategy ([96a88b5](https://github.com/arabold/docs-mcp-server/commit/96a88b594ac11f260e695af2383c6c6601a3c786))
+* **scraper:** correctly detect mime type for binary files from github ([4063df3](https://github.com/arabold/docs-mcp-server/commit/4063df3b6c779b620577bef9a875fca58987e4ec))
+* **telemetry:** respect disabled state from initTelemetry ([af85411](https://github.com/arabold/docs-mcp-server/commit/af85411982253e2e6e75ea390d96763a126e246e)), closes [#306](https://github.com/arabold/docs-mcp-server/issues/306)
+
+
+### Features
+
+* add search quality evaluation pipeline ([47bce31](https://github.com/arabold/docs-mcp-server/commit/47bce31898c516166446db81b691e6298ce6ca05))
+* **docs:** add proposal for markdown frontmatter processing (ref [#99](https://github.com/arabold/docs-mcp-server/issues/99)) ([609235c](https://github.com/arabold/docs-mcp-server/commit/609235c51b8007d77994b5ac5122c0c5a9577b87))
+* **docs:** implement markdown frontmatter support (ref [#99](https://github.com/arabold/docs-mcp-server/issues/99)) ([a9f6033](https://github.com/arabold/docs-mcp-server/commit/a9f60331d69ffbf3a902e4d7fa283f9428e735bb))
+* **docs:** implement markdown frontmatter support (ref [#99](https://github.com/arabold/docs-mcp-server/issues/99)) ([a06a61d](https://github.com/arabold/docs-mcp-server/commit/a06a61d72d55186a9190b8b156fa18655d03c721))
+* implement smart chunking for search results ([31376c9](https://github.com/arabold/docs-mcp-server/commit/31376c99c2fa74ad871ed4f60f4180ea3ad7729a))
+* **scraper:** add zip file support proposal ([ab9b73e](https://github.com/arabold/docs-mcp-server/commit/ab9b73e42695cdef25a8daf6964b0e055d4beed9)), closes [#276](https://github.com/arabold/docs-mcp-server/issues/276)
+* **scraper:** implement zip and tar archive support ([fee9693](https://github.com/arabold/docs-mcp-server/commit/fee969325d06ec1bbed7a9a28586a0e1fecee3e0))
+* **splitter:** enhance markdown chunking with list support ([104f076](https://github.com/arabold/docs-mcp-server/commit/104f0769722877de0cbbf11ea273c8669e5613bc))
+* **tests:** improve search evaluation with keyword queries and robust rubrics ([83cf652](https://github.com/arabold/docs-mcp-server/commit/83cf652d4f3309f141a2778d0846fc53fa113d5c))
+
+# [1.35.0](https://github.com/arabold/docs-mcp-server/compare/v1.34.0...v1.35.0) (2026-01-11)
+
+
+### Bug Fixes
+
+* **pipeline:** improve file extension extraction robustness ([c5283d4](https://github.com/arabold/docs-mcp-server/commit/c5283d4c04967d63312767f768edfdfeb1f72b39))
+* **web:** render supported documents as HTML and fix exclude patterns ([4e56b4a](https://github.com/arabold/docs-mcp-server/commit/4e56b4ad12b0682a68ca86400679d6602b47d47f))
+
+
+### Features
+
+* **scraper:** support PDF, Office, and Jupyter documents ([a74646b](https://github.com/arabold/docs-mcp-server/commit/a74646bbc369a44cc479e1254610d856e850d4ca))
+
+# [1.34.0](https://github.com/arabold/docs-mcp-server/compare/v1.33.1...v1.34.0) (2026-01-04)
+
+
+### Bug Fixes
+
+* remove embedding configuration checks and correctly resolve scraper CLI options ([1ea2111](https://github.com/arabold/docs-mcp-server/commit/1ea21113886aeec68e648bd121cb2021db072b38))
+* remove embedding model configuration checks from `refresh`, `scrape`, and `search` CLI commands ([6462d98](https://github.com/arabold/docs-mcp-server/commit/6462d98a4c47988bd23b279f297e06d149d7ba4e))
+
+
+### Features
+
+* add Docker configuration persistence via a dedicated `/config` volume ([546ddee](https://github.com/arabold/docs-mcp-server/commit/546ddee5d21ab6a9257feb5018c92e7f0d9308bf))
+* overhaul configuration loading with improved precedence and auto-creation ([ae12726](https://github.com/arabold/docs-mcp-server/commit/ae127260ab95e95121f52e6d5a104af0c6d8deef))
+* refactor configuration handling and enhance strategy assembly ([d259b58](https://github.com/arabold/docs-mcp-server/commit/d259b58225d074d9f1160452f391e7149403681a))
+
+## [1.33.1](https://github.com/arabold/docs-mcp-server/compare/v1.33.0...v1.33.1) (2025-12-14)
+
+
+### Bug Fixes
+
+* fix Playwright version incompatibility in Docker image ([fbacb28](https://github.com/arabold/docs-mcp-server/commit/fbacb28e1fb86b9d31df43ade7c72c2937147c51))
+
+# [1.33.0](https://github.com/arabold/docs-mcp-server/compare/v1.32.0...v1.33.0) (2025-12-14)
+
+
+### Bug Fixes
+
+* ensure JSON chunks respect max chunk size limits ([09f4413](https://github.com/arabold/docs-mcp-server/commit/09f4413abc8702344b03ccf6a7e5c45ec4c9f58b))
+* fixed triggers for documents_vec synchronization and add vector persistence tests ([1afea9a](https://github.com/arabold/docs-mcp-server/commit/1afea9a75df25354eb4e204060f79b6f4352461d)), closes [#293](https://github.com/arabold/docs-mcp-server/issues/293)
+* remove incorrect second argument to TextDocumentSplitter.splitText() ([579978c](https://github.com/arabold/docs-mcp-server/commit/579978c8ec1fbb518b9888a52624fe2e761ff05c))
+* respect chunk size limit tests and improve primitive processing in JSON ([4418d0e](https://github.com/arabold/docs-mcp-server/commit/4418d0e5358876d30cf7bc7878fd9ec49b00609c))
+
+
+### Features
+
+* add depth and chunk count limiting to JSON document splitter ([12f04ca](https://github.com/arabold/docs-mcp-server/commit/12f04ca81b2f441e39edbb0ee5f07a24d57d9a74))
+
+# [1.32.0](https://github.com/arabold/docs-mcp-server/compare/v1.31.1...v1.32.0) (2025-12-05)
+
+
+### Bug Fixes
+
+* address PR review comments ([4c976f3](https://github.com/arabold/docs-mcp-server/commit/4c976f37de591027d0a3f58de1be375374aaa1c3))
+
+
+### Features
+
+* add SSE heartbeat mechanism and corresponding tests for MCP service ([920e337](https://github.com/arabold/docs-mcp-server/commit/920e337656102e7c01669db846f45183b43cd8ba)), closes [#285](https://github.com/arabold/docs-mcp-server/issues/285)
+
+## [1.31.1](https://github.com/arabold/docs-mcp-server/compare/v1.31.0...v1.31.1) (2025-12-02)
+
+
+### Bug Fixes
+
+* improve error handling and timeout management in HtmlPlaywrightMiddleware ([c3730d5](https://github.com/arabold/docs-mcp-server/commit/c3730d5a191df6a495d56d0d3281756e289ffb30)), closes [#282](https://github.com/arabold/docs-mcp-server/issues/282)
+
+# [1.31.0](https://github.com/arabold/docs-mcp-server/compare/v1.30.0...v1.31.0) (2025-11-30)
+
+
+### Features
+
+* more consistent version sorting and naming ([800ea66](https://github.com/arabold/docs-mcp-server/commit/800ea663794cf549954c39ceb0c691a3d96641fd))
+* **web:** easily refresh existing versions and add new versions to a library ([c150c7a](https://github.com/arabold/docs-mcp-server/commit/c150c7accb91e5b3a20889d8290a65785ab31ab3))
+
+# [1.30.0](https://github.com/arabold/docs-mcp-server/compare/v1.29.0...v1.30.0) (2025-11-29)
+
+
+### Features
+
+* fixed embedding configuration and improve startup messaging ([a602e2d](https://github.com/arabold/docs-mcp-server/commit/a602e2d44aa027ee442e895aa1f94ec2e82a60e0))
+* **web:** add analytics stats route and component; enhance UI with animations and new job controls ([a8cb77c](https://github.com/arabold/docs-mcp-server/commit/a8cb77c9ec36e822591558b02c6e9b68c3078458))
+* **web:** add empty state messaging ([bf9d209](https://github.com/arabold/docs-mcp-server/commit/bf9d20926fdedbd04cb65c2b451a3f90e92ee814))
+* **web:** update UI text for scrape job and indexing; enhance confirmation handling in components ([4de71d1](https://github.com/arabold/docs-mcp-server/commit/4de71d11fa8c64952f3b5e1f046c5df3f109f954))
+
+# [1.29.0](https://github.com/arabold/docs-mcp-server/compare/v1.28.0...v1.29.0) (2025-11-23)
+
+
+### Bug Fixes
+
+* enhance caching mechanism with structured resource storage and validation ([0b48aea](https://github.com/arabold/docs-mcp-server/commit/0b48aea1c5a4375efc89a0516894cf550561cf0c))
+* enhance HtmlSanitizerMiddleware with safety net for content removal ([e29da93](https://github.com/arabold/docs-mcp-server/commit/e29da934e399483a7e4f7b3f976b7e0fe37ed5bc)), closes [#256](https://github.com/arabold/docs-mcp-server/issues/256)
+* fixed issues preventing libraries from being deleted when no version exists ([753e108](https://github.com/arabold/docs-mcp-server/commit/753e10875e1396d2228c36b4b5f87491a2c96860))
+* force close all active connections on server shutdown ([f893dd4](https://github.com/arabold/docs-mcp-server/commit/f893dd40a0d8dbed0cfd4439db998b08914b73af))
+* improved confirmation handling for job cancellation and version deletion in Web UI ([c836bcd](https://github.com/arabold/docs-mcp-server/commit/c836bcd917eefd58fd45465203b980817317bc42))
+* update Dockerfile to install Chromium and cleaned up dependencies ([89b7ad5](https://github.com/arabold/docs-mcp-server/commit/89b7ad52a6d83dbe84826ccbbb904d89aaa88c15))
+* update query construction in DocumentStore to use OR for terms ([2440cb7](https://github.com/arabold/docs-mcp-server/commit/2440cb70d2deb4826e04ba5b1b316c52c47a9fcd))
+
+
+### Features
+
+* add Toast component for global notifications and enhance confirmation handling ([0c6cb85](https://github.com/arabold/docs-mcp-server/commit/0c6cb85ac8b96f8e5695fc5872b286afd6bdca9d))
+* implement LRU caching web scraper ([444f2d0](https://github.com/arabold/docs-mcp-server/commit/444f2d05b659d4597298d1e5a8891950b14cb9a4))
+* remove tracking images and handle missing img src attributes ([332bfcd](https://github.com/arabold/docs-mcp-server/commit/332bfcd328de4a586a1f2297e3d74ccefc0de7eb))
+
+# [1.28.0](https://github.com/arabold/docs-mcp-server/compare/v1.27.1...v1.28.0) (2025-11-22)
+
+
+### Bug Fixes
+
+* add JOB_LIST_CHANGE event and update event handling in PipelineManager and SSE route ([0f15f4e](https://github.com/arabold/docs-mcp-server/commit/0f15f4eb01efcd6557ff23c494ab835f85ac2214))
+* enhance handling of quoted search strings and special characters in DocumentStore ([57b7da1](https://github.com/arabold/docs-mcp-server/commit/57b7da1aa7ed2361f92ed644cf9a6a16df8ada45)), closes [#262](https://github.com/arabold/docs-mcp-server/issues/262)
+* inject correct app version at build time ([6f36709](https://github.com/arabold/docs-mcp-server/commit/6f36709ced66cba2adf6abb523bcaca3210de541)), closes [#264](https://github.com/arabold/docs-mcp-server/issues/264)
+* integrate superjson transformer across tRPC clients and routers ([d482b87](https://github.com/arabold/docs-mcp-server/commit/d482b87d55a3daabc94f78a654c3ee1e4ae41fc0))
+
+
+### Features
+
+* implement EventBusService for event-driven architecture ([7388933](https://github.com/arabold/docs-mcp-server/commit/7388933c2938ab13accc4560795cda528e1af9b8))
+* integrate EventBusService into PipelineClient and related commands ([eb09ff1](https://github.com/arabold/docs-mcp-server/commit/eb09ff1c3ada690bf02accb91474ce84fd1bfc9d))
+
+## [1.27.1](https://github.com/arabold/docs-mcp-server/compare/v1.27.0...v1.27.1) (2025-11-20)
+
+
+### Bug Fixes
+
+* removed incompatible --enable-source-maps from shebang ([ab443ac](https://github.com/arabold/docs-mcp-server/commit/ab443aca15bc274f28bf8e55e460a9c3051ddc71))
+
+# [1.27.0](https://github.com/arabold/docs-mcp-server/compare/v1.26.2...v1.27.0) (2025-11-15)
+
+
+### Bug Fixes
+
+* **cli:** update server URL in CLI commands to reflect default port ([4689d5e](https://github.com/arabold/docs-mcp-server/commit/4689d5eb96d5410472b7d98a629dbb5a9461ecb2))
+* **remove:** fix deletion of libraries and versions ([a2f90fb](https://github.com/arabold/docs-mcp-server/commit/a2f90fb8cec918f9055ed4fe3ea1735ff370d592)), closes [#257](https://github.com/arabold/docs-mcp-server/issues/257)
+* **scraper:** enhance refresh mode handling and page processing ([abda63a](https://github.com/arabold/docs-mcp-server/commit/abda63adba3c9176e9b53cfbaf2d729c2c89db7f))
+* **scraper:** implement include/exclude patterns for link processing in WebScraperStrategy ([91a0be3](https://github.com/arabold/docs-mcp-server/commit/91a0be39d2e128ff0271f9619ef53388e1705622))
+* **tests:** correct setupFiles path in vitest configuration ([5dfe222](https://github.com/arabold/docs-mcp-server/commit/5dfe2221091334780c7523c605e987d5a91430d3))
+
+
+### Features
+
+* add ETag and lastModified support for caching in fetchers and strategies ([faa2508](https://github.com/arabold/docs-mcp-server/commit/faa2508d1c0849175a3eb7d4609d28335360e898))
+* **chunking:** improved chunking strategy to favor larger chunks with better context ([697d92d](https://github.com/arabold/docs-mcp-server/commit/697d92d118b6d095a933fa30295bf0f54d7a1686))
+* **ci:** add type checking script and tsconfig for tests ([9fc6cf9](https://github.com/arabold/docs-mcp-server/commit/9fc6cf9a46b7e89d088be62cfdc98e79d4a9a0d7))
+* enable source maps for better error reporting ([90fcf1f](https://github.com/arabold/docs-mcp-server/commit/90fcf1fa0cee3e4785854d267af5c96c36aeebfa))
+* implement refresh job functionality ([ba3a72e](https://github.com/arabold/docs-mcp-server/commit/ba3a72e2a27118cb4eb3e7c6a6877b21284ed32d))
+* **pipeline:** enhance enqueueRefreshJob to handle incomplete versions with full re-scrape ([838af52](https://github.com/arabold/docs-mcp-server/commit/838af52169c9dd05197b10ff42eeb88b5c9229b4))
+* **refresh:** improve depth handling and backfill logic in migrations ([b82dc27](https://github.com/arabold/docs-mcp-server/commit/b82dc274b4de5195f8de73a749291c0be6a8fafd))
+* **schema:** add database schema comparison tool for migration validation ([e8410f3](https://github.com/arabold/docs-mcp-server/commit/e8410f3a9410aa7bbda98c091b2cb5f55d1d0653))
+* **scraper:** add support for legacy github-file:// URLs and mark them as NOT_FOUND ([2d18b69](https://github.com/arabold/docs-mcp-server/commit/2d18b69d3c38fa0804a28202e0a3e3db24dde673))
+* **scraper:** enhance URL matching to support full URL and pathname patterns ([158eda1](https://github.com/arabold/docs-mcp-server/commit/158eda1c26c286796bdd02074343c86421efea36))
+* **scraper:** implement efficient version refresh using ETags ([93a6ee3](https://github.com/arabold/docs-mcp-server/commit/93a6ee33ab0e787bd0a880ffd30d1456f49b9323))
+* update contentType handling across pipelines to reflect transformed formats ([b915bcf](https://github.com/arabold/docs-mcp-server/commit/b915bcf2c37df0cc9429582a66e773eb9d0e7416))
+
+## [1.26.2](https://github.com/arabold/docs-mcp-server/compare/v1.26.1...v1.26.2) (2025-10-11)
+
+
+### Bug Fixes
+
+* delete pages before versions to prevent foreign key constraint failure ([6defe01](https://github.com/arabold/docs-mcp-server/commit/6defe015b0b4e62bd37761d67860eabff48b5b90))
+
+## [1.26.1](https://github.com/arabold/docs-mcp-server/compare/v1.26.0...v1.26.1) (2025-10-04)
+
+
+### Bug Fixes
+
+* fixed issue with store path not being passed to individual CLI commands ([dfa6d97](https://github.com/arabold/docs-mcp-server/commit/dfa6d97527b2212af27311da2d53cc32f5c05914))
+
+# [1.26.0](https://github.com/arabold/docs-mcp-server/compare/v1.25.3...v1.26.0) (2025-09-27)
+
+
+### Features
+
+* add GitHub Wiki scraping as well as blob URL support ([3b48706](https://github.com/arabold/docs-mcp-server/commit/3b487069eff65cc4f80f13cdca65c44c55906f3d))
+* add web app icons, manifest, and version update notifications ([ffd50b4](https://github.com/arabold/docs-mcp-server/commit/ffd50b4ac849f1955e72a444290496b87cac7d17))
+* better handling of Cloudflare challenges, for example for npmjs.com ([6e10590](https://github.com/arabold/docs-mcp-server/commit/6e10590ee620aa8f98b92e0ff93665891d622313))
+* **github:** add support for subpath in GitHub URLs and update parsing logic ([9d3b9ef](https://github.com/arabold/docs-mcp-server/commit/9d3b9ef393147c8ee697de30725ba22079b0350c)), closes [#238](https://github.com/arabold/docs-mcp-server/issues/238)
+
+## [1.25.3](https://github.com/arabold/docs-mcp-server/compare/v1.25.2...v1.25.3) (2025-09-27)
+
+
+### Bug Fixes
+
+* **cli:** update global options handling and centralize store path resolution ([a16e0ec](https://github.com/arabold/docs-mcp-server/commit/a16e0ec165daba80682cb21d55378819dafbef58))
+
+## [1.25.2](https://github.com/arabold/docs-mcp-server/compare/v1.25.1...v1.25.2) (2025-09-22)
+
+
+### Bug Fixes
+
+* **middleware:** add HtmlNormalizationMiddleware for URL and link normalization ([30211db](https://github.com/arabold/docs-mcp-server/commit/30211db72c0c12edfdd5a28f0548d60d95af8381))
+
+## [1.25.1](https://github.com/arabold/docs-mcp-server/compare/v1.25.0...v1.25.1) (2025-09-22)
+
+
+### Bug Fixes
+
+* **cli:** fixed custom store path and telemetry configuration via environment variables ([ec53cc6](https://github.com/arabold/docs-mcp-server/commit/ec53cc6727ebefbfb9e17bc54507831c0bf3203a))
+
+# [1.25.0](https://github.com/arabold/docs-mcp-server/compare/v1.24.0...v1.25.0) (2025-09-21)
+
+
+### Bug Fixes
+
+* enhance handling of non-HTML content and update scrape modes in GitHub scraper ([6579242](https://github.com/arabold/docs-mcp-server/commit/6579242ef7efb9872d156b1ba1fcf5b0ff811a30)), closes [#232](https://github.com/arabold/docs-mcp-server/issues/232)
+* **parser:** correct TypeScript and TSX imports in TypeScriptParser ([7b6f772](https://github.com/arabold/docs-mcp-server/commit/7b6f772912b08620a19c540ce0008fb7247953ef))
+* **web:** correct default markdown handling and improve non-markdown rendering ([afa80ad](https://github.com/arabold/docs-mcp-server/commit/afa80ad4c0439384ec0ffff85f1b2e2fc813551c))
+
+
+### Features
+
+* implement HierarchicalAssemblyStrategy for structured content assembly ([209e474](https://github.com/arabold/docs-mcp-server/commit/209e474a1b398ea9aaf53694fb0d57704f9eda16))
+* implement JavaScript and TypeScript parsers based on TreeSitter ([d01ef90](https://github.com/arabold/docs-mcp-server/commit/d01ef90bb7dcb88c25f500db43fc42b082ca2e3d))
+* implement SourceCodeDocumentSplitter for hierarchical source code splitting ([5b08c7d](https://github.com/arabold/docs-mcp-server/commit/5b08c7d71a5c93a94a65d35031ecc2a4c7df7493))
+* **parser:** add Python support ([25a4cf2](https://github.com/arabold/docs-mcp-server/commit/25a4cf2801476f822586f1ae10e2e0a53a3539c8)), closes [#214](https://github.com/arabold/docs-mcp-server/issues/214)
+* **parser:** enhance boundary extraction with hierarchical documentation merging ([ab50160](https://github.com/arabold/docs-mcp-server/commit/ab50160c92c222410e3a949b32f5ca213c9d2f40))
+* **search:** implement hybrid search with configurable weights and overfetch factor ([04eee7c](https://github.com/arabold/docs-mcp-server/commit/04eee7cec92326c120a430661281c699fb65fe1b)), closes [#171](https://github.com/arabold/docs-mcp-server/issues/171)
+* **splitter:** implement chunk fetching and hierarchical assembly improvements ([5c6f227](https://github.com/arabold/docs-mcp-server/commit/5c6f227ee7e740c585ff231dd0cc68565701539f))
+* **splitter:** implement structural boundary classification for content chunks ([53c2014](https://github.com/arabold/docs-mcp-server/commit/53c20140d01c21a3d9265a193e1d5c21650634a4))
+* **strategy:** implement selective subtree reassembly ([a0daf55](https://github.com/arabold/docs-mcp-server/commit/a0daf55f3abd7edb1716197751e88a86c7470b04))
+* vector search and embeddings are optional now ([83bc1ac](https://github.com/arabold/docs-mcp-server/commit/83bc1aca4c40d1091641fc43718caa127b5f71ca))
+
+# [1.24.0](https://github.com/arabold/docs-mcp-server/compare/v1.23.0...v1.24.0) (2025-09-20)
+
+
+### Bug Fixes
+
+* ensure proper shutdown ([d20ea9e](https://github.com/arabold/docs-mcp-server/commit/d20ea9ef88527937686935786f3bc90d37398a3c))
+* remove prompts capability from MCP server ([615247a](https://github.com/arabold/docs-mcp-server/commit/615247ad8eab9aa0cd4a4cdccb3e755e5abe7311))
+
+
+### Features
+
+* add host configuration for server binding ([9500f65](https://github.com/arabold/docs-mcp-server/commit/9500f658b5f24786ac601dbe0d403ae3f52065e8))
+* enhance MIME type detection for source code files and update related tests ([ee966c1](https://github.com/arabold/docs-mcp-server/commit/ee966c1b0c464be8c318c6540ee8657f95eea060))
+* implement cleanup functionality across various components to prevent resource leaks ([a4132e4](https://github.com/arabold/docs-mcp-server/commit/a4132e46fc625a7d4fa5b70389c2e7074f0eea7c))
+* implement native GitHub repository crawling ([5344a49](https://github.com/arabold/docs-mcp-server/commit/5344a4952ec3aed3438bd6e7faeab6abe5f42390))
+* introduce JSON processing capabilities across scraper strategies ([a69da82](https://github.com/arabold/docs-mcp-server/commit/a69da827d8984eb545f49f693c9c0208bbaebdf6))
+* **middleware:** add shadow DOM extraction support ([d15bd42](https://github.com/arabold/docs-mcp-server/commit/d15bd42332c03a2b2a7acf3f1a51507c24df3e15))
+* **splitters:** introduce JsonDocumentSplitter and PassThroughSplitter ([3001178](https://github.com/arabold/docs-mcp-server/commit/3001178bafa8dc5c6df12fb0fd5f1906cf69d9fb))
+* **web:** improved rendering of non-HTML documents ([e14f0fe](https://github.com/arabold/docs-mcp-server/commit/e14f0fe5b9e45b384c21e40400bb968380de49d3))
+
+# [1.23.0](https://github.com/arabold/docs-mcp-server/compare/v1.22.1...v1.23.0) (2025-08-28)
+
+
+### Features
+
+* **scraper:** added support for HTML frames and framesets ([80f184f](https://github.com/arabold/docs-mcp-server/commit/80f184f9a5aeffc32cbfcbee5b64375d7d2cd3e4))
+
+## [1.22.1](https://github.com/arabold/docs-mcp-server/compare/v1.22.0...v1.22.1) (2025-08-27)
+
+
+### Bug Fixes
+
+* **scraper:** enhance loading handling for iframes and improve loading indicator checks ([4fc5d0c](https://github.com/arabold/docs-mcp-server/commit/4fc5d0cbbb7e498bad2bf4243543d05d7404f8fd)), closes [#194](https://github.com/arabold/docs-mcp-server/issues/194)
+
+# [1.22.0](https://github.com/arabold/docs-mcp-server/compare/v1.21.1...v1.22.0) (2025-08-24)
+
+
+### Bug Fixes
+
+* **api:** add removeVersion mutation to document management API ([0eb6ae8](https://github.com/arabold/docs-mcp-server/commit/0eb6ae85af1fd0d6cdb73f825b4a6f7c365bea56))
+* **embeddings:** add ModelConfigurationError handling for missing OPENAI_API_KEY ([4460700](https://github.com/arabold/docs-mcp-server/commit/4460700d12916023c9c79cc409b315602de3ccbf)), closes [#188](https://github.com/arabold/docs-mcp-server/issues/188)
+* **mcpService:** fix excessive session creation in MCP HTTP transport ([39e05bd](https://github.com/arabold/docs-mcp-server/commit/39e05bd08aff47fd1f6c157554a68ee18fd0e53a)), closes [#190](https://github.com/arabold/docs-mcp-server/issues/190)
+
+
+### Features
+
+* **telemetry:** add type-safe telemetry event tracking and enhance analytics methods ([75b4004](https://github.com/arabold/docs-mcp-server/commit/75b4004d32711aadbaf3a8b98f10fe74cbe3dfcf))
+* **telemetry:** enhance error tracking with PostHog's native exception capture ([d938134](https://github.com/arabold/docs-mcp-server/commit/d9381345f88cd42741d5dbabd2abc19709890070)), closes [#192](https://github.com/arabold/docs-mcp-server/issues/192)
+* **telemetry:** enhance PostHog client with automatic property conversion and standardization ([cdb191c](https://github.com/arabold/docs-mcp-server/commit/cdb191cf5f60a379d9d9e428022832fbd7dd986c))
+* **telemetry:** enhance session context with embedding model information and initialization ([337bc39](https://github.com/arabold/docs-mcp-server/commit/337bc3972b084aa358e7d20d3a8f3d09626615d8)), closes [#191](https://github.com/arabold/docs-mcp-server/issues/191)
+
+## [1.21.1](https://github.com/arabold/docs-mcp-server/compare/v1.21.0...v1.21.1) (2025-08-24)
+
+
+### Bug Fixes
+
+* **ci:** add vite plugin to include shebang and make index.js executable ([b5087a8](https://github.com/arabold/docs-mcp-server/commit/b5087a82fab3cf790c72911b695041c9ea8d0eaa))
+
+# [1.21.0](https://github.com/arabold/docs-mcp-server/compare/v1.20.0...v1.21.0) (2025-08-23)
+
+
+### Bug Fixes
+
+* **auth:** validate tokens using userinfo endpoint ([0084123](https://github.com/arabold/docs-mcp-server/commit/008412386c00671b232015cabd58c9d71e1fc302))
+* **document-management:** rename version to libraryVersion for clarity ([80be3f9](https://github.com/arabold/docs-mcp-server/commit/80be3f944fe48aad17647839e6ff199bb7466746))
+* **tests:** correct casing in SessionTracker mock and update comment for clarity ([f4bfa14](https://github.com/arabold/docs-mcp-server/commit/f4bfa1419d3717abfa064aef7e349daa980f321a))
+
+
+### Features
+
+* adds OAuth2/OIDC authentication and scope control ([2ed3ed5](https://github.com/arabold/docs-mcp-server/commit/2ed3ed5f358cee800e37a61a4b3272cc6d39448d))
+* implement default exclusion patterns for documentation scraping ([d927e21](https://github.com/arabold/docs-mcp-server/commit/d927e2151b174643610a13c9b3aa95fed3cf4409))
+* implement privacy-first telemetry and analytics tracking ([0144c50](https://github.com/arabold/docs-mcp-server/commit/0144c5065f1bcd8f99716fd142f60d00338b0ade))
+* **remove-tool:** implement complete library version removal functionality ([9d6f957](https://github.com/arabold/docs-mcp-server/commit/9d6f957e433e2c3e8c28b618fe3a7f63bef8d552)), closes [#185](https://github.com/arabold/docs-mcp-server/issues/185)
+* **telemetry:** enhance telemetry integration with session tracking and user agent categorization ([bdd9dba](https://github.com/arabold/docs-mcp-server/commit/bdd9dba2e600b04ca5d733c5048fde8f8946fd3b))
+* **telemetry:** implement telemetry configuration and analytics service ([ffb3f32](https://github.com/arabold/docs-mcp-server/commit/ffb3f320357b50ca6e241842a44e82de769c1996))
+* **telemetry:** integrate PostHog analytics configuration and update related functions ([c5c7e41](https://github.com/arabold/docs-mcp-server/commit/c5c7e418aed848cc50598ef27fb6a681166ea25e))
+* **telemetry:** introduce comprehensive telemetry system for user tracking and analytics ([cdbc3fb](https://github.com/arabold/docs-mcp-server/commit/cdbc3fb7c06f9bb2db456b171684e0f7ba2d3c55))
+* **telemetry:** support custom installation ID storage path ([b688b35](https://github.com/arabold/docs-mcp-server/commit/b688b3570da4011f52ff984e8f23b2dc897de06a))
+
+# [1.20.0](https://github.com/arabold/docs-mcp-server/compare/v1.19.0...v1.20.0) (2025-08-16)
+
+
+### Bug Fixes
+
+* improve URL subpath detection logic for directory-like segments ([5aaa7bb](https://github.com/arabold/docs-mcp-server/commit/5aaa7bbec2335f441c49377531c6c4281de013f9))
+* properly follow links after initial redirect ([9329a77](https://github.com/arabold/docs-mcp-server/commit/9329a77d5da3c88854d346b9d3f7cbc9fea2d8b9))
+
+
+### Features
+
+* enhance link resolution with base tag handling and scope filtering for cross-origin links ([6403325](https://github.com/arabold/docs-mcp-server/commit/64033255dac2d5042ffc4c2ddef72816688c916b))
+
+# [1.19.0](https://github.com/arabold/docs-mcp-server/compare/v1.18.0...v1.19.0) (2025-08-15)
+
+
+### Bug Fixes
+
+* **cli:** normalizes unversioned input to null for pipeline jobs ([00c2d9d](https://github.com/arabold/docs-mcp-server/commit/00c2d9ddbad86cb143b42457494c7a96b56c3816))
+* **cli:** removed some duplicate logging ([cc56814](https://github.com/arabold/docs-mcp-server/commit/cc56814898aa9fb0032822c21f9927bf589d404c))
+* omits progress info for completed library versions ([9f87315](https://github.com/arabold/docs-mcp-server/commit/9f873153ed7c79f72677fb50058cb21d50bb46e6))
+* prevent 413 errors when embedding large documents ([ead87d1](https://github.com/arabold/docs-mcp-server/commit/ead87d100e65b6cbc3198de0658f57e44cc980f7))
+
+
+### Features
+
+* **cli:** adds --no-resume flag to CLI commands ([0624d62](https://github.com/arabold/docs-mcp-server/commit/0624d6254f8d5d9090e0096a8736340147e7cc9a))
+* **cli:** adds --server-url support to all supported CLI commands ([c4084f4](https://github.com/arabold/docs-mcp-server/commit/c4084f46f8532fbe9656f532463cbad74228b871))
+* improves version deduplication and enriches library metadata ([bd6ad33](https://github.com/arabold/docs-mcp-server/commit/bd6ad337a10adfc06baaa2000147d78cc895b06c))
+
+# [1.18.0](https://github.com/arabold/docs-mcp-server/compare/v1.17.0...v1.18.0) (2025-08-08)
+
+
+### Bug Fixes
+
+* add comprehensive tests for DocumentStore functionality ([5a7c480](https://github.com/arabold/docs-mcp-server/commit/5a7c480a8b8c235d620432748a274142f9a63862))
+* adjust linter rules to disable noExplicitAny warning in suspicious category ([c8cec16](https://github.com/arabold/docs-mcp-server/commit/c8cec16704a4819d6d1b691266263a56c89d1b89))
+* **cli:** removes redundant server startup log messages ([6919198](https://github.com/arabold/docs-mcp-server/commit/691919828ba41d47a8b0a7c2f4daafe9b5555703))
+* **cli:** unifies CLI port defaults and updates related docs ([7663332](https://github.com/arabold/docs-mcp-server/commit/766333205cc73448fb1ef03a547b4990e04cfc31))
+* **db:** only vacuum database after successful migration ([0d12ac0](https://github.com/arabold/docs-mcp-server/commit/0d12ac006574aad8ea1c4e77734e9d1c0dd2faa5))
+* disable recovery of old pipeline jobs for now ([53ebbf5](https://github.com/arabold/docs-mcp-server/commit/53ebbf52de0d95ddb7bc822a3a72dc642cea6815))
+* **docs:** update schema URL in biome.json to the latest version ([727698c](https://github.com/arabold/docs-mcp-server/commit/727698cf4f1cbc9b1662d441cec86e3c2c99a46c))
+* enhance version comparison with fallback to string comparison and update job item timestamps ([c06f396](https://github.com/arabold/docs-mcp-server/commit/c06f396a8d782aef6ee99c26edcb4bbeefcc6546))
+* ensures job progress is always persisted in pipeline manager ([d4fa1b7](https://github.com/arabold/docs-mcp-server/commit/d4fa1b7abfdb17d9a319e567ef6e5701c29c3fdc))
+* **fetcher:** enhance content fetching and charset handling ([d3e4076](https://github.com/arabold/docs-mcp-server/commit/d3e40764f659b1d056eb0e5c3c832dc87ad472c2))
+* **mcp:** fixed serialization issues caused by dependencies update ([c36b723](https://github.com/arabold/docs-mcp-server/commit/c36b723138b39aa38954d5cb8660fa77280a933c))
+* reverse sorting order for vector and FTS scores in rank assignment ([e2e5d13](https://github.com/arabold/docs-mcp-server/commit/e2e5d130b9eaa757a30b2283a2283b37bc76bf55))
+* **scraper:** ensures URL-specific documents are replaced on add ([f4b60bd](https://github.com/arabold/docs-mcp-server/commit/f4b60bd1a66f88a3be3b3d41a84866a590062917))
+* **scraper:** invalid characters when scraping some docs (charset issue) ([feb03e5](https://github.com/arabold/docs-mcp-server/commit/feb03e53c5c80b2cfdf16251eb48c668facdd880))
+* **tests:** adds totalDiscovered field to test progress objects ([a3c5906](https://github.com/arabold/docs-mcp-server/commit/a3c59066b7abb92cc535e6bfcb763d925e89475f))
+
+
+### Features
+
+* add scraper options tracking ([952dd8f](https://github.com/arabold/docs-mcp-server/commit/952dd8f0bc106ccab039bc6a2179377560307181))
+* adds external pipeline worker and HTTP API support ([85a93ca](https://github.com/arabold/docs-mcp-server/commit/85a93caa0d54495365ebdd1571d302ff27cd52f1))
+* apply production-ready SQLite settings post-migration ([3d20968](https://github.com/arabold/docs-mcp-server/commit/3d20968fe156b1406e99d03df1e00f169747c036))
+* complete vector table normalization with data preservation ([ead3987](https://github.com/arabold/docs-mcp-server/commit/ead3987a3c99e84f02a55e576116adec78c6d07e))
+* **docs:** adds note about Docker Compose feature limitations ([cb42b76](https://github.com/arabold/docs-mcp-server/commit/cb42b76b7bb42a8d3728726e245ae0d46c829d93))
+* **docs:** adds provider-specific embedding config examples ([503beea](https://github.com/arabold/docs-mcp-server/commit/503beea117be6cc4921ffc4b3389a147415711fb))
+* **docs:** update MCP server transport options and configuration examples ([fc9ba11](https://github.com/arabold/docs-mcp-server/commit/fc9ba114306c12b2024afcbff78f90dce675c214))
+* enhance database migrations and vector search functionality ([2b661d5](https://github.com/arabold/docs-mcp-server/commit/2b661d507719494cf92f829958b24dd64f8383aa))
+* enhance job management with database status and progress tracking ([5922b4a](https://github.com/arabold/docs-mcp-server/commit/5922b4a9409f131ba1e33095ac310686b7487b99))
+* implement auto protocol detection and explicit job recovery control ([b30e82c](https://github.com/arabold/docs-mcp-server/commit/b30e82cef5e36760d945f2b577cdddd1acc21724))
+* implement hybrid pipeline architecture with functionality-based selection ([e274f07](https://github.com/arabold/docs-mcp-server/commit/e274f07a449a7024002d32f207e1d82c9c0d9690))
+* implement real-time job progress updates with auto-refresh functionality ([d04a27c](https://github.com/arabold/docs-mcp-server/commit/d04a27c6a333625478af8366901204c22ecd2675))
+* implement unified server architecture with modular service composition ([83f642d](https://github.com/arabold/docs-mcp-server/commit/83f642d10f8eea2f67763838f46f6d46e924e37e)), closes [#161](https://github.com/arabold/docs-mcp-server/issues/161)
+* implement version status tracking and related database operations ([8c6975d](https://github.com/arabold/docs-mcp-server/commit/8c6975df7c6fe133a9c73c70c489195788329346))
+* normalize database schema by introducing versions table and updating documents ([aece02a](https://github.com/arabold/docs-mcp-server/commit/aece02a35649c0a5d68d518dc85075ee598556ba))
+
+# [1.17.0](https://github.com/arabold/docs-mcp-server/compare/v1.16.1...v1.17.0) (2025-05-26)
+
+
+### Bug Fixes
+
+* **cli:** display help when an invalid command is passed ([3a5d879](https://github.com/arabold/docs-mcp-server/commit/3a5d8799f7895c6865ef1babb4645275748f3fcc))
+* **pipeline:** ensure waitForJobCompletion resolves for cancelled jobs ([a39bb2b](https://github.com/arabold/docs-mcp-server/commit/a39bb2bdb6d94f722e73646734014144d192e851)), closes [#137](https://github.com/arabold/docs-mcp-server/issues/137)
+
+
+### Features
+
+* **cli:** support custom HTTP headers for fetch-url command ([1000630](https://github.com/arabold/docs-mcp-server/commit/1000630e517233b3b93884d14ad8c7bb9d675b65))
+* forward custom HTTP headers to Playwright in HtmlPlaywrightMiddleware ([3d956c2](https://github.com/arabold/docs-mcp-server/commit/3d956c28aa6ac60527f1b7b28395848a7d42654e))
+* implement immediate UI feedback for version deletion and job cancellation ([0fe63a6](https://github.com/arabold/docs-mcp-server/commit/0fe63a6f2b1fa78d7fd9f097b5edb14fd27213fe))
+* **scraper:** add support for custom HTTP headers via CLI and propagate to fetcher ([a0778aa](https://github.com/arabold/docs-mcp-server/commit/a0778aa6efb1b3163223644dabd742207df7093a)), closes [#139](https://github.com/arabold/docs-mcp-server/issues/139)
+* **ui, jobs:** robust HTMX/Alpine job queue actions, fix global htmx, and add clear-completed API ([8c8c094](https://github.com/arabold/docs-mcp-server/commit/8c8c094fa84073e8b7aacc494729848424b41e98))
+* **web:** support custom HTTP headers in scrape job form ([48a832a](https://github.com/arabold/docs-mcp-server/commit/48a832a4ba2abf393f2b3558aaf160fba48bff50))
+
+## [1.16.1](https://github.com/arabold/docs-mcp-server/compare/v1.16.0...v1.16.1) (2025-05-25)
+
+
+### Bug Fixes
+
+* **playwright:** disable output when installing Chromium browser ([9fb5540](https://github.com/arabold/docs-mcp-server/commit/9fb5540931d502ff8e2a07033e14350b5c5f3b5b))
+
+# [1.16.0](https://github.com/arabold/docs-mcp-server/compare/v1.15.1...v1.16.0) (2025-05-24)
+
+
+### Features
+
+* **aws:** support AWS_PROFILE for credentials fallback (task 125) and add test coverage ([96194f5](https://github.com/arabold/docs-mcp-server/commit/96194f56839ab678cafa44f6d581acdc6c553290))
+* **ci:** publish multi-arch Docker images (x86_64/amd64 and arm64) for Mac Silicon support ([a282c7f](https://github.com/arabold/docs-mcp-server/commit/a282c7f4c9cc7c0e88e31327f8bcd37bd75ba588)), closes [#127](https://github.com/arabold/docs-mcp-server/issues/127)
+* **docker:** use system Chromium instead of Playwright's bundled browser ([5be058b](https://github.com/arabold/docs-mcp-server/commit/5be058b545afed0d2a79a4a91ccdef7759d716c3)), closes [#124](https://github.com/arabold/docs-mcp-server/issues/124)
+* **local-file-support:** improve local file support in server and web interface ([50074f5](https://github.com/arabold/docs-mcp-server/commit/50074f54290178b2c2795edf46b6fbb2de570940)), closes [#128](https://github.com/arabold/docs-mcp-server/issues/128)
+* **scraper:** robust encoding, BOM, and binary/text detection ([45b3f94](https://github.com/arabold/docs-mcp-server/commit/45b3f9490359239cfb5e2d31573591cd76d08f2a)), closes [#129](https://github.com/arabold/docs-mcp-server/issues/129)
+
+## [1.15.1](https://github.com/arabold/docs-mcp-server/compare/v1.15.0...v1.15.1) (2025-05-18)
+
+
+### Bug Fixes
+
+* **playwright:** ensure Playwright is installed from the correct project path ([f45f530](https://github.com/arabold/docs-mcp-server/commit/f45f5300e30a36e59e2f9c0423fbf0e7eee88c76))
+
+# [1.15.0](https://github.com/arabold/docs-mcp-server/compare/v1.14.0...v1.15.0) (2025-05-18)
+
+
+### Bug Fixes
+
+* **playwright:** auto-install Playwright browsers at startup if missing ([090f5e1](https://github.com/arabold/docs-mcp-server/commit/090f5e19953a59653e35e1bc90d3625589455cf0))
+* **smithery:** removed smithery config file ([0c4c30c](https://github.com/arabold/docs-mcp-server/commit/0c4c30c080c6a5f69a15e03bad7b6089b33ef781))
+* **store:** wrap migrations in immediate transaction with retries ([63f7485](https://github.com/arabold/docs-mcp-server/commit/63f7485e0b9dffc40476eaa432daeafce8907625)), closes [#108](https://github.com/arabold/docs-mcp-server/issues/108)
+* **web:** sanitize and encode library/version for delete (fixes [#100](https://github.com/arabold/docs-mcp-server/issues/100)) ([3182733](https://github.com/arabold/docs-mcp-server/commit/318273384ad54df888ee06a9025da9b9116fe5f7))
+
+
+### Features
+
+* **queue:** improve job deduplication, safe deletion, and test coverage ([ff529cc](https://github.com/arabold/docs-mcp-server/commit/ff529cc161cfa0b2fc5a1d3960932470723482a3)), closes [#111](https://github.com/arabold/docs-mcp-server/issues/111)
+* **scraper/playwright:** improve page loading reliability by waiting for body element ([46f106c](https://github.com/arabold/docs-mcp-server/commit/46f106c0c8313c310b45eee49fcc1a8dff29e787)), closes [#116](https://github.com/arabold/docs-mcp-server/issues/116)
+* **scraper:** add robust URL filtering with glob/regex patterns ([d81aaf1](https://github.com/arabold/docs-mcp-server/commit/d81aaf11c166b19d01ffe8951127647132b19e38)), closes [#97](https://github.com/arabold/docs-mcp-server/issues/97)
+* simplify npx setup by merging binaries ([f4ce7a4](https://github.com/arabold/docs-mcp-server/commit/f4ce7a4468bba2788072d090131d363654ee794d)), closes [#105](https://github.com/arabold/docs-mcp-server/issues/105)
+* **web:** improve scrape form user experience with tooltips, animated alerts, and better spacing ([edcc7e2](https://github.com/arabold/docs-mcp-server/commit/edcc7e2a755fd93c1917cac4b605dda176cf15aa))
+
+# [1.14.0](https://github.com/arabold/docs-mcp-server/compare/v1.13.0...v1.14.0) (2025-05-10)
+
+
+### Bug Fixes
+
+* reduce embeddings batch size to avoid token errors ([a25f04c](https://github.com/arabold/docs-mcp-server/commit/a25f04c668278fedcf66586efbc9b79d914627d0)), closes [#106](https://github.com/arabold/docs-mcp-server/issues/106)
+
+
+### Features
+
+* **web:** display build version in UI title using __APP_VERSION__ from package.json ([59d6306](https://github.com/arabold/docs-mcp-server/commit/59d630667c86f769109af3a6222a532effee8688))
+
+# [1.13.0](https://github.com/arabold/docs-mcp-server/compare/v1.12.4...v1.13.0) (2025-05-08)
+
+
+### Bug Fixes
+
+* added missing HtmlSanitizerMiddleware back into the pipeline ([d926775](https://github.com/arabold/docs-mcp-server/commit/d926775d85069c30289ec781b581e76b2b4d6efc))
+* **embeddings:** handle colon in model name parsing ([#89](https://github.com/arabold/docs-mcp-server/issues/89)) ([0e73eb0](https://github.com/arabold/docs-mcp-server/commit/0e73eb04db7f7f2f2d626e194ea8feae829e2aab))
+* **store:** batch embedding creation to avoid token limit errors (closes [#93](https://github.com/arabold/docs-mcp-server/issues/93)) ([e86df97](https://github.com/arabold/docs-mcp-server/commit/e86df97ca1926836c1b8fc00a6147e5f7e462943))
+
+
+### Features
+
+* **scraper:** refactor pipelines, fetchers, and strategies ([#92](https://github.com/arabold/docs-mcp-server/issues/92), [#94](https://github.com/arabold/docs-mcp-server/issues/94)) ([9244d7e](https://github.com/arabold/docs-mcp-server/commit/9244d7e427a28820dcc62d9d8d699b659213caec))
+
+## [1.12.4](https://github.com/arabold/docs-mcp-server/compare/v1.12.3...v1.12.4) (2025-05-05)
+
+
+### Reverts
+
+* Revert "fix: handle indexed_at column already exists" ([4058cfe](https://github.com/arabold/docs-mcp-server/commit/4058cfe4e0f738ea7a242c83a63abc65757313f6))
+
+## [1.12.3](https://github.com/arabold/docs-mcp-server/compare/v1.12.2...v1.12.3) (2025-05-05)
+
+
+### Bug Fixes
+
+* handle indexed_at column already exists ([78fda67](https://github.com/arabold/docs-mcp-server/commit/78fda67de98a4151727613863963a43c9bcc12a5))
+
+## [1.12.2](https://github.com/arabold/docs-mcp-server/compare/v1.12.1...v1.12.2) (2025-05-04)
+
+
+### Bug Fixes
+
+* **docs:** corrected port numbers in README.md ([93438ef](https://github.com/arabold/docs-mcp-server/commit/93438ef9f481e6510adf886a6eb5f4ad64f94a64))
+
+## [1.12.1](https://github.com/arabold/docs-mcp-server/compare/v1.12.0...v1.12.1) (2025-05-03)
+
+
+### Bug Fixes
+
+* **ci:** fix docker build ([d8796eb](https://github.com/arabold/docs-mcp-server/commit/d8796ebe2d1a93c4f7b37c68169a9522ed18b936))
+
+# [1.12.0](https://github.com/arabold/docs-mcp-server/compare/v1.11.0...v1.12.0) (2025-05-03)
+
+
+### Bug Fixes
+
+* improved contrast in dark mode ([dc91fb3](https://github.com/arabold/docs-mcp-server/commit/dc91fb3eb3090b9da9434ee52c0ceaf11c0d4373))
+* **scraper:** use header-generator for concurrent-safe HTTP header generation ([3a2593d](https://github.com/arabold/docs-mcp-server/commit/3a2593d1b89bddbf0547f7461252c10bd7803d57))
+* start pipeline manager in web server ([b01a598](https://github.com/arabold/docs-mcp-server/commit/b01a598bd2674c357080b64ffbad807f1e7e54d4))
+* **store:** ensure parent and child chunk retrieval uses correct hierarchy ([d1cb5b5](https://github.com/arabold/docs-mcp-server/commit/d1cb5b51ce10145ad9a41bc6911561ec48169c0b))
+
+
+### Features
+
+* add library detail page with search ([3e2b009](https://github.com/arabold/docs-mcp-server/commit/3e2b0099e6b6516806a8514448abe5f2e5d98455))
+* add web interface for job and library monitoring ([bf2d27d](https://github.com/arabold/docs-mcp-server/commit/bf2d27d2a77422e44857b595608e17284e195429))
+* configure and document custom ports for docker compose setup ([c10bde4](https://github.com/arabold/docs-mcp-server/commit/c10bde4720560780ebf98d524177aca1e879ca01))
+* display library versions with details in UI ([f2f4351](https://github.com/arabold/docs-mcp-server/commit/f2f4351ea0cbb30a724c1f310f797bc8bacff02f))
+* **docker:** add web interface service to docker-compose ([950f7ca](https://github.com/arabold/docs-mcp-server/commit/950f7ca1869123750caed3fa5f4fd310bae69770))
+* enhance hmr, shutdown, sanitization, and ui ([d00e022](https://github.com/arabold/docs-mcp-server/commit/d00e02264ed326e2e121212be97d45b9212207d7))
+* **scraper:** retry all retryable HTTP status codes and add fingerprint-generator ([31b4a13](https://github.com/arabold/docs-mcp-server/commit/31b4a13d5718db11e5e5e561f9a1bb6944a4e7cf))
+* **store:** add details to listLibraries output ([19638f8](https://github.com/arabold/docs-mcp-server/commit/19638f8a080eb1b76be132c56e3b139277b4c27a))
+* **web/libraries:** display snippet count ([6543504](https://github.com/arabold/docs-mcp-server/commit/654350414b7f509f3682db2935c7432ae7d30f23))
+* **web:** add dynamic data and job queuing form to web UI ([4bc518d](https://github.com/arabold/docs-mcp-server/commit/4bc518d1ded90b84f34e777c60937b517e94f13f))
+* **web:** add two-stage delete confirmation for library versions ([1b6e846](https://github.com/arabold/docs-mcp-server/commit/1b6e846ae827fa361a2ee8a2c743f8d6bda64f9e))
+* **web:** bundle frontend assets with Vite ([6dbfdb3](https://github.com/arabold/docs-mcp-server/commit/6dbfdb35404cd5d0e9c907fe36e86a196ff51544))
+
+# [1.11.0](https://github.com/arabold/docs-mcp-server/compare/v1.10.0...v1.11.0) (2025-05-01)
+
+
+### Bug Fixes
+
+* properly initialize streamable http transport in http server ([e4fbd79](https://github.com/arabold/docs-mcp-server/commit/e4fbd797ecbb984a9e9b2ee2f30b44dcd68ac4c1))
+* reuse promise in searchtool test for reliability ([e0f9cbe](https://github.com/arabold/docs-mcp-server/commit/e0f9cbe744c3d7cbe45c76d068266b50a93d86f0))
+
+
+### Features
+
+* add HTTP protocol support ([29441a0](https://github.com/arabold/docs-mcp-server/commit/29441a029a3891d2a3fecd4b55fe7a2c45d47261))
+* implement streamable http protocol support ([429b6c1](https://github.com/arabold/docs-mcp-server/commit/429b6c141bb0b05ba1c506b77f51e392330d8ffe)), closes [#71](https://github.com/arabold/docs-mcp-server/issues/71)
+* remove empty anchor links in HtmlToMarkdownMiddleware ([2774509](https://github.com/arabold/docs-mcp-server/commit/2774509f95f90f4cb04d55e6ddf80bd70c70f8f7))
+
+# [1.10.0](https://github.com/arabold/docs-mcp-server/compare/v1.9.0...v1.10.0) (2025-04-21)
+
+
+### Bug Fixes
+
+* **ci:** set PLAYWRIGHT_LAUNCH_ARGS for tests ([55ea901](https://github.com/arabold/docs-mcp-server/commit/55ea90165fc5552e6a3a63f0ab6a7666532bbe89))
+* correct Playwright dependencies in Dockerfile ([6f19fc0](https://github.com/arabold/docs-mcp-server/commit/6f19fc0da4820e6a1493054d82b03cdc1f838bb3))
+* **deps:** remove drizzle dependencies ([ad6a09a](https://github.com/arabold/docs-mcp-server/commit/ad6a09af93eb4d4732fd32b7d15286ae055c1144)), closes [#57](https://github.com/arabold/docs-mcp-server/issues/57)
+* **scraper:** replace domcontentloaded with load event in Playwright ([9345152](https://github.com/arabold/docs-mcp-server/commit/9345152c4b1bb96dd37655337d6adb8fbe7b82e4)), closes [#62](https://github.com/arabold/docs-mcp-server/issues/62)
+* silence JSDOM virtual console output ([61e41be](https://github.com/arabold/docs-mcp-server/commit/61e41bec2059ff95150d4f3720fffeacfe883198)), closes [#53](https://github.com/arabold/docs-mcp-server/issues/53)
+
+
+### Features
+
+* add initial JS sandbox utility and executor middleware ([#18](https://github.com/arabold/docs-mcp-server/issues/18)) ([19dea10](https://github.com/arabold/docs-mcp-server/commit/19dea109e6e52aeab8fc71bf4ca7de81eadfd4ff))
+* **cli:** add --scrape-mode option and update README ([e8e4beb](https://github.com/arabold/docs-mcp-server/commit/e8e4beb57170baf3f509b8fd3c16dbaa1f5ae7e6))
+* **cli:** add --scrape-mode option to fetch-url command ([cc6465a](https://github.com/arabold/docs-mcp-server/commit/cc6465a8bc6d99384fa8f15115f13a25f5045906))
+* refactor content processing to middleware pipeline ([00f9a2f](https://github.com/arabold/docs-mcp-server/commit/00f9a2f28151639547d6435652fae919d46122c6)), closes [#17](https://github.com/arabold/docs-mcp-server/issues/17)
+* **scraper:** add HtmlPlaywrightMiddleware for dynamic content rendering ([ee3118f](https://github.com/arabold/docs-mcp-server/commit/ee3118fb645bbde4fc879ae1058227507ead703a)), closes [#19](https://github.com/arabold/docs-mcp-server/issues/19)
+* **scraper:** enable external script fetching in sandbox ([88b7e7a](https://github.com/arabold/docs-mcp-server/commit/88b7e7a430b89f735e6852937e5ab24debf8fa5d))
+* **scraper:** replace JSDOM with Cheerio for HTML parsing ([5dd624a](https://github.com/arabold/docs-mcp-server/commit/5dd624ae965a221bcc6a9f18c72a7cbed7dc0eb5))
+
+# [1.9.0](https://github.com/arabold/docs-mcp-server/compare/v1.8.0...v1.9.0) (2025-04-14)
+
+
+### Bug Fixes
+
+* **scraper:** use JSDOM title property for robust HTML title extraction ([dee350f](https://github.com/arabold/docs-mcp-server/commit/dee350f482428b7bc68192238aee1077eb6ace80)), closes [#41](https://github.com/arabold/docs-mcp-server/issues/41)
+
+
+### Features
+
+* increase default maxPages and add constants ([7b10eba](https://github.com/arabold/docs-mcp-server/commit/7b10ebaa3f610e53d8e2837702143f3f6d084bd2)), closes [#43](https://github.com/arabold/docs-mcp-server/issues/43)
+
+# [1.8.0](https://github.com/arabold/docs-mcp-server/compare/v1.7.0...v1.8.0) (2025-04-14)
+
+
+### Bug Fixes
+
+* disabled removal of form elements ([3b6afde](https://github.com/arabold/docs-mcp-server/commit/3b6afde7b8c6796f65d6d4f09d86fb11e6a34b6a))
+* preserve line breaks in pre tags ([b94b1e3](https://github.com/arabold/docs-mcp-server/commit/b94b1e3d4a56bd3ecf19b82c8d7b5c9abc715218))
+* remove overly aggressive html filtering ([6c76509](https://github.com/arabold/docs-mcp-server/commit/6c76509b80dd48a5a21923b54f985c456c19d46a)), closes [#36](https://github.com/arabold/docs-mcp-server/issues/36)
+* resolve store path correctly when not in project root ([49a3c1f](https://github.com/arabold/docs-mcp-server/commit/49a3c1ffb493a83c244708332dbe523e9c1e28ef))
+* **search:** remove exactMatch flag from MCP API, improve internal handling ([e5cb8d1](https://github.com/arabold/docs-mcp-server/commit/e5cb8d16204ff01a1747d2db9e169b9ecd3c676a)), closes [#24](https://github.com/arabold/docs-mcp-server/issues/24)
+
+
+### Features
+
+* add fetch-url tool to CLI and MCP server ([604175f](https://github.com/arabold/docs-mcp-server/commit/604175f7d7abe1765ab419abe04340b1478230b2)), closes [#34](https://github.com/arabold/docs-mcp-server/issues/34)
+
+# [1.7.0](https://github.com/arabold/docs-mcp-server/compare/v1.6.0...v1.7.0) (2025-04-11)
+
+
+### Features
+
+* **embeddings:** add support for multiple embedding providers ([e197bec](https://github.com/arabold/docs-mcp-server/commit/e197beca104192a77793c2a585b74bdfaa0da53e)), closes [#28](https://github.com/arabold/docs-mcp-server/issues/28)
+
+# [1.6.0](https://github.com/arabold/docs-mcp-server/compare/v1.5.0...v1.6.0) (2025-04-11)
+
+
+### Features
+
+* **#26:** add environment variables to Dockerfile ([51b7059](https://github.com/arabold/docs-mcp-server/commit/51b7059147b846c5a85bebd6226ec63ef99b00e7)), closes [#26](https://github.com/arabold/docs-mcp-server/issues/26)
+* **#26:** handle different embedding model dimensions via padding ([f712c9b](https://github.com/arabold/docs-mcp-server/commit/f712c9b0e43c2d90e2a9ad68f5cc1883af7b0a2a)), closes [#26](https://github.com/arabold/docs-mcp-server/issues/26)
+* **#26:** support OpenAI API base URL and model name config ([66b70bb](https://github.com/arabold/docs-mcp-server/commit/66b70bba1b677cd20db85180d796b901583ca3b8)), closes [#26](https://github.com/arabold/docs-mcp-server/issues/26)
+
+# [1.5.0](https://github.com/arabold/docs-mcp-server/compare/v1.4.5...v1.5.0) (2025-04-08)
+
+
+### Bug Fixes
+
+* **ci:** increase allowed footer line length ([afbc62c](https://github.com/arabold/docs-mcp-server/commit/afbc62ca14f65126e39718448563cd795e5b1d6d))
+
+
+### Features
+
+* **scraper:** enhance crawler controls with scope and redirect options ([45d0e93](https://github.com/arabold/docs-mcp-server/commit/45d0e93313ce5ff3eaddac848cd629ace9190418)), closes [#15](https://github.com/arabold/docs-mcp-server/issues/15)
+
+## [1.4.5](https://github.com/arabold/docs-mcp-server/compare/v1.4.4...v1.4.5) (2025-04-08)
+
+
+### Bug Fixes
+
+* empty commit to trigger patch release ([ca62a92](https://github.com/arabold/docs-mcp-server/commit/ca62a92825c2073a79e5b02c98ddbef5b3d0fd17))
+
+## [1.4.4](https://github.com/arabold/docs-mcp-server/compare/v1.4.3...v1.4.4) (2025-04-08)
+
+
+### Bug Fixes
+
+* empty commit to trigger patch release ([be47616](https://github.com/arabold/docs-mcp-server/commit/be47616ace3d30e222ef4f896287f231fab242be))
+* empty commit to trigger patch release ([ff7f518](https://github.com/arabold/docs-mcp-server/commit/ff7f51845bf7778f3af0d5c25460eb53e052c649))
+* **workflow:** update semantic-release configuration and output variables ([7725875](https://github.com/arabold/docs-mcp-server/commit/772587511f5fc2c193fcd69f41c0381dfff0df3c))
+* **workflow:** update semantic-release configuration and output variables ([7628854](https://github.com/arabold/docs-mcp-server/commit/76288548a5688f68397add9abadb69837bb65b55))
+
+## [1.4.4](https://github.com/arabold/docs-mcp-server/compare/v1.4.3...v1.4.4) (2025-04-08)
+
+
+### Bug Fixes
+
+* empty commit to trigger patch release ([ff7f518](https://github.com/arabold/docs-mcp-server/commit/ff7f51845bf7778f3af0d5c25460eb53e052c649))
+* **workflow:** update semantic-release configuration and output variables ([7725875](https://github.com/arabold/docs-mcp-server/commit/772587511f5fc2c193fcd69f41c0381dfff0df3c))
+* **workflow:** update semantic-release configuration and output variables ([7628854](https://github.com/arabold/docs-mcp-server/commit/76288548a5688f68397add9abadb69837bb65b55))
+
+## [1.4.4](https://github.com/arabold/docs-mcp-server/compare/v1.4.3...v1.4.4) (2025-04-08)
+
+
+### Bug Fixes
+
+* **workflow:** update semantic-release configuration and output variables ([7725875](https://github.com/arabold/docs-mcp-server/commit/772587511f5fc2c193fcd69f41c0381dfff0df3c))
+* **workflow:** update semantic-release configuration and output variables ([7628854](https://github.com/arabold/docs-mcp-server/commit/76288548a5688f68397add9abadb69837bb65b55))
+
+## [1.4.3](https://github.com/arabold/docs-mcp-server/compare/v1.4.2...v1.4.3) (2025-04-08)
+
+
+### Bug Fixes
+
+* empty commit to trigger patch release ([50bb240](https://github.com/arabold/docs-mcp-server/commit/50bb24026abc1eba3b1a3fa011e04814ba5f3387))
+
+## [1.4.2](https://github.com/arabold/docs-mcp-server/compare/v1.4.1...v1.4.2) (2025-04-08)
+
+
+### Bug Fixes
+
+* empty commit to trigger patch release ([c8f9a0f](https://github.com/arabold/docs-mcp-server/commit/c8f9a0fc58e47b6248e22614581e5583617de89d))
+
+## [1.4.1](https://github.com/arabold/docs-mcp-server/compare/v1.4.0...v1.4.1) (2025-04-08)
+
+
+### Bug Fixes
+
+* **docs:** clarify docker volume creation in README ([03a58d6](https://github.com/arabold/docs-mcp-server/commit/03a58d69acd6da17ac24862d14ec9f2dc2e03cab))
+
+# [1.4.0](https://github.com/arabold/docs-mcp-server/compare/v1.3.0...v1.4.0) (2025-04-08)
+
+
+### Features
+
+* **docker:** add configurable storage path & improve support ([9f35c54](https://github.com/arabold/docs-mcp-server/commit/9f35c54b7e50dcffba98fb96b0d316a018d6aad8))
+* **store:** implement dynamic database path selection ([527d9f9](https://github.com/arabold/docs-mcp-server/commit/527d9f994969fa76aa3e585c6ecd98766870c592))
+
+# [1.3.0](https://github.com/arabold/docs-mcp-server/compare/v1.2.1...v1.3.0) (2025-04-03)
+
+
+### Features
+
+* **search:** provide suggestions for unknown libraries ([d6628bb](https://github.com/arabold/docs-mcp-server/commit/d6628bb16bb321a19c4bdf109e361c1a54dca345)), closes [#12](https://github.com/arabold/docs-mcp-server/issues/12)
+
+## [1.2.1](https://github.com/arabold/docs-mcp-server/compare/v1.2.0...v1.2.1) (2025-04-01)
+
+
+### Bug Fixes
+
+* **store:** escape FTS query to handle special characters ([bcf01a8](https://github.com/arabold/docs-mcp-server/commit/bcf01a84f7f82f6e9fe3ca3400e4d73b3a1ca165)), closes [#10](https://github.com/arabold/docs-mcp-server/issues/10)
+
+# [1.2.0](https://github.com/arabold/docs-mcp-server/compare/v1.1.0...v1.2.0) (2025-03-30)
+
+
+### Features
+
+* **deploy:** add Smithery.ai deployment configuration ([3763168](https://github.com/arabold/docs-mcp-server/commit/3763168452bc02fd772149425229e16725bdc0de))
+
+# [1.1.0](https://github.com/arabold/docs-mcp-server/compare/v1.0.0...v1.1.0) (2025-03-30)
+
+
+### Features
+
+* implement log level control via CLI flags ([b2f8b73](https://github.com/arabold/docs-mcp-server/commit/b2f8b73f1d0d63e58b76e92fd61bf9188014a563))
+
+# 1.0.0 (2025-03-30)
+
+
+### Bug Fixes
+
+* Cleaned up log messages in MCP server ([db2c82e](https://github.com/arabold/docs-mcp-server/commit/db2c82ee31bdf658cc5b2019f2dce4f9053413cb))
+* Cleaned up README ([0ac054e](https://github.com/arabold/docs-mcp-server/commit/0ac054e40bddfaeed75795dae23bc0614294f7ab))
+* Fixed concatenation of chunks in the DocumentRetrieverService ([ae4ff6b](https://github.com/arabold/docs-mcp-server/commit/ae4ff6bf8247ba994ca83fda10ad02d78e7db920))
+* Fixed several linter and formatter issues ([a2e4594](https://github.com/arabold/docs-mcp-server/commit/a2e45940eaaff935282604046c0488e2856c3c00))
+* **package:** remove relative prefix from bin paths in package.json ([22f74e3](https://github.com/arabold/docs-mcp-server/commit/22f74e3925313e4e45e06ec7fcd4801e49e62bd6))
+* removed unnecessary file extends in imports ([117903f](https://github.com/arabold/docs-mcp-server/commit/117903f415adfaf1c7d9f294317a8387b951a11c))
+* restore progress callbacks in scraper ([0cebe97](https://github.com/arabold/docs-mcp-server/commit/0cebe9792b9766215bb3a9bb6196888c83851527))
+* various linter issues and type cleanup ([14b02bd](https://github.com/arabold/docs-mcp-server/commit/14b02bd4b3a2f75d559651fc54e44fd460ff11ff))
+
+
+### Code Refactoring
+
+* improve type organization and method signatures ([da16170](https://github.com/arabold/docs-mcp-server/commit/da161702845c01fdd95b4d454c5e30f7d4eb3a28))
+
+
+### Features
+
+* Add comprehensive logging system ([ba8a6f1](https://github.com/arabold/docs-mcp-server/commit/ba8a6f112b1e5ccaf5ba71a3c7d02d4bb8a56eff))
+* add configurable concurrency for web scraping ([f6c3baa](https://github.com/arabold/docs-mcp-server/commit/f6c3baab86673e8b082caca3d3761744062e1556))
+* Add document ordering and URL tracking ([11ff1c8](https://github.com/arabold/docs-mcp-server/commit/11ff1c804c90650f14851dd71fd1233b09b9b12f))
+* Add pipeline management tools to MCP server ([e01d31e](https://github.com/arabold/docs-mcp-server/commit/e01d31e39f47dcf8abe1749e5c43f0d46370ee8c))
+* Add remove documents functionality ([642a320](https://github.com/arabold/docs-mcp-server/commit/642a32056986f07d9e52509e0738ba5a95f2b885))
+* add store clearing before scraping ([9557014](https://github.com/arabold/docs-mcp-server/commit/9557014fee1c33354922c26acc3f0a0239b03665))
+* Add vitest tests for MCP tools ([0c40c9e](https://github.com/arabold/docs-mcp-server/commit/0c40c9e13bc412c33efa84a07b7d3e60bd7f99de))
+* Added .env.example to repository ([93c47f1](https://github.com/arabold/docs-mcp-server/commit/93c47f1d9e70dd7fc5a844698967883833e94b48))
+* Added Cline custom instructions file ([aabb806](https://github.com/arabold/docs-mcp-server/commit/aabb80623fa41629eb1e3edd978c0961c93421cd))
+* **ci:** configure automated releases with semantic-release ([8af5595](https://github.com/arabold/docs-mcp-server/commit/8af5595790c20bd7f9a5db44775c5158427c8092))
+* enhance web scraping and error handling ([d3aa894](https://github.com/arabold/docs-mcp-server/commit/d3aa89490e82d79d05dba608e7991e54e9e91f60))
+* Implement optional version handling and improve CLI ([9b41856](https://github.com/arabold/docs-mcp-server/commit/9b4185641af5eaa1a667afbe43bea8dfd5ac08ce))
+* improve document processing and architecture docs ([b996d19](https://github.com/arabold/docs-mcp-server/commit/b996d1932d8061ae21f091eed578d281838e894b))
+* Improve scraping, indexing, and URL handling ([3fc0931](https://github.com/arabold/docs-mcp-server/commit/3fc09313cd7dfc5091e71401adb9960ab582f7eb))
+* improve search capabilities with PostgreSQL integration ([4e04aa7](https://github.com/arabold/docs-mcp-server/commit/4e04aa7cc694fa79bbcb36d685fa0fd81f524fe0))
+* Make search tool version and limit optional and update dependencies ([bd83392](https://github.com/arabold/docs-mcp-server/commit/bd83392d7ad4e1b3aba59313ab6aaacfdb2b1837))
+* Refactor scraper and introduce document processing pipeline ([6229f97](https://github.com/arabold/docs-mcp-server/commit/6229f97184211b9c561c95de4b4071b301cf8c90))
+* **scraper:** implement configurable subpage scraping behavior ([1dc2a11](https://github.com/arabold/docs-mcp-server/commit/1dc2a118602187654603f8c81f49baf321d77e47))
+* **scraper:** Implement local file scraping and refactor strategy pattern ([d058b48](https://github.com/arabold/docs-mcp-server/commit/d058b487eefb3073d6cd082ceeeded73d903e145))
+* Simplify pipeline job data returned by MCP tools ([35c3279](https://github.com/arabold/docs-mcp-server/commit/35c327937f8e430795e5f5580501b3063dbcd2f0))
+* switch to jsdom for DOM processing and improve database queries ([ba4768f](https://github.com/arabold/docs-mcp-server/commit/ba4768f2628cb6fdd3e55202132ee2877d68ab18))
+* **tooling:** configure CI/CD, semantic-release, and commit hooks ([3d9b7a3](https://github.com/arabold/docs-mcp-server/commit/3d9b7a373d3bf1135a16f286ce32d8b74b36b637))
+* Updated dependencies ([2b345c7](https://github.com/arabold/docs-mcp-server/commit/2b345c71a46e24dc8ab70335f00df85c7e1e8203))
+
+
+### BREAKING CHANGES
+
+* DocumentStore and VectorStoreService method signatures have changed
+
+- Reorganize types across domains:
+  * Move domain-specific types closer to their implementations
+  * Keep only shared types in src/types/index.ts
+  * Add domain prefixes to type names for clarity
+
+- Standardize method signatures:
+  * Replace filter objects with explicit library/version parameters
+  * Make parameter order consistent across all methods
+  * Update all tests to match new signatures
+
+- Improve type naming:
+  * Rename DocContent -> Document
+  * Rename PageResult -> ScrapedPage
+  * Rename ScrapeOptions -> ScraperOptions
+  * Rename ScrapingProgress -> ScraperProgress
+  * Rename SearchResult -> StoreSearchResult
+  * Rename VersionInfo -> LibraryVersion
+  * Rename SplitterOptions -> MarkdownSplitterOptions
+
+The changes improve code organization, make dependencies clearer,
+and provide a more consistent and explicit API across the codebase.
