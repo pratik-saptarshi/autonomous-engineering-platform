@@ -15,7 +15,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - run: npx --yes markdownlint-cli2@0.24.0 "**/*.md" "!reference/esf/**/*.md" "!reference/neurostrata/**/*.md" "!reference/neurostrata-ops/**/*.md" "!reference/harness2/**/*.md" "!reference/security-audit-skill/**/*.md" "!reference/ub-mode/**/*.md" "!reference/grim-prompter/**/*.md" "!skills/archify/**/*.md"
+      - run: npx --yes markdownlint-cli2@0.24.0 "**/*.md" "!reference/esf/**/*.md" "!reference/neurostrata/**/*.md" "!reference/neurostrata-ops/**/*.md" "!reference/harness2/**/*.md" "!reference/security-audit-skill/**/*.md" "!reference/ub-mode/**/*.md" "!reference/grim-prompter/**/*.md" "!skills/archify/**/*.md" "!skills/diagnosing-superpowers/**/*.md" "!skills/neurogenesis/**/*.md" "!skills/overseer/**/*.md" "!skills/retro/**/*.md"
 
   shell-lint:
     runs-on: ubuntu-latest
