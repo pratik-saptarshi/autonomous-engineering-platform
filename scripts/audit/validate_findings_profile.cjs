@@ -18,6 +18,18 @@
 // "composition" entry as the offending kind are not profile errors. Every
 // other vendored error is reported unchanged.
 //
+// Cap interaction: the vendored validator caps its error list at
+// LIMITS.validationErrors and its semantic pass stops generating errors
+// once the cap is reached, while this wrapper filters exempt composition
+// errors only after that capped list returns. If enough exempt errors
+// saturate the list, a later finding's non-exempt semantic error is never
+// generated and filtering would report a false PASS. So when the raw list
+// reaches the cap and every returned error was exempt, run() performs a
+// recovery pass: it relabels "composition" trace entries in a copy of the
+// findings to the ordering kind for their position (so they produce no
+// ordering errors and consume no cap) and re-runs the vendored semantic
+// pass on the copy, surfacing any non-exempt errors it now reaches.
+//
 // Usage: node scripts/audit/validate_findings_profile.cjs <path-to-findings.json>
 // Exit 0 on PASS, nonzero on FAIL, with each violation named on stderr.
 
@@ -61,6 +73,23 @@ function isProfileCompositionTraceError(findings, errorMessage) {
   // profile schema, because the profile enum admits it.
   if (!errorMessage.includes(".trace[")) return false;
   return traceKindAt(findings, errorMessage) === "composition";
+}
+
+function relabelCompositionTraceKinds(findingsCopy) {
+  // In the copy only: give each "composition" trace entry the vendored
+  // ordering kind for its position, so the vendored semantic pass sees a
+  // well-ordered trace and spends its error budget on real errors.
+  for (const finding of findingsCopy) {
+    if (!finding || typeof finding !== "object" || !Array.isArray(finding.trace)) {
+      continue;
+    }
+    finding.trace.forEach((entry, index) => {
+      if (!entry || typeof entry !== "object" || entry.kind !== "composition") return;
+      if (finding.trace.length === 1 || index === 0) entry.kind = "entrypoint";
+      else if (index === finding.trace.length - 1) entry.kind = "sink";
+      else entry.kind = "propagation";
+    });
+  }
 }
 
 function run(file) {
@@ -112,9 +141,25 @@ function run(file) {
     console.error("Failed to validate findings JSON:", error.message);
     return 1;
   }
-  const profileErrors = errors.filter(
+  let profileErrors = errors.filter(
     (message) => !isProfileCompositionTraceError(findings, message)
   );
+
+  if (
+    profileErrors.length === 0 &&
+    errors.length >= vendored.LIMITS.validationErrors
+  ) {
+    // Untrustworthy PASS candidate: the raw list hit the vendored cap and
+    // every returned error was exempt, so cap suppression may have hidden
+    // non-exempt semantic errors from later findings. Recover them with a
+    // semantic pass over a copy whose composition entries are relabeled
+    // to their positional ordering kinds (see the header comment).
+    const findingsCopy = JSON.parse(JSON.stringify(findings));
+    relabelCompositionTraceKinds(findingsCopy);
+    profileErrors = vendored
+      .collectFindingSemanticErrors(findingsCopy)
+      .filter((message) => !isProfileCompositionTraceError(findings, message));
+  }
 
   for (const message of profileErrors) console.error("ERROR:", message);
   if (profileErrors.length > 0) {
