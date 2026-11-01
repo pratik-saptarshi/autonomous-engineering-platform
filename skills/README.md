@@ -51,7 +51,6 @@ The 28 paperthin skills are distributed under the upstream MIT license; its copy
 | re0-merge | LilMGenius/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | re0-plan | LilMGenius/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | re0-release | LilMGenius/paperthin | MIT | Vendored verbatim (7d5dc62); upstream paperthin release workflow — requires paperthin repo surfaces (plugin.json, docs/readme/, scripts/catalog.cjs, package.json), not directly runnable here |
-| re0-upgrade | LilMGenius/paperthin | MIT | Vendored verbatim (7d5dc62); npx-skills-CLI upgrade flow targets the npm skills CLI, not this repo |
 | re0-work | LilMGenius/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | readchk | LilMGenius/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | receiving-review | obra/superpowers | MIT | |
