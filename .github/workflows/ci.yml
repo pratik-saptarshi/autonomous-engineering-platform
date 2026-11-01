@@ -115,3 +115,15 @@ jobs:
         run: |
           node --test reference/security-audit-skill/skills/security-audit/validate-findings.test.cjs
           node --test reference/security-audit-skill/skills/security-audit/validate-coverage-ledger.test.cjs
+
+  # Bounded claim: this gate proves the repo skills/ tree equals the manifest
+  # generated from the repo tree immediately after the last sync copied from
+  # live -- a consistency claim about the sync's own output, never a freshness
+  # claim against the live tree (CI cannot see live).
+  skills-freshness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - run: python3 scripts/check_skills_manifest.py --root skills --check
