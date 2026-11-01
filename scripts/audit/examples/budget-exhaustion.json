@@ -1,0 +1,22 @@
+{
+  "run_id": "example-budget-exhaustion",
+  "profile": "quick",
+  "run_status": "incomplete",
+  "incomplete_reason": "validation_budget_exhausted",
+  "budget": 20,
+  "budget_reserved": {
+    "reconnaissance": 4,
+    "critics": 1,
+    "verifiers": 1
+  },
+  "spent": {
+    "total_agent_invocations": 20
+  },
+  "unvalidated_candidates": [
+    {
+      "fingerprint": "example-unvalidated-candidate",
+      "ledger_status": "candidate",
+      "disposition": "remains in the coverage ledger only; not entered in findings.json under any verdict"
+    }
+  ]
+}
