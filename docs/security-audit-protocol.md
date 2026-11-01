@@ -254,7 +254,7 @@ Caps are total agent invocations, reserved calls included:
 | standard | ≤ 40 |
 | deep | ≤ 60 |
 
-A run may set a lower cap than its profile's. 
+A run may set a lower cap than its profile's.
 
 **Budget-exhaustion rule.** If the remaining budget cannot validate
 every candidate, the run ends with `run_status: incomplete` and
@@ -869,48 +869,83 @@ The supply-chain hunt targets AEP's own release path:
   vendor-integrity job that checks the snapshots under `reference/`
   against them.
 
-Two open residuals are already-tracked inputs to this hunt, named
-here so a run treats them as known state, not as rediscoveries:
+Two residuals were already-tracked inputs to this hunt, named here
+so a run treats them as known state, not as rediscoveries. Both are
+now closed, closed by PR #75 (verified against the live issue
+record on 2026-10-31):
 
 - Issue #38 — receipt stdout hashing: raw capped bytes for
-  `stdout_sha256` on non-UTF-8 output.
+  `stdout_sha256` on non-UTF-8 output. Closed by PR #75.
 - Issue #55 — the fs-digest format change invalidating pre-change fs
-  receipts.
+  receipts. Closed by PR #75.
 
 Two further items form this hunt's worked set. They are the two P0s
 of the 2026-10-26 overseer panel report on main
 (`review_panel_report_main_2026-10-26.md`). At Task A4's Step 0
-re-check (2026-10-26) both were verified still open on this branch's
-tree — the evidence below is the code as read, not the report's
-prose — and neither was found in the tracked-issue record (a ghg
-read of the repository's issues, all states, returned no issue for
-either). Both are verifier evidence-integrity defects in AEP's own
-release/verification path, which is why they sit in this class:
+re-check (2026-10-26) both were verified open on the branch tree.
+Re-verified against main
+`4770aeb5aa38c72833aae40394e819c039895d27` on 2026-10-31: Panel
+Action Item 1 remains open; Panel Action Item 2 is changed in
+substance — the between-legs gap persists, but the fs seal's digest
+coverage has materially strengthened since the branch tree (see
+Panel Action Item 2 below). Neither was found in the tracked-issue
+record (a ghg read of the repository's issues, all states, returned
+no issue for either — re-confirmed 2026-10-31). Both are verifier
+evidence-integrity defects in AEP's own release/verification path,
+which is why they sit in this class:
+
+**Status of the two worked-set items (as of main `4770aeb`,
+2026-10-31).** Both items are untracked: no issue has been filed
+for either, and filing is Pratik's separate pending decision; this
+listing is not authorisation to file or fix them. Owner of this
+status: the AEP lane coordinator. Re-verification trigger: any
+change to `scripts/mechanical_verify.py` re-opens §10's status
+claims until the claim-by-claim verification behind this section is
+re-run.
 
 - Panel Action Item 1 — the environment-scrub policy is re-read per
-  leg from an unbound file. `scripts/mechanical_verify.py:973`
-  resolves the policy path from the environment or beside the
-  verifier script — never from the verified root and never covered
-  by the tree binding, whose fields are exactly root, head, tree
-  digest, and mode (`tree_binding`,
-  `scripts/mechanical_verify.py:1614`). `run_verification`
-  (`scripts/mechanical_verify.py:1140`) builds each leg's
-  environment by reading that policy afresh, and `run_all` calls it
-  once per command (`scripts/mechanical_verify.py:1283`), while the
-  run-start record samples the environment mode only once
-  (`scripts/mechanical_verify.py:2263`). A mid-run rewrite of the
-  policy file therefore changes what a later leg scrubs, under a
-  sealed record that states the run-start mode.
+  leg from an unbound file. In `_policy_path()` —
+  `def _policy_path() -> Path:` — the policy path resolves from the
+  environment or beside the verifier script — never from the
+  verified root and never covered by the tree binding, whose fields
+  are exactly root, head, tree digest, and mode (in `tree_binding()`
+  — `def tree_binding(`). In `run_verification()`, the statement
+  `env = build_run_env(_policy_path())` builds each leg's
+  environment by reading that policy afresh, and in `run_all()`, the
+  statement
+  `result = run_verification(root, command, timeout_seconds=effective_timeout)`
+  calls it once per command, while the run-start record samples the
+  environment mode only once (in `main()`, the call
+  `env=run_env_mode(_policy_path())` inside the `append_run_start`
+  invocation). A mid-run rewrite of the policy file therefore
+  changes what a later leg scrubs, under a sealed record that states
+  the run-start mode. Status (2026-10-31): **still open** — the
+  policy content is not bound into the verified tree at run start,
+  and a mid-run rewrite to another valid policy is applied by the
+  next leg.
 - Panel Action Item 2 (panel item Y1) — fs mode has no between-legs
   tree re-validation. The `between_commands` hook is installed only
-  when the binding mode is git
-  (`scripts/mechanical_verify.py:2275`), and `binding_excursion`
-  returns no excursion for any non-git mode
-  (`scripts/mechanical_verify.py:1730`). In fs mode the seal is a
-  single final-digest re-comparison
-  (`scripts/mechanical_verify.py:2311`), so a between-legs
-  swap-and-restore is invisible to the run: a later leg can execute
-  on substituted bytes and the run can still seal.
+  when the binding mode is git (in `main()`,
+  `between_commands = None`, replaced by the `binding_excursion`
+  closure only under `binding["mode"] == "git"`), and in
+  `binding_excursion()`, the guard
+  `if binding.get("mode") != "git": return None` returns no
+  excursion for any non-git mode. In fs mode the seal is a single
+  final-digest re-comparison in `main()` —
+  `tree_binding(root, receipts_path)["tree_digest"] == binding["tree_digest"]`.
+  On current main the recomputed digest is the strengthened
+  `_fs_tree_digest`: directories named in `FS_RESIDUE_DIRS` (`.git`,
+  `__pycache__`, `.pytest_cache`, `.mypy_cache`) contribute only
+  their residue-bound entries, and every other directory —
+  dependency, virtualenv and build-output trees included — is bound
+  in full. So a between-legs swap-and-restore is invisible to the
+  run: a later leg can execute on substituted bytes and the run can
+  still seal. Status (2026-10-31): **changed in substance** — the
+  between-legs gap persists exactly as described, but the seal it
+  relies on is materially stronger than the branch-era seal, which
+  excluded whole directory trees (`FS_EXCLUDED_DIRS`, twelve names
+  including `target`, `node_modules`, `dist`, `build`, `.venv`)
+  from the digest wholesale.
 
 ### 10.3 AI and LLM: the standing target set
 
