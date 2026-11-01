@@ -1,0 +1,81 @@
+# Skills sync scope -- the SINGLE source for the skills-freshness gate.
+#
+# Bounded claim: This gate proves the repo skills/ tree equals the manifest
+# generated from the repo tree immediately after the last sync copied from
+# live -- a consistency claim about the sync's own output, never a freshness
+# claim against the live tree (CI cannot see live).
+#
+# Format: three sections. [skills] lists the in-scope skill directory names
+# (directories present in both the repo skills/ tree and the live skills
+# tree at derivation time), one per line; membership changes are edits to
+# this file, made by PR. [exclude-paths] lists path exclusions: a bare name
+# matches any file with that basename, an entry ending in /** matches any
+# file whose root-relative path contains that component, and any other
+# entry containing / matches only that exact root-relative path.
+# [exclude-content] lists literals: a file whose bytes contain any of them
+# is excluded when the manifest is generated (and the exclusion is
+# reported); at check time a listed file whose bytes contain one is a
+# stale manifest entry. Blank lines and lines starting with # are ignored.
+# scripts/check_skills_manifest.py parses ALL of its scope and exclusion
+# rules from this file; no rule is hardcoded anywhere else.
+
+[skills]
+agent_operations
+aim
+autobahn
+brainstorming
+catchup
+code_explorer
+debloat
+dedash
+detool
+dispatching-parallel-agents
+executing-plans
+factchk
+feature-pr-pipeline
+feynman
+grilling
+hate
+macrothink
+mandela
+modelchk
+nba
+neurostrata_memory
+overnight-parallel-lanes
+prism
+product-refinement-loop
+prototype
+re0
+re0-git
+re0-loop
+re0-memo
+re0-merge
+re0-plan
+re0-release
+re0-upgrade
+re0-work
+readchk
+reorder
+requesting-code-review
+research
+reverse_engineering
+scrubbing-public-tree
+self_test_gym
+shower
+sip
+ssotize
+subagent-driven-development
+systematic-debugging
+test-driven-development
+verification-before-completion
+writing-for-agents
+writing-plans
+writing-skills
+
+[exclude-paths]
+skill.yaml
+.superpowers/**
+scrubbing-public-tree/SKILL.md
+
+[exclude-content]
+/home/hatch
