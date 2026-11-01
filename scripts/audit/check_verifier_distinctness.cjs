@@ -334,7 +334,9 @@ function checkRun({ findings, ledger, sidecar, dispatch, profile, findingsSha, l
       if (typeof phase5 !== "string" || phase5 !== phase3) {
         fail(fp, "quick profile requires phase5_verifier_agent_id == phase3_verifier_agent_id (merged Phase 3+5)");
       }
-    } else if (typeof phase5 === "string" && phase5 === phase3) {
+    } else if (typeof phase5 !== "string" || phase5.length === 0) {
+      fail(fp, "sidecar phase5_verifier_agent_id is missing or not a string: standard/deep profiles require a recorded Phase 5 verifier for every final record (protocol §9.2)");
+    } else if (phase5 === phase3) {
       fail(fp, "Phase 3 and Phase 5 verifiers are the same agent outside the quick profile");
     }
 

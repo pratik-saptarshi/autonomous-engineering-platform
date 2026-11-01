@@ -480,3 +480,30 @@ test("(q) sidecar entry with an unknown superseded_verdict rank fails", () => {
   });
   assertFailsNaming(result, FP_ONE);
 });
+
+test("(r) standard profile with phase5_verifier_agent_id null fails naming the fingerprint and the Phase 5 requirement", () => {
+  const result = runChecker((data) => {
+    // An otherwise-clean standard run whose FP_ONE record has no
+    // recorded Phase 5 pass: the Phase 5 dispatch entry for verifier-2
+    // is irrelevant once the sidecar records no verifier, and protocol
+    // §9.2 requires a Phase 5 verification for every final record.
+    data.entries[FP_ONE].phase5_verifier_agent_id = null;
+  });
+  assertFailsNaming(result, FP_ONE);
+  assert.ok(
+    result.output.includes("Phase 5"),
+    `expected failure output to name the Phase 5 requirement, got: ${result.output}`
+  );
+});
+
+test("(s) deep profile with phase5_verifier_agent_id null fails naming the fingerprint and the Phase 5 requirement", () => {
+  const result = runChecker((data) => {
+    data.profile = "deep";
+    data.entries[FP_ONE].phase5_verifier_agent_id = null;
+  });
+  assertFailsNaming(result, FP_ONE);
+  assert.ok(
+    result.output.includes("Phase 5"),
+    `expected failure output to name the Phase 5 requirement, got: ${result.output}`
+  );
+});
