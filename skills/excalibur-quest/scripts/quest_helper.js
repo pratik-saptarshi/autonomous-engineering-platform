@@ -19,7 +19,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
+const { execSync, execFileSync } = require('child_process');
 
 class QuestDB {
   constructor(dbDir) {
@@ -44,7 +44,7 @@ class QuestDB {
     if (this.useDolt) {
       try {
         const query = `SELECT data FROM quests WHERE issue_id = '${issueId}'`;
-        const res = execSync(`dolt sql -q "${query}" -r json`, { encoding: 'utf8' }).trim();
+        const res = execFileSync('dolt', ['sql', '-q', query, '-r', 'json'], { encoding: 'utf8' }).trim();
         if (res) {
           const rows = JSON.parse(res);
           if (rows && rows.rows && rows.rows.length > 0) {
@@ -70,26 +70,57 @@ class QuestDB {
   saveQuest(issueId, questData) {
     if (this.useDolt) {
       try {
-        execSync('dolt sql -q "CREATE TABLE IF NOT EXISTS quests (issue_id VARCHAR(50) PRIMARY KEY, data TEXT)"', { stdio: 'ignore' });
+        execFileSync('dolt', ['sql', '-q', 'CREATE TABLE IF NOT EXISTS quests (issue_id VARCHAR(50) PRIMARY KEY, data TEXT)'], { stdio: 'ignore' });
         const escapedData = JSON.stringify(questData).replace(/'/g, "''");
-        execSync(`dolt sql -q "REPLACE INTO quests (issue_id, data) VALUES ('${issueId}', '${escapedData}')"`, { stdio: 'ignore' });
+        execFileSync('dolt', ['sql', '-q', `REPLACE INTO quests (issue_id, data) VALUES ('${issueId}', '${escapedData}')`], { stdio: 'ignore' });
         return;
       } catch (e) {
         console.error('Dolt write failed, falling back to JSON:', e.message);
       }
     }
 
-    let data = {};
-    if (fs.existsSync(this.jsonDb)) {
-      try {
-        data = JSON.parse(fs.readFileSync(this.jsonDb, 'utf8'));
-      } catch (e) {}
-    }
-    data[issueId] = questData;
+    const releaseLock = this.acquireDbLock();
     try {
-      fs.writeFileSync(this.jsonDb, JSON.stringify(data, null, 2), 'utf8');
-    } catch (e) {
-      console.error('JSON write failed:', e.message);
+      let data = {};
+      if (fs.existsSync(this.jsonDb)) {
+        try {
+          data = JSON.parse(fs.readFileSync(this.jsonDb, 'utf8'));
+        } catch (e) {}
+      }
+      data[issueId] = questData;
+      try {
+        fs.writeFileSync(this.jsonDb, JSON.stringify(data, null, 2), 'utf8');
+      } catch (e) {
+        console.error('JSON write failed:', e.message);
+      }
+    } finally {
+      releaseLock();
+    }
+  }
+
+  acquireDbLock() {
+    const lockPath = this.jsonDb + '.lock';
+    while (true) {
+      try {
+        const fd = fs.openSync(lockPath, 'wx');
+        return () => {
+          try { fs.closeSync(fd); } catch (e) {}
+          try { fs.unlinkSync(lockPath); } catch (e) {}
+        };
+      } catch (err) {
+        if (err.code !== 'EEXIST') {
+          throw err;
+        }
+        // Drop locks abandoned by crashed writers so the DB cannot wedge.
+        try {
+          if (Date.now() - fs.statSync(lockPath).mtimeMs > 30000) {
+            fs.unlinkSync(lockPath);
+            continue;
+          }
+        } catch (e) {}
+        const start = Date.now();
+        while (Date.now() - start < 50) {}
+      }
     }
   }
 }
@@ -229,7 +260,7 @@ function runSync(args, db) {
   }
 
   try {
-    execSync(`gh issue comment ${args.issueId} --repo ${args.repoOwner}/${args.repoName} --body "${commentBody.replace(/"/g, '\\"')}"`, { stdio: 'pipe' });
+    execFileSync('gh', ['issue', 'comment', String(args.issueId), '--repo', `${args.repoOwner}/${args.repoName}`, '--body', commentBody], { stdio: 'pipe' });
     console.error('Successfully synced comment to GitHub.');
     quest.github_synced = true;
   } catch (e) {

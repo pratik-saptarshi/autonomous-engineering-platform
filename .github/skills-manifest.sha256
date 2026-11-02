@@ -45,7 +45,7 @@ f6bf2aa996c6e6f53fdd0708e18a0d16a56aed8322cca59fedbe3c0d2c75f06b  ./domain-model
 d09b0dd39ac5fc536046904b3e3ba8d63ad1cbd2aff6713f9da548df706c9c10  ./excalibur-quest/docs/implementation_plan.md
 4e8e480edefdb2c9bb07a1140b690dc99f0bd96bdb7646b4e3137ec86ffa3780  ./excalibur-quest/docs/walkthrough.md
 2c79683296757b2a7f39ad424b6af121c80d60e9bfc9a77982b57df6dfb2d503  ./excalibur-quest/references/arthurian_bead_notes.md
-8d4ef42fb286da18ad08699ac44d2711a6453c1a5d02808e205f8ff1afd65e04  ./excalibur-quest/scripts/quest_helper.js
+b651b8c946274037a6487420b96dcb9d9b12365041cd46cd6f2af069292cc287  ./excalibur-quest/scripts/quest_helper.js
 f38e8f2ddcf079f65493adc713c1fed78421dfaf5f4dbf6b3a6b2b1d95466e71  ./executing-plans/SKILL.md
 d0d4f2397c85a4426443ea955e699ef12568b41b408ec6122d4ec2433ee3a5f6  ./executing-plans/scripts/task-done
 f833693c8fce3700fc9f841562d80f8015cd40f652c168a3405ac3e46947a1fe  ./executing-plans/scripts/task-start
