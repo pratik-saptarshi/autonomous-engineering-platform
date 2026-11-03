@@ -1,0 +1,138 @@
+/**
+ * Fetcher that routes URLs to HTTP, browser, or file implementations and
+ * retries with a browser when an HTTP challenge is detected. Requires the
+ * resolved scraper configuration to align with entrypoint-provided settings.
+ */
+
+import type { AppConfig } from "../../utils/config";
+import { ChallengeError, HttpStatusError, TlsCertificateError } from "../../utils/errors";
+import { logger } from "../../utils/logger";
+import { BrowserFetcher } from "./BrowserFetcher";
+import { FileFetcher } from "./FileFetcher";
+import { HostBackoff } from "./HostBackoff";
+import { HttpFetcher } from "./HttpFetcher";
+import type { ManagedBrowser } from "./ManagedBrowser";
+import type { ContentFetcher, FetchOptions, RawContent } from "./types";
+
+/** Statuses anti-bot layers return that a real browser can often get past. */
+const ANTI_BOT_STATUS_CODES = new Set([403, 429]);
+
+/**
+ * AutoDetectFetcher automatically selects the appropriate fetcher based on URL type
+ * and handles fallbacks for challenge detection.
+ *
+ * This eliminates the need for consumers to manage multiple fetcher instances
+ * and implement fallback logic themselves.
+ */
+export class AutoDetectFetcher implements ContentFetcher {
+  private readonly httpFetcher: HttpFetcher;
+  private readonly browserFetcher: BrowserFetcher;
+  private readonly fileFetcher: FileFetcher;
+  /** Pauses a host that throttled a request, for the browser fallback too. */
+  private readonly hostBackoff = new HostBackoff();
+
+  /**
+   * @param scraperConfig - Scraper settings shared by all fetchers.
+   * @param managedBrowser - The browser for the browser fallback; pass one to
+   * share it with the HTML renderer.
+   */
+  constructor(scraperConfig: AppConfig["scraper"], managedBrowser?: ManagedBrowser) {
+    this.httpFetcher = new HttpFetcher(scraperConfig, this.hostBackoff);
+    this.browserFetcher = new BrowserFetcher(scraperConfig, managedBrowser);
+    this.fileFetcher = new FileFetcher(scraperConfig);
+  }
+
+  /**
+   * Classifies a fetch failure as one a real browser could plausibly get past.
+   *
+   * @param error The error the HTTP fetcher threw.
+   * @returns A reason to log, or null when the browser would not help.
+   */
+  private static browserFallbackReason(error: unknown): string | null {
+    if (error instanceof ChallengeError) {
+      return "Challenge detected";
+    }
+    if (error instanceof TlsCertificateError) {
+      return "TLS certificate validation failed";
+    }
+    // A 403/429 that wasn't recognized as a challenge is still usually an
+    // anti-bot block. Keyed off the response status, never the message text,
+    // which embeds the url and would match any url containing "403".
+    if (error instanceof HttpStatusError && ANTI_BOT_STATUS_CODES.has(error.statusCode)) {
+      return `Anti-bot block (HTTP ${error.statusCode})`;
+    }
+    return null;
+  }
+
+  /**
+   * Returns the URL whose response caused a fetch failure.
+   *
+   * @param error The error the HTTP fetcher threw.
+   * @returns The answering URL, or undefined when the error does not name one.
+   */
+  private static responseUrl(error: unknown): string | undefined {
+    if (error instanceof ChallengeError || error instanceof HttpStatusError) {
+      return error.responseUrl;
+    }
+    return undefined;
+  }
+
+  /**
+   * Check if this fetcher can handle the given source.
+   * Returns true for any URL that any of the underlying fetchers can handle.
+   */
+  canFetch(source: string): boolean {
+    return (
+      this.httpFetcher.canFetch(source) ||
+      this.browserFetcher.canFetch(source) ||
+      this.fileFetcher.canFetch(source)
+    );
+  }
+
+  /**
+   * Fetch content from the source, automatically selecting the appropriate fetcher
+   * and handling fallbacks when challenges are detected.
+   */
+  async fetch(source: string, options?: FetchOptions): Promise<RawContent> {
+    // For file:// URLs, use FileFetcher directly
+    if (this.fileFetcher.canFetch(source)) {
+      logger.debug(`Using FileFetcher for: ${source}`);
+      return this.fileFetcher.fetch(source, options);
+    }
+
+    // For HTTP(S) URLs, try HttpFetcher first, fallback to BrowserFetcher on
+    // a challenge or an anti-bot block
+    if (this.httpFetcher.canFetch(source)) {
+      try {
+        logger.debug(`Using HttpFetcher for: ${source}`);
+        return await this.httpFetcher.fetch(source, options);
+      } catch (error: unknown) {
+        const reason = AutoDetectFetcher.browserFallbackReason(error);
+        if (reason) {
+          logger.info(`🔄 ${reason} for ${source}, falling back to browser fetcher...`);
+          // A 429 paused the host; navigating at once would be throttled again.
+          // The browser follows the same redirects, so it also waits for the
+          // host that answered when a redirect led away from `source`.
+          for (const url of new Set([source, AutoDetectFetcher.responseUrl(error)])) {
+            if (url) await this.hostBackoff.wait(url, options?.signal);
+          }
+          return this.browserFetcher.fetch(source, options);
+        }
+        throw error;
+      }
+    }
+
+    // If we get here, no fetcher can handle this URL
+    throw new Error(`No suitable fetcher found for URL: ${source}`);
+  }
+
+  /**
+   * Close all underlying fetchers to prevent resource leaks.
+   */
+  async close(): Promise<void> {
+    await Promise.allSettled([
+      this.browserFetcher.close(),
+      // HttpFetcher and FileFetcher don't need explicit cleanup
+    ]);
+  }
+}

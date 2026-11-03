@@ -1,0 +1,269 @@
+# embedding-resolution Specification
+
+## Purpose
+Defines how the embedding model is resolved from configuration sources, how provider credentials are validated, and how vector dimensions are determined.
+
+## Requirements
+
+### Requirement: Model Specification Parsing
+The system SHALL resolve the provider of an embedding model specification by matching the segment preceding the first colon against the set of supported providers. The match SHALL be case-insensitive, and the resolved provider SHALL be its canonical lowercase form.
+
+When that segment names a supported provider, the system SHALL split on the first colon only, using the segment as the provider and the remainder as the model name. This ensures provider model identifiers containing colons (e.g. `aws:amazon.titan-embed-text-v2:0`) are handled correctly.
+
+In every other case — no colon present, or a leading segment that does not name a supported provider — the system SHALL use the `openai` provider and treat the entire specification as the model name. This ensures model names carrying a tag or quantization suffix (e.g. `nomic-embed-text:latest`, `second-state/jina-embeddings-v3-GGUF:Q4_K_M`) reach OpenAI-compatible endpoints intact rather than being misread as an unsupported provider and silently degraded to FTS-only mode.
+
+Every supported provider SHALL have a model-creation branch. The system SHALL NOT offer a provider prefix it cannot construct a client for.
+
+**Supported providers:** `openai`, `vertex`, `gemini`, `aws`, `microsoft`.
+
+**Note:** This list is normative, not descriptive — it determines which prefixes claim the provider slot, so editing it changes how existing configuration strings parse. Adding a provider SHALL be treated as potentially breaking for existing configurations: a model literally named `<new-provider>:<tag>` served by an OpenAI-compatible endpoint would begin resolving to the new provider instead of `openai`. Removing a provider is breaking in the same way, in reverse. Provider additions and removals SHALL be called out in release notes.
+
+**Code reference:** `src/store/embeddings/EmbeddingConfig.ts:24-69` (`SUPPORTED_PROVIDERS`, the `EmbeddingProvider` type derived from it, `splitModelSpec`), `src/store/embeddings/EmbeddingConfig.ts:408` (`parse`)
+
+#### Scenario: Model string without provider prefix
+- **WHEN** the model specification is `text-embedding-3-small` (no colon)
+- **THEN** the system SHALL use `openai` as the provider and `text-embedding-3-small` as the model name
+
+#### Scenario: Model string with provider prefix
+- **WHEN** the model specification is `gemini:embedding-001`
+- **THEN** the system SHALL use `gemini` as the provider and `embedding-001` as the model name
+
+#### Scenario: Model string with multiple colons
+- **WHEN** the model specification is `aws:amazon.titan-embed-text-v2:0`
+- **THEN** the system SHALL split on the first colon only, using `aws` as the provider and `amazon.titan-embed-text-v2:0` as the model name
+
+#### Scenario: Model name with a tag or quantization suffix
+- **WHEN** the model specification is `nomic-embed-text:latest`
+- **AND** `nomic-embed-text` does not name a supported provider
+- **THEN** the system SHALL use `openai` as the provider and `nomic-embed-text:latest` as the model name
+- **AND** credential validation SHALL apply the `openai` requirements rather than reporting an unsupported provider
+
+#### Scenario: Provider prefix in non-canonical case
+- **WHEN** the model specification is `OpenAI:text-embedding-3-small`
+- **THEN** the system SHALL use `openai` as the provider and `text-embedding-3-small` as the model name
+
+#### Scenario: Namespaced model name with a quantization suffix
+- **WHEN** the model specification is `second-state/jina-embeddings-v3-GGUF:Q4_K_M`
+- **THEN** the system SHALL use `openai` as the provider and `second-state/jina-embeddings-v3-GGUF:Q4_K_M` as the model name
+
+#### Scenario: Namespaced model name under an explicit provider prefix
+- **WHEN** the model specification is `openai:jeffh/intfloat-multilingual-e5-large-instruct:f16`
+- **THEN** the system SHALL use `openai` as the provider and `jeffh/intfloat-multilingual-e5-large-instruct:f16` as the model name
+
+#### Scenario: Unrecognized leading segment
+- **WHEN** the model specification is `unknown:model`
+- **THEN** the system SHALL use `openai` as the provider and `unknown:model` as the model name
+- **AND** the system SHALL NOT raise `UnsupportedProviderError`
+
+#### Scenario: Mistyped provider prefix with OpenAI credentials present
+- **WHEN** the model specification is `vertx:text-embedding-004`, mistyping `vertex`
+- **AND** `OPENAI_API_KEY` is set
+- **THEN** the system SHALL resolve the specification to the `openai` provider with model name `vertx:text-embedding-004`
+- **AND** the mistake SHALL surface as an error from the configured OpenAI-compatible endpoint rather than at startup
+
+#### Scenario: Withdrawn provider name
+- **WHEN** the model specification is `sagemaker:my-endpoint`
+- **AND** `sagemaker` is no longer a supported provider
+- **THEN** the system SHALL use `openai` as the provider and `sagemaker:my-endpoint` as the model name
+- **AND** the system SHALL NOT raise `UnsupportedProviderError`
+
+#### Scenario: Every supported provider constructs a client
+- **WHEN** a model specification names any provider in the supported-provider list
+- **AND** that provider's credential requirements are satisfied
+- **THEN** the system SHALL construct an embedding client for it
+- **AND** the system SHALL NOT raise `UnsupportedProviderError`
+
+### Requirement: Configuration Precedence
+The system SHALL resolve the embedding model from multiple configuration sources, merged in the following priority order (later sources override earlier ones):
+
+1. Built-in defaults (lowest priority)
+2. Configuration file (`config.yaml`, key `app.embeddingModel`)
+3. Environment variable (`DOCS_MCP_EMBEDDING_MODEL`)
+4. CLI flag (`--embedding-model`) (highest priority)
+
+**Code reference:** `src/utils/config.ts:396-410`
+
+#### Scenario: CLI flag overrides environment variable
+- **WHEN** `DOCS_MCP_EMBEDDING_MODEL` is set to `text-embedding-3-small`
+- **AND** the CLI flag `--embedding-model gemini:embedding-001` is provided
+- **THEN** the system SHALL use `gemini:embedding-001` as the embedding model
+
+#### Scenario: Environment variable overrides config file
+- **WHEN** `config.yaml` sets `app.embeddingModel` to `text-embedding-3-small`
+- **AND** `DOCS_MCP_EMBEDDING_MODEL` is set to `vertex:text-embedding-004`
+- **THEN** the system SHALL use `vertex:text-embedding-004` as the embedding model
+
+#### Scenario: Config file overrides defaults
+- **WHEN** no environment variable or CLI flag is set
+- **AND** `config.yaml` sets `app.embeddingModel` to `gemini:embedding-001`
+- **THEN** the system SHALL use `gemini:embedding-001` as the embedding model
+
+### Requirement: Default Model Fallback
+The system SHALL default to `text-embedding-3-small` via the built-in default configuration (`DEFAULT_CONFIG.app.embeddingModel`). This default applies unconditionally unless overridden by a higher-precedence source.
+
+When the embedding model has been explicitly cleared to a falsy value (e.g., set to an empty string in config or env) AND `OPENAI_API_KEY` is present in the environment, the system SHALL restore `text-embedding-3-small` as the model.
+
+When the resolved model's credentials are missing (e.g., the default `text-embedding-3-small` is set but no `OPENAI_API_KEY` exists), the system SHALL fall back to FTS-only mode via credential validation, not by clearing the model.
+
+**Code reference:** `src/utils/config.ts:36, 405-408`
+
+#### Scenario: Default model with OpenAI API key present
+- **WHEN** no embedding model override is specified in any configuration source
+- **AND** `OPENAI_API_KEY` is set
+- **THEN** the system SHALL use the built-in default `text-embedding-3-small` with the `openai` provider
+
+#### Scenario: Default model without API key
+- **WHEN** no embedding model override is specified in any configuration source
+- **AND** `OPENAI_API_KEY` is not set
+- **THEN** the system SHALL resolve the model to `text-embedding-3-small` (built-in default)
+- **AND** credential validation SHALL fail for the `openai` provider
+- **AND** the system SHALL fall back to FTS-only mode
+
+#### Scenario: Model explicitly cleared with API key present
+- **WHEN** the embedding model is explicitly set to an empty string (e.g., via env var or config)
+- **AND** `OPENAI_API_KEY` is set
+- **THEN** the system SHALL restore `text-embedding-3-small` as the model
+
+### Requirement: Credential Validation
+The system SHALL validate that the required provider-specific credentials are available before attempting to create the embedding model. Each provider has specific required environment variables:
+
+| Provider | Required Variables |
+|----------|-------------------|
+| `openai` | `OPENAI_API_KEY` |
+| `vertex` | `GOOGLE_APPLICATION_CREDENTIALS` |
+| `gemini` | `GOOGLE_API_KEY` |
+| `aws` | (`BEDROCK_AWS_REGION` or `AWS_REGION`) and (`AWS_PROFILE` or `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`) |
+| `microsoft` | `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_API_INSTANCE_NAME`, `AZURE_OPENAI_API_DEPLOYMENT_NAME`, `AZURE_OPENAI_API_VERSION` |
+
+When credentials are missing, the system SHALL log a warning and fall back to FTS-only mode rather than raising a hard error.
+
+**Code reference:** `src/store/embeddings/EmbeddingFactory.ts:59-99`
+
+#### Scenario: Valid credentials for selected provider
+- **WHEN** the embedding model is `gemini:embedding-001`
+- **AND** `GOOGLE_API_KEY` is set
+- **THEN** the system SHALL proceed with embedding model initialization
+
+#### Scenario: Missing credentials for selected provider
+- **WHEN** the embedding model is `gemini:embedding-001`
+- **AND** `GOOGLE_API_KEY` is not set
+- **THEN** the system SHALL log a warning indicating missing credentials
+- **AND** the system SHALL fall back to FTS-only mode
+
+#### Scenario: OpenAI with custom endpoint
+- **WHEN** the embedding model uses the `openai` provider
+- **AND** `OPENAI_API_KEY` is set
+- **AND** `OPENAI_API_BASE` is set to a custom URL (e.g., Ollama or LM Studio)
+- **THEN** the system SHALL use the custom endpoint for embedding requests
+
+### Requirement: Environment Value Normalization
+The system SHALL normalize environment variable values by stripping surrounding quotes (both single and double) and trimming leading/trailing whitespace. This prevents common configuration errors where shell quoting artifacts leak into the value.
+
+**Code reference:** `src/utils/env.ts:5-14`
+
+#### Scenario: Double-quoted environment value
+- **WHEN** `DOCS_MCP_EMBEDDING_MODEL` is set to `"text-embedding-3-small"` (with literal quotes)
+- **THEN** the system SHALL normalize the value to `text-embedding-3-small`
+
+#### Scenario: Single-quoted environment value
+- **WHEN** `DOCS_MCP_EMBEDDING_MODEL` is set to `'gemini:embedding-001'` (with literal single quotes)
+- **THEN** the system SHALL normalize the value to `gemini:embedding-001`
+
+#### Scenario: Value with surrounding whitespace
+- **WHEN** `DOCS_MCP_EMBEDDING_MODEL` is set to `  text-embedding-3-small  ` (with spaces)
+- **THEN** the system SHALL trim the value to `text-embedding-3-small`
+
+### Requirement: Known Dimensions Lookup
+The system SHALL maintain a lookup table mapping well-known fixed-output embedding model names to their vector dimensions. The lookup SHALL be case-insensitive and SHALL support common provider aliases when they unambiguously identify the same fixed-output model. When a model is found in the lookup table and is not marked as runtime-detected, the system SHALL use the known dimensions directly without making an API call.
+
+The system SHALL treat known variable-dimension models as runtime-detected models rather than forcing a single table value. Variable-dimension models include models that advertise multiple valid output dimensions, such as Matryoshka/resizable models with selectable projection heads.
+
+When a model is not found in the lookup table or is marked as variable-dimension, the system SHALL first check persisted embedding metadata. If the stored `embedding_model` exactly matches the current configured model and the stored `embedding_dimension` is present, the system SHALL use the stored dimension without making a provider probe request. If no matching stored dimension exists, the system SHALL generate a test embedding using the string `"test"` to detect the model's output dimensions. This detection SHALL have a configurable timeout (default 30 seconds, `embeddings.initTimeoutMs`). The detected dimensions SHALL be cached for the duration of the session and persisted after successful embedding initialization.
+
+**Code reference:** `src/store/embeddings/EmbeddingConfig.ts:70-260`, `src/store/DocumentStore.ts:508-537`
+
+#### Scenario: Well-known fixed-output model dimensions
+- **WHEN** the embedding model is `text-embedding-3-small`
+- **THEN** the system SHALL resolve the dimensions to 1536 without making any API call
+
+#### Scenario: Known variable-dimension model triggers runtime detection
+- **WHEN** the embedding model is `openai:NovaSearch/stella_en_400M_v5`
+- **AND** no stored embedding metadata exists for that model
+- **AND** the provider returns a 6144-dimensional vector for the test input
+- **THEN** the system SHALL detect 6144 as the model's effective dimension
+- **AND** the system SHALL NOT use a hardcoded known-dimension table value for that model
+
+#### Scenario: Known variable-dimension model reuses stored dimension
+- **WHEN** the embedding model is `openai:NovaSearch/stella_en_400M_v5`
+- **AND** stored metadata contains `embedding_model = "openai:NovaSearch/stella_en_400M_v5"`
+- **AND** stored metadata contains `embedding_dimension = "6144"`
+- **THEN** the system SHALL resolve the effective dimension to 6144
+- **AND** the system SHALL NOT generate a test embedding during startup
+
+#### Scenario: Unknown model dimension detection
+- **WHEN** the embedding model is not in the known dimensions lookup table
+- **AND** no stored embedding metadata exists for that model
+- **THEN** the system SHALL generate a test embedding of `"test"` to detect the output dimensions
+- **AND** the system SHALL cache the detected dimensions for the session
+- **AND** the system SHALL persist the detected dimensions after successful initialization
+
+#### Scenario: Unknown model reuses stored dimension
+- **WHEN** the embedding model is `openai:custom-embedding-v1`
+- **AND** stored metadata contains `embedding_model = "openai:custom-embedding-v1"`
+- **AND** stored metadata contains `embedding_dimension = "1024"`
+- **THEN** the system SHALL resolve the effective dimension to 1024
+- **AND** the system SHALL NOT generate a test embedding during startup
+
+#### Scenario: Dimension detection timeout
+- **WHEN** the embedding model is not in the known dimensions lookup table
+- **AND** no stored embedding metadata exists for that model
+- **AND** the test embedding request exceeds the initialization timeout
+- **THEN** the system SHALL fail embedding initialization
+- **AND** the system SHALL fall back to FTS-only mode
+
+### Requirement: Embedding Identity Persistence
+After successful embedding initialization, the system SHALL persist the resolved embedding model identity to the database `metadata` table. This enables detection of model changes on subsequent startups. The persisted values SHALL be the model specification string as provided in configuration (e.g., `openai:text-embedding-3-small` or `gemini:embedding-001`) and the resolved effective vector dimension.
+
+The persistence SHALL occur as the final step of `initializeEmbeddings()`, after dimension detection and validation have succeeded. If embedding initialization fails or is skipped (FTS-only mode), no metadata SHALL be written.
+
+#### Scenario: Model identity persisted after successful init
+- **WHEN** the embedding model `gemini:embedding-001` initializes successfully with resolved dimension 768
+- **THEN** the system SHALL store `embedding_model = "gemini:embedding-001"` in the `metadata` table
+- **AND** the system SHALL store `embedding_dimension = "768"` in the `metadata` table
+
+#### Scenario: Auto-detected dimension persisted after successful init
+- **WHEN** the embedding model `openai:custom-embedding-v1` returns a 1024-dimensional test embedding
+- **THEN** the system SHALL store `embedding_model = "openai:custom-embedding-v1"` in the `metadata` table
+- **AND** the system SHALL store `embedding_dimension = "1024"` in the `metadata` table
+
+#### Scenario: Model identity not persisted on init failure
+- **WHEN** the embedding model fails to initialize (e.g., network timeout)
+- **THEN** no embedding metadata SHALL be written to the `metadata` table
+- **AND** any previously stored metadata SHALL remain unchanged
+
+### Requirement: Startup Model Mismatch Detection
+During initialization, after migrations are applied, the system SHALL read the stored `embedding_model` and `embedding_dimension` from the `metadata` table. If the stored model matches the current model and no explicit vector dimension override changed, the system SHALL treat the stored dimension as the current resolved effective dimension without probing the provider. If the current model specification or explicitly configured dimension differs from stored metadata, the system SHALL throw a structured `EmbeddingModelChangedError` before proceeding with vector table creation or prepared statement initialization.
+
+This check SHALL occur only when both conditions are true:
+1. The `metadata` table contains an `embedding_model` key (not a first-run scenario)
+2. The current configuration specifies an embedding model (not FTS-only mode)
+
+#### Scenario: Mismatch detected before vec table creation
+- **WHEN** the stored model is `openai:text-embedding-3-small` (1536d)
+- **AND** the configured model is `gemini:embedding-001` (resolved 768d)
+- **THEN** the system SHALL throw `EmbeddingModelChangedError` before creating/modifying the `documents_vec` table
+- **AND** the vector table SHALL remain in its previous state until the change is confirmed or rejected
+
+#### Scenario: Auto-detected dimension matches metadata
+- **WHEN** the stored model is `openai:custom-embedding-v1`
+- **AND** the stored dimension is `"1024"`
+- **AND** the current configured model is `openai:custom-embedding-v1`
+- **THEN** startup SHALL proceed normally without any prompt or error
+- **AND** the system SHALL NOT generate a test embedding during startup
+
+#### Scenario: FTS-only mode skips mismatch check
+- **WHEN** the configured embedding model is empty or credentials are missing
+- **AND** the stored model is `openai:text-embedding-3-small`
+- **THEN** the system SHALL NOT throw an error
+- **AND** the system SHALL proceed in FTS-only mode
+- **AND** the stored metadata SHALL remain unchanged

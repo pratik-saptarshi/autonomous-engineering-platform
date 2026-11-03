@@ -1,0 +1,547 @@
+import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
+import matter from "gray-matter";
+import remarkGfm from "remark-gfm";
+import remarkHtml from "remark-html";
+import remarkParse from "remark-parse";
+import TurndownService from "turndown";
+import { unified } from "unified";
+import { createJSDOM } from "../utils/dom";
+import { logger } from "../utils/logger";
+import { fullTrim } from "../utils/string";
+import { ContentSplitterError, MinimumChunkSizeError } from "./errors";
+import { CodeContentSplitter } from "./splitters/CodeContentSplitter";
+import { ListContentSplitter } from "./splitters/ListContentSplitter";
+import { TableContentSplitter } from "./splitters/TableContentSplitter";
+import { TextContentSplitter } from "./splitters/TextContentSplitter";
+import type { Chunk, DocumentSplitter, SectionContentType } from "./types";
+
+/**
+ * Removes an explicit anchor annotation from the end of a heading.
+ *
+ * Markdown dialects let authors pin a heading's id rather than let it be
+ * derived. MDX writes it as a comment and several Markdown extensions use
+ * `{#adding-styles}`. Neither is prose — both are instructions to the renderer
+ * — yet they survive into the text we index, landing in the embedded content
+ * and in the section path shown to readers.
+ *
+ * The MDX form reaches here already chewed: this runs after markdown has been
+ * converted to HTML, and the conversion consumes the comment's asterisks as
+ * emphasis markers, so `{/*adding-styles*\/}` arrives as `{/adding-styles/}`.
+ * Both spellings are matched, since which one appears depends on the converter.
+ *
+ * Anchored to the end of the string, so a heading that legitimately contains
+ * braces earlier on — `Use {count} in JSX` — keeps them.
+ *
+ * @param heading The heading text as rendered.
+ * @returns The heading without a trailing anchor annotation.
+ */
+function stripHeadingAnchors(heading: string): string {
+  return heading
+    .replace(/\s*\{\/\*?[\s\S]*?\*?\/\}\s*$/, "")
+    .replace(/\s*\{#[^}\s]*\}\s*$/, "")
+    .trimEnd();
+}
+
+/**
+ * Represents a section of content within a document,
+ * typically defined by a heading
+ */
+interface DocumentSection {
+  level: number;
+  path: string[]; // Full path including parent headings
+  content: {
+    type: SectionContentType;
+    text: string;
+  }[];
+}
+
+/**
+ * Splits markdown documents into semantic chunks while preserving
+ * structure and distinguishing between different content types.
+ *
+ * The splitting process happens in two steps:
+ * 1. Split document into sections based on headings (H1-H3 only)
+ * 2. Split section content into smaller chunks based on preferredChunkSize
+ */
+export class SemanticMarkdownSplitter implements DocumentSplitter {
+  private turndownService: TurndownService;
+  public textSplitter: TextContentSplitter;
+  public codeSplitter: CodeContentSplitter;
+  public tableSplitter: TableContentSplitter;
+  public listSplitter: ListContentSplitter;
+
+  constructor(
+    private preferredChunkSize: number,
+    private maxChunkSize: number,
+  ) {
+    this.turndownService = new TurndownService({
+      headingStyle: "atx",
+      hr: "---",
+      bulletListMarker: "-",
+      codeBlockStyle: "fenced",
+      emDelimiter: "_",
+      strongDelimiter: "**",
+      linkStyle: "inlined",
+    });
+
+    // Add table rule to preserve markdown table format
+    this.turndownService.addRule("table", {
+      filter: ["table"],
+      replacement: (_content, node) => {
+        const table = node as HTMLTableElement;
+        const headers = Array.from(table.querySelectorAll("th")).map(
+          (th) => th.textContent?.trim() || "",
+        );
+        const rows = Array.from(table.querySelectorAll("tr")).filter(
+          (tr) => !tr.querySelector("th"),
+        );
+
+        if (headers.length === 0 && rows.length === 0) return "";
+
+        let markdown = "\n";
+        if (headers.length > 0) {
+          markdown += `| ${headers.join(" | ")} |\n`;
+          markdown += `|${headers.map(() => "---").join("|")}|\n`;
+        }
+
+        for (const row of rows) {
+          const cells = Array.from(row.querySelectorAll("td")).map(
+            (td) => td.textContent?.trim() || "",
+          );
+          markdown += `| ${cells.join(" | ")} |\n`;
+        }
+
+        return markdown;
+      },
+    });
+
+    // Text splitter uses preferred chunk size (keeps paragraphs together if possible)
+    this.textSplitter = new TextContentSplitter({
+      chunkSize: this.preferredChunkSize,
+    });
+    // Code/table splitters use the hard chunk size (avoid splitting unless necessary)
+    this.codeSplitter = new CodeContentSplitter({
+      chunkSize: this.maxChunkSize,
+    });
+    this.tableSplitter = new TableContentSplitter({
+      chunkSize: this.maxChunkSize,
+    });
+    this.listSplitter = new ListContentSplitter({
+      chunkSize: this.preferredChunkSize, // Lists prefer to stay together, so use preferred size
+    });
+  }
+
+  /**
+   * Main entry point for splitting markdown content
+   */
+  async splitText(markdown: string, _contentType?: string): Promise<Chunk[]> {
+    // Note: JSON content is now handled by dedicated JsonDocumentSplitter in JsonPipeline
+    // This splitter focuses on markdown, HTML, and plain text content
+
+    let contentToProcess = markdown;
+    let frontmatterBlock: string | null = null;
+
+    try {
+      // Check for frontmatter
+      const file = matter(markdown);
+      if (
+        SemanticMarkdownSplitter.hasClosedFrontmatterBlock(markdown) &&
+        SemanticMarkdownSplitter.hasFrontmatterData(file.data)
+      ) {
+        frontmatterBlock = SemanticMarkdownSplitter.extractRawFrontmatter(markdown, file);
+        contentToProcess = file.content;
+      }
+    } catch (err) {
+      // Log warning but continue with original content if parsing fails
+      logger.warn(
+        `Failed to parse frontmatter in splitter: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    // For markdown, HTML, or plain text, process normally
+    const html = await this.markdownToHtml(contentToProcess);
+    const dom = await this.parseHtml(html);
+    const sections = await this.splitIntoSections(dom);
+    const chunks = await this.splitSectionContent(sections);
+
+    if (frontmatterBlock) {
+      // Size-bounded like every other chunk. It is prepended after splitting,
+      // so nothing else would bound it, and a page carrying a long `summary:`
+      // or a generated field list produced a single chunk many times the limit.
+      //
+      // A block that cannot be divided — one unbroken token longer than the
+      // limit, such as an embedded key or data URI — keeps its oversized chunk
+      // rather than failing the page. That is the behaviour this replaces, so
+      // the worst case is unchanged and the common case is now bounded.
+      let parts: string[];
+      try {
+        parts = await this.textSplitter.split(frontmatterBlock);
+      } catch (err) {
+        logger.warn(
+          `Keeping an oversized frontmatter chunk; it could not be split: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+        parts = [frontmatterBlock];
+      }
+      chunks.unshift(
+        ...parts.map(
+          (content): Chunk => ({
+            types: ["frontmatter"],
+            content,
+            section: { level: 0, path: [] },
+          }),
+        ),
+      );
+    }
+
+    return chunks;
+  }
+
+  /**
+   * Reports whether the document actually opens with a closed frontmatter block.
+   *
+   * gray-matter has no delimiter to stop at when a document opens with a
+   * thematic break and never closes it, so it parses the entire body as YAML.
+   * When that body happens to be a valid mapping — a page whose first line is
+   * `---` followed by `Replacement: use the createClient helper`, or any
+   * `Key: value` prose — the parse looks exactly like real frontmatter, and the
+   * whole document is filed as one frontmatter chunk with no headings and no
+   * sections. Turndown renders `<hr>` as `---`, so HTML pages reach this too.
+   *
+   * Checked against the source rather than the parse, because only the source
+   * says whether a closing delimiter was ever there.
+   *
+   * @param markdown The original markdown passed to gray-matter.
+   * @returns True when a `---` delimited block opens the document and closes.
+   */
+  private static hasClosedFrontmatterBlock(markdown: string): boolean {
+    return /^\uFEFF?---[^\S\n]*\r?\n[\s\S]*?\r?\n---[^\S\n]*(\r?\n|$)/.test(markdown);
+  }
+
+  /**
+   * Reports whether a gray-matter parse produced real frontmatter.
+   *
+   * gray-matter hands back whatever YAML parsed to, which is not necessarily a mapping.
+   * A document opening with a thematic break (`---`) has its entire body parsed as YAML
+   * and can yield a bare string or array, and `Object.keys` on those returns character or
+   * element indices — so a naive emptiness check treats the whole document as frontmatter
+   * and discards its heading structure. Only a plain object with at least one key counts.
+   *
+   * @param data The `data` property of a gray-matter result.
+   * @returns True when the parse yielded a non-empty mapping.
+   */
+  private static hasFrontmatterData(data: unknown): data is Record<string, unknown> {
+    return (
+      typeof data === "object" &&
+      data !== null &&
+      !Array.isArray(data) &&
+      Object.keys(data).length > 0
+    );
+  }
+
+  /**
+   * Recovers the raw frontmatter block, including its delimiters, from the original markdown.
+   *
+   * gray-matter exposes the raw block as `file.matter`, but that property is non-enumerable
+   * and the library caches parsed results: a repeated parse of the same string returns a
+   * shallow `Object.assign({}, cached)` copy, which drops it. Our pipeline parses the same
+   * content more than once (see MarkdownMetadataExtractorMiddleware), so `file.matter` is
+   * `undefined` here in practice. `file.content` is the input with the frontmatter block
+   * stripped from the front, so the block is recovered by slicing that suffix off instead,
+   * which also preserves the author's original formatting and YAML comments.
+   *
+   * @param markdown The original markdown passed to gray-matter.
+   * @param file The parsed gray-matter result for that markdown.
+   * @returns The frontmatter block with delimiters, e.g. `---\ntitle: Quick Start\n---`.
+   */
+  private static extractRawFrontmatter(
+    markdown: string,
+    file: matter.GrayMatterFile<string>,
+  ): string {
+    if (markdown.endsWith(file.content)) {
+      const block = markdown.slice(0, markdown.length - file.content.length).trimEnd();
+      if (block.length > 0) {
+        return block;
+      }
+    }
+    // Defensive fallback: re-serialize the parsed data if the content is not a suffix.
+    return matter.stringify("", file.data).trimEnd();
+  }
+
+  /**
+   * Step 1: Split document into sections based on H1-H6 headings,
+   * as well as code blocks, tables, lists, blockquotes, and media.
+   */
+  private async splitIntoSections(dom: Document): Promise<DocumentSection[]> {
+    const body = dom.querySelector("body");
+    if (!body) {
+      throw new Error("Invalid HTML structure: no body element found");
+    }
+
+    let currentSection = this.createRootSection();
+    const sections: DocumentSection[] = [];
+    const stack: DocumentSection[] = [currentSection];
+
+    // Process each child of the body
+    for (const element of Array.from(body.children)) {
+      const headingMatch = element.tagName.match(/H([1-6])/);
+
+      if (headingMatch) {
+        // Create new section for H1-H6 heading
+        const level = Number.parseInt(headingMatch[1], 10);
+        const title = stripHeadingAnchors(fullTrim(element.textContent || ""));
+
+        // Pop sections from stack until we find the parent level
+        while (stack.length > 1 && stack[stack.length - 1].level >= level) {
+          stack.pop();
+        }
+
+        // Start new section with the header
+        currentSection = {
+          level,
+          path: [
+            ...stack.slice(1).reduce((acc: string[], s) => {
+              const lastPath = s.path[s.path.length - 1];
+              if (lastPath) acc.push(lastPath);
+              return acc;
+            }, []),
+            title,
+          ],
+          content: [
+            {
+              type: "heading",
+              text: `${"#".repeat(level)} ${title}`,
+            },
+          ],
+        };
+
+        sections.push(currentSection);
+        stack.push(currentSection);
+      } else if (element.tagName === "PRE") {
+        // Code blocks are kept as separate chunks
+        const code = element.querySelector("code");
+        const language = code?.className.replace("language-", "") || "";
+        const content = code?.textContent || element.textContent || "";
+        const markdown = `${"```"}${language}\n${content}\n${"```"}`;
+
+        currentSection = {
+          level: currentSection.level,
+          path: currentSection.path,
+          content: [
+            {
+              type: "code",
+              text: markdown,
+            },
+          ],
+        } satisfies DocumentSection;
+        sections.push(currentSection);
+      } else if (element.tagName === "TABLE") {
+        this.addSectionFromElement(element, "table", currentSection, sections);
+      } else if (element.tagName === "UL" || element.tagName === "OL") {
+        this.addSectionFromElement(element, "list", currentSection, sections);
+      } else if (element.tagName === "BLOCKQUOTE") {
+        this.addSectionFromElement(element, "blockquote", currentSection, sections);
+      } else if (element.tagName === "IMG") {
+        this.addSectionFromElement(element, "media", currentSection, sections);
+      } else if (
+        element.tagName === "P" &&
+        element.children.length === 1 &&
+        element.children[0].tagName === "IMG" &&
+        (!element.textContent || element.textContent.trim() === "")
+      ) {
+        // Handle images wrapped in paragraphs
+        this.addSectionFromElement(
+          element.children[0],
+          "media",
+          currentSection,
+          sections,
+        );
+      } else if (element.tagName === "HR") {
+      } else {
+        const markdown = fullTrim(this.turndownService.turndown(element.innerHTML));
+        if (markdown) {
+          // Create a new section for the text content
+          currentSection = {
+            level: currentSection.level,
+            path: currentSection.path,
+            content: [
+              {
+                type: "text",
+                text: markdown,
+              },
+            ],
+          } satisfies DocumentSection;
+          sections.push(currentSection);
+        }
+      }
+    }
+
+    return sections;
+  }
+
+  /**
+   * Helper to create a new section from a specific DOM element type
+   */
+  private addSectionFromElement(
+    element: Element,
+    type: SectionContentType,
+    currentSection: DocumentSection,
+    sections: DocumentSection[],
+  ): void {
+    const markdown = fullTrim(this.turndownService.turndown(element.outerHTML));
+    const newSection = {
+      level: currentSection.level,
+      path: currentSection.path,
+      content: [
+        {
+          type,
+          text: markdown,
+        },
+      ],
+    } satisfies DocumentSection;
+    sections.push(newSection);
+  }
+
+  /**
+   * Step 2: Split section content into smaller chunks
+   */
+  private async splitSectionContent(sections: DocumentSection[]): Promise<Chunk[]> {
+    const chunks: Chunk[] = [];
+
+    for (const section of sections) {
+      for (const content of section.content) {
+        let splitContent: string[] = [];
+
+        try {
+          switch (content.type) {
+            case "heading":
+            case "text":
+            case "blockquote":
+            case "media": {
+              // Trim markdown content before splitting
+              splitContent = await this.textSplitter.split(fullTrim(content.text));
+              break;
+            }
+            case "code": {
+              splitContent = await this.codeSplitter.split(content.text);
+              break;
+            }
+            case "table": {
+              splitContent = await this.tableSplitter.split(content.text);
+              break;
+            }
+            case "list": {
+              splitContent = await this.listSplitter.split(content.text);
+              break;
+            }
+            default: {
+              // Fallback for any unknown type
+              splitContent = await this.textSplitter.split(fullTrim(content.text));
+            }
+          }
+        } catch (err) {
+          // If it's a MinimumChunkSizeError, use RecursiveCharacterTextSplitter directly
+          if (err instanceof MinimumChunkSizeError) {
+            logger.warn(
+              `⚠ Cannot split ${content.type} chunk normally, using RecursiveCharacterTextSplitter: ${err.message}`,
+            );
+
+            // Create a RecursiveCharacterTextSplitter with aggressive settings to ensure splitting
+            const splitter = new RecursiveCharacterTextSplitter({
+              chunkSize: this.maxChunkSize,
+              chunkOverlap: Math.min(20, Math.floor(this.maxChunkSize * 0.1)),
+              // Use more aggressive separators including empty string as last resort
+              separators: [
+                "\n\n",
+                "\n",
+                " ",
+                "\t",
+                ".",
+                ",",
+                ";",
+                ":",
+                "-",
+                "(",
+                ")",
+                "[",
+                "]",
+                "{",
+                "}",
+                "",
+              ],
+            });
+
+            const chunks = await splitter.splitText(content.text);
+            if (chunks.length === 0) {
+              // If still no chunks, use the most extreme approach: just truncate
+              splitContent = [content.text.substring(0, this.maxChunkSize)];
+            } else {
+              splitContent = chunks;
+            }
+          } else {
+            // Convert other error message to string, handling non-Error objects
+            const errMessage = err instanceof Error ? err.message : String(err);
+            throw new ContentSplitterError(
+              `Failed to split ${content.type} content: ${errMessage}`,
+            );
+          }
+        }
+
+        // Create chunks from split content
+        chunks.push(
+          ...splitContent.map(
+            (text): Chunk => ({
+              types: [content.type],
+              content: text,
+              section: {
+                level: section.level,
+                path: section.path,
+              },
+            }),
+          ),
+        );
+      }
+    }
+
+    return chunks;
+  }
+
+  /**
+   * Helper to create the root section
+   */
+  private createRootSection(): DocumentSection {
+    return {
+      level: 0,
+      path: [],
+      content: [],
+    };
+  }
+
+  /**
+   * Convert markdown to HTML using remark
+   */
+  private async markdownToHtml(markdown: string): Promise<string> {
+    const html = await unified()
+      .use(remarkParse)
+      .use(remarkGfm)
+      .use(remarkHtml)
+      .process(markdown);
+
+    return `<!DOCTYPE html>
+      <html>
+        <body>
+          ${String(html)}
+        </body>
+      </html>`;
+  }
+
+  /**
+   * Parse HTML
+   */
+  private async parseHtml(html: string): Promise<Document> {
+    // Use createJSDOM which includes default options like virtualConsole
+    const { window } = createJSDOM(html);
+    return window.document;
+  }
+}
