@@ -65,6 +65,19 @@ separated by `|` are satisfied by any one of them. An entry written as a
 bracketed token (a severity tag, a classification label) matches that
 literal token in the file's labeled content.
 
+**Vocabulary entries.** An entry marked `(vocabulary)` in its description
+names the label set for a per-item classification, not a set of outcomes
+that must all occur: the entry is present when at least one label from
+the set appears, and the gate fails if an item is classified with a
+bracketed label outside the set. A file whose items all carry the same
+label from the set is complete. Classifications are the labels the
+report itself assigns to its items — for
+`phase_10_claim_verification.md`, the labels in the verification table's
+Verdict column (in a report without that table, the bracketed label
+attached to each claim). Bracketed tokens quoted from other phases'
+output or from the material under review are not classifications and
+count neither way.
+
 **Coverage.** These lists cover exactly the file types the gate's table
 names. Phase 5 debate files for rounds 2 and 3 (`_phase_5_round2.md`,
 `_phase_5_round3.md`) and the Phase 6 round summaries
@@ -96,11 +109,7 @@ names. Phase 5 debate files for rounds 2 and 3 (`_phase_5_round2.md`,
 - `Missed|Overlooked` — what the panel missed: overlooked details, edge cases, constants, code paths
 
 ### `phase_10_claim_verification.md`
-- `[VERIFIED]` — claims verified against source
-- `[INACCURATE]` — claims classified inaccurate
-- `[MISATTRIBUTED]` — claims classified misattributed
-- `[HALLUCINATED]` — claims classified hallucinated
-- `[UNVERIFIABLE]` — claims classified unverifiable
+- `[VERIFIED]|[INACCURATE]|[MISATTRIBUTED]|[HALLUCINATED]|[UNVERIFIABLE]` (vocabulary) — the classification of each claim: exactly one label from this set per claim (SKILL.md: "Classifies each as [VERIFIED], [INACCURATE], [MISATTRIBUTED], [HALLUCINATED], or [UNVERIFIABLE]"); any one label satisfies this entry, and a report whose claims all carry the same label is complete
 
 ### `phase_11_severity_verification.md`
 - `Severity table` — the severity verification table (standard or extended)
