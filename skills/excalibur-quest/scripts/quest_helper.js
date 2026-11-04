@@ -67,12 +67,48 @@ class QuestDB {
     return null;
   }
 
+  _writeQuestToDolt(issueId, questData) {
+    execFileSync('dolt', ['sql', '-q', 'CREATE TABLE IF NOT EXISTS quests (issue_id VARCHAR(50) PRIMARY KEY, data TEXT)'], { stdio: 'ignore' });
+    const escapedData = JSON.stringify(questData).replace(/'/g, "''");
+    execFileSync('dolt', ['sql', '-q', `REPLACE INTO quests (issue_id, data) VALUES ('${issueId}', '${escapedData}')`], { stdio: 'ignore' });
+  }
+
+  // Rewrites the JSON store with questData under issueId. The caller
+  // must hold the DB lock: the file is rewritten wholesale, so the
+  // read-modify-write has to be atomic against other writers.
+  _writeQuestToJson(issueId, questData) {
+    let data = {};
+    if (fs.existsSync(this.jsonDb)) {
+      try {
+        data = JSON.parse(fs.readFileSync(this.jsonDb, 'utf8'));
+      } catch (e) {}
+    }
+    data[issueId] = questData;
+    try {
+      fs.writeFileSync(this.jsonDb, JSON.stringify(data, null, 2), 'utf8');
+    } catch (e) {
+      console.error('JSON write failed:', e.message);
+    }
+  }
+
+  // Backend write with no lock handling of its own; the caller is
+  // responsible for holding the DB lock (see updateQuest).
+  _storeQuest(issueId, questData) {
+    if (this.useDolt) {
+      try {
+        this._writeQuestToDolt(issueId, questData);
+        return;
+      } catch (e) {
+        console.error('Dolt write failed, falling back to JSON:', e.message);
+      }
+    }
+    this._writeQuestToJson(issueId, questData);
+  }
+
   saveQuest(issueId, questData) {
     if (this.useDolt) {
       try {
-        execFileSync('dolt', ['sql', '-q', 'CREATE TABLE IF NOT EXISTS quests (issue_id VARCHAR(50) PRIMARY KEY, data TEXT)'], { stdio: 'ignore' });
-        const escapedData = JSON.stringify(questData).replace(/'/g, "''");
-        execFileSync('dolt', ['sql', '-q', `REPLACE INTO quests (issue_id, data) VALUES ('${issueId}', '${escapedData}')`], { stdio: 'ignore' });
+        this._writeQuestToDolt(issueId, questData);
         return;
       } catch (e) {
         console.error('Dolt write failed, falling back to JSON:', e.message);
@@ -81,18 +117,43 @@ class QuestDB {
 
     const releaseLock = this.acquireDbLock();
     try {
-      let data = {};
-      if (fs.existsSync(this.jsonDb)) {
-        try {
-          data = JSON.parse(fs.readFileSync(this.jsonDb, 'utf8'));
-        } catch (e) {}
+      this._writeQuestToJson(issueId, questData);
+    } finally {
+      releaseLock();
+    }
+  }
+
+  // Atomically applies `mutator` to the freshest stored quest and
+  // persists the result. An operation whose work spans a slow step
+  // between load and save (sync's GitHub request) must mutate through
+  // here: saving the snapshot it loaded before that step would
+  // silently overwrite a concurrent update (e.g. a close that
+  // completed the quest in the meantime). The mutator receives the
+  // current stored quest and returns the quest to store, or null to
+  // abort the write. Returns the stored quest, the unmodified current
+  // quest when the mutator aborts, or null when no quest is stored
+  // for issueId.
+  //
+  // The DB lock is held only for this load-mutate-store step — never
+  // across a network call — and serializes the step against every
+  // other updateQuest and against saveQuest's JSON writes, on both
+  // backends. It is the same lock, taken in the same seat-then-store
+  // order as everywhere else in this file, so no new lock ordering
+  // is introduced; _storeQuest never re-acquires it, so the spin
+  // lock cannot self-deadlock here.
+  updateQuest(issueId, mutator) {
+    const releaseLock = this.acquireDbLock();
+    try {
+      const current = this.loadQuest(issueId);
+      if (!current) {
+        return null;
       }
-      data[issueId] = questData;
-      try {
-        fs.writeFileSync(this.jsonDb, JSON.stringify(data, null, 2), 'utf8');
-      } catch (e) {
-        console.error('JSON write failed:', e.message);
+      const updated = mutator(current);
+      if (!updated) {
+        return current;
       }
+      this._storeQuest(issueId, updated);
+      return updated;
     } finally {
       releaseLock();
     }
@@ -314,17 +375,45 @@ function runSync(args, db) {
     commentBody += `- ${statusBox} **${b.id}**: ${b.title} (${b.severity})\n`;
   }
 
+  let synced;
   try {
     execFileSync('gh', ['issue', 'comment', String(args.issueId), '--repo', `${args.repoOwner}/${args.repoName}`, '--body', commentBody], { stdio: 'pipe' });
     console.error('Successfully synced comment to GitHub.');
-    quest.github_synced = true;
+    synced = true;
   } catch (e) {
     console.error('Warning: gh CLI sync failed (continuing locally):', e.message);
-    quest.github_synced = false;
+    synced = false;
   }
 
-  db.saveQuest(args.issueId, quest);
-  return quest;
+  // The GitHub request above is the slow step: the snapshot loaded at
+  // the top of this function may be stale by now — a concurrent close
+  // may have completed the quest, or the quest may have been
+  // re-initialized. Apply only the field sync owns (github_synced)
+  // onto the freshest stored quest instead of saving the stale
+  // snapshot wholesale, which would silently revert the concurrent
+  // update (a COMPLETED quest must never come back as ACTIVE).
+  let applied = true;
+  const result = db.updateQuest(args.issueId, (current) => {
+    if (current.created_at !== quest.created_at) {
+      // The stored quest is a new incarnation created by a re-init
+      // while the GitHub request ran; sync's result is not its own.
+      applied = false;
+      return null;
+    }
+    if (current.status !== quest.status) {
+      console.error(`Note: quest ${args.issueId} was updated concurrently (${quest.status} -> ${current.status}); the newer state is preserved.`);
+    }
+    current.github_synced = synced;
+    return current;
+  });
+  if (!result) {
+    console.error(`Error: Quest for issue ${args.issueId} no longer exists.`);
+    process.exit(1);
+  }
+  if (!applied) {
+    console.error(`Warning: quest ${args.issueId} was re-initialized during sync; the sync result was not recorded on the new quest.`);
+  }
+  return result;
 }
 
 function runClose(args, db) {
@@ -334,14 +423,23 @@ function runClose(args, db) {
     process.exit(1);
   }
 
-  quest.status = 'COMPLETED';
-  if (quest.beads) {
-    quest.beads.forEach(b => b.status = 'COMPLETED');
+  // Complete the freshest stored quest rather than the snapshot
+  // above, so a metadata update that landed after the load (e.g. a
+  // sync's github_synced stamp) is not clobbered — the mirror image
+  // of the sync-side fix in runSync.
+  const result = db.updateQuest(args.issueId, (current) => {
+    current.status = 'COMPLETED';
+    if (current.beads) {
+      current.beads.forEach(b => b.status = 'COMPLETED');
+    }
+    return current;
+  });
+  if (!result) {
+    console.error(`Error: Quest for issue ${args.issueId} not found.`);
+    process.exit(1);
   }
-
-  db.saveQuest(args.issueId, quest);
   console.error(`Successfully closed quest ${args.issueId}.`);
-  return quest;
+  return result;
 }
 
 function main() {
