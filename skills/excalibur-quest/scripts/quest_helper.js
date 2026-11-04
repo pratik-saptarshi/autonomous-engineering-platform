@@ -284,7 +284,33 @@ function acquireConcurrencySlot(lockDir, maxConcurrent = 3) {
           fs.writeFileSync(ownerPath, String(process.pid), 'utf8');
         } catch (e) {}
         console.error(`Acquired Roundtable seat ${i + 1} of ${maxConcurrent}`);
+        // Release must be idempotent: main() invokes this closure from
+        // its finally block AND from the exit hook, and the signal
+        // handlers invoke it before process.exit() re-triggers that
+        // hook. A second invocation must be a no-op — by then the seat
+        // may have been re-acquired by another process, and deleting
+        // its owner record and directory would let a third process
+        // into an occupied seat, bypassing the concurrency limit.
+        let released = false;
         return () => {
+          if (released) {
+            return;
+          }
+          released = true;
+          // Delete only while the seat is still ours: if it was
+          // reclaimed and re-acquired in the meantime, the owner
+          // record names the new owner (pids are unique among live
+          // processes, so a record naming this pid can only be our
+          // own write). A missing or unreadable record still means
+          // the seat is ours to free — our own ownership write is
+          // best-effort at acquisition, and skipping here would leak
+          // a record-less seat until it goes stale.
+          try {
+            const recorded = parseInt(fs.readFileSync(ownerPath, 'utf8').trim(), 10);
+            if (Number.isInteger(recorded) && recorded > 0 && recorded !== process.pid) {
+              return;
+            }
+          } catch (e) {}
           try {
             fs.unlinkSync(ownerPath);
           } catch (e) {}
