@@ -76,6 +76,8 @@ class QuestDB {
   // Rewrites the JSON store with questData under issueId. The caller
   // must hold the DB lock: the file is rewritten wholesale, so the
   // read-modify-write has to be atomic against other writers.
+  // A failed write throws: callers must never report success for a
+  // quest that was not persisted.
   _writeQuestToJson(issueId, questData) {
     let data = {};
     if (fs.existsSync(this.jsonDb)) {
@@ -84,11 +86,7 @@ class QuestDB {
       } catch (e) {}
     }
     data[issueId] = questData;
-    try {
-      fs.writeFileSync(this.jsonDb, JSON.stringify(data, null, 2), 'utf8');
-    } catch (e) {
-      console.error('JSON write failed:', e.message);
-    }
+    fs.writeFileSync(this.jsonDb, JSON.stringify(data, null, 2), 'utf8');
   }
 
   // Backend write with no lock handling of its own; the caller is
@@ -479,6 +477,14 @@ function main() {
       console.error(`Error writing output to ${args.output}:`, e.message);
       process.exit(1);
     }
+  } catch (e) {
+    // A command whose work could not be persisted (or otherwise
+    // failed) must not report success: exit non-zero, before any
+    // output file is written. The seat is still released — by the
+    // finally below on normal unwind, and by the exit hook on
+    // process.exit.
+    console.error('Error:', e.message);
+    process.exit(1);
   } finally {
     cleanup();
   }
