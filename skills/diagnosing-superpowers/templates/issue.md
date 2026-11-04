@@ -27,7 +27,7 @@ rewritten as `transcript line <n>`.>
 
 ## Steps to reproduce
 
-1. <first human prompt, scrubbed>
+1. <first human prompt, scrubbed via the issue-body scrub gate — quote only from issue-gate/post-body.md>
 2. <the turns leading to the problem, one line each>
 3. <the observable>
 
