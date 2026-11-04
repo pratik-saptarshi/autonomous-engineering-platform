@@ -1,7 +1,7 @@
 # paperthin skills
 
-Vendored into `~/workspace/custom-skills/` on 2026-10-18. Upstream:
-[LilMGenius/paperthin](https://github.com/LilMGenius/paperthin) (MIT),
+Vendored into `~/workspace/custom-skills/` on 2026-10-18. Fork:
+[pratik-saptarshi/paperthin](https://github.com/pratik-saptarshi/paperthin) (default branch `develop`; upstream LilMGenius/paperthin, MIT),
 pinned to commit `7d5dc62`. All 28 `SKILL.md` files are verbatim copies —
 nothing rewritten, nothing trimmed. Attribution (license, notice) lives in
 `~/workspace/custom-skills/paperthin-attribution/`.

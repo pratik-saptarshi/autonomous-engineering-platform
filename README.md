@@ -41,8 +41,8 @@ graph TB
 ```
 
 - [ESF reference](docs/esf-reference.md) — vendored snapshot of pratik-saptarshi/esf (Engineering Software Factory) with build/verification notes.
-- [Security-audit skill reference](docs/security-audit-reference.md) — vendored snapshot of cloudflare/security-audit-skill (via the pratik-saptarshi fork) with audit-methodology notes.
-- [Ub-mode skill reference](docs/ub-mode-reference.md) — vendored snapshot of unclebob/ub-mode (via the pratik-saptarshi fork) with notes on its companion quality-gate tools.
+- [Security-audit skill reference](docs/security-audit-reference.md) — vendored snapshot of pratik-saptarshi/security-audit-skill (fork of cloudflare/security-audit-skill) with audit-methodology notes.
+- [Ub-mode skill reference](docs/ub-mode-reference.md) — vendored snapshot of pratik-saptarshi/ub-mode (fork of unclebob/ub-mode) with notes on its companion quality-gate tools.
 
 ## Continuous loop cycle
 
@@ -81,22 +81,22 @@ Guards: at most 6 iterations per run. Three failed attempts on one task stops th
 
 ### Skill sources
 
-| Upstream | Skills adapted |
+| Source | Skills adapted |
 |---|---|
-| obra/superpowers | brainstorming, dispatching-parallel-agents, executing-plans, receiving-review, requesting-review, subagent-driven-development, systematic-debugging, test-driven-development, verification-before-completion, writing-plans, writing-skills |
-| mattpocock/skills | grilling, prototype, recurring-workflows, research, teach, to-questionnaire, writing-articles, writing-for-agents |
+| pratik-saptarshi/superpowers | brainstorming, dispatching-parallel-agents, executing-plans, receiving-review, requesting-review, subagent-driven-development, systematic-debugging, test-driven-development, verification-before-completion, writing-plans, writing-skills |
+| pratik-saptarshi/skills | grilling, prototype, recurring-workflows, research, teach, to-questionnaire, writing-articles, writing-for-agents |
 | pratik-saptarshi/NeuroStrata | neurostrata_memory |
-| Cognilogical/NeuroPlasticity | self_test_gym |
-| Cognilogical/NeuroGenesis | neurogenesis_teams |
-| LilMGenius/paperthin | re0, readchk, aim, modelchk, hate, macrothink, feynman, autobahn, reorder, detool, dedash, debloat, shower, factchk, mandela, sip, re0-git, re0-release, re0-merge, ssotize, re0-plan, re0-loop, re0-memo, re0-work, catchup, nba, prism (see [docs/paperthin-skills.md](docs/paperthin-skills.md)) |
-| humanlayer/12-factor-agents | agent_operations |
+| pratik-saptarshi/NeuroPlasticity | self_test_gym |
+| pratik-saptarshi/NeuroGenesis | neurogenesis_teams |
+| pratik-saptarshi/paperthin | re0, readchk, aim, modelchk, hate, macrothink, feynman, autobahn, reorder, detool, dedash, debloat, shower, factchk, mandela, sip, re0-git, re0-release, re0-merge, ssotize, re0-plan, re0-loop, re0-memo, re0-work, catchup, nba, prism (see [docs/paperthin-skills.md](docs/paperthin-skills.md)) |
+| pratik-saptarshi/12-factor-agents | agent_operations |
 | pratik-saptarshi/opencode-rountable-review | plan_review_integrator, roundtable_review |
-| zomars/ralph | ralph_loop |
-| Jakevin/fastcontext-agent-tools | code_explorer |
-| morluto/rea | reverse_engineering |
-| alibaba/open-code-review | delegate_code_review |
+| pratik-saptarshi/ralph | ralph_loop |
+| pratik-saptarshi/fastcontext-agent-tools | code_explorer |
+| pratik-saptarshi/rea | reverse_engineering |
+| pratik-saptarshi/open-code-review | delegate_code_review |
 
-SWE-bench was evaluated and deliberately skipped. The `fastcontext` upstream package was uninstallable (repository unreachable); only its methodology was adapted.
+Sources above are pratik-saptarshi forks (default branch `develop`), each mirroring its upstream; the two pratik-saptarshi rows already in the table are the fork (NeuroStrata) and an owned original (opencode-rountable-review). SWE-bench was evaluated and deliberately skipped. The `fastcontext` upstream package was uninstallable (repository unreachable); only its methodology was adapted.
 
 ## Repository layout
 

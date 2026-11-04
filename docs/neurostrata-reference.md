@@ -2,7 +2,7 @@
 
 ## What it is
 
-Cognilogical/NeuroStrata (vendored from the pratik-saptarshi fork) — a local-first MCP memory server for coding agents, written in Rust. One daemon (`neurostrata-mcp`, 127.0.0.1:34343) serves a hierarchical graph/vector memory (SynapticGraph over an embedded LadybugDB store: dense-embedding distance ranking with a capped usage/provenance boost, then bounded graph expansion), a task subsystem with a completion gate (a task reaches `done` only with an extracted memory), and a behavioral-rule guard that validates state-mutating actions before they land.
+pratik-saptarshi/NeuroStrata (fork of Cognilogical/NeuroStrata, default branch `develop`) — a local-first MCP memory server for coding agents, written in Rust. One daemon (`neurostrata-mcp`, 127.0.0.1:34343) serves a hierarchical graph/vector memory (SynapticGraph over an embedded LadybugDB store: dense-embedding distance ranking with a capped usage/provenance boost, then bounded graph expansion), a task subsystem with a completion gate (a task reaches `done` only with an extracted memory), and a behavioral-rule guard that validates state-mutating actions before they land.
 
 Vendored snapshot: [PROVENANCE.md](../reference/neurostrata/PROVENANCE.md) — fork `https://github.com/pratik-saptarshi/NeuroStrata` at `219e47de604a283c6fb8d4249db77b9824e35188` (2026-10-24, MIT). Upstream: `https://github.com/Cognilogical/NeuroStrata`.
 
