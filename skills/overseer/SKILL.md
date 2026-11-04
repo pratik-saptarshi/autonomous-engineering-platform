@@ -953,7 +953,11 @@ For each reviewer in the panel, verify these files exist under `state/`
 Plus panel-level files:
 - `phase_8_audit.md`
 - `phase_10_claim_verification.md`
-- `phase_11_severity_verification.md`
+- `phase_11_severity_verification.md` (only when Phase 11 ran — it is
+  skipped when the panel raised no P0/P1 findings; see Edge Cases. A
+  Phase 11 skipped under that rule is not a gate failure: do not
+  re-dispatch for it, and it never counts toward the COMPRESSED RUN
+  determination.)
 
 **For each required file, run three checks:**
 
