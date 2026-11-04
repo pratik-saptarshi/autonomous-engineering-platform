@@ -385,6 +385,14 @@ function parseArgs() {
 
 function runInit(args, db) {
   let beads = [];
+  // True only when a reviews file was provided AND loaded: its
+  // findings are then authoritative, even when there are none. The
+  // default beads below are the fallback for absent review input (no
+  // --reviews-path, or a file that failed to load) — substituting
+  // them for a successfully loaded clean review would fabricate
+  // remediation tasks the review never raised, and sync would
+  // publish them to the GitHub issue.
+  let reviewsLoaded = false;
   if (args.reviewsPath && fs.existsSync(args.reviewsPath)) {
     try {
       const reviews = JSON.parse(fs.readFileSync(args.reviewsPath, 'utf8'));
@@ -395,18 +403,23 @@ function runInit(args, db) {
           severity: r.severity || 'MEDIUM',
           status: 'PENDING'
         }));
+        reviewsLoaded = true;
       }
     } catch (e) {
       console.error('Failed to load reviews path:', e.message);
     }
   }
 
-  if (beads.length === 0) {
+  if (beads.length === 0 && !reviewsLoaded) {
     beads = [
       { id: 'bead-1', title: 'Audit source for security vulnerabilities', severity: 'CRITICAL', status: 'PENDING' },
       { id: 'bead-2', title: 'Verify tokio async I/O migrations', severity: 'HIGH', status: 'PENDING' },
       { id: 'bead-3', title: 'Check static analyzer schemas', severity: 'MEDIUM', status: 'PENDING' }
     ];
+  }
+
+  if (reviewsLoaded && beads.length === 0) {
+    console.error('Review loaded with no findings: the review is clean and no remediation is needed. Initializing quest with zero beads.');
   }
 
   const questData = {
