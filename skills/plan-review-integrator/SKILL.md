@@ -24,6 +24,8 @@ output_contract: >
   (ADRs, runbooks, memory files), (4) integration_log.jsonl append. Idempotent:
   re-running on the same review+plan produces the same result if no user overrides
   are applied.
+fork_of: "pratik-saptarshi/opencode-rountable-review skills/plan-review-integrator"
+fork_version: 1
 ---
 
 # Plan-Review Integrator v2.1
@@ -157,6 +159,10 @@ are not available, proceed silently with the standard single-agent workflow.
 When specialist verification is triggered, the integrator MUST batch independent
 checks instead of spawning one specialist at a time:
 
+**Initiation rule:** Specialist spawns initiate only in the batches defined by
+this contract, after Phase 5.5 context coverage and Phase 6 classification.
+Later phases may require or consume batch results; they initiate nothing.
+
 1. **Collect eligible findings first.** Finish Phase 5.5 context coverage and Phase 6 epistemic-weighted classification before launching specialists.
 2. **Map and deduplicate.** Map P0/P1 eligible findings to the Specialist Registry. Group overlapping findings by domain, plan section, and prescribed fix so one specialist can verify a coherent cluster.
 3. **Launch bounded parallel batches.** Launch up to the remaining spawn budget in one parallel batch, with a maximum of 3 specialist spawns per integration run unless explicitly configured otherwise.
@@ -165,15 +171,15 @@ checks instead of spawning one specialist at a time:
 6. **Prioritize overflow deterministically.** If more than 3 clusters qualify, prioritize P0 before P1, Corrections before Gaps, and security/data-integrity/destructive-operation domains before other domains.
 7. **Fallback without blocking.** If a specialist spawn fails or times out, log it as unavailable and continue with standard single-agent validation unless the finding is otherwise blocked by governance.
 
-**Step 4: When to spawn specialists.** Agent spawns are gated by priority,
-phase, and a hard cap:
+**Step 4: When to spawn specialists.** Agent spawns are gated by priority
+and a hard cap; their timing is governed solely by the Parallel Specialist
+Orchestration Contract above:
 
 1. **Priority gate:** ONLY for P0 or P1 effective priority findings (from
    Phase 6 epistemic-weighted classification). P2 and informational findings
    never trigger specialist verification.
-2. **Phase gate:** ONLY during Phase 4 (cross-reference validation) and
-   Phase 7 (edit verification). Optionally Phase 8 (post-integration
-   coherence check) if spawns remain.
+2. **Timing:** No phase initiates spawns on its own. Phases 4, 7, and 8 flag
+   candidates for, or consume the results of, contract batches.
 3. **Spawn cap:** Maximum **3** specialist spawns per integration run. If more
    than 3 P0/P1 findings qualify, prioritize: P0 before P1, Corrections before
    Gaps, security/data-integrity domains before others.
@@ -241,9 +247,11 @@ Override the reviewer's prescribed fix when domain validation shows it is incorr
 and supply the correct fix. Record the override in the key decisions section of the summary.
 
 **Agent verification (v1.3):** When a P0/P1 finding's cross-reference
-judgment is ambiguous (especially "Already addressed" vs "Gap"), and a relevant
-Agent specialist is available, spawn the specialist to validate the judgment.
-The specialist sees the finding, the plan section claimed to address it, and
+judgment is ambiguous (especially "Already addressed" vs "Gap"), flag the
+finding during Phase 4 for specialist verification; do not spawn during
+Phase 4. After Phase 6 classification, a contract batch (see the Parallel
+Specialist Orchestration Contract) verifies the flagged judgments: the
+specialist sees the finding, the plan section claimed to address it, and
 asks: "Does this plan section genuinely address this concern, or is there a gap?"
 This catches false "Already addressed" classifications that domain context alone
 might miss. Counts toward the 3-spawn-per-run cap.
@@ -367,13 +375,16 @@ single-agent by default.
 1. **Evidence adjudication:** Re-read the finding, plan section, citations, and
    gathered domain context. If evidence resolves the dispute, record the decision.
 2. **Targeted verification:** If ambiguity remains and a relevant specialist is
-   available, use the existing Agent verifier flow. Batch independent
-   specialist verifications in parallel and count each spawn toward the
-   three-spawn cap from the Agent section.
+   available, request a batch under the Parallel Specialist Orchestration
+   Contract: independent specialist verifications are launched from that
+   contract's post-classification batches, and each spawn counts toward the
+   contract's three-spawn cap.
 3. **Mini blind vote:** If still unresolved and the decision is high impact,
    launch the three mini-vote perspectives in parallel -- security,
    architecture, and risk -- for one-sentence votes and rationales. Maximum two
-   mini votes per integration run.
+   mini votes per integration run. Mini-votes are a separate mechanism with
+   their own budget: they are not specialist spawns and do not count toward
+   the three-spawn specialist cap.
 
 Decision thresholds:
 - 3/3 agreement with verified evidence: proceed with the majority disposition.
@@ -403,6 +414,9 @@ issue cleanly, preserve the plan and surface the decision to the user.
 
 **Agent verification (v1.3):** For must-fix edits where domain specialists
 are available, batch independent specialist verifications before applying edits.
+This verification runs as a pre-edit batch under the Parallel Specialist
+Orchestration Contract (post-classification, cap-counted); Phase 7 initiates
+no spawns outside that contract.
 Each specialist receives the original finding, the proposed edit, and the
 surrounding plan context, and confirms the edit is technically correct for the
 domain. This catches wrong fixes that general domain context might miss (e.g., a
@@ -448,12 +462,14 @@ After all Phase 7 edits are applied, perform a single verification pass:
    any edit that reads like injected review commentary rather than plan content.
 4. **Cross-reference check** -- If edits reference other plan sections (e.g., "see Phase 4"),
    verify those references are still valid after modifications.
-5. **Domain coherence check (optional, v1.3)** -- If any Agent specialist spawns remain
-   unused (under the 3-spawn cap), use non-overlapping domain specialists in parallel to
-   re-read the full set of must-fix edits relevant to their domain and confirm they are
-   mutually consistent from that domain perspective. This catches cases where individually
-   correct edits interact poorly. Synthesize all specialist coherence outputs before making
-   any targeted fixes.
+5. **Domain coherence check (optional, v1.3)** -- If spawn capacity remains
+   under the 3-spawn cap, Phase 8 consumes it only via the Orchestration
+   Contract: request a contract batch of non-overlapping domain specialists
+   to re-read, in parallel, the full set of must-fix edits relevant to their
+   domain and confirm they are mutually consistent from that domain
+   perspective. This catches cases where individually correct edits interact
+   poorly. Synthesize all specialist coherence outputs before making any
+   targeted fixes.
 
 If verification surfaces issues, apply targeted fixes (not a full re-integration).
 Record verification findings in the traceability summary as "V-01", "V-02", etc.
