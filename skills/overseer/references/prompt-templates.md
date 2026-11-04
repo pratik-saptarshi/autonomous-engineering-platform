@@ -44,7 +44,7 @@ Re-check any judge-introduced P0/P1 claims against ground truth before report ge
 Assemble a chronological, verbatim log of the run, including persona profiles.
 
 ## Phase 15.3: HTML Report Generation Prompt
-Read the markdown report and process history from disk, then render a self-contained HTML dashboard.
+Read the markdown report and process history from disk, then render a self-contained HTML dashboard. The binding rendering requirements live in this skill's `SKILL.md`, section "Phase 15.3: Interactive HTML Report" — read that section in full before rendering and follow it exactly. In summary, it mandates: a dashboard overview with stats row and charts; a Panel Gallery; expandable issue cards whose expanded state is the 10-section accordion (all 10 sections always present, with placeholders when empty); filtering by severity, tier, verdict, and epistemic label, plus sort controls; deep-linking, keyboard navigation, and expand/collapse-all controls; print styles; every Chart.js canvas wrapped in a height-bounded, position-relative div; the compressed-run banner when the source report carries one; and Tailwind CSS, Chart.js, and Prism.js loaded via CDN.
 
 ## Phase 16: Merge Agent Prompt
 Deduplicate findings across runs, score stability, and produce the merged report.

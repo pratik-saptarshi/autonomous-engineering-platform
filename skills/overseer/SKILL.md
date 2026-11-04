@@ -1283,7 +1283,8 @@ subagent has no knowledge of the skill installation directory or the user's
 output directory. Substitute:
 - `{output_dir}` → the actual resolved output directory (where Phase 15.1
   wrote `review_panel_report.md`)
-- `{skill_dir}` → the absolute path to the skill's `references/` directory
+- `{skill_dir}` → the absolute path to the skill's root directory (the
+  directory containing this `SKILL.md`)
 - If the user specified a custom output name (e.g., `--output my_review.md`),
   use the actual filenames, not the defaults
 

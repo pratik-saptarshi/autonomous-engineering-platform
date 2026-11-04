@@ -125,6 +125,49 @@ class QuestDB {
   }
 }
 
+function tryReclaimSeat(lockPath) {
+  const ownerPath = path.join(lockPath, 'owner');
+  let pid = null;
+  try {
+    pid = parseInt(fs.readFileSync(ownerPath, 'utf8').trim(), 10);
+  } catch (e) {}
+
+  if (Number.isInteger(pid) && pid > 0) {
+    // The seat has a recorded owner; it is abandoned only if that process
+    // no longer exists. PID reuse can make a dead owner's seat look held
+    // (the recycled PID belongs to a live process), never the reverse, so
+    // this fails safe: the seat frees when that process exits.
+    try {
+      process.kill(pid, 0);
+      return false;
+    } catch (err) {
+      if (err.code !== 'ESRCH') {
+        return false; // EPERM: owner exists under another user
+      }
+    }
+  } else {
+    // No ownership record: the seat predates ownership recording, or its
+    // owner has not written the record yet. Reclaim only once the seat is
+    // clearly stale (same 30s rule as the DB lock above) so a seat that
+    // is mid-acquisition is never stolen from a live process.
+    try {
+      if (Date.now() - fs.statSync(lockPath).mtimeMs < 30000) {
+        return false;
+      }
+    } catch (e) {
+      return false;
+    }
+  }
+
+  try { fs.unlinkSync(ownerPath); } catch (e) {}
+  try {
+    fs.rmdirSync(lockPath);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
 function acquireConcurrencySlot(lockDir, maxConcurrent = 3) {
   if (!fs.existsSync(lockDir)) {
     fs.mkdirSync(lockDir, { recursive: true });
@@ -133,10 +176,19 @@ function acquireConcurrencySlot(lockDir, maxConcurrent = 3) {
   while (true) {
     for (let i = 0; i < maxConcurrent; i++) {
       const lockPath = path.join(lockDir, `lock_${i}`);
+      const ownerPath = path.join(lockPath, 'owner');
       try {
         fs.mkdirSync(lockPath);
+        // Record ownership so a later process can reclaim this seat if
+        // this one is killed before its exit hooks can release it.
+        try {
+          fs.writeFileSync(ownerPath, String(process.pid), 'utf8');
+        } catch (e) {}
         console.error(`Acquired Roundtable seat ${i + 1} of ${maxConcurrent}`);
         return () => {
+          try {
+            fs.unlinkSync(ownerPath);
+          } catch (e) {}
           try {
             fs.rmdirSync(lockPath);
           } catch (e) {}
@@ -144,6 +196,9 @@ function acquireConcurrencySlot(lockDir, maxConcurrent = 3) {
       } catch (err) {
         if (err.code !== 'EEXIST') {
           throw err;
+        }
+        if (tryReclaimSeat(lockPath)) {
+          i--; // Seat was abandoned; retry it immediately.
         }
       }
     }
