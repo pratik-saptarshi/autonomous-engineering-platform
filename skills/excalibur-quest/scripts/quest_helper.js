@@ -78,6 +78,16 @@ class QuestDB {
   // read-modify-write has to be atomic against other writers.
   // A failed write throws: callers must never report success for a
   // quest that was not persisted.
+  //
+  // The new snapshot is published atomically: it is written to a temp
+  // file in the same directory, flushed, and renamed over the store.
+  // A concurrent loadQuest — which does not take the DB lock —
+  // therefore always opens a complete snapshot (the old one or the
+  // new one), never the truncated file an in-place write exposes
+  // mid-write. The temp name is PID-scoped, so the permitted
+  // concurrent instances never collide on it; a crashed writer's
+  // leftover temp is never mistaken for the store (loadQuest reads
+  // only the store path) and never blocks a later write.
   _writeQuestToJson(issueId, questData) {
     let data = {};
     if (fs.existsSync(this.jsonDb)) {
@@ -86,7 +96,37 @@ class QuestDB {
       } catch (e) {}
     }
     data[issueId] = questData;
-    fs.writeFileSync(this.jsonDb, JSON.stringify(data, null, 2), 'utf8');
+
+    // Rename replaces the store file, so the replacement carries the
+    // current store's permissions where there is one. It also makes
+    // writability a property of the directory: a read-only store file
+    // in a writable directory is now genuinely — and atomically —
+    // replaced, while a read-only directory still fails the write
+    // loudly, as round 4 requires.
+    let storeMode = null;
+    try {
+      storeMode = fs.statSync(this.jsonDb).mode & 0o777;
+    } catch (e) {}
+
+    const tmpPath = `${this.jsonDb}.tmp.${process.pid}`;
+    let fd = null;
+    try {
+      fd = fs.openSync(tmpPath, 'w');
+      if (storeMode !== null) {
+        try { fs.fchmodSync(fd, storeMode); } catch (e) {}
+      }
+      fs.writeFileSync(fd, JSON.stringify(data, null, 2), 'utf8');
+      fs.fsyncSync(fd);
+      fs.closeSync(fd);
+      fd = null;
+      fs.renameSync(tmpPath, this.jsonDb);
+    } catch (e) {
+      if (fd !== null) {
+        try { fs.closeSync(fd); } catch (ignored) {}
+      }
+      try { fs.unlinkSync(tmpPath); } catch (ignored) {}
+      throw e;
+    }
   }
 
   // Backend write with no lock handling of its own; the caller is
