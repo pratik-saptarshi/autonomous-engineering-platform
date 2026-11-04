@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "jsx": "react-jsx",
+    "jsxImportSource": "react",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "noEmit": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "outDir": "dist",
+    "sourceMap": true,
+    "declaration": false,
+    "allowJs": true,
+    "resolveJsonModule": true,
+    "types": ["vite/client"],
+    "incremental": true,
+    "tsBuildInfoFile": ".tsbuildinfo",
+    "noUncheckedIndexedAccess": false,
+    "exactOptionalPropertyTypes": false,
+    "assumeChangesOnlyAffectDirectDependencies": true
+  },
+  "include": ["src/**/*", "test/**/*", "tests/**/*"],
+  "exclude": ["node_modules", "dist"]
+}

@@ -1,0 +1,195 @@
+import { beforeEach, describe, expect, it, type Mock, vi } from "vitest";
+import type { PipelineManager } from "../pipeline/PipelineManager";
+import { type PipelineJob, PipelineJobStatus } from "../pipeline/types";
+import { PageOutcome } from "../scraper/types";
+import { VersionStatus } from "../store/types";
+import { ListJobsTool } from "./ListJobsTool";
+
+// Mock dependencies
+vi.mock("../pipeline/PipelineManager");
+
+describe("ListJobsTool", () => {
+  // Define the mock instance directly
+  let mockManagerInstance: Partial<PipelineManager>;
+  let listJobsTool: ListJobsTool;
+
+  // Define more complete mock data with enhanced PipelineJob interface
+  const mockJobs: PipelineJob[] = [
+    {
+      id: "job-1",
+      library: "lib-a",
+      version: "1.0.0",
+      status: PipelineJobStatus.QUEUED,
+      createdAt: new Date("2023-01-01T10:00:00Z"),
+      progress: null,
+      error: null,
+      startedAt: null,
+      finishedAt: null,
+      // Database fields
+      versionId: 1,
+      versionStatus: VersionStatus.QUEUED,
+      progressPages: 0,
+      progressMaxPages: 0,
+      errorMessage: null,
+      updatedAt: new Date("2023-01-01T10:00:00Z"),
+      sourceUrl: "url1",
+      scraperOptions: null,
+    },
+    {
+      id: "job-2",
+      library: "lib-b",
+      version: "2.0.0",
+      status: PipelineJobStatus.RUNNING,
+      createdAt: new Date("2023-01-01T11:00:00Z"),
+      startedAt: new Date("2023-01-01T11:05:00Z"),
+      progress: {
+        pagesScraped: 5,
+        totalPages: 100,
+        totalDiscovered: 120,
+        pagesIndexed: 4,
+        currentUrl: "url2/page5",
+        depth: 1,
+        maxDepth: 3,
+        outcome: PageOutcome.Stored,
+        result: null,
+      },
+      error: null,
+      finishedAt: null,
+      // Database fields
+      versionId: 2,
+      versionStatus: VersionStatus.RUNNING,
+      progressPages: 5,
+      progressMaxPages: 100,
+      errorMessage: null,
+      updatedAt: new Date("2023-01-01T11:05:00Z"),
+      sourceUrl: "url2",
+      scraperOptions: {
+        url: "url2",
+        library: "lib-b",
+        version: "2.0.0",
+        maxDepth: 3,
+      },
+    },
+    {
+      id: "job-3",
+      library: "lib-a",
+      version: "1.1.0",
+      status: PipelineJobStatus.COMPLETED,
+      createdAt: new Date("2023-01-01T12:00:00Z"),
+      startedAt: new Date("2023-01-01T12:05:00Z"),
+      finishedAt: new Date("2023-01-01T12:15:00Z"),
+      progress: {
+        pagesScraped: 10,
+        totalPages: 10,
+        totalDiscovered: 10,
+        pagesIndexed: 10,
+        currentUrl: "url3/page10",
+        depth: 2,
+        maxDepth: 2,
+        outcome: PageOutcome.Stored,
+        result: null,
+      },
+      error: null,
+      // Database fields
+      versionId: 3,
+      versionStatus: VersionStatus.COMPLETED,
+      progressPages: 10,
+      progressMaxPages: 10,
+      errorMessage: null,
+      updatedAt: new Date("2023-01-01T12:15:00Z"),
+      sourceUrl: "url3",
+      scraperOptions: {
+        url: "url3",
+        library: "lib-a",
+        version: "1.1.0",
+        maxDepth: 2,
+      },
+    },
+  ];
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+
+    // Define the mock implementation for the manager instance
+    mockManagerInstance = {
+      getJobs: vi.fn().mockResolvedValue(mockJobs), // Default mock returns all jobs
+    };
+
+    // Instantiate the tool with the correctly typed mock instance
+    listJobsTool = new ListJobsTool(mockManagerInstance as PipelineManager);
+  });
+
+  it("should return the list of jobs received from the manager", async () => {
+    const result = await listJobsTool.execute({});
+
+    expect(result.jobs.length).toBe(mockJobs.length);
+    expect(result.jobs.map((job) => job.id)).toEqual(mockJobs.map((job) => job.id));
+
+    // Check properties of the first simplified JobInfo object
+    if (result.jobs.length > 0 && mockJobs.length > 0) {
+      const firstResultJob = result.jobs[0];
+      const firstMockJob = mockJobs[0];
+      expect(firstResultJob.id).toBe(firstMockJob.id);
+      expect(firstResultJob.library).toBe(firstMockJob.library);
+      expect(firstResultJob.version).toBe(firstMockJob.version);
+      expect(firstResultJob.status).toBe(firstMockJob.status);
+      expect(firstResultJob.createdAt).toBe(firstMockJob.createdAt.toISOString());
+      expect(firstResultJob.startedAt).toBeNull(); // Based on first mockJob
+      expect(firstResultJob.finishedAt).toBeNull(); // Based on first mockJob
+      expect(firstResultJob.error).toBeNull(); // Based on first mockJob
+    }
+  });
+
+  it("asks the pipeline for the jobs with the given status and lists those", async () => {
+    const runningJobs = mockJobs.filter(
+      (job) => job.status === PipelineJobStatus.RUNNING,
+    );
+    (mockManagerInstance.getJobs as Mock).mockResolvedValue(runningJobs);
+
+    const result = await listJobsTool.execute({ status: PipelineJobStatus.RUNNING });
+
+    expect(mockManagerInstance.getJobs).toHaveBeenCalledWith(PipelineJobStatus.RUNNING);
+    expect(result.jobs.map((job) => job.id)).toEqual(["job-2"]);
+  });
+
+  it("reports the live progress counters once a job knows its total, and no progress before", async () => {
+    const result = await listJobsTool.execute({});
+
+    const progressById = Object.fromEntries(
+      result.jobs.map((job) => [job.id, job.progress]),
+    );
+    expect(progressById["job-1"]).toBeUndefined();
+    expect(progressById["job-2"]).toEqual({
+      pages: 5,
+      pagesIndexed: 4,
+      totalPages: 100,
+      totalDiscovered: 120,
+    });
+  });
+
+  it("falls back to the stored counters for a job without live progress", async () => {
+    // A job read back from the store, after a restart, has its counters but no
+    // live progress event, so nothing reports discoveries beyond the total.
+    (mockManagerInstance.getJobs as Mock).mockResolvedValue([
+      {
+        ...mockJobs[1],
+        progress: null,
+        progressPages: 3,
+        progressPagesIndexed: 2,
+        progressMaxPages: 50,
+      },
+    ]);
+
+    const result = await listJobsTool.execute({});
+
+    expect(result.jobs[0]?.progress).toEqual({
+      pages: 3,
+      pagesIndexed: 2,
+      totalPages: 50,
+      totalDiscovered: 50,
+    });
+  });
+
+  // ListJobsTool.ts reads it with `||`, so a live count of 0 falls back to the total.
+  it.todo("reports a live totalDiscovered of 0 rather than the stored total");
+});

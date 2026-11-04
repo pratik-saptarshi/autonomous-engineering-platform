@@ -66,7 +66,6 @@ re0-memo
 re0-merge
 re0-plan
 re0-release
-re0-upgrade
 re0-work
 readchk
 receiving-code-review
