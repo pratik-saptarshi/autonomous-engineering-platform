@@ -48,3 +48,60 @@ Read the markdown report and process history from disk, then render a self-conta
 
 ## Phase 16: Merge Agent Prompt
 Deduplicate findings across runs, score stability, and produce the merged report.
+
+## Required sections per phase output
+
+The Phase 13.5 gate's required-headers check (SKILL.md, "Phase 13.5:
+Pre-Judge Verification Gate") is defined here: one list per gated file
+type. Every entry is the section's operative noun phrase, derived from
+SKILL.md's section for that phase, the phase's prompt skeleton above, or
+the gate text itself.
+
+**Match semantics.** A required section is present when a header or
+labeled block carries the entry's operative noun phrase, case-insensitive.
+A multi-word phrase matches when its words appear in order within one
+header, so "Score" matches "Final Score" or "Panel score". Alternatives
+separated by `|` are satisfied by any one of them. An entry written as a
+bracketed token (a severity tag, a classification label) matches that
+literal token in the file's labeled content.
+
+**Coverage.** These lists cover exactly the file types the gate's table
+names. Phase 5 debate files for rounds 2 and 3 (`_phase_5_round2.md`,
+`_phase_5_round3.md`) and the Phase 6 round summaries
+(`phase_6_summary_*.md`) are NOT gated and have no list here.
+
+### `reviewer_<name>_phase_3.md`
+- `Score` — the review's score
+- `Findings` — the findings section
+- `[P0]|[P1]|[P2]|[P3]` — severity tags on the findings
+
+### `reviewer_<name>_phase_4.md`
+- `Confidence` — confidence rating per finding
+- `New issues` — issues first noted in reflection
+- `Most defensible` — the reviewer's most defensible finding
+- `Least defensible` — the reviewer's least defensible finding
+
+### `reviewer_<name>_phase_5_round1.md`
+- `Unresolved points` — responses to the round's unresolved points
+- `New evidence` — new evidence called out this round
+- `Changed opinions` — opinions changed this round, with what changed them
+
+### `reviewer_<name>_phase_7.md`
+- `Score` — the final score (matches "Final Score")
+- `Top points` — the top points / top issues
+- `Recommendation` — the reviewer's recommendation
+- `Verdict` — the one-line verdict
+
+### `phase_8_audit.md`
+- `Missed|Overlooked` — what the panel missed: overlooked details, edge cases, constants, code paths
+
+### `phase_10_claim_verification.md`
+- `[VERIFIED]` — claims verified against source
+- `[INACCURATE]` — claims classified inaccurate
+- `[MISATTRIBUTED]` — claims classified misattributed
+- `[HALLUCINATED]` — claims classified hallucinated
+- `[UNVERIFIABLE]` — claims classified unverifiable
+
+### `phase_11_severity_verification.md`
+- `Severity table` — the severity verification table (standard or extended)
+- `[EXISTING_DEFECT]|[PLAN_RISK]` — the defect/risk classification of the verified findings

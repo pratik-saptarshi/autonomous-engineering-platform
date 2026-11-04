@@ -10,6 +10,8 @@ description: >
   reviewer personas, supports optional deep research, multi-run merge mode,
   and data-flow tracing, and is not for simple single-reviewer feedback,
   bug-fixing, deployment, or addressing existing PR comments.
+fork_of: "pratik-saptarshi/opencode-rountable-review skills/overseer"
+fork_version: 1
 ---
 
 # Overseer v3.2.0
