@@ -224,8 +224,14 @@ class QuestDB {
   }
 }
 
-function tryReclaimSeat(lockPath) {
-  const ownerPath = path.join(lockPath, 'owner');
+// True when the seat directory at dirPath is abandoned: its recorded
+// owner no longer exists, or it has no ownership record and the
+// directory is stale. tryReclaimSeat applies it both to the seat's own
+// path and — after the atomic claim there — to the claimed directory,
+// so the directory actually deleted is re-verified as the abandoned
+// one that was checked.
+function seatIsAbandoned(dirPath) {
+  const ownerPath = path.join(dirPath, 'owner');
   let pid = null;
   try {
     pid = parseInt(fs.readFileSync(ownerPath, 'utf8').trim(), 10);
@@ -240,31 +246,68 @@ function tryReclaimSeat(lockPath) {
       process.kill(pid, 0);
       return false;
     } catch (err) {
-      if (err.code !== 'ESRCH') {
-        return false; // EPERM: owner exists under another user
-      }
-    }
-  } else {
-    // No ownership record: the seat predates ownership recording, or its
-    // owner has not written the record yet. Reclaim only once the seat is
-    // clearly stale (same 30s rule as the DB lock above) so a seat that
-    // is mid-acquisition is never stolen from a live process.
-    try {
-      if (Date.now() - fs.statSync(lockPath).mtimeMs < 30000) {
-        return false;
-      }
-    } catch (e) {
-      return false;
+      return err.code === 'ESRCH'; // EPERM: owner exists under another user
     }
   }
 
-  try { fs.unlinkSync(ownerPath); } catch (e) {}
+  // No ownership record: the seat predates ownership recording, or its
+  // owner has not written the record yet. Abandoned only once the seat
+  // is clearly stale (same 30s rule as the DB lock above) so a seat
+  // that is mid-acquisition is never stolen from a live process. A
+  // directory that cannot be stat'ed is not abandoned.
   try {
-    fs.rmdirSync(lockPath);
-    return true;
+    return Date.now() - fs.statSync(dirPath).mtimeMs >= 30000;
   } catch (e) {
     return false;
   }
+}
+
+function tryReclaimSeat(lockPath) {
+  if (!seatIsAbandoned(lockPath)) {
+    return false;
+  }
+
+  // The check above and a deletion by name would not be atomic against
+  // other helpers: a second reclaimer can finish reclaiming this seat
+  // and a new owner can acquire it before this one's deletion runs,
+  // and deleting by name would then remove the NEW owner's live seat.
+  // Claim the checked directory atomically instead — rename it to a
+  // unique sibling name (same parent directory, so the rename stays on
+  // one filesystem). Exactly one concurrent reclaimer can win the
+  // rename; the loser sees it fail and leaves the seat alone, and no
+  // acquirer can take the seat's name while the claim is in flight
+  // without the claim's outcome deciding what the name holds.
+  const trashPath = `${lockPath}.reclaim.${process.pid}`;
+  try {
+    fs.renameSync(lockPath, trashPath);
+  } catch (e) {
+    return false;
+  }
+
+  // The rename moved whichever directory held the seat's name at that
+  // instant — in the gap since the check, that can be a seat that was
+  // reclaimed and re-acquired, not the abandoned one. Delete only a
+  // claimed directory that is STILL abandoned under the same test. A
+  // live seat claimed by mistake is renamed back untouched and the
+  // reclaim reports failure; if its name has already been taken again,
+  // it stays at the trash path rather than overwriting the newer seat
+  // (its owner's release re-checks the owner record before deleting,
+  // so it cannot remove the newer seat either).
+  if (!seatIsAbandoned(trashPath)) {
+    try { fs.renameSync(trashPath, lockPath); } catch (e) {}
+    return false;
+  }
+
+  try { fs.unlinkSync(path.join(trashPath, 'owner')); } catch (e) {}
+  try { fs.rmdirSync(trashPath); } catch (e) {}
+  // The seat's name is free again whether or not the claimed directory
+  // could be removed, so the reclaim succeeded. A leftover trash
+  // directory (here, or from a winner killed between the rename and
+  // the delete) is deliberately left rather than swept: the
+  // acquisition scan only considers the numbered seat names, so it is
+  // never mistaken for a seat, and a sweeper would need its own
+  // coordination against a winner still deleting.
+  return true;
 }
 
 function acquireConcurrencySlot(lockDir, maxConcurrent = 3) {
