@@ -1,6 +1,8 @@
 ---
 name: subagent-driven-development
 description: Use when executing implementation plans with independent tasks in the current session
+fork_of: "obra/superpowers skills/subagent-driven-development"
+fork_version: 1
 ---
 
 # Subagent-Driven Development
