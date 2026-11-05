@@ -44,6 +44,7 @@ grill-with-docs
 grilling
 handoff
 hate
+humanizer
 macrothink
 mandela
 modelchk
@@ -91,6 +92,7 @@ writing-skills
 
 [exclude-paths]
 skill.yaml
+humanizer/PROVENANCE.md
 .superpowers/**
 scrubbing-public-tree/SKILL.md
 
