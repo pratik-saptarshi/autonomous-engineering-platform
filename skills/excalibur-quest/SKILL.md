@@ -3,6 +3,8 @@ name: excalibur-quest
 description: >-
   Remediates repository bugs/issues using multi-phase Roundtable bead plans,
   atomic edits, and Camelot/GitHub issue synchronizations.
+fork_of: "pratik-saptarshi/opencode-rountable-review skills/excalibur-quest"
+fork_version: 1
 ---
 
 # Excalibur Quest
