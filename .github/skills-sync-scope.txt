@@ -92,6 +92,7 @@ writing-skills
 
 [exclude-paths]
 skill.yaml
+humanizer/PROVENANCE.md
 .superpowers/**
 scrubbing-public-tree/SKILL.md
 

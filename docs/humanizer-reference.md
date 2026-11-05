@@ -2,9 +2,9 @@
 
 ## What it is
 
-pratik-saptarshi/humanizer (fork of blader/humanizer, default branch `develop`) — a coding-agent skill that rewrites AI-sounding prose so it reads like the writer, without changing what it says. It is built on Wikipedia's "Signs of AI writing": 26 numbered patterns in six groups (staging instead of stating, rhythm and formatting by rule, inflation, stock vocabulary, structural habits, and leftover chat artifacts), ordered by strength and frequency. The method is mark the tells, draft a rewrite, check the draft against the patterns and the original's claims, then write the final version. It supports pasted-text, file, and embedded modes, and can match a supplied writing sample's voice. The whole skill is one `SKILL.md`; the rest of the tree is plugin packaging for Claude Code, Cursor, and OpenAI-compatible agents, plus a stdlib-only package validator.
+pratik-saptarshi/humanizer (fork of blader/humanizer, default branch `develop`) — a coding-agent skill that rewrites AI-sounding prose so it reads like the writer, without changing what it says. It is built on Wikipedia's "Signs of AI writing": 26 numbered patterns in six groups (Staging instead of stating; Rhythm by rule; Inflation and borrowed authority; Formatting by rule; Leftovers from the chat and the draft; Writing for the wrong reader), ordered by strength and frequency. The method is mark the tells, draft a rewrite, check the draft against the patterns and the original's claims, then write the final version. It supports pasted-text, file, and embedded modes, and can match a supplied writing sample's voice. The whole skill is one `SKILL.md`; the rest of the tree is plugin packaging for Claude Code, Cursor, and OpenAI-compatible agents, plus a stdlib-only package validator.
 
-Vendored snapshot: [PROVENANCE.md](../reference/humanizer/PROVENANCE.md) — fork `https://github.com/pratik-saptarshi/humanizer` at `0ef9fe5bc3572734fd3ae6c448fe00a30cd5dcf0` (2026-11-04), upstream version 3.1.0. Upstream: `https://github.com/blader/humanizer`.
+Vendored snapshot: [PROVENANCE.md](../reference/humanizer/PROVENANCE.md) — fork `https://github.com/pratik-saptarshi/humanizer` at `0ef9fe5bc3572734fd3ae6c448fe00a30cd5dcf0` (commit dated 2026-10-28; snapshot taken 2026-11-04), upstream version 3.1.0. Upstream: `https://github.com/blader/humanizer`.
 
 ## License
 
@@ -21,7 +21,7 @@ The same amendments live on the fork's `feat/scope-and-file-mode-amendments` bra
 
 ## What runs on this VM
 
-Nothing executes from the vendored tree. The live skill is `~/workspace/custom-skills/humanizer`, kept consistent with `skills/humanizer/` by the skills sync and the manifest gate. The snapshot's own validator (`scripts/validate-package.py`) is a packaging checker for the upstream repo; it is not run here.
+Nothing executes from the vendored tree. The live skill is `~/workspace/custom-skills/humanizer`, kept consistent with `skills/humanizer/` by the skills sync and the manifest gate; its extra `PROVENANCE.md` is local-only and is excluded from the sync scope. The snapshot's own validator (`scripts/validate-package.py`) is a packaging checker for the upstream repo; it is not run here.
 
 ## Agent-rules caveat
 
