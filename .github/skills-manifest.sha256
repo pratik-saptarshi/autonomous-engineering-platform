@@ -1,7 +1,7 @@
 47391abe18d1977e912ad7f1426c1ade29022459d015d2f538ffdc4222b29769  ./agent_operations/SKILL.md
 093fc6a2ca87cef0344728c55b06a5759a65eb560a244b68cf09ca9702f54e00  ./aim/SKILL.md
 b3dd527a9d0f8990fcc6be530513db02093fc5c659148d16b1da682223ea7a4a  ./autobahn/SKILL.md
-6ee10d1481b8a2580d5336ff66c5c08acc9d4b251b13bbc3bfd31be99c261d43  ./brainstorming/SKILL.md
+a5048187207d15a4c65cf2dcf06aeeab9bfe2d167a3d3cc72ce7e2a0f4ef8d93  ./brainstorming/SKILL.md
 36d51a4723d6f0a3ce5811a0ea3b3a8424f07533947e1355f5d8cb8cce40c55e  ./brainstorming/builder-check-prompt.md
 6a8a4e58bd6a44b904e2e3c57de774481d909204597e1498de53f1b2fecc4c4e  ./brainstorming/scripts/frame-template.html
 8959f8de86f43b4066f8936bc17b04285057592760ea1624cca8ba0975723c2b  ./brainstorming/scripts/helper.js
@@ -77,7 +77,7 @@ a789890e6629456a09de62c1227a68cc3a161ee5f9b3a94593e964eab66e892d  ./neurostrata_
 be279452e666988cdc0e5568ce9295238f956bef9a0746cf630c4d8dba58654f  ./neurostrata_memory/SKILL.md
 1ad19cca0a584e3175e171616a314ee8de5d4fb90c31971a40eff9bb2fb1f2f8  ./open-code-review-delegate/SKILL.md
 a789890e6629456a09de62c1227a68cc3a161ee5f9b3a94593e964eab66e892d  ./overnight-parallel-lanes/LICENSE
-f36ed2b8f8f3883e1d818198638da3fd6aeb1cb0537e010b8ca22bc6f62bed52  ./overnight-parallel-lanes/SKILL.md
+6cdb15d2205da522f604f9d2441e72fb4245d37f883539cde9870882b58d3cdd  ./overnight-parallel-lanes/SKILL.md
 1f1fb7e0b262ea8eecfe11781c3daf6ca5828e66430b9b4b9b41aea0428ccede  ./overseer/FORK.md
 055bc3dc8b733523e7b98591f6e4bc795a1510b1487ef7467de8df98d5762ef9  ./overseer/SKILL.md
 3d9422505ee6d9e01dde3eb0f347a7f54bb622dec821bc07244c8dd8ab4314df  ./overseer/references/changelog.md
@@ -93,7 +93,7 @@ c7ed6a24e508c8fd3e04c1c4dc45fc92af03aac230502d8df7ada5cc3533ae97  ./prism/SKILL.
 a789890e6629456a09de62c1227a68cc3a161ee5f9b3a94593e964eab66e892d  ./product-refinement-loop/LICENSE
 5eca5b5516064c6eb5e83f841c36db833d3b3ca16e3497fbe02d2692a45b7e01  ./product-refinement-loop/SKILL.md
 40ea7879348f374b8a3380fc1283bd070c347dde402890f36bc683e64d3160c5  ./prototype/LOGIC.md
-714de632d116bb73f65cdb5a882db15b9369a6713b9a47c0fad827848f0bfbe3  ./prototype/SKILL.md
+412518fd2a660ba2a13a84b0f1b8027ddf57d811bc96ca5a586d9ff8d4dae6bf  ./prototype/SKILL.md
 723211e878acbc7b6ff09755263f3295cde724ba902ff0064da41eed51d45ad3  ./prototype/UI.md
 5af65e43ab41a350436697b81e27b7f848d36782043b73c322bb2c9fa9cc55dc  ./prototype/agents/openai.yaml
 3fa554214ebc58318c1c72697a6ea4a64a03aa28c1e89f72f6d8fc6a7d4ddd9a  ./re0-git/SKILL.md
@@ -119,7 +119,7 @@ aef15a498650f5de03ad108d5f5ff13d3e7b7e4fa32047a51d2731b0aef838c0  ./self_test_gy
 8e81a802dcd3a74390b0bf9703d8e1da9f31c46d06a779abbe47635022792dc1  ./shower/SKILL.md
 e92f71a7519789257069d4db36da892c997b2b2a64f015c030322469dc2c0e9e  ./sip/SKILL.md
 65a5097919bf5fd787b50217c33e84237a77d33bca641f57acfc2fd9dabc35ce  ./ssotize/SKILL.md
-0cce66771387c21f6906a3fd299644c9ecf29c896029c1a8cbac27012ba41345  ./subagent-driven-development/SKILL.md
+a45c600f0f97497379299be3c32956a710420e8162646b9e22a1ac47d42113c7  ./subagent-driven-development/SKILL.md
 81dd9d5a3fb0b09b96b5829f03b9796842f3199ef7591d1ba1c2db2a515f64d0  ./subagent-driven-development/implementer-prompt.md
 0828a5e9cbb12ba49f14621dd8c3953c48c0fc383e75bb5494f055ed0d6d824f  ./subagent-driven-development/re-review-prompt.md
 f9275175b2276b1d5fdb1bae0bedaadd2a950659b7c6f311ea37ff85e1861b1f  ./subagent-driven-development/scripts/review-package
