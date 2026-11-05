@@ -44,6 +44,7 @@ grill-with-docs
 grilling
 handoff
 hate
+humanizer
 macrothink
 mandela
 modelchk
