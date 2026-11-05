@@ -52,7 +52,10 @@ mkdir -p "$STAGE"
 # NOTE: fd 9 must not leak into the daemon (see 9>&- in start_daemon) — an
 # inheriting daemon would hold the lock forever and brick future runs.
 exec 9>"$HOME/workspace/neurostrata/.watchdog.lock"
-flock -n 9 || { log "another watchdog run in progress — exiting"; exit 0; }
+flock -n 9 || {
+  log "another watchdog run in progress — exiting"
+  exit 0
+}
 
 drive_configured() {
   [ -s "$FOLDER_ID_FILE" ] && command -v /opt/hatch/bin/hatch_gws_cli >/dev/null
@@ -71,7 +74,7 @@ drive_catch_up() {
   if [ -n "$drive_sha" ] && [ "$drive_sha" = "$want_sha" ]; then
     return 0
   fi
-  newest="$(ls -1t "$STAGE"/db-*.db 2>/dev/null | head -1 || true)"
+  newest="$(find "$STAGE" -maxdepth 1 -type f -name 'db-*.db' -printf '%T@ %p\0' 2>/dev/null | sort -znr | head -z -n 1 | cut -z -d ' ' -f 2- | tr -d '\0' || true)"
   if [ -z "$newest" ]; then
     log "WARNING: Drive catch-up wanted (sha ${want_sha:0:12}…) but no staged backup exists — clearing local watermark so the next run takes a fresh backup"
     rm -f "$SHA_FILE"
@@ -87,7 +90,7 @@ drive_catch_up() {
   name="$(basename "$newest")"
   if upload_diag="$(/opt/hatch/bin/hatch_gws_cli drive +upload "$newest" --parent "$folder_id" --name "$name" 2>&1)"; then
     log "uploaded to Drive (folder ${folder_id:0:12}…): $name"
-    echo -n "$want_sha" > "$DRIVE_SHA_FILE"
+    echo -n "$want_sha" >"$DRIVE_SHA_FILE"
   else
     log "ERROR: Drive catch-up upload failed (${upload_diag:0:200}) — will retry next run"
     return 1
@@ -95,8 +98,8 @@ drive_catch_up() {
 }
 
 prune_staging() {
-  ls -1t "$STAGE"/db-*.db 2>/dev/null | tail -n +4 | xargs -r rm -f
-  ls -1t "$STAGE"/logs-*.tar.gz 2>/dev/null | tail -n +4 | xargs -r rm -f
+  find "$STAGE" -maxdepth 1 -type f -name 'db-*.db' -printf '%T@ %p\0' 2>/dev/null | sort -znr | tail -z -n +4 | cut -z -d ' ' -f 2- | xargs -0 -r rm -f
+  find "$STAGE" -maxdepth 1 -type f -name 'logs-*.tar.gz' -printf '%T@ %p\0' 2>/dev/null | sort -znr | tail -z -n +4 | cut -z -d ' ' -f 2- | xargs -0 -r rm -f
 }
 
 # Archive the daemon and watchdog logs (the latter carries the memory
@@ -141,7 +144,7 @@ rotate_daemon_log() {
   base="daemon-$ts.log"
   mv -f "$src" "$LOGS_DIR/$base"
   log "rotated daemon log -> logs/$base"
-  ls -1t "$LOGS_DIR"/daemon-*.log 2>/dev/null | tail -n +6 | xargs -r rm -f
+  find "$LOGS_DIR" -maxdepth 1 -type f -name 'daemon-*.log' -printf '%T@ %p\0' 2>/dev/null | sort -znr | tail -z -n +6 | cut -z -d ' ' -f 2- | xargs -0 -r rm -f
 }
 
 daemon_healthy() {
@@ -193,7 +196,7 @@ if ! daemon_healthy; then
   fi
   log "local backup OK: $STAGE_FILE"
   archive_logs "$TS"
-  echo -n "$CP_SHA" > "$SHA_FILE"
+  echo -n "$CP_SHA" >"$SHA_FILE"
   if ! drive_configured; then
     log "WARNING: Drive upload not configured — local backup is the only tier"
   else
@@ -201,7 +204,7 @@ if ! daemon_healthy; then
     NAME="ladybug-$TS.db"
     if upload_diag="$(/opt/hatch/bin/hatch_gws_cli drive +upload "$STAGE_FILE" --parent "$FOLDER_ID" --name "$NAME" 2>&1)"; then
       log "uploaded to Drive (folder ${FOLDER_ID:0:12}…): $NAME"
-      echo -n "$CP_SHA" > "$DRIVE_SHA_FILE"
+      echo -n "$CP_SHA" >"$DRIVE_SHA_FILE"
     else
       log "ERROR: Drive upload failed (${upload_diag:0:200}) — local backup retained at $STAGE_FILE; will retry next run"
       exit 1
@@ -304,7 +307,7 @@ archive_logs "$TS"
 # The local tier is complete: record it now, independently of Drive. A
 # failing Drive upload must not force a redundant daemon stop/copy cycle on
 # the next run — the catch-up path re-uploads from staging instead.
-echo -n "$CP_SHA" > "$SHA_FILE"
+echo -n "$CP_SHA" >"$SHA_FILE"
 
 # 5. Upload to Google Drive when configured. Drive is an optional tier: if the
 # folder id file or hatch_gws_cli is missing, log a loud warning and keep the
@@ -318,7 +321,7 @@ else
   NAME="ladybug-$TS.db"
   if upload_diag="$(/opt/hatch/bin/hatch_gws_cli drive +upload "$STAGE_FILE" --parent "$FOLDER_ID" --name "$NAME" 2>&1)"; then
     log "uploaded to Drive (folder ${FOLDER_ID:0:12}…): $NAME"
-    echo -n "$CP_SHA" > "$DRIVE_SHA_FILE"
+    echo -n "$CP_SHA" >"$DRIVE_SHA_FILE"
   else
     log "ERROR: Drive upload failed (${upload_diag:0:200}) — local backup retained at $STAGE_FILE; will retry next run"
     exit 1
@@ -328,4 +331,3 @@ fi
 # 6. Prune local staging, keep 3 most recent
 prune_staging
 log "done"
-
