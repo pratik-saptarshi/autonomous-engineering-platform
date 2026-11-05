@@ -12,6 +12,12 @@ Known gaps, F6). Snapshot date 2026-10-25; amendments 2026-10-26. It is not
 a self-sufficient rebuild kit: the Known gaps section below names what a
 rebuild still needs from outside this repo.
 
+> **Canonical lifecycle kit (2026-11-04):** the canonical source for the
+> lifecycle scripts is now `ops/` in this repo (see `ops/README.md`).
+> The kit-era documents in `reference/neurostrata-ops/` are a dated Oct 26
+> snapshot; on any disagreement, the deployed script governs runtime (see
+> `docs/daemon-lifecycle-contract.md`).
+
 ## Doctrine (standing rule, adopted 2026-10-25)
 
 - **NeuroStrata is the primary memory system.** Learnings, patterns, and project
