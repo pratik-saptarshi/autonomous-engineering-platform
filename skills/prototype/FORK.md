@@ -10,6 +10,6 @@ This copy is a **locally modified fork** of an upstream skill. It is not the ups
 ## Local changes
 
 - 2026-11-04 — Fork marking added (this file + `fork_of`/`fork_version` markers); no content change in this step.
-- (pre-marking) Cosmetic only: LOGIC.md emphasis style normalized (*idea* where upstream has _idea_); SKILL.md, UI.md and agents/ are verbatim. No content change.
+- (pre-marking) Cosmetic only: LOGIC.md emphasis style normalized (asterisk form where upstream has the underscore form); SKILL.md, UI.md and agents/ are verbatim. No content change.
 
 Bump `fork_version` and append a dated line here whenever this copy is edited locally.
