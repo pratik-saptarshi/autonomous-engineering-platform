@@ -83,6 +83,7 @@ ssotize
 subagent-driven-development
 systematic-debugging
 test-driven-development
+untangle-codebase
 using-git-worktrees
 verification-before-completion
 wizard
