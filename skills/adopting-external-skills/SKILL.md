@@ -174,11 +174,17 @@ Verbatim imports stay unmarked. Verify every prose edit landed by grepping
 the artifact — a patch against hard-wrapped text can apply and change
 nothing.
 
-Verification, in order. Harness: RED against the pristine candidate first
-(recorded), then GREEN against the installed text; whitespace-normalized
+Verification, in order. Harness: when the run amends the candidate, RED
+against the pristine candidate first (recorded — the amendment-specific
+checks must fail there), then GREEN against the installed text. When the
+run adopts verbatim, pristine and installed are byte-identical and no
+pristine-RED is possible: verify byte-identity to the recorded pin, run the
+provenance and structure checks GREEN on the installed text, and prove the
+checks discriminate with a mutated-copy control (one mandated element
+removed; the harness must FAIL on it). Either way: whitespace-normalized
 comparisons using upstream's exact phrasings; a check is never weakened to
 make it pass — a harness bug may be fixed only when the corrected check
-also passes against pristine upstream. Probe: if the candidate relies on a
+still fails its negative control (pristine or mutated copy, as applies). Probe: if the candidate relies on a
 runtime frontmatter key or harness behavior, probe whether this runtime
 honors it and record the result with its caveat; the probe never upgrades
 itself to a pass, and the in-text rule is the operative control. Dogfood:
