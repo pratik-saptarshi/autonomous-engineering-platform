@@ -20,6 +20,7 @@
 # rules from this file; no rule is hardcoded anywhere else.
 
 [skills]
+adopting-external-skills
 agent_operations
 aim
 autobahn
