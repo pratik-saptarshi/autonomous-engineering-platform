@@ -205,8 +205,8 @@ Gate (b), sync plus first inclusion: after membership, the daily
 skill-sync carries files live→repo. If the sync's drift guard as it stands
 at run time fail-safe-excludes first-inclusion files (files with no
 touching commit on main), they land via an owner-ruled amendment carrying
-the sync commit subject, so later drift classifies live-ahead (the PR
-#97/#99 pattern). If the guard's behavior changes, that workaround retires
+the sync commit subject, so later drift classifies live-ahead (the
+PR #97/#99 pattern). If the guard's behavior changes, that workaround retires
 with it — never apply it by rote.
 
 Every merge follows the merge-readiness census: CI green on the exact
