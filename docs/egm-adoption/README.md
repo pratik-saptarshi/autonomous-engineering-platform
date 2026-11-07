@@ -34,13 +34,15 @@ was never written to disk.
 
 ## Still open
 
-- **zoom_out-1-1 ESCALATE (Environment A scope)** — the round-1 reviewer
-  questioned designing Environment A in full with no identified user. The
-  resolver escalated it: the dual-environment scope was the owner's
-  explicit instruction, recorded in the requesting conversation, not in any
-  file the reviewers could read. It needs the owner's ruling (keep fully
-  designed, demote to appendix, or drop) and is carried as settled in
-  later rounds, not re-decided.
+- **zoom_out-1-1 ESCALATE (Environment A scope) — RULED 2026-11-07,
+  closed.** The owner ruled to keep Environment A fully designed as §9
+  of the strategy doc (no appendix move, not dropped). The headless
+  (Path 2) shape was validated the same day in an emulated fresh-VM
+  rootfs — §9.1 provisioning, §10.6 checks (48/48 references), gate
+  scans, D6 snapshot, and §9.5 step 2 packaging tests (342 tests,
+  0 failures) all pass; the Path 1 (muse-cli) E2E shape remains
+  documented-but-unexecuted. Ruling and gate record: strategy doc
+  §14 decision 3 and §11.
 - Convergence: not achieved — 0 of 2 clean rounds across all 5 rounds;
   the cap is reached and the loop is complete.
 
