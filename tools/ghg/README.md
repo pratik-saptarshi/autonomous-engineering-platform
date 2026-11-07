@@ -201,8 +201,7 @@ and paths are deliberately left ungated today:
 - **GitHub's CPU-time secondary limit** (90 s of CPU per 60 s,
   published) — unmodelled, like the other secondary shapes beyond
   the content throttle.
-- **Prose mentions in skills** — `feature-pr-pipeline`,
-  `re0-upgrade`, `receiving-code-review`, and `wizard` mention
+- **Prose mentions in skills** — `feature-pr-pipeline`, `receiving-code-review`, and `wizard` mention
   `gh` commands as instructions to future agents. They are
   prose, not unattended callers; the fleet-wide convention
   (AGENTS.md + `BRIEF-SNIPPET.md`) governs the agents who read

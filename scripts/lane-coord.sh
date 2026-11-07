@@ -189,6 +189,31 @@ print(value)
 ' "$1" "$2"
 }
 
+# manifest_missing_field <file> — print the first required schema
+# field absent from the manifest; non-zero if the file does not
+# parse or no required field is missing. The required set is exactly
+# the fields write_manifest writes unconditionally; the policy
+# triple is written only when non-empty, so it stays optional.
+# Presence only, matching manifest_get's semantics (a JSON null
+# counts as absent) — no type validation.
+manifest_missing_field() {
+  python3 -c '
+import json, sys
+try:
+    with open(sys.argv[1]) as fh:
+        data = json.load(fh)
+except Exception:
+    sys.exit(1)
+for field in ("version", "name", "repo", "path", "branch", "base",
+              "worker", "launcher_pid", "epoch", "state", "claimed_at",
+              "updated_at", "worker_pid", "worker_start"):
+    if data.get(field) is None:
+        print(field)
+        sys.exit(0)
+sys.exit(1)
+' "$1"
+}
+
 # manifest_epoch_state <file> — print "<epoch> <state>" from a SINGLE
 # parse, so the two values can never be observed across a concurrent
 # rewrite of the manifest.
@@ -1231,8 +1256,14 @@ cmd_release() {
       exit 1
     fi
 
-    # Signal 1: the manifest exists and its repo/path/branch name
-    # this lane.
+    # Signal 1: the manifest exists, carries the full schema
+    # write_manifest writes unconditionally, and its
+    # repo/path/branch name this lane.
+    local m_missing
+    if m_missing=$(manifest_missing_field "$manifest_file" 2>/dev/null); then
+      echo "LANE: refuse clean $name: manifest missing required field $m_missing"
+      exit 1
+    fi
     m_name=$(manifest_get "$manifest_file" name 2>/dev/null || true)
     m_repo=$(manifest_get "$manifest_file" repo 2>/dev/null || true)
     m_path=$(manifest_get "$manifest_file" path 2>/dev/null || true)
@@ -2614,6 +2645,29 @@ PYEOF
   [ -f "$live_new/rho-thirtythree.json" ] || case_fails=1
   [ ! -e "$live_legacy/rho-thirtythree.json" ] || case_fails=1
   report_case "migrate-refuses-while-legacy-fence-held"
+
+  # --- Case 33: clean-refuses-manifest-missing-required-field ---
+  # A lane that passes every validated-cleanup signal (claimed then
+  # released by a completed claim, worktree registered, branch
+  # matches, path is the managed location, worker gone) must still
+  # refuse --clean when its manifest lacks a required schema field:
+  # Signal 1 requires the full schema write_manifest writes
+  # unconditionally (issue #39). `base` is removed because nothing
+  # in the clean path reads it today, so only the schema check can
+  # refuse; the refusal names the field and removes nothing.
+  local out33="$selftest_root/out33.txt" out33r="$selftest_root/out33r.txt" rc33=0 rc33r=0
+  bash "$self_path" claim --repo "$repo" --project upsilon --lane thirtyfour \
+    --branch br-thirtyfour --base HEAD --worker w34 \
+    --exec true >"$out33" 2>&1 || rc33=$?
+  [ "$rc33" -eq 0 ] || case_fails=1
+  [ "$(mget upsilon-thirtyfour state)" = "released" ] || case_fails=1
+  python3 -c 'import json, sys; p = sys.argv[1]; d = json.load(open(p)); del d["base"]; json.dump(d, open(p, "w"))' \
+    "$LANES_DIR/upsilon-thirtyfour.json" || case_fails=1
+  bash "$self_path" release --name upsilon-thirtyfour --clean >"$out33r" 2>&1 || rc33r=$?
+  [ "$rc33r" -eq 1 ] || case_fails=1
+  grep -qF "LANE: refuse clean upsilon-thirtyfour: manifest missing required field base" "$out33r" || case_fails=1
+  [ -d "$WT_ROOT/upsilon-thirtyfour" ] || case_fails=1
+  report_case "clean-refuses-manifest-missing-required-field"
 
   return "$fails"
 }

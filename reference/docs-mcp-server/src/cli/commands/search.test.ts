@@ -1,0 +1,89 @@
+/** Unit test for searchAction */
+
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import yargs from "yargs";
+import { telemetry } from "../../telemetry";
+import { SearchTool } from "../../tools";
+import { createSearchCommand } from "./search";
+
+const stdoutWriteMock = vi.fn();
+
+vi.mock("../../telemetry", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../telemetry")>()),
+  telemetry: { track: vi.fn() },
+}));
+vi.mock("../../services/backend", () => ({
+  openBackend: vi.fn(async () => ({ docService: {}, close: vi.fn() })),
+}));
+vi.mock("../../tools", () => ({
+  SearchTool: vi.fn().mockImplementation(function () {
+    return { execute: vi.fn(async () => ({ results: [] })) };
+  }),
+}));
+vi.mock("../utils", () => ({
+  getGlobalOptions: vi.fn(() => ({ storePath: undefined })),
+  getEventBus: vi.fn(() => ({
+    on: vi.fn(),
+    emit: vi.fn(),
+  })),
+  resolveEmbeddingContext: vi.fn(() => ({ provider: "mock", model: "mock-model" })),
+  CliContext: {},
+}));
+// Mock loadConfig to avoid Zod issues during tests if any, or ensuring defaults
+vi.mock("../../utils/config", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../utils/config")>();
+  return {
+    ...actual,
+    loadConfig: vi.fn(() => ({
+      app: { embeddingModel: "mock-model", storePath: "/mock/store" },
+      search: { overfetchFactor: 2 },
+    })),
+  };
+});
+
+describe("search command", () => {
+  let stdoutWriteSpy: { mockRestore: () => void };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    stdoutWriteMock.mockReset();
+    stdoutWriteSpy = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(stdoutWriteMock as any);
+  });
+
+  afterEach(() => {
+    stdoutWriteSpy.mockRestore();
+  });
+
+  it("invokes SearchTool with parameters", async () => {
+    const parser = yargs().scriptName("test");
+    createSearchCommand(parser);
+
+    await parser.parse("search react hooks --version 18.x --limit 3");
+
+    expect(SearchTool).toHaveBeenCalledTimes(1);
+    const mockInstance = (SearchTool as any).mock.results[0].value;
+    expect(mockInstance.execute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        library: "react",
+        query: "hooks",
+        version: "18.x",
+        limit: 3,
+        exactMatch: false,
+      }),
+    );
+    expect(stdoutWriteMock).toHaveBeenCalledWith("[]\n");
+  });
+
+  it("sends the query length to telemetry instead of the query", async () => {
+    const parser = yargs().scriptName("test");
+    createSearchCommand(parser);
+
+    await parser.parse(["search", "react", "secret roadmap"]);
+
+    const [, properties] = vi.mocked(telemetry.track).mock.calls[0];
+    expect(properties).toMatchObject({ queryLength: 14 });
+    expect(JSON.stringify(properties)).not.toContain("secret");
+  });
+});

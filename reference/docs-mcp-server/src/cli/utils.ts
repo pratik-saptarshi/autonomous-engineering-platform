@@ -1,0 +1,425 @@
+/**
+ * Shared CLI utilities and helper functions.
+ */
+
+import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { createRequire } from "node:module";
+import path from "node:path";
+import { createInterface } from "node:readline";
+import type { AppServerConfig } from "../app";
+import type { AuthConfig } from "../auth/types";
+import type { EventBusService } from "../events";
+import { ManagedBrowser } from "../scraper/fetcher/ManagedBrowser";
+import type { DocumentManagementService } from "../store/DocumentManagementService";
+import {
+  EmbeddingConfig,
+  type EmbeddingModelConfig,
+} from "../store/embeddings/EmbeddingConfig";
+import { describeEmbeddingModel, type EmbeddingModelChangedError } from "../store/errors";
+import { parseEnvBoolean } from "../utils/config";
+import { logger } from "../utils/logger";
+import type { GlobalOptions } from "./types";
+
+/**
+ * Context extended with EventBusService, injected via middleware.
+ */
+export interface CliContext {
+  _eventBus?: EventBusService;
+  [key: string]: unknown;
+}
+
+/**
+ * Retrieves the global EventBusService from the arguments context.
+ * @param argv The parsed arguments context.
+ * @returns The global EventBusService.
+ * @throws Error if EventBusService is not initialized.
+ */
+export function getEventBus(argv: CliContext): EventBusService {
+  const eventBus = argv._eventBus;
+  if (!eventBus) {
+    throw new Error("EventBusService not initialized");
+  }
+  return eventBus;
+}
+
+/**
+ * Helper to extract GlobalOptions from the argv.
+ * In Yargs, all options are in argv, so we just cast/pick.
+ */
+export function getGlobalOptions(argv: Record<string, unknown>): GlobalOptions {
+  return argv as unknown as GlobalOptions;
+}
+
+/**
+ * Embedding context.
+ * Simplified subset of EmbeddingModelConfig for telemetry purposes.
+ */
+export interface EmbeddingContext {
+  aiEmbeddingProvider: string;
+  aiEmbeddingModel: string;
+  aiEmbeddingDimensions: number | null;
+}
+
+/**
+ * Ensures a Chromium for scraping is installed, unless a system Chromium path
+ * is set.
+ *
+ * Any Chromium `ManagedBrowser` launches without an explicit path counts: the
+ * headless shell or the full build. When neither is there, the headless shell
+ * is installed with the CLI of the Playwright this package depends on, so it
+ * matches that version. The install leaves other browsers alone, since another
+ * process may be running them.
+ */
+export function ensurePlaywrightBrowsersInstalled(): void {
+  if (process.env.PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD === "1") {
+    logger.debug(
+      "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD is set, skipping Playwright browser install.",
+    );
+    return;
+  }
+
+  // If PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH is set, skip install
+  const chromiumEnvPath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
+  if (chromiumEnvPath && existsSync(chromiumEnvPath)) {
+    logger.debug(
+      `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH is set to '${chromiumEnvPath}', skipping Playwright browser install.`,
+    );
+    return;
+  }
+
+  if (ManagedBrowser.isPlaywrightChromiumInstalled()) {
+    return;
+  }
+
+  // `playwright/cli.js` is not an exported path, but its package.json is.
+  const playwrightCli = path.join(
+    path.dirname(createRequire(import.meta.url).resolve("playwright/package.json")),
+    "cli.js",
+  );
+  try {
+    logger.info("🌐 Installing Playwright Chromium browser... (this may take a moment)");
+    execFileSync(
+      process.execPath,
+      [playwrightCli, "install", "chromium-headless-shell", "--no-remove"],
+      { stdio: "ignore" },
+    );
+  } catch (error) {
+    logger.debug(String(error));
+    logger.error(
+      `❌ Failed to install Playwright browsers automatically. Please run:\n  node "${playwrightCli}" install --with-deps chromium-headless-shell\nand try again.`,
+    );
+    process.exit(1);
+  }
+}
+
+/**
+ * Resolves the protocol based on auto-detection or explicit specification.
+ * Auto-detection uses TTY status to determine appropriate protocol.
+ */
+export function resolveProtocol(protocol: string): "stdio" | "http" {
+  if (protocol === "auto") {
+    // VS Code and CI/CD typically run without TTY
+    if (!process.stdin.isTTY && !process.stdout.isTTY) {
+      return "stdio";
+    }
+    return "http";
+  }
+
+  // Explicit protocol specification
+  if (protocol === "stdio" || protocol === "http") {
+    return protocol;
+  }
+
+  throw new Error(`Invalid protocol: ${protocol}. Must be 'auto', 'stdio', or 'http'`);
+}
+
+/**
+ * Validates and parses port number
+ */
+export function validatePort(portString: string): number {
+  const port = Number.parseInt(portString, 10);
+  if (Number.isNaN(port) || port < 1 || port > 65535) {
+    throw new Error("Invalid port number");
+  }
+  return port;
+}
+
+/**
+ * Validates host string for basic format checking
+ */
+export function validateHost(hostString: string): string {
+  // Basic validation - allow IPv4, IPv6, and hostnames
+  const trimmed = hostString.trim();
+  if (!trimmed) {
+    throw new Error("Host cannot be empty");
+  }
+
+  // Very basic format check - reject obviously invalid values
+  if (trimmed.includes(" ") || trimmed.includes("\t") || trimmed.includes("\n")) {
+    throw new Error("Host cannot contain whitespace");
+  }
+
+  return trimmed;
+}
+
+/**
+ * Creates AppServerConfig based on service requirements.
+ *
+ * AppConfig is the source of truth for host/auth/telemetry/read-only settings.
+ * AppServerConfig only selects which services to run and which port to bind to.
+ * Whether the server runs jobs itself or uses a worker follows from the backend.
+ *
+ * @param options Which services to run, the port, and startup details.
+ * @returns The server configuration.
+ */
+export function createAppServerConfig(options: {
+  enableWebInterface?: boolean;
+  enableMcpServer?: boolean;
+  enableApiServer?: boolean;
+  port: number;
+  showLogo?: boolean;
+  startupContext?: {
+    cliCommand?: string;
+    mcpProtocol?: "stdio" | "http";
+    mcpTransport?: "sse" | "streamable";
+  };
+}): AppServerConfig {
+  return {
+    enableWebInterface: options.enableWebInterface ?? false,
+    enableMcpServer: options.enableMcpServer ?? true,
+    enableApiServer: options.enableApiServer ?? false,
+    port: options.port,
+    showLogo: options.showLogo ?? true,
+    startupContext: options.startupContext,
+  };
+}
+
+/**
+ * Parses custom headers from CLI options
+ */
+export function parseHeaders(headerOptions: string[]): Record<string, string> {
+  const headers: Record<string, string> = {};
+
+  if (Array.isArray(headerOptions)) {
+    for (const entry of headerOptions) {
+      const idx = entry.indexOf(":");
+      if (idx > 0) {
+        const name = entry.slice(0, idx).trim();
+        const value = entry.slice(idx + 1).trim();
+        if (name) headers[name] = value;
+      }
+    }
+  }
+
+  return headers;
+}
+
+/**
+ * Check the auth settings for the transport a command serves. Authentication
+ * applies to MCP over HTTP only. Over stdio the host launching the process is
+ * the trust boundary, so auth settings are ignored with a warning on stderr,
+ * which never carries protocol data.
+ * @param auth - The loaded auth settings.
+ * @param protocol - The resolved transport.
+ * @param port - The HTTP port, for the plain-HTTP warning.
+ * @throws Error when an auth setting over HTTP is malformed.
+ */
+export function checkAuthForProtocol(
+  auth: AuthConfig,
+  protocol: "stdio" | "http",
+  port: number,
+): void {
+  if (!auth.enabled) {
+    return;
+  }
+  if (protocol === "stdio") {
+    console.error(
+      "⚠️  Authentication does not apply to MCP over stdio; auth settings are ignored.",
+    );
+    return;
+  }
+  validateAuthConfig(auth);
+  warnHttpUsage(port);
+}
+
+/**
+ * Validates the format of auth settings that are present. Whether a setting
+ * is required depends on what the process serves, so the server checks that
+ * at startup.
+ */
+function validateAuthConfig(authConfig: AuthConfig): void {
+  const errors: string[] = [];
+
+  if (authConfig.issuerUrl) {
+    try {
+      const url = new URL(authConfig.issuerUrl);
+      if (url.protocol !== "https:") {
+        errors.push("Issuer URL must use HTTPS protocol");
+      }
+    } catch {
+      errors.push("Issuer URL must be a valid URL");
+    }
+  }
+
+  // Audience is optional: it defaults to the MCP endpoint's public URL.
+  if (authConfig.audience) {
+    // Audience can be any valid URI (URL or URN)
+    // Examples: https://api.example.com, urn:docs-mcp-server:api, urn:company:service
+    try {
+      // Try parsing as URL first (most common case)
+      const url = new URL(authConfig.audience);
+      if (url.protocol === "http:" && url.hostname !== "localhost") {
+        // Warn about HTTP in production but don't fail
+        logger.warn(
+          "⚠️  Audience uses HTTP protocol - consider using HTTPS for production",
+        );
+      }
+      if (url.hash) {
+        errors.push("Audience must not contain URL fragments");
+      }
+    } catch {
+      // If not a valid URL, check if it's a valid URN
+      if (authConfig.audience.startsWith("urn:")) {
+        // Basic URN validation: urn:namespace:specific-string
+        const urnParts = authConfig.audience.split(":");
+        if (urnParts.length < 3 || !urnParts[1] || !urnParts[2]) {
+          errors.push("URN audience must follow format: urn:namespace:specific-string");
+        }
+      } else {
+        errors.push(
+          "Audience must be a valid absolute URL or URN (e.g., https://api.example.com or urn:company:service)",
+        );
+      }
+    }
+  }
+
+  if (errors.length > 0) {
+    throw new Error(`Auth configuration validation failed:\n${errors.join("\n")}`);
+  }
+}
+
+/**
+ * Warns about HTTP usage in production when auth is enabled.
+ */
+function warnHttpUsage(port: number): void {
+  // Check if we're likely running in production (not localhost)
+  const isLocalhost =
+    process.env.NODE_ENV !== "production" ||
+    port === 6280 || // default dev port
+    process.env.HOSTNAME?.includes("localhost");
+
+  if (!isLocalhost) {
+    logger.warn(
+      "⚠️  Authentication is enabled but running over HTTP in production. " +
+        "Consider using HTTPS for security.",
+    );
+  }
+}
+
+/**
+ * Resolves embedding configuration from the provided model specification.
+ * This function centralizes the logic for determining the embedding model.
+ *
+ * @param embeddingModel The embedding model specification string.
+ * @returns Embedding configuration or null if config is unavailable.
+ */
+export function resolveEmbeddingContext(
+  embeddingModel?: string,
+): EmbeddingModelConfig | null {
+  try {
+    const modelSpec = embeddingModel;
+
+    if (!modelSpec) {
+      logger.debug("No embedding model specified. Embeddings are disabled.");
+      return null;
+    }
+
+    logger.debug(`Resolving embedding configuration for model: ${modelSpec}`);
+    return EmbeddingConfig.parseEmbeddingConfig(modelSpec);
+  } catch (error) {
+    logger.debug(`Failed to resolve embedding configuration: ${error}`);
+    return null;
+  }
+}
+
+/**
+ * Prompts the user interactively to confirm an embedding model change.
+ * Returns true if the user confirms (y/Y), false otherwise.
+ */
+function promptModelChangeConfirmation(
+  change: EmbeddingModelChangedError,
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    console.error(
+      `\n⚠️  Embedding model change detected:\n` +
+        `   Previous: ${describeEmbeddingModel(change.previousModel, change.previousDimension)}\n` +
+        `   Current:  ${describeEmbeddingModel(change.currentModel, change.currentDimension)}\n\n` +
+        `   All existing embedding vectors will be invalidated.\n` +
+        `   Libraries must be re-scraped to restore vector search.\n` +
+        `   Full-text search will continue working for all existing documents.\n`,
+    );
+
+    const rl = createInterface({
+      input: process.stdin,
+      output: process.stderr,
+    });
+
+    rl.question("   Proceed with model change? (y/N) ", (answer) => {
+      rl.close();
+      const confirmed = answer.trim().toLowerCase() === "y";
+      resolve(confirmed);
+    });
+  });
+}
+
+/**
+ * Handles EmbeddingModelChangedError during service initialization.
+ *
+ * - When accepted (`--accept-model-change` or `DOCS_MCP_ACCEPT_MODEL_CHANGE`):
+ *   resolves the model change (invalidates vectors) without asking.
+ * - In non-interactive mode (no TTY): re-throws the error to fail startup.
+ * - In interactive mode (TTY): prompts the user for confirmation, then either
+ *   resolves the model change or exits.
+ *
+ * @param error The EmbeddingModelChangedError thrown by DocumentStore.initialize()
+ * @param service The DocumentManagementService instance (already partially initialized)
+ * @param acceptFlag The value of `--accept-model-change`; when omitted,
+ *   `DOCS_MCP_ACCEPT_MODEL_CHANGE` decides
+ * @throws Re-throws the error in non-interactive mode or if the user rejects the change
+ */
+export async function handleEmbeddingModelChange(
+  error: EmbeddingModelChangedError,
+  service: Pick<DocumentManagementService, "resolveModelChange">,
+  acceptFlag?: boolean,
+): Promise<void> {
+  const accepted =
+    acceptFlag ?? parseEnvBoolean(process.env.DOCS_MCP_ACCEPT_MODEL_CHANGE) ?? false;
+  if (accepted) {
+    logger.warn(
+      `⚠️  Accepting embedding model change without a prompt: ` +
+        `${describeEmbeddingModel(error.previousModel, error.previousDimension)} → ` +
+        `${describeEmbeddingModel(error.currentModel, error.currentDimension)}`,
+    );
+    await service.resolveModelChange();
+    return;
+  }
+
+  // Non-interactive: fail startup entirely
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    throw error;
+  }
+
+  // Interactive: prompt user for confirmation
+  const confirmed = await promptModelChangeConfirmation(error);
+
+  if (!confirmed) {
+    throw new Error(
+      "Embedding model change rejected. Startup aborted.\n" +
+        "Restore the previous embedding model configuration to continue without changes.",
+    );
+  }
+
+  // User confirmed: invalidate vectors and complete initialization
+  await service.resolveModelChange();
+}

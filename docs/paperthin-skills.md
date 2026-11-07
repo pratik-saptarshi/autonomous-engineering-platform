@@ -1,7 +1,7 @@
 # paperthin skills
 
-Vendored into `~/workspace/custom-skills/` on 2026-10-18. Upstream:
-[LilMGenius/paperthin](https://github.com/LilMGenius/paperthin) (MIT),
+Vendored into `~/workspace/custom-skills/` on 2026-10-18. Fork:
+[pratik-saptarshi/paperthin](https://github.com/pratik-saptarshi/paperthin) (default branch `develop`; upstream LilMGenius/paperthin, MIT),
 pinned to commit `7d5dc62`. All 28 `SKILL.md` files are verbatim copies —
 nothing rewritten, nothing trimmed. Attribution (license, notice) lives in
 `~/workspace/custom-skills/paperthin-attribution/`.
@@ -78,7 +78,6 @@ receiving-review, the `coil/` loop skills with the ralph lanes and retro.
 | Skill | What it does | Invoked by |
 |---|---|---|
 | ssotize | Audit scatter, then consolidate to one home and point the rest at it | model |
-| re0-upgrade | Upgrade to the full current catalog in one command | user |
 
 ### coil/ — one project, across iterations
 
@@ -99,6 +98,7 @@ receiving-review, the `coil/` loop skills with the ralph lanes and retro.
 
 ## Updating
 
-Re-clone upstream, re-copy the 28 files, and diff against the pinned
-commit before replacing. The upstream `/re0-upgrade` workflow covers
-renames and retirements; apply its report, don't hand-edit around it.
+Re-clone upstream, re-copy the remaining files, and diff against the pinned
+commit before replacing. The upstream `/re0-upgrade` workflow is not vendored
+here (removed for security reasons); apply its report only by hand, don't
+hand-edit around it.
