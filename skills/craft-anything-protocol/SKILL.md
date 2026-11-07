@@ -2,7 +2,7 @@
 name: craft-anything-protocol
 description: Use when a reverse-engineering task requires clean-room posture (the target's inspection rights are not affirmatively established) or the deliverable is a recreation-oriented evidence record. This is the Craft Anything Study-surface discipline and AEP-side claim-verification as a governed protocol over the existing REA/Ghidra bench — a protocol, not a runtime; the engine is not installed. For ordinary analysis of a binary or package you may inspect, use the reverse_engineering skill instead.
 fork_of: "storytold/craft-anything — Study tooling surface and evidence-record discipline (via pratik-saptarshi/craft-anything, pin 2e4afc5)"
-fork_version: 1
+fork_version: 2
 ---
 
 # Craft Anything Protocol
@@ -16,6 +16,8 @@ Branch B evaluation note (2026-11-07): the published engine, craft-anything v0.5
 This skill is not written as if the engine were runnable here. It adopts three things from Craft Anything: the Study tooling surface as a pinned reference, its evidence-record discipline, and its clean-room posture as governed process — executed with the bench AEP already has.
 
 ## Routing — which surface answers which question
+
+This table is shared with the `reverse_engineering` skill; the two copies are kept byte-identical so the surfaces cannot drift apart.
 
 | Question shape | Route | Why |
 |---|---|---|
