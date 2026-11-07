@@ -13,7 +13,7 @@ Vendored snapshot: [PROVENANCE.md](../reference/neurostrata/PROVENANCE.md) — f
 | persistent graph memory across sessions | the memory layer every agent session boots against |
 | task gate — `done` requires an extracted lesson | per-task evidence + review gates before anything ships |
 | behavioral rules enforced pre-action | standing rules (deletion rule, push authorization) in agent instructions |
-| watchdog + idle-reaper lifecycle around the daemon | `scripts/watchdog-backup.sh` + the environment-maintenance crons |
+| watchdog + idle-reaper lifecycle around the daemon | canonical lifecycle kit in `ops/` (watchdog, deltas, test, cron record, runbooks) — see `ops/README.md`; `scripts/watchdog-backup.sh` is the legacy always-on-era copy, kept with its test |
 
 ## What runs on this VM
 

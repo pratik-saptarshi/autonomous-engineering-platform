@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   docs-lint:
     runs-on: ubuntu-latest
@@ -27,8 +31,8 @@ jobs:
       - run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
           go install mvdan.cc/sh/v3/cmd/shfmt@v3.10.0
-          shellcheck scripts/*.sh
-          test -z "$(shfmt -d -i 2 scripts/*.sh)"
+          shellcheck scripts/*.sh ops/bin/*.sh
+          test -z "$(shfmt -d -i 2 scripts/*.sh ops/bin/*.sh)"
 
   script-tests:
     runs-on: ubuntu-latest
@@ -40,6 +44,7 @@ jobs:
       - run: bash scripts/lane-coord.sh --self-test
       - run: bash scripts/boot-gate.sh --self-test --offline
       - run: bash scripts/tests/test_watchdog.sh
+      - run: bash ops/tests/test_watchdog_ops.sh
 
   go-checks:
     runs-on: ubuntu-latest
