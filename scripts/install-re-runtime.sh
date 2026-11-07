@@ -289,6 +289,159 @@ install_radare2() {
   ok radare2
 }
 
+# Set by ensure_profile: whether ~/.profile pre-existed this process or
+# was created by it. Cached so a repeat call in the same run cannot
+# re-derive "pre-existing" for a profile the run itself just created.
+PROFILE_ORIGIN=""
+
+ensure_profile() {
+  if [ -n "$PROFILE_ORIGIN" ]; then
+    return 0
+  fi
+  if [ -e "$HOME/.profile" ]; then
+    PROFILE_ORIGIN="pre-existing"
+    return 0
+  fi
+  # Create-only-if-absent: login shells source ~/.bashrc so the env
+  # block below reaches them. A pre-existing profile is never modified.
+  cat >"$HOME/.profile" <<'EOF'
+# Created by install-re-runtime.sh so login shells pick up the
+# interactive configuration (and with it the re-runtime env block).
+if [ -f "$HOME/.bashrc" ]; then
+  . "$HOME/.bashrc"
+fi
+EOF
+  PROFILE_ORIGIN="created-by-install-re-runtime"
+}
+
+install_env_block() {
+  local bashrc="$HOME/.bashrc"
+  local bak="$HOME/.bashrc.install-re-runtime.bak"
+  local tmp="$HOME/.bashrc.install-re-runtime.tmp"
+  # One-time as-found backup, before any inspection or modification:
+  # the .bashrc exactly as found (damaged or not) is preserved if the
+  # backup is absent, so a later refusal can always name a real path
+  # and the as-found state survives the refusal.
+  if [ -e "$bashrc" ] && [ ! -e "$bak" ]; then
+    cp "$bashrc" "$bak" || fail env "cannot create as-found backup $bak"
+  fi
+
+  # Split the file into the content outside the marker block (kept,
+  # carried through verbatim) and the block itself (replaced whole).
+  # A start marker with no end marker is a torn block: everything from
+  # the start marker on is block content and is rewritten whole.
+  local -a lines=() kept=()
+  local line trimmed in_block=0 seen_block=0 insert_at=-1
+  local unmarked=0 prior_profile=""
+  if [ -e "$bashrc" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      lines+=("$line")
+    done <"$bashrc"
+  fi
+  for line in "${lines[@]}"; do
+    if [ "$line" = "# >>> re-runtime >>>" ]; then
+      if [ "$in_block" -eq 0 ]; then
+        in_block=1
+        if [ "$seen_block" -eq 0 ]; then
+          insert_at=${#kept[@]}
+        fi
+        seen_block=1
+      fi
+      continue
+    fi
+    if [ "$line" = "# <<< re-runtime <<<" ]; then
+      in_block=0
+      continue
+    fi
+    if [ "$in_block" -eq 1 ]; then
+      case "$line" in
+      "# profile: created-by-install-re-runtime" | "# profile: pre-existing")
+        if [ -z "$prior_profile" ]; then
+          prior_profile="${line#'# profile: '}"
+        fi
+        ;;
+      esac
+      continue
+    fi
+    kept+=("$line")
+    trimmed="${line#"${line%%[![:space:]]*}"}"
+    case "$trimmed" in
+    '#'*) ;;
+    *JAVA_HOME=* | *GHIDRA_INSTALL_DIR=*) unmarked=1 ;;
+    esac
+  done
+  if [ "$insert_at" -lt 0 ]; then
+    insert_at=${#kept[@]}
+  fi
+
+  # Damage outside the block: the kept content must parse as shell.
+  # The atomic write below makes a torn file unreachable from this
+  # script's own writes, so unparseable kept content means an outside
+  # writer tore the file — fail, naming the file and the backup,
+  # rather than silently "repairing" over lost user content.
+  if [ "${#kept[@]}" -gt 0 ] &&
+    ! printf '%s\n' "${kept[@]}" | bash -n >/dev/null 2>&1; then
+    fail env "$bashrc is damaged outside the re-runtime block (kept content fails bash -n); refusing to rewrite it; as-found backup at $bak"
+  fi
+
+  # Adoption guard: RE exports outside any marker block are a hand
+  # install (the live VM's state). Never silently duplicate them —
+  # print the SKIP line and change nothing; adoption is a supervised
+  # step, not this stage's.
+  if [ "$unmarked" -eq 1 ]; then
+    echo "INSTALL-RE: env SKIP: unmarked RE exports present — manual adoption required"
+    return 0
+  fi
+
+  ensure_profile
+  # The recorded profile origin is sticky: a block written when this
+  # script created ~/.profile keeps saying so on later runs (when the
+  # profile now pre-exists relative to the run), which is what makes a
+  # repeat run byte-identical.
+  local origin="$PROFILE_ORIGIN"
+  if [ -n "$prior_profile" ]; then
+    origin="$prior_profile"
+  fi
+
+  # Compose the new file in a same-directory temp file, fsync it,
+  # then install it by atomic mv — a crash leaves the old file or the
+  # new one, never a torn one.
+  local i
+  rm -f "$tmp"
+  {
+    for ((i = 0; i < insert_at; i++)); do
+      printf '%s\n' "${kept[i]}"
+    done
+    printf '%s\n' "# >>> re-runtime >>>"
+    printf '# profile: %s\n' "$origin"
+    printf 'export JAVA_HOME="$HOME/opt/jdk-%s"\n' "$TEMURIN_VERSION"
+    printf 'export GHIDRA_INSTALL_DIR="$HOME/opt/ghidra_%s_PUBLIC"\n' "$GHIDRA_VERSION"
+    printf '%s\n' 'export PATH="$JAVA_HOME/bin:$GHIDRA_INSTALL_DIR/support:$HOME/opt/radare2/bin:$PATH"'
+    printf '%s\n' 'export LD_LIBRARY_PATH="$HOME/opt/radare2/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"'
+    printf '%s\n' "# <<< re-runtime <<<"
+    for ((i = insert_at; i < ${#kept[@]}; i++)); do
+      printf '%s\n' "${kept[i]}"
+    done
+  } >"$tmp" || fail env "cannot compose new .bashrc in $tmp"
+  sync "$tmp" || fail env "cannot fsync $tmp"
+  mv "$tmp" "$bashrc" || fail env "cannot install new .bashrc over $bashrc"
+  ok env
+}
+
+assert_rea() {
+  local node_version
+  if command -v node >/dev/null 2>&1 && command -v npx >/dev/null 2>&1; then
+    node_version=$(node --version 2>/dev/null) || node_version="unknown"
+    echo "INSTALL-RE: rea ok (npx -y $REA_PIN, node $node_version)"
+    return 0
+  fi
+  # Absence is not failure (the boot-gate SKIP precedent): REA is
+  # unavailable, the run continues to verify_all, and this script
+  # never installs Node.
+  echo "INSTALL-RE: rea SKIP: node/npx not found — REA unavailable; this script does not install Node"
+  return 0
+}
+
 self_test() {
   local fails=0 pin out rc tool bindir holder tries
   local fixhome badhome goodbin lowbin mem_good mem_low lock_file
@@ -910,6 +1063,236 @@ EOF
     pass=1
   fi
   report_stage radare2-clone-reuse "$pass"
+
+  # --- Task 4: env block, .profile, REA assertion ---
+  # Fixture-HOME cases for install_env_block / ensure_profile /
+  # assert_rea. The env functions run against a fixture $HOME with the
+  # host PATH (real cp/mv/sync/bash); assert_rea runs against stub
+  # node/npx bins or a node-less bin of core-tool symlinks.
+  local envhome envbin nonodebin
+  envhome="$selftest_root/envhome"
+  envbin="$selftest_root/envbin"
+  nonodebin="$selftest_root/nonodebin"
+  mkdir -p "$envhome" "$envbin" "$nonodebin"
+  cat >"$envbin/node" <<'EOF'
+#!/bin/bash
+if [ "${1:-}" = "--version" ]; then
+  echo "v22.11.0"
+fi
+exit 0
+EOF
+  printf '#!/bin/bash\nexit 0\n' >"$envbin/npx"
+  chmod +x "$envbin/node" "$envbin/npx"
+  for tool in bash cp mv sync cat; do
+    ln -s "$(command -v "$tool")" "$nonodebin/$tool"
+  done
+
+  # Per-case env inputs, mutated by each case and read by run_env /
+  # run_rea (bash dynamic scoping makes self_test's locals visible).
+  local ENV_HOME="$envhome" ENV_PATH="$PATH" REA_PATH="$PATH"
+
+  run_env() { # $1 = env stage function name
+    (
+      HOME="$ENV_HOME"
+      PATH="$ENV_PATH"
+      export HOME PATH
+      "$1"
+    )
+  }
+
+  run_rea() {
+    (
+      HOME="$ENV_HOME"
+      PATH="$REA_PATH"
+      export HOME PATH
+      assert_rea
+    )
+  }
+
+  reset_env() {
+    rm -rf "$envhome"
+    mkdir -p "$envhome"
+    ENV_HOME="$envhome"
+    ENV_PATH="$PATH"
+    REA_PATH="$PATH"
+  }
+
+  count_markers() { # $1 = '>>>' or '<<<'
+    grep -cxF "# $1 re-runtime $1" "$envhome/.bashrc" 2>/dev/null || true
+  }
+
+  # (a) Running install_env_block twice leaves exactly one marker pair
+  # and a byte-identical file after the second run; user content and
+  # the pinned exports survive, and the one-time backup holds the
+  # as-found fixture.
+  reset_env
+  cat >"$envhome/.bashrc" <<'EOF'
+# user bashrc
+export EDITOR=vim
+alias ll='ls -l'
+EOF
+  printf '# user profile\n' >"$envhome/.profile"
+  cp "$envhome/.bashrc" "$selftest_root/env-a-orig"
+  out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
+  cp "$envhome/.bashrc" "$selftest_root/env-a-run1"
+  out2=$(run_env install_env_block 2>&1) && rc2=0 || rc2=$?
+  out="$out2" rc="$rc2"
+  pass=0
+  if [ "$rc" -eq 0 ] &&
+    printf '%s\n' "$out" | grep -qxF "INSTALL-RE: env ok" &&
+    [ "$(count_markers '>>>')" = "1" ] &&
+    [ "$(count_markers '<<<')" = "1" ] &&
+    cmp -s "$selftest_root/env-a-run1" "$envhome/.bashrc" &&
+    grep -qxF 'export JAVA_HOME="$HOME/opt/jdk-25.0.4.1+1"' "$envhome/.bashrc" &&
+    grep -qxF 'export GHIDRA_INSTALL_DIR="$HOME/opt/ghidra_12.1.4_PUBLIC"' "$envhome/.bashrc" &&
+    grep -qF 'export PATH="$JAVA_HOME/bin:$GHIDRA_INSTALL_DIR/support:$HOME/opt/radare2/bin:$PATH"' "$envhome/.bashrc" &&
+    grep -qF 'export LD_LIBRARY_PATH="$HOME/opt/radare2/lib' "$envhome/.bashrc" &&
+    grep -qxF 'export EDITOR=vim' "$envhome/.bashrc" &&
+    cmp -s "$selftest_root/env-a-orig" "$envhome/.bashrc.install-re-runtime.bak"; then
+    pass=1
+  fi
+  report_stage env-block-idempotent "$pass"
+
+  # (b) A pre-existing user .profile is never modified, and the block
+  # header records it as pre-existing.
+  reset_env
+  printf '# user bashrc\nexport EDITOR=vim\n' >"$envhome/.bashrc"
+  printf '# my own profile\nexport PROFILE_SENTINEL=1\n' >"$envhome/.profile"
+  cp "$envhome/.profile" "$selftest_root/env-b-profile"
+  out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
+  pass=0
+  if [ "$rc" -eq 0 ] &&
+    cmp -s "$selftest_root/env-b-profile" "$envhome/.profile" &&
+    grep -qxF '# profile: pre-existing' "$envhome/.bashrc"; then
+    pass=1
+  fi
+  report_stage env-profile-pre-existing "$pass"
+
+  # (c) With no .profile, one is created sourcing ~/.bashrc, the header
+  # records the creation, and a second run stays byte-identical (the
+  # recorded origin is sticky, not re-derived from the now-existing
+  # profile).
+  reset_env
+  printf '# user bashrc\nexport EDITOR=vim\n' >"$envhome/.bashrc"
+  out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
+  pass=0
+  if [ "$rc" -eq 0 ] &&
+    [ -f "$envhome/.profile" ] &&
+    grep -qF '.bashrc' "$envhome/.profile" &&
+    grep -qxF '# profile: created-by-install-re-runtime' "$envhome/.bashrc"; then
+    pass=1
+  fi
+  report_stage env-profile-created "$pass"
+  cp "$envhome/.bashrc" "$selftest_root/env-c-run1"
+  out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
+  pass=0
+  if [ "$rc" -eq 0 ] &&
+    cmp -s "$selftest_root/env-c-run1" "$envhome/.bashrc" &&
+    grep -qxF '# profile: created-by-install-re-runtime' "$envhome/.bashrc"; then
+    pass=1
+  fi
+  report_stage env-profile-created-idempotent "$pass"
+
+  # (d) A torn block (start marker, no end marker) is rewritten whole:
+  # exactly one marker pair and the complete block afterwards.
+  reset_env
+  cat >"$envhome/.bashrc" <<'EOF'
+# user bashrc
+export EDITOR=vim
+# >>> re-runtime >>>
+export JAVA_HOME="$HOME/opt/jdk-25.0.4.1+1"
+EOF
+  printf '# user profile\n' >"$envhome/.profile"
+  out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
+  pass=0
+  if [ "$rc" -eq 0 ] &&
+    [ "$(count_markers '>>>')" = "1" ] &&
+    [ "$(count_markers '<<<')" = "1" ] &&
+    grep -qF 'export LD_LIBRARY_PATH="$HOME/opt/radare2/lib' "$envhome/.bashrc" &&
+    grep -qxF 'export EDITOR=vim' "$envhome/.bashrc"; then
+    pass=1
+  fi
+  report_stage env-torn-block "$pass"
+
+  # (e) Adoption case: RE exports already present outside any markers
+  # (the live VM's hand-install state) — the stage prints the SKIP line
+  # and changes nothing (.bashrc byte-identical, no .profile created,
+  # no markers added); only the mandated as-found backup appears.
+  reset_env
+  cat >"$envhome/.bashrc" <<'EOF'
+# hand-installed bench
+export JAVA_HOME="$HOME/opt/jdk-25.0.4.1+1"
+export GHIDRA_INSTALL_DIR="$HOME/opt/ghidra_12.1.4_PUBLIC"
+export PATH="$JAVA_HOME/bin:$GHIDRA_INSTALL_DIR/support:$HOME/opt/radare2/bin:$PATH"
+export LD_LIBRARY_PATH="$HOME/opt/radare2/lib"
+EOF
+  cp "$envhome/.bashrc" "$selftest_root/env-e-orig"
+  out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
+  pass=0
+  if [ "$rc" -eq 0 ] &&
+    printf '%s\n' "$out" | grep -qxF "INSTALL-RE: env SKIP: unmarked RE exports present — manual adoption required" &&
+    cmp -s "$selftest_root/env-e-orig" "$envhome/.bashrc" &&
+    [ ! -e "$envhome/.profile" ] &&
+    cmp -s "$selftest_root/env-e-orig" "$envhome/.bashrc.install-re-runtime.bak"; then
+    pass=1
+  fi
+  report_stage env-adoption-skip "$pass"
+
+  # (f) Damage outside any block: a .bashrc truncated mid-line
+  # (unterminated quote, no markers) fails the run, naming the file
+  # and the one-time backup path; the damaged file itself is left
+  # exactly as found and the backup preserves the as-found bytes.
+  reset_env
+  printf '# user bashrc\nexport EDITOR=vim\nexport BROKEN="unterminated' >"$envhome/.bashrc"
+  cp "$envhome/.bashrc" "$selftest_root/env-f-orig"
+  out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
+  pass=0
+  if [ "$rc" -ne 0 ] &&
+    printf '%s\n' "$out" | grep -qF "INSTALL-RE: env FAIL:" &&
+    printf '%s\n' "$out" | grep -qF "$envhome/.bashrc" &&
+    printf '%s\n' "$out" | grep -qF "$envhome/.bashrc.install-re-runtime.bak" &&
+    cmp -s "$selftest_root/env-f-orig" "$envhome/.bashrc" &&
+    cmp -s "$selftest_root/env-f-orig" "$envhome/.bashrc.install-re-runtime.bak"; then
+    pass=1
+  fi
+  report_stage env-damaged-bashrc "$pass"
+
+  # Fresh-HOME leg: with no .bashrc at all, the stage creates one
+  # holding exactly the block (the fixture-HOME full-run shape).
+  reset_env
+  out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
+  pass=0
+  if [ "$rc" -eq 0 ] &&
+    [ "$(count_markers '>>>')" = "1" ] &&
+    [ "$(count_markers '<<<')" = "1" ] &&
+    grep -qxF 'export JAVA_HOME="$HOME/opt/jdk-25.0.4.1+1"' "$envhome/.bashrc"; then
+    pass=1
+  fi
+  report_stage env-creates-bashrc "$pass"
+
+  # (g) assert_rea with node/npx absent prints the SKIP line and
+  # returns 0 — absence never fails the run.
+  REA_PATH="$nonodebin"
+  out=$(run_rea 2>&1) && rc=0 || rc=$?
+  pass=0
+  if [ "$rc" -eq 0 ] &&
+    printf '%s\n' "$out" | grep -qxF "INSTALL-RE: rea SKIP: node/npx not found — REA unavailable; this script does not install Node"; then
+    pass=1
+  fi
+  report_stage rea-skip-no-node "$pass"
+
+  # assert_rea with stub node/npx present prints the ok line naming
+  # the pinned invocation and recording the node version.
+  REA_PATH="$envbin:$PATH"
+  out=$(run_rea 2>&1) && rc=0 || rc=$?
+  pass=0
+  if [ "$rc" -eq 0 ] &&
+    printf '%s\n' "$out" | grep -qF "INSTALL-RE: rea ok (npx -y rea-agents@6.5.0" &&
+    printf '%s\n' "$out" | grep -qF "v22.11.0"; then
+    pass=1
+  fi
+  report_stage rea-ok-with-node "$pass"
+  REA_PATH="$PATH"
 
   return "$fails"
 }
