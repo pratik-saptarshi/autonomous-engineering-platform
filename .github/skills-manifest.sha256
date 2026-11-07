@@ -122,7 +122,7 @@ ad031663c912f08c7ac90ea011a4bd208ab4940577751c8433e7f25538c3aa63  ./readchk/SKIL
 9b4c470d63221c1f68f22df70b83e2f12401b317babe0d1b7b5f24a974474d0d  ./research/agents/openai.yaml
 33fbc28568e3146f20fd908b12998bc0ab30aa4f4c87288199a40793efa94696  ./retro/SKILL.md
 cb6fb9d7e6b4be5975f41f6def1dd00a1255bad5d9b02696b124c924a8b8745c  ./retro/agents/openai.yaml
-24337e5148738f4ba4d29bf2208693dd123e8c8c084a6a9de218f1e32e310193  ./reverse_engineering/SKILL.md
+f4bcb62773f7fea8942fc6d0bcccc46ffe808b699267895e3221b7b31e5ce1d7  ./reverse_engineering/SKILL.md
 a789890e6629456a09de62c1227a68cc3a161ee5f9b3a94593e964eab66e892d  ./scrubbing-public-tree/LICENSE
 aef15a498650f5de03ad108d5f5ff13d3e7b7e4fa32047a51d2731b0aef838c0  ./self_test_gym/SKILL.md
 8e81a802dcd3a74390b0bf9703d8e1da9f31c46d06a779abbe47635022792dc1  ./shower/SKILL.md
