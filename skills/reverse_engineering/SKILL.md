@@ -7,6 +7,7 @@ Adapted from REA (Reverse Engineer Anything). Use this when a claim depends on a
 - The working tool is the REA CLI via `npx -y rea-agents@6.5.0` (verified: version 6.5.0 prints, and JavaScript application analysis returns a structured Evidence record). It needs no installation and writes only to the npm cache. The version is pinned — do not use `@latest` (supply-chain hygiene).
 - There is no MCP client in this environment, so the REA MCP server cannot be registered here. Hopper and IDA are not installed (Hopper needs a paid license).
 - Ghidra 12.1.4 IS installed (2026-10-20): `GHIDRA_INSTALL_DIR=~/opt/ghidra_12.1.4_PUBLIC`, Temurin JDK 25 at `~/opt/jdk-25.0.4.1+1` (`JAVA_HOME`; both exported in `~/.bashrc`, `support/` on PATH). Native deep analysis runs headless via `analyzeHeadless` (verified: boots and prints usage) — no display needed. Keep memory modest: this VM has 7GB RAM with ~6GB typically in use, so cap the heap (e.g. 2G) and prefer bounded `-analysisTimeoutPerFile`.
+- radare2 6.2.6 IS installed (2026-11-07): built from source (tag 6.2.6) at `~/opt/radare2` (`bin/` on PATH; `LD_LIBRARY_PATH` must include `~/opt/radare2/lib` or the tools fail to load — both exported in `~/.bashrc`). It is the cheap native-triage rung: `rabin2` for headers/sections/imports/strings, `radiff2` for binary diffing, `r2 -qc` for scripted batch inspection. Verified: `rabin2 -I /bin/ls` identifies ELF64 correctly; `radiff2` clean on identical files.
 - Static JavaScript and Electron application analysis works through the REA CLI with no engine.
 - Analyze a JavaScript application or Electron tree with:
 
@@ -25,7 +26,8 @@ Adapted from REA (Reverse Engineer Anything). Use this when a claim depends on a
 Ghidra headless is the heaviest tool here (JVM on a 7GB VM). Route cheapest-first and start
 it only when the evidence requires it:
 
-- If the question is answerable from metadata, `strings`, or the REA CLI evidence record
+- If the question is answerable from metadata, `strings`, `rabin2` triage, `radiff2`
+  (for what-changed-between-two-binaries questions), or the REA CLI evidence record
   (JS/Electron trees, archive inventory), do that and stop. Do not start Ghidra.
 - Invoke Ghidra headless only when ALL hold: the target is a native binary (ELF/Mach-O/PE,
   or firmware with its extractor present) AND the question needs disassembly,
