@@ -167,6 +167,63 @@ class PhantomCapabilityTests(unittest.TestCase):
             name="other/SKILL.md")
         self.assertEqual(result.returncode, 0, result.stdout)
 
+    def test_wrapped_instruction_fails(self):
+        # Codex's example verbatim: a hard wrap between verb span and
+        # noun does not hide the instruction, and the finding names
+        # the physical line where the verb starts.
+        result = self.run_check("Install the\nCraft Anything engine.\n")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("some-skill/SKILL.md:1", result.stdout)
+        self.assertIn("imperative invocation instruction", result.stdout)
+
+    def test_wrap_after_verb_fails(self):
+        result = self.run_check("Install\nthe Craft Anything engine.\n")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("some-skill/SKILL.md:1", result.stdout)
+        self.assertIn("imperative invocation instruction", result.stdout)
+
+    def test_wrap_inside_noun_fails(self):
+        result = self.run_check("Install the Craft\nAnything engine.\n")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("some-skill/SKILL.md:1", result.stdout)
+        self.assertIn("imperative invocation instruction", result.stdout)
+
+    def test_wrapped_list_item_fails(self):
+        result = self.run_check("- Install the\n  Craft Anything engine.\n")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("some-skill/SKILL.md:1", result.stdout)
+        self.assertIn("imperative invocation instruction", result.stdout)
+
+    def test_wrapped_instruction_reports_verb_line(self):
+        # The verb starts on physical line 2 of a wrapped paragraph.
+        result = self.run_check(
+            "Some introductory prose comes first.\n"
+            "Install the Craft Anything\n"
+            "engine to study the app.\n")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("some-skill/SKILL.md:2", result.stdout)
+        self.assertIn("imperative invocation instruction", result.stdout)
+
+    def test_wrapped_negation_passes(self):
+        # The honest non-goal shape wrapped before the verb list: the
+        # governing negation joins its pairing, so no finding.
+        result = self.run_check(
+            "Nothing here installs,\n"
+            "registers, or calls the craft-anything engine.\n")
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_instruction_split_across_list_items_passes(self):
+        # No cross-block pairings: each list item is its own unit.
+        result = self.run_check("- Install the\n- Craft Anything engine.\n")
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_double_space_noun_fails(self):
+        # A wrap is a whitespace variance: runs of whitespace inside
+        # the target phrase are normalized before matching.
+        result = self.run_check("Install the Craft  Anything engine.\n")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("imperative invocation instruction", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

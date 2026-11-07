@@ -7,10 +7,24 @@ binaries), (b) a command-position invocation of the engine binary, (c) an
 MCP-server registration entry for it, or (d) a direct imperative
 instruction to run / invoke / install / register / use the Craft Anything
 engine, CLI, or MCP server, where no negation in the instruction's own
-clause governs it (see below). It is a tripwire against
+clause governs it (see below). Rule (d) is evaluated over logical lines:
+prose wrapped across physical lines is joined (whitespace normalized)
+before matching, so ordinary Markdown hard-wrapping neither hides an
+instruction nor strands a governing negation on another line; a rule (d)
+finding names the physical line where the matched verb starts. Rules
+(a)-(c) match per physical line. It is a tripwire against
 phantom-capability drift -- a skill silently gaining instructions to
 invoke a runtime that is not authorized here -- not a semantic proof
 that no paraphrase could instruct invocation.
+
+Outside the claim: rule (b) remains wrap-sensitive in the other
+direction -- a bare binary name alone on a console line, its arguments
+wrapped onto the next line, is not detected. Nor is adversarial
+obfuscation of the target phrase itself: emphasis or comment splitting
+inside it, HTML entities, zero-width characters, soft hyphens, or the
+phrase split across a table cell or a JSON boundary. This gate guards
+against drift in honestly written prose; review, not this gate, is the
+control for adversarial content.
 
 Why it exists: the craft-anything adoption (plan v2.1, Phase 3; wringer
 Risk condition (c)) adopted a protocol, not the engine. The protocol
@@ -29,7 +43,7 @@ before the verb within the same clause -- clauses end at . ! ? ; :,
 and a negation does not carry past a comma that closes a subordinate
 clause ("if it is not installed, install ..."), nor does a negation in
 an earlier sentence exempt a later instruction. Every verb->target
-pairing on the line is evaluated independently. Rules (a)-(c) have no guard:
+pairing in the logical line is evaluated independently. Rules (a)-(c) have no guard:
 honest prose never needs the binary names, a command position, or a
 registration entry. The skill's own name is never a finding: the noun
 pattern refuses a trailing hyphen or word character, so
@@ -83,6 +97,15 @@ SUBORDINATOR_RE = re.compile(
 
 CLAUSE_BOUNDARIES = ".!?;:"
 
+FENCE_RE = re.compile(r"^\s{0,3}(```|~~~)")
+HEADING_RE = re.compile(r"^\s{0,3}#{1,6}(?:\s|$)")
+TABLE_ROW_RE = re.compile(r"^\s*\|")
+THEMATIC_BREAK_RE = re.compile(
+    r"^\s{0,3}(?:(?:-\s*){3,}|(?:\*\s*){3,}|(?:_\s*){3,})$")
+LIST_ITEM_RE = re.compile(r"^\s{0,3}(?:[-*+]|\d{1,9}[.)])\s+\S")
+BLOCKQUOTE_RE = re.compile(r"^\s{0,3}>\s?(.*)$")
+FRONTMATTER_END_RE = re.compile(r"^(?:---|\.\.\.)$")
+
 
 def _negation_governs(line, match):
     """True if a negation scopes over this verb->target pairing.
@@ -111,8 +134,8 @@ def _negation_governs(line, match):
     return bool(NEGATION_RE.search(line[effective_start:start]))
 
 
-def check_line(line):
-    """Return the name of the first rule that fires on this line, or None."""
+def check_rules_abc(line):
+    """Rules (a)-(c), evaluated per physical line exactly as shipped."""
     lowered = line.lower()
     for literal in ARTIFACT_LITERALS:
         if literal in lowered:
@@ -121,11 +144,140 @@ def check_line(line):
         return "command-position invocation"
     if REGISTRATION_RE.search(line):
         return "MCP registration entry"
-    for verb in VERB_RE.finditer(line):
-        match = IMPERATIVE_RE.match(line, verb.start())
-        if match and not _negation_governs(line, match):
-            return "imperative invocation instruction"
     return None
+
+
+def imperative_match(text):
+    """First unexempted verb->target pairing in text, or None (rule (d))."""
+    for verb in VERB_RE.finditer(text):
+        match = IMPERATIVE_RE.match(text, verb.start())
+        if match and not _negation_governs(text, match):
+            return match
+    return None
+
+
+def iter_logical_lines(lines):
+    """Yield (text, segments) for each logical line in a file's lines.
+
+    Consecutive prose lines in the same block are joined with a single
+    space, whitespace runs normalized and punctuation preserved, so rule
+    (d) sees through ordinary Markdown hard-wrapping. A logical line
+    terminates at a blank line, a fence delimiter or any fenced line
+    (no joining inside fences -- each shell line stays its own unit), a
+    heading, a table row, a thematic break, or any frontmatter line
+    (frontmatter is never joined); a new list-item start closes the
+    previous item, whose indented or lazy continuations join it.
+    Blockquote markers are stripped per line and consecutive quote
+    lines join. ``segments`` maps positions in the joined text back to
+    physical lines: a list of (start_offset, lineno), one per segment.
+    """
+    blocks = []
+    current = None
+    current_kind = None
+
+    def flush():
+        nonlocal current, current_kind
+        if current:
+            blocks.append(current)
+        current = None
+        current_kind = None
+
+    def singleton(lineno, text):
+        flush()
+        blocks.append([(lineno, text)])
+
+    in_frontmatter = False
+    in_fence = False
+    for idx, raw in enumerate(lines):
+        lineno = idx + 1
+        stripped = raw.strip()
+        if idx == 0 and stripped == "---":
+            in_frontmatter = True
+            singleton(lineno, raw)
+            continue
+        if in_frontmatter:
+            singleton(lineno, raw)
+            if FRONTMATTER_END_RE.match(stripped):
+                in_frontmatter = False
+            continue
+        if FENCE_RE.match(raw):
+            in_fence = not in_fence
+            singleton(lineno, raw)
+            continue
+        if in_fence:
+            singleton(lineno, raw)
+            continue
+        if not stripped:
+            flush()
+            continue
+        if (HEADING_RE.match(raw) or TABLE_ROW_RE.match(raw)
+                or THEMATIC_BREAK_RE.match(raw)):
+            singleton(lineno, raw)
+            continue
+        quote = BLOCKQUOTE_RE.match(raw)
+        if quote is not None:
+            if not quote.group(1).strip():
+                flush()
+                continue
+            if current_kind != "quote":
+                flush()
+                current = []
+                current_kind = "quote"
+            current.append((lineno, quote.group(1)))
+            continue
+        if LIST_ITEM_RE.match(raw):
+            flush()
+            current = [(lineno, raw)]
+            current_kind = "prose"
+            continue
+        if current_kind != "prose":
+            flush()
+            current = []
+            current_kind = "prose"
+        current.append((lineno, raw))
+    flush()
+
+    for block in blocks:
+        segments = []
+        parts = []
+        offset = 0
+        for lineno, seg_text in block:
+            normalized = " ".join(seg_text.split())
+            if not normalized:
+                continue
+            segments.append((offset, lineno))
+            parts.append(normalized)
+            offset += len(normalized) + 1
+        if parts:
+            yield " ".join(parts), segments
+
+
+def physical_line_for_offset(segments, offset):
+    """Physical line number of the segment containing offset."""
+    lineno = segments[0][1]
+    for start, seg_lineno in segments:
+        if start > offset:
+            break
+        lineno = seg_lineno
+    return lineno
+
+
+def check_text(text):
+    """All findings in one file's text, as (lineno, rule, excerpt)."""
+    lines = text.splitlines()
+    findings = []
+    for lineno, line in enumerate(lines, start=1):
+        rule = check_rules_abc(line)
+        if rule is not None:
+            findings.append((lineno, rule, line.strip()[:120]))
+    for joined, segments in iter_logical_lines(lines):
+        match = imperative_match(joined)
+        if match is not None:
+            lineno = physical_line_for_offset(segments, match.start())
+            findings.append((lineno, "imperative invocation instruction",
+                             lines[lineno - 1].strip()[:120]))
+    findings.sort(key=lambda finding: finding[0])
+    return findings
 
 
 def iter_files(root):
@@ -147,11 +299,8 @@ def main(argv=None):
     for path in iter_files(root):
         rel = path.relative_to(root).as_posix()
         text = path.read_bytes().decode("utf-8", errors="replace")
-        for lineno, line in enumerate(text.splitlines(), start=1):
-            rule = check_line(line)
-            if rule is not None:
-                findings.append(
-                    f"{rel}:{lineno}: {rule}: {line.strip()[:120]}")
+        for lineno, rule, excerpt in check_text(text):
+            findings.append(f"{rel}:{lineno}: {rule}: {excerpt}")
 
     for line in findings:
         print(line)
