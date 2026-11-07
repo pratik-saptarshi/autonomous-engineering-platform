@@ -394,13 +394,17 @@ install_env_block() {
   fi
 
   ensure_profile
-  # The recorded profile origin is sticky: a block written when this
-  # script created ~/.profile keeps saying so on later runs (when the
-  # profile now pre-exists relative to the run), which is what makes a
-  # repeat run byte-identical.
-  local origin="$PROFILE_ORIGIN"
-  if [ -n "$prior_profile" ]; then
-    origin="$prior_profile"
+  # The recorded profile origin is sticky in one direction only: a
+  # block written when this script created ~/.profile keeps saying so
+  # on later runs (when the profile now pre-exists relative to the
+  # run), which is what makes a repeat run byte-identical. But a fresh
+  # creation in this run always wins: if the user deleted a formerly
+  # pre-existing profile and this run re-created it, the header must
+  # record the re-creation, not perpetuate the stale prior value.
+  local origin="pre-existing"
+  if [ "$PROFILE_ORIGIN" = "created-by-install-re-runtime" ] ||
+    [ "$prior_profile" = "created-by-install-re-runtime" ]; then
+    origin="created-by-install-re-runtime"
   fi
 
   # Compose the new file in a same-directory temp file, fsync it,
@@ -1192,6 +1196,33 @@ EOF
     pass=1
   fi
   report_stage env-profile-created-idempotent "$pass"
+
+  # Regression: a fresh creation wins over the prior block header.
+  # Run 1 with a user .profile records pre-existing; the user deletes
+  # the profile; run 2 re-creates it, so the header must flip to
+  # created-by-install-re-runtime rather than perpetuating the stale
+  # recorded value.
+  reset_env
+  printf '# user bashrc\nexport EDITOR=vim\n' >"$envhome/.bashrc"
+  printf '# user profile\n' >"$envhome/.profile"
+  out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
+  pass=0
+  if [ "$rc" -eq 0 ] &&
+    grep -qxF '# profile: pre-existing' "$envhome/.bashrc"; then
+    pass=1
+  fi
+  report_stage env-profile-recreate-setup "$pass"
+  rm "$envhome/.profile"
+  out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
+  pass=0
+  if [ "$rc" -eq 0 ] &&
+    [ -f "$envhome/.profile" ] &&
+    grep -qF '.bashrc' "$envhome/.profile" &&
+    grep -qxF '# profile: created-by-install-re-runtime' "$envhome/.bashrc" &&
+    ! grep -qxF '# profile: pre-existing' "$envhome/.bashrc"; then
+    pass=1
+  fi
+  report_stage env-profile-recreated-wins "$pass"
 
   # (d) A torn block (start marker, no end marker) is rewritten whole:
   # exactly one marker pair and the complete block afterwards.
