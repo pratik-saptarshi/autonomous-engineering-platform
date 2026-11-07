@@ -82,12 +82,22 @@ from Codex is recorded as pending, never as earned.
 
 ## Merge
 
-1. Pre-flight: `ghg check -- pr merge N --repo <owner>/<repo> --squash`.
+1. Pre-flight: `ghg check -- pr merge N --repo <owner>/<repo> --squash
+   --match-head-commit <censused-sha>`.
    Exit 75 means stop and report the stage reached — never retry around
-   the gate, never set GHG_BYPASS.
-2. `ghg run -- pr merge N --repo <owner>/<repo> --squash`.
+   the gate, never set GHG_BYPASS. (The check is a budget pre-flight;
+   the head binding takes effect in step 2.)
+2. `ghg run -- pr merge N --repo <owner>/<repo> --squash
+   --match-head-commit <censused-sha>`. The flag binds the merge to the
+   censused head: if the head has moved since the census, the merge is
+   refused. A refusal on head mismatch voids the census — restart it
+   from Census step 1 on the new head. Never drop the flag and retry.
+   The flag binds the tree, not the review state: a thread opened on
+   the same head after the census is stopped by the dwell rule and by
+   conversation-resolution protection, not by this flag.
 3. Verify from the API, not the command output: `pr view` shows
-   state MERGED and the merge commit SHA.
+   state MERGED, the merge commit SHA, and a `headRefOid` still equal
+   to the censused SHA.
 4. Never bypass branch protection. A merge instruction never implies
    branch deletion; `--delete-branch` needs its own authorization.
 
@@ -123,6 +133,7 @@ commit SHA, or the analyst's findings, or the pending question asked).
 | "The owner is waiting / about to fly" | Time pressure does not widen a narrow instruction. |
 | "Codex reviewed the previous heads clean" | A no-show on this head is pending, recorded as pending — never as a pass. |
 | "The diff since the reviewed head is trivial" | Any tree difference voids a SHA-bound receipt. Renames are not trivial: names are identifiers other files resolve. |
+| "Nothing will push to this branch in the next minute" | The census binds a SHA; the merge must bind the same SHA. A benign fix push voids the receipt and the checks just as surely as a hostile one. |
 | "There are literally comments on the PR, so the condition fails" | A clean receipt on the head is evidence for merging, not a comment against it. The predicate is unresolved threads and outstanding findings. |
 
 ## Red Flags — Stop
@@ -133,3 +144,4 @@ commit SHA, or the analyst's findings, or the pending question asked).
 - A resolved thread accepted without reading the flagged file at head
 - `headRefOid` unchecked against the branch ref after a recent push
 - A no-show about to be reported as "Codex clean"
+- About to merge without `--match-head-commit` set to the censused SHA
