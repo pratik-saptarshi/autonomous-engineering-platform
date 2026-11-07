@@ -9,7 +9,11 @@ description: >-
   Zoom Out Review, and Implementation Readiness.
 ---
 
-In Muse, read ../../reference/elephant-goldfish-model/docs/muse.md first.
+In Muse, the bundle is already vendored in this repo: read
+`../../reference/elephant-goldfish-model/docs/muse.md` for its harness caveats
+only — ignore its install and plugin-root path instructions, which describe
+the upstream plugin layout and do not apply here; resolve bundle paths against
+`../../reference/elephant-goldfish-model/` as this skill directs.
 
 # Review, Validation & Automated Remediation
 
@@ -285,24 +289,28 @@ plain chat):
     sequence without interactive checkpoint pauses between steps. For each
     stage, write the individual report file to the working directory (or your
     harness's artifact directory, if it has one). Pass `GoldfishContext` to
-    every step except Step 6.
+    every step except Step 6. Reviewer lists in this flow use filename
+    shortnames (e.g. `design_critic`), never frontmatter `egm-*` names, and
+    every synthesizer call states `Mode: REVIEW`: the synthesizer resolves
+    each entry as `agents/{name}.md` and does not normalize frontmatter names
+    (the review loop does, but this flow does not invoke it).
     *   **Step 5 (Initial Zoom Out)**: Spawn `egm-synthesizer` (or direct
-        subagent) with `Reviewers: [egm-zoom-out, egm-inventive-catalyst]` on
-        `full file` → write `zoom_out_report.md`.
+        subagent) with `Mode: REVIEW` and `Reviewers: [zoom_out,
+        inventive_catalyst]` on `full file` → write `zoom_out_report.md`.
     *   **Step 6 (Comprehension Test)**: Spawn the `egm-comprehension`
         subagent directly (not the synthesizer) on `FeatureRange` &
         `DetailedRange` → write its complete result to
         `comprehension_report.md`.
     *   **Step 7 (Critic Review)**: Spawn `egm-synthesizer` (or direct
-        subagents) with `Reviewers: [egm-design, egm-structural, egm-style]` on
-        `FeatureRange` → write `critic_report.md`.
+        subagents) with `Mode: REVIEW` and `Reviewers: [design_critic,
+        structural, style]` on `FeatureRange` → write `critic_report.md`.
     *   **Step 8 (Intermediate Zoom Out)**: Spawn `egm-synthesizer` (or direct
-        subagent) with `Reviewers: [egm-zoom-out]` on `full file` → write
-        `intermediate_zoom_out_report.md`.
+        subagent) with `Mode: REVIEW` and `Reviewers: [zoom_out]` on
+        `full file` → write `intermediate_zoom_out_report.md`.
     *   **Step 9 (Implementation Readiness Test)**: Spawn `egm-synthesizer` (or
-        direct subagents) with `Reviewers: [egm-implementation-readiness,
-        egm-codebase-details, egm-style]` on `DetailedRange` → write
-        `implementation_readiness_report.md`.
+        direct subagents) with `Mode: REVIEW` and `Reviewers:
+        [implementation_readiness, codebase_details, style]` on `DetailedRange`
+        → write `implementation_readiness_report.md`.
 2.  **Cross-Stage Synthesis & Deduplication**:
     *   Collect all findings across the 5 stage reports.
     *   Consolidate observations into actionable tasks by priority (🔴 Blocker, 🟡
@@ -322,8 +330,12 @@ plain chat):
     as Step 8 (Intermediate Zoom Out), include `zoom_out_report.md` path in
     context and focus on additions/mitigations from Comprehension and Critic
     stages. When running as Step 5, also
-    spawn `egm-inventive-catalyst` in parallel and write both into
-    `zoom_out_report.md`.
+    spawn `egm-inventive-catalyst` (persona at
+    `../../reference/elephant-goldfish-model/agents/inventive_catalyst.md`) in parallel
+    and write both into `zoom_out_report.md`. If the synthesizer route is used
+    instead of the direct spawns, call it with `Mode: REVIEW` and filename
+    shortnames (`zoom_out`, `inventive_catalyst`) — it resolves entries as
+    `agents/{name}.md` without normalization.
     In both Stage 5 and Stage 8, pass `GoldfishContext`.
 2.  **Delivery**: Write findings to `zoom_out_report.md` (Stage 5) or
     `intermediate_zoom_out_report.md` (Stage 8) using your file-writing tool.

@@ -6,7 +6,7 @@ of that document.
 
 - `adoption-strategy.md` — the EGM adoption strategy for AEP (dual
   environment: general-purpose Linux VM + current Muse environment), as
-  revised through round 5 of review (546 lines).
+  revised through round 5 of review (547 lines).
 - `goldfish-review-r1.md`, `goldfish-review-r2.md`, `goldfish-review-r3.md`,
   `goldfish-review-r4.md`, `goldfish-review-r5.md`
   — the five Goldfish review rounds: 5 fresh-context reviewers each
@@ -27,7 +27,7 @@ could be built from the round-3 state; rounds 4 and 5 were then run in
 parallel lanes by the owner. Round 5 is complete: review (72 findings:
 4 Blockers, 40 Majors, 28 Nits), resolve (71 PROPOSE FIX, 1 DECLINE,
 0 new ESCALATE), and all 51 shared fixes applied — the strategy doc as
-vendored here reflects rounds 1–5 fixes (546 lines). Note:
+vendored here reflects rounds 1–5 fixes (547 lines). Note:
 `goldfish-review-r5.md` was reconstructed from the round-5 resolve
 report (see its header) because the original consolidated review file
 was never written to disk.

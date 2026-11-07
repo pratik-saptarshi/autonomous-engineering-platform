@@ -10,7 +10,11 @@ description: >-
   egm-draft.
 ---
 
-In Muse, read ../../reference/elephant-goldfish-model/docs/muse.md first.
+In Muse, the bundle is already vendored in this repo: read
+`../../reference/elephant-goldfish-model/docs/muse.md` for its harness caveats
+only — ignore its install and plugin-root path instructions, which describe
+the upstream plugin layout and do not apply here; resolve bundle paths against
+`../../reference/elephant-goldfish-model/` as this skill directs.
 
 # EGM Brainstorm: Interactive Multi-Lens Ideation & Refinement
 

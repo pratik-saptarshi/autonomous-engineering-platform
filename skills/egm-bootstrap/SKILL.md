@@ -5,7 +5,11 @@ disable-model-invocation: true
 description: Bootstrap directory README.md files across a repository subtree.
 ---
 
-In Muse, read ../../reference/elephant-goldfish-model/docs/muse.md first.
+In Muse, the bundle is already vendored in this repo: read
+`../../reference/elephant-goldfish-model/docs/muse.md` for its harness caveats
+only — ignore its install and plugin-root path instructions, which describe
+the upstream plugin layout and do not apply here; resolve bundle paths against
+`../../reference/elephant-goldfish-model/` as this skill directs.
 
 # EGM Peanuts and Hay Bootstrap (`egm-bootstrap`)
 
@@ -357,18 +361,21 @@ If your harness has no subagent tool, run the scout steps inline.
     roots.
 
     *   Process these intermediate directories sequentially bottom-up.
-    *   **Scout Scan Requirement**: For each intermediate directory, apply Step 4's
-        scout-scan requirement — always scan its own direct source files with a
-        `goldfish-explorer` scout (per Step 4's Scout Spawning & Constraints) to
-        compile the true code symbol boundary, and include the local symbols and
-        invariants under the optional `## Local Interface & Invariants` section,
-        the same treatment Step 5.3 gives the root. If the directory contains no
-        direct source files, generate the Intermediate Blueprint from the compiled
-        worker summaries alone.
-    *   Generate Intermediate Blueprint contract files using the compiled summaries
-        returned by the workers.
-    *   Ensure clean formatting and valid relative links for each Intermediate
-        Blueprint contract file.
+    *   **Scout Scan & Classification**: For each intermediate directory, apply
+        Step 4's scout-scan requirement and directory classification — always
+        scan its own direct source files with a `goldfish-explorer` scout (per
+        Step 4's Scout Spawning & Constraints) to compile the true code symbol
+        boundary, then classify the directory per Step 4: a directory with
+        direct source files is a **Component Package (Peanut)**; one without is
+        a **Repository Blueprint (Hay)**.
+    *   Generate the contract file with the template the classification selects:
+        the **Component Package README Template** for source-bearing directories
+        (the scout's local symbols, invariants, and side effects go in its
+        native `## Interface`, `## Invariants`, and `## Side Effects` sections,
+        alongside the compiled worker summaries for its subdirectories), or the
+        **Intermediate Blueprint README Template** for directories without direct
+        source files (generated from the compiled worker summaries alone).
+    *   Ensure clean formatting and valid relative links for each contract file.
 
 3.  **Root Directory Documentation**: The target root `path` of the execution is
     *always* classified as the **Repository Root (Blueprint / Hay)**.
