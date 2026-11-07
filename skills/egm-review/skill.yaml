@@ -1,0 +1,5 @@
+name: "egm-review"
+title: "EGM Review"
+description: "Orchestrates the EGM Goldfish Review Protocol. Used as part of the EGM process to perform design document reviews. Executes five review phases: Initial Zoom Out Review, Comprehension Review, Design Critique, Intermediate"
+category: "Work and knowledge"
+include_in_prompt: true

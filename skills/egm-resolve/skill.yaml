@@ -1,0 +1,5 @@
+name: "egm-resolve"
+title: "EGM Resolve"
+description: "The Elephant resolution skill. Ingests flat deficiency reports from concurrent Goldfish reviewers, applies automated fixes for PROPOSE FIX items via UI multiple-choice gates, and presents interactive"
+category: "Work and knowledge"
+include_in_prompt: true

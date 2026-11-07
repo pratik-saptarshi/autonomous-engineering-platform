@@ -46,6 +46,13 @@ e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./direct_drive
 21dcc40cdec8e151a829b98ab1517c1867bc444e3665134a98c6983411996801  ./domain-modeling/GLOSSARY-FORMAT.md
 7b925d7b1e341a2eeae33ad68a8a8c0ab889a38ddd22a7598e4c240e5a7556a3  ./domain-modeling/SKILL.md
 f6bf2aa996c6e6f53fdd0708e18a0d16a56aed8322cca59fedbe3c0d2c75f06b  ./domain-modeling/agents/openai.yaml
+a30628872f767c23439e57bc1639d6d2d423269f05d8d757c9471327cc8d3efe  ./egm-bootstrap/SKILL.md
+d7c04d35f704d11510dedca86f7b033bf25e7b50e7cc8143b8027265a33b2f37  ./egm-brainstorm/SKILL.md
+a08bdf3562cf43dac2f4f176528833602cac1d0f238c766691cd2a3836519660  ./egm-draft/SKILL.md
+01b440434147fc08fcd069a5e4dec298c632b811dc85b563cdd21062d25d7eb9  ./egm-drift-report/SKILL.md
+45e117b349a08d4428a0d307593e9555a48ebc8460ee58d50421234e093de5df  ./egm-resolve/SKILL.md
+a3485a529c27147c8a49b7690030dc55b03fb4ca206f62f503ce9d6acaaa6c13  ./egm-review-loop/SKILL.md
+45699368207f991691127f929455ee2465b244cbdf8912f1518ba5a8d4622ffe  ./egm-review/SKILL.md
 826c25ef0f52e24619307109ee2344e96cdec6435ea4960d22d64b584e4188e4  ./excalibur-quest/FORK.md
 c5cc408e56f7dd2f91085c6f9fb645299ce3b97ffb99668760fababfb8d19fcd  ./excalibur-quest/SKILL.md
 d09b0dd39ac5fc536046904b3e3ba8d63ad1cbd2aff6713f9da548df706c9c10  ./excalibur-quest/docs/implementation_plan.md
