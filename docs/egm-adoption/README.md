@@ -6,13 +6,14 @@ of that document.
 
 - `adoption-strategy.md` — the EGM adoption strategy for AEP (dual
   environment: general-purpose Linux VM + current Muse environment), as
-  revised through round 3 of review (443 lines).
+  revised through round 4 of review (457 lines).
 - `goldfish-review-r1.md`, `goldfish-review-r2.md`, `goldfish-review-r3.md`,
   `goldfish-review-r4.md`
   — the four Goldfish review rounds: 5 fresh-context reviewers each
   (design_critic, structural, implementation_readiness, comprehension,
   zoom_out) auditing the strategy doc against EGM standards.
-- `goldfish-resolve-r1.md`, `goldfish-resolve-r2.md`, `goldfish-resolve-r3.md`
+- `goldfish-resolve-r1.md`, `goldfish-resolve-r2.md`, `goldfish-resolve-r3.md`,
+  `goldfish-resolve-r4.md`
   — the per-round resolutions: each finding categorized as CONTEST,
   ESCALATE, PROPOSE FIX, or DECLINE, with precise proposed edits.
 
@@ -22,9 +23,10 @@ of that document.
 convergence**. All four rounds were NOT CLEAN. The loop was stopped by an
 owner redirect before convergence so the vendor PR could be built from
 the round-3 state; round 4 was then restarted in a parallel lane by the
-owner. Round 4's review is complete (56 findings: 3 Blockers, 44 Majors,
-9 Nits, NOT CLEAN); its resolution and the resulting strategy-doc fixes
-are pending. The strategy doc as vendored here reflects rounds 1–3 fixes.
+owner. Round 4 is complete: review (56 findings: 3 Blockers, 44 Majors,
+9 Nits), resolve (52 PROPOSE FIX, 1 CONTEST, 2 DECLINE, 1 SETTLED, 0 new
+ESCALATE), and all 52 fixes applied — the strategy doc as vendored here
+reflects rounds 1–4 fixes (457 lines).
 
 ## Still open
 
@@ -35,8 +37,7 @@ are pending. The strategy doc as vendored here reflects rounds 1–3 fixes.
   file the reviewers could read. It needs the owner's ruling (keep fully
   designed, demote to appendix, or drop) and is carried as settled in
   later rounds, not re-decided.
-- Convergence: round 5 of the 5-round cap remains; round 4's resolve and
-  fix application are in progress in a parallel lane.
+- Convergence: round 5 of the 5-round cap remains, not run.
 
 These files are reference material, not vendored skills: they live under
 `docs/` and are intentionally outside the skills manifest scope.
