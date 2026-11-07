@@ -52,9 +52,10 @@ The caller or user provides exactly these parameters:
 *   **`TargetFile`**: Absolute or relative path to target document.
 *   **`SemanticTarget`**: Descriptive targeting string (e.g., *"Target the H4
     block with SS-ID 'S1.12'"*), or `full file`.
-*   **`Reviewers`**: List of reviewer names (shortnames or paths).
-*   **`Standards`**: Mapping of reviewer names to standard names (shortnames or
-    paths).
+*   **`Reviewers`**: List of reviewer names (frontmatter names, filename
+    shortnames, or paths).
+*   **`Standards`**: Mapping of reviewer names to standard names (frontmatter
+    names, filename shortnames, or paths).
 *   **`GoldfishContext`**: A reading list (source files, directories, or
     documentation URLs) fed to reviewers to establish their baseline. An empty
     list from the caller counts as provided; do not ask for it again. Some
@@ -68,6 +69,17 @@ The caller or user provides exactly these parameters:
 
 When resolving names in `Reviewers` and `Standards`:
 
+*   **Frontmatter Names**: If a reviewer name starts with `egm-`, it is the
+    persona's frontmatter `name`, not a filename. Normalize it through this
+    table before resolving a path (the same mapping the adoption strategy
+    documents in §1.1): `egm-design` → `design_critic`, `egm-comprehension` →
+    `comprehension`, `egm-structural` → `structural`, `egm-style` → `style`,
+    `egm-implementation-readiness` → `implementation_readiness`,
+    `egm-codebase-details` → `codebase_details`, `egm-zoom-out` → `zoom_out`,
+    `egm-inventive-catalyst` → `inventive_catalyst`, `egm-synthesizer` →
+    `synthesizer`, `egm-bootstrap-orchestrator` → `bootstrap_orchestrator`.
+    Apply the same normalization to `Standards` keys, which are keyed by
+    reviewer name.
 *   **Reviewer Shortnames**: Map reviewer shortname (e.g., `design_critic`,
     `structural`, `style`, `implementation_readiness`,
     `codebase_details`, `comprehension`, `zoom_out`) to `../../reference/elephant-goldfish-model/agents/{name}.md`.

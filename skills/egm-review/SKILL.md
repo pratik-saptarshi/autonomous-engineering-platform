@@ -375,10 +375,14 @@ plain chat):
 1.  **Invoke Antagonistic Review Loop**: Invoke `egm-review-loop` in-thread on
     `FeatureRange` with reviewers `[egm-design, egm-structural, egm-style]`,
     standards `{"egm-design": "feature-spec-standard", "egm-structural":
-    "feature-spec-standard"}`, and `GoldfishContext`.
-2.  **Notify User (No Chat Dumps)**: Notify user that findings are written to
+    "feature-spec-standard"}`, and `GoldfishContext`. The loop writes its
+    consolidated report to `goldfish_review_report.md`.
+2.  **Save the Stage Report**: Copy `goldfish_review_report.md` to
+    `critic_report.md` (the stage-specific filename) before presenting the
+    checkpoint, so the file the checkpoint names exists.
+3.  **Notify User (No Chat Dumps)**: Notify user that findings are written to
     `critic_report.md` (give its path).
-3.  **Checkpoint Gate**: Present the Stage 7 gate:
+4.  **Checkpoint Gate**: Present the Stage 7 gate:
     *   Question: `"Stage 7 (Critic Review) completed. Findings written to
         critic_report.md. How would you like to proceed?"`
     *   Option 0: `"Proceed to next stage: Stage 8 (Intermediate Zoom Out
@@ -388,7 +392,7 @@ plain chat):
     *   Option 2: `"I will update doc manually (pause session; notify me in chat
         when edits are complete to re-run)"`
     *   Option 3: `"Pause Review (save progress and exit)"`
-4.  **Remediation & Resolution (Option 1)**:
+5.  **Remediation & Resolution (Option 1)**:
     *   Invoke `egm-resolve` in the primary Elephant context on `FeatureRange`,
         passing findings from `critic_report.md` (or
         `goldfish_review_report.md`).
@@ -404,10 +408,14 @@ plain chat):
     egm-codebase-details, egm-style]` and standards
     `{"egm-implementation-readiness": "implementation-readiness-standard",
     "egm-codebase-details": "implementation-readiness-standard"}`, and
-    `GoldfishContext`.
-2.  **Notify User (No Chat Dumps)**: Notify user that findings are written to
+    `GoldfishContext`. The loop writes its consolidated report to
+    `goldfish_review_report.md`.
+2.  **Save the Stage Report**: Copy `goldfish_review_report.md` to
+    `implementation_readiness_report.md` (the stage-specific filename) before
+    presenting the checkpoint, so the file the checkpoint names exists.
+3.  **Notify User (No Chat Dumps)**: Notify user that findings are written to
     `implementation_readiness_report.md` (give its path).
-3.  **Terminal Checkpoint Gate**: Present the Stage 9 terminal gate:
+4.  **Terminal Checkpoint Gate**: Present the Stage 9 terminal gate:
     *   Question: `"Stage 9 (Implementation Readiness Test) completed. Report
         written to implementation_readiness_report.md. How would you like to
         proceed?"`
@@ -417,7 +425,7 @@ plain chat):
     *   Option 2: `"I will update doc manually (pause session; notify me in chat
         when edits are complete to re-run)"`
     *   Option 3: `"Pause Review (save progress and exit)"`
-4.  **Remediation & Resolution (Option 1)**:
+5.  **Remediation & Resolution (Option 1)**:
     *   Invoke `egm-resolve` in the primary Elephant context on `DetailedRange`,
         passing findings from `implementation_readiness_report.md` (or
         `goldfish_review_report.md`).

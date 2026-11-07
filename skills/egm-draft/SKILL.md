@@ -173,7 +173,7 @@ this strict generation order:
     problem and user pain points.
 2.  **Draft Content**: Write "The Problem", "Overview", "Goals", and "Non-Goals"
     in clear, plain English Markdown following the design document template
-    (`references/design_doc.md`).
+    (`../../reference/elephant-goldfish-model/skills/egm-draft/references/design_doc.md`).
 3.  **Focus**: Emphasize the *why* (the user need and business value) rather
     than the *how* (technical implementation).
 4.  **Write Draft Artifact (MANDATORY)**: Save this initial draft to
@@ -310,7 +310,7 @@ strictly:
 
 4.  **Write doc**: Once finalized, write the contents of `design_draft.md` to
     the designated destination file at `<DESIGN_DIR>/<FEATURE>.md` using your
-    file-writing tool. Follow the [template](references/design_doc.md) for final
+    file-writing tool. Follow the [template](../../reference/elephant-goldfish-model/skills/egm-draft/references/design_doc.md) for final
     structure if any adjustments are needed.
 
 5.  **Clean Formatting**: Ensure clean standard Markdown formatting, valid table

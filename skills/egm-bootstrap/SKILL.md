@@ -331,8 +331,8 @@ If your harness has no subagent tool, run the scout steps inline.
     the `subtree_index` array containing the `path`, `summary`, `interface`,
     `invariants`, and `side_effects` for every processed directory.
 
-4.  If `is_worker` is `true`, read the [Worker Return Interface Schema](references/worker-return.schema.json)
-    relative to this skill directory, then return a matching JSON payload to
+4.  If `is_worker` is `true`, read the [Worker Return Interface Schema](../../reference/elephant-goldfish-model/skills/egm-bootstrap/references/worker-return.schema.json)
+    in the vendored bundle, then return a matching JSON payload to
     the Root Orchestrator and terminate. If
     `is_worker` is `false` (sequential mode), proceed directly to **Step 5: Root
     Compilation & Termination**.
@@ -424,6 +424,6 @@ If your harness has no subagent tool, run the scout steps inline.
 ## Templates
 
 Before writing any contract file, read the
-[README templates](references/templates.md) relative to this skill directory.
+[README templates](../../reference/elephant-goldfish-model/skills/egm-bootstrap/references/templates.md) in the vendored bundle.
 It defines the **Component Package (Peanuts)**, **Repository Root (Blueprint /
 Hay)**, and **Intermediate Blueprint** README templates referenced above.
