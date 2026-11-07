@@ -2,7 +2,7 @@
 name: craft-anything-protocol
 description: Use when a reverse-engineering task requires clean-room posture (the target's inspection rights are not affirmatively established) or the deliverable is a recreation-oriented evidence record. This is the Craft Anything Study-surface discipline and AEP-side claim-verification as a governed protocol over the existing REA/Ghidra bench — a protocol, not a runtime; the engine is not installed. For ordinary analysis of a binary or package you may inspect, use the reverse_engineering skill instead.
 fork_of: "storytold/craft-anything — Study tooling surface and evidence-record discipline (via pratik-saptarshi/craft-anything, pin 2e4afc5)"
-fork_version: 2
+fork_version: 3
 ---
 
 # Craft Anything Protocol
@@ -66,7 +66,9 @@ Verification under this protocol is an AEP-side process run against REA/Ghidra e
 Before any load-bearing claim is reported as a finding:
 
 1. **Work-record check.** Confirm the work record names, for this target, the inspection right and its basis (per D5 above). If either is missing, Deep-derived claims do not proceed — the route reverts to clean-room posture or stops.
-2. **Independent cross-verification.** Cross-verify the claim against an independent evidence record (REA or Ghidra) — a second surface, not a re-read of the same record.
+2. **Independent cross-verification.** Cross-verify the claim against an independent evidence record — a second surface, not a re-read of the same record. Which surfaces qualify is set by the posture recorded for the target:
+   - *Inspection right established:* an independent REA or Ghidra record.
+   - *Clean-room posture:* an independently collected black-box behavioral record — a separate observation run, a test-harness result, or documented external behavior — gathered under the same clean-room constraints. Internals records (REA/Ghidra) do not qualify under this posture and must not be produced to satisfy verification: verification never licenses an inspection the posture forbids.
 3. **Limitations attached.** Report the claim with the confidence, coverage, and limitations of the records it rests on.
 
 ## Pinned reference
