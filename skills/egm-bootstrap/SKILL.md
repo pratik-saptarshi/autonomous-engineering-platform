@@ -191,6 +191,16 @@ If your harness has no subagent tool, run the scout steps inline.
         6.  Fallback: If `depth` reaches 3 and count is still < 3, select the
             immediate children of the root (or fall back to sequential
             execution).
+        7.  **Coverage check (CRITICAL)**: Add any shallower terminal branch
+            the depth walk passed over — a directory above the selected depth
+            that is not an ancestor of a selected root (for example `cli/`
+            holding `main.py` beside `src/{a,b,c,d}/` when the depth-2 nodes
+            under `src` are selected) — as a partition root itself. Then
+            verify that every directory in the retained discovery map is a
+            partition root, a descendant of one, or an ancestor of one
+            (ancestors are documented as intermediates in Step 5); add any
+            uncovered directory as its own partition root. Never leave a
+            retained directory unvisited.
     *   **Spawn Unbounded Sub-Orchestrators**: For each partition subtree root,
         use your harness's subagent tool to spawn a parallel worker:
         *   Subagent: `egm-bootstrap-orchestrator` (`../../reference/elephant-goldfish-model/agents/bootstrap_orchestrator.md`) (or a general-purpose subagent)

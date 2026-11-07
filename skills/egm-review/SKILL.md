@@ -293,24 +293,33 @@ plain chat):
     shortnames (e.g. `design_critic`), never frontmatter `egm-*` names, and
     every synthesizer call states `Mode: REVIEW`: the synthesizer resolves
     each entry as `agents/{name}.md` and does not normalize frontmatter names
-    (the review loop does, but this flow does not invoke it).
+    (the review loop does, but this flow does not invoke it). Each call also
+    passes its stage's standards explicitly — the synthesizer supplies no
+    defaults, and the structural and implementation-readiness personas define
+    none.
     *   **Step 5 (Initial Zoom Out)**: Spawn `egm-synthesizer` (or direct
-        subagent) with `Mode: REVIEW` and `Reviewers: [zoom_out,
-        inventive_catalyst]` on `full file` → write `zoom_out_report.md`.
+        subagent) with `Mode: REVIEW`, `Reviewers: [zoom_out,
+        inventive_catalyst]`, and standards `{"zoom_out":
+        "zoom-out-standard"}` on `full file` → write `zoom_out_report.md`.
     *   **Step 6 (Comprehension Test)**: Spawn the `egm-comprehension`
         subagent directly (not the synthesizer) on `FeatureRange` &
         `DetailedRange` → write its complete result to
         `comprehension_report.md`.
     *   **Step 7 (Critic Review)**: Spawn `egm-synthesizer` (or direct
-        subagents) with `Mode: REVIEW` and `Reviewers: [design_critic,
-        structural, style]` on `FeatureRange` → write `critic_report.md`.
+        subagents) with `Mode: REVIEW`, `Reviewers: [design_critic,
+        structural, style]`, and standards `{"design_critic":
+        "feature-spec-standard", "structural": "feature-spec-standard"}` on
+        `FeatureRange` → write `critic_report.md`.
     *   **Step 8 (Intermediate Zoom Out)**: Spawn `egm-synthesizer` (or direct
-        subagent) with `Mode: REVIEW` and `Reviewers: [zoom_out]` on
-        `full file` → write `intermediate_zoom_out_report.md`.
+        subagent) with `Mode: REVIEW`, `Reviewers: [zoom_out]`, and
+        standards `{"zoom_out": "zoom-out-standard"}` on `full file` → write
+        `intermediate_zoom_out_report.md`.
     *   **Step 9 (Implementation Readiness Test)**: Spawn `egm-synthesizer` (or
-        direct subagents) with `Mode: REVIEW` and `Reviewers:
-        [implementation_readiness, codebase_details, style]` on `DetailedRange`
-        → write `implementation_readiness_report.md`.
+        direct subagents) with `Mode: REVIEW`, `Reviewers:
+        [implementation_readiness, codebase_details, style]`, and standards
+        `{"implementation_readiness": "implementation-readiness-standard",
+        "codebase_details": "implementation-readiness-standard"}` on
+        `DetailedRange` → write `implementation_readiness_report.md`.
 2.  **Cross-Stage Synthesis & Deduplication**:
     *   Collect all findings across the 5 stage reports.
     *   Consolidate observations into actionable tasks by priority (🔴 Blocker, 🟡
