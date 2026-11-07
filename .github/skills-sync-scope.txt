@@ -27,6 +27,7 @@ autobahn
 brainstorming
 catchup
 code_explorer
+craft-anything-protocol
 debloat
 dedash
 detool
