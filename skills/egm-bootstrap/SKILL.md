@@ -357,6 +357,14 @@ If your harness has no subagent tool, run the scout steps inline.
     roots.
 
     *   Process these intermediate directories sequentially bottom-up.
+    *   **Scout Scan Requirement**: For each intermediate directory, apply Step 4's
+        scout-scan requirement — always scan its own direct source files with a
+        `goldfish-explorer` scout (per Step 4's Scout Spawning & Constraints) to
+        compile the true code symbol boundary, and include the local symbols and
+        invariants under the optional `## Local Interface & Invariants` section,
+        the same treatment Step 5.3 gives the root. If the directory contains no
+        direct source files, generate the Intermediate Blueprint from the compiled
+        worker summaries alone.
     *   Generate Intermediate Blueprint contract files using the compiled summaries
         returned by the workers.
     *   Ensure clean formatting and valid relative links for each Intermediate
