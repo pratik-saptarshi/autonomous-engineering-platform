@@ -69,12 +69,22 @@ Owner shorthand maps to census predicates:
 | green | every required check concluded success on the head SHA |
 | no review comments | zero unresolved threads AND zero outstanding findings (including findings whose "fix" failed step 6) |
 
-Merge only when every predicate in the owner's condition holds **and**
-Codex state is `CLEAN-ON-HEAD` — or the owner's instruction explicitly
-covers merging without a current-head Codex verdict. A clean receipt on
-the head supports merging; it is not a "review comment" against the PR.
-A receipt bound to a superseded head is neutral evidence: it neither
-blocks nor clears.
+Two gates are **unconditional** — they hold under every instruction,
+whatever shorthand the owner used: zero unresolved threads, and zero
+outstanding findings, on the exact head. An instruction that names
+only some terms ("merge if green") does not waive them, and a clean
+current-head Codex receipt does not establish that conversations from
+an earlier review are resolved. The repository's own rule requires
+conversation resolution before merge; certify it in the census rather
+than relying on branch protection to enforce it.
+
+Merge only when every predicate in the owner's condition holds, the
+unconditional gates hold, **and** Codex state is `CLEAN-ON-HEAD` — or
+the owner's instruction explicitly covers merging without a
+current-head Codex verdict. A clean receipt on the head supports
+merging; it is not a "review comment" against the PR. A receipt bound
+to a superseded head is neutral evidence: it neither blocks nor
+clears.
 
 If Codex state is `PENDING` and the instruction does not cover it: do
 not merge. Report the census and the pending state, and ask. Silence
@@ -134,6 +144,7 @@ commit SHA, or the analyst's findings, or the pending question asked).
 | "Codex reviewed the previous heads clean" | A no-show on this head is pending, recorded as pending — never as a pass. |
 | "The diff since the reviewed head is trivial" | Any tree difference voids a SHA-bound receipt. Renames are not trivial: names are identifiers other files resolve. |
 | "Nothing will push to this branch in the next minute" | The census binds a SHA; the merge must bind the same SHA. A benign fix push voids the receipt and the checks just as surely as a hostile one. |
+| "The owner only said 'green'" | Conversation resolution is not shorthand-scoped. Unresolved threads and outstanding findings block every merge under this skill, whatever terms the owner named. |
 | "There are literally comments on the PR, so the condition fails" | A clean receipt on the head is evidence for merging, not a comment against it. The predicate is unresolved threads and outstanding findings. |
 
 ## Red Flags — Stop
