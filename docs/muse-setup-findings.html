@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Muse Setup Findings — Autonomous Engineering Platform</title>
+<style>
+  :root {
+    --ink: #1a2233;
+    --muted: #5b6478;
+    --line: #d9dee9;
+    --accent: #2456c8;
+    --accent-soft: #eaf0fd;
+    --warn: #9a6206;
+    --warn-soft: #fdf3e0;
+    --code-bg: #f2f4f9;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+    color: var(--ink);
+    background: #f7f8fb;
+    line-height: 1.55;
+  }
+  .page {
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 40px 28px 64px;
+    background: #ffffff;
+    min-height: 100vh;
+    border-left: 1px solid var(--line);
+    border-right: 1px solid var(--line);
+  }
+  header.doc-head {
+    border-bottom: 3px solid var(--accent);
+    padding-bottom: 18px;
+    margin-bottom: 28px;
+  }
+  header.doc-head h1 {
+    margin: 0 0 6px;
+    font-size: 1.9rem;
+    letter-spacing: -0.01em;
+  }
+  header.doc-head p.subtitle {
+    margin: 0;
+    color: var(--muted);
+    font-size: 1.02rem;
+  }
+  .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 28px;
+    margin-top: 14px;
+    font-size: 0.9rem;
+    color: var(--muted);
+  }
+  .meta strong { color: var(--ink); font-weight: 600; }
+  h2 {
+    font-size: 1.25rem;
+    margin: 34px 0 10px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--line);
+  }
+  p { margin: 8px 0; }
+  code {
+    font-family: "Cascadia Code", Consolas, "SFMono-Regular", Menlo, monospace;
+    background: var(--code-bg);
+    padding: 0.08em 0.35em;
+    border-radius: 4px;
+    font-size: 0.92em;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 14px 0 20px;
+    font-size: 0.94rem;
+  }
+  th, td {
+    border: 1px solid var(--line);
+    padding: 8px 12px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { background: var(--accent-soft); font-weight: 600; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .finding {
+    border: 1px solid var(--line);
+    border-left: 5px solid var(--accent);
+    border-radius: 6px;
+    padding: 18px 22px 10px;
+    margin: 22px 0;
+  }
+  .finding h3 {
+    margin: 0 0 4px;
+    font-size: 1.12rem;
+  }
+  .finding .fid {
+    color: var(--accent);
+    font-weight: 700;
+    margin-right: 8px;
+  }
+  .tags { margin: 6px 0 10px; }
+  .tag {
+    display: inline-block;
+    font-size: 0.78rem;
+    font-weight: 600;
+    padding: 2px 9px;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    margin-right: 6px;
+  }
+  .tag.environment { background: var(--warn-soft); color: var(--warn); }
+  .callout {
+    background: var(--warn-soft);
+    border: 1px solid #ecd9ac;
+    border-radius: 6px;
+    padding: 12px 16px;
+    margin: 14px 0;
+    font-size: 0.95rem;
+  }
+  ul { margin: 8px 0 8px 4px; padding-left: 20px; }
+  li { margin: 4px 0; }
+  footer {
+    margin-top: 44px;
+    padding-top: 14px;
+    border-top: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 0.86rem;
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+<header class="doc-head">
+  <h1>Muse Setup Findings</h1>
+  <p class="subtitle">Verified findings about the environment this platform&rsquo;s agents run in &mdash;
+  what the environment actually does, the evidence for it, and the operating rules that follow.</p>
+  <div class="meta">
+    <span><strong>Repository:</strong> autonomous-engineering-platform</span>
+    <span><strong>Established:</strong> 2026-11-04</span>
+    <span><strong>Maintained by:</strong> the environment &amp; memory lane, as findings are verified</span>
+  </div>
+</header>
+
+<h2>Findings index</h2>
+<table>
+  <thead>
+    <tr><th style="width:70px">ID</th><th>Finding</th><th style="width:130px">Area</th><th style="width:120px">Verified</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><a href="#f-001">F-001</a></td>
+      <td>Guest memory is balloon-trimmed by the host: ~6.1&nbsp;GiB of the nominal 7.7&nbsp;GiB is held by the virtio balloon, leaving an effective guest size of ~1.6&nbsp;GiB</td>
+      <td>VM environment</td>
+      <td>2026-11-04</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="finding" id="f-001">
+  <h3><span class="fid">F-001</span>Guest memory is balloon-trimmed by the host hypervisor</h3>
+  <div class="tags">
+    <span class="tag environment">Environment</span>
+    <span class="tag">Memory</span>
+    <span class="tag">Capacity planning</span>
+  </div>
+
+  <p><strong>Summary.</strong> The virtual machine reports 7.7&nbsp;GiB of total memory, and
+  <code>free</code> reports roughly 7.2&nbsp;GiB of it as &ldquo;used&rdquo; even when almost nothing is
+  running &mdash; yet the resident memory of every guest process combined is only a few hundred
+  megabytes. The difference is not a leak and not any workload: the host&rsquo;s <strong>virtio memory
+  balloon</strong> is inflated and holds about <strong>6.1&nbsp;GiB</strong> of the guest&rsquo;s memory for
+  the hypervisor. The guest&rsquo;s effective size is therefore about <strong>1.6&nbsp;GiB</strong>, not
+  7.7&nbsp;GiB, and the balloon re-inflates after every reboot.</p>
+
+  <p><strong>Evidence.</strong> Measured live on 2026-11-04 (≈24 minutes after a VM restart, load
+  average 0.45, no agent workloads running):</p>
+
+  <table>
+    <thead>
+      <tr><th>Measure</th><th>Source</th><th class="num">Value</th><th>Reading</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Total memory</td><td><code>/proc/meminfo</code> &middot; <code>MemTotal</code></td><td class="num">7.7 GiB</td><td>The nominal VM size</td></tr>
+      <tr><td>Balloon</td><td><code>/proc/meminfo</code> &middot; <code>Balloon</code></td><td class="num">6.1 GiB</td><td>Held by the host via the balloon driver</td></tr>
+      <tr><td>Balloon driver</td><td><code>/sys/bus/virtio/drivers/</code></td><td class="num">&mdash;</td><td><code>virtio_balloon</code> loaded</td></tr>
+      <tr><td>All process memory</td><td><code>/proc/meminfo</code> &middot; <code>AnonPages</code></td><td class="num">~390 MB</td><td>Every guest process, combined</td></tr>
+      <tr><td>Page cache</td><td><code>/proc/meminfo</code> &middot; <code>Cached</code></td><td class="num">~640 MB</td><td>Reclaimable under pressure</td></tr>
+      <tr><td>Kernel slab</td><td><code>/proc/meminfo</code> &middot; <code>Slab</code></td><td class="num">~210 MB</td><td>~40% reclaimable</td></tr>
+      <tr><td>Usable headroom</td><td><code>/proc/meminfo</code> &middot; <code>MemAvailable</code></td><td class="num">~570 MB</td><td>The figure that governs what can run</td></tr>
+      <tr><td>OOM kills</td><td>kernel log, current boot</td><td class="num">0</td><td>A sizing constraint, not a fault</td></tr>
+    </tbody>
+  </table>
+
+  <p>The guest&rsquo;s genuine consumption &mdash; processes, cache, and kernel structures &mdash; totals
+  roughly 1.1&nbsp;GiB. The same signature (available memory of ~0.4&ndash;0.6&nbsp;GiB with a near-empty
+  process table) was observed on 2026-10-27 and again on 2026-11-01, across multiple VM
+  replacements, which confirms a standing host policy rather than a transient condition.</p>
+
+  <div class="callout">
+    <strong>Diagnostic rule.</strong> On this VM, <code>free</code>&rsquo;s &ldquo;used&rdquo; column can
+    never be reconciled against process totals. When memory looks impossibly high, check
+    <code>grep Balloon /proc/meminfo</code> first &mdash; the balloon accounts for the gap.
+  </div>
+
+  <p><strong>Impact.</strong></p>
+  <ul>
+    <li>Heavy work must be sized against ~1.5&nbsp;GiB effective memory, not the nominal 7.7&nbsp;GiB.</li>
+    <li>Below roughly 512&nbsp;MiB free, full test suites fail environmentally &mdash; including on a
+    pristine checkout &mdash; so suite failures under memory pressure are not, by themselves,
+    evidence of a code defect. Isolated runs are the discriminator.</li>
+    <li>The balloon can in principle deflate and return memory under genuine guest pressure, but
+    in practice it stays inflated in this environment; do not plan on headroom appearing.</li>
+    <li>Long-lived daemons are a real cost in a ~1.6&nbsp;GiB guest: the NeuroStrata daemon&rsquo;s idle
+    reaper (shut down after 45 idle minutes) exists for exactly this reason.</li>
+  </ul>
+
+  <p><strong>Operating guidance.</strong></p>
+  <ul>
+    <li>Run full test suites and other heavyweight jobs in isolation; avoid parallel heavy lanes.</li>
+    <li>Judge memory health by <code>MemAvailable</code> and the pressure counters in
+    <code>/proc/pressure/memory</code>, not by <code>free</code>&rsquo;s used figure.</li>
+    <li>Expect the constraint to reassert itself after every VM reboot or replacement; it is a
+    property of the hosting environment, not of any setup performed inside the guest.</li>
+  </ul>
+</div>
+
+<footer>
+  Muse Setup Findings &middot; Autonomous Engineering Platform &middot; Finding F-001 verified
+  2026-11-04 from live kernel accounting on the agent VM (&ldquo;MuseBot-blue&rdquo; environment).
+  New findings are appended as numbered entries with their evidence; superseded findings are
+  corrected in place with the correction dated.
+</footer>
+
+</div>
+</body>
+</html>
