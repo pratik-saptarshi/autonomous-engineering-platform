@@ -1,0 +1,5 @@
+name: "egm-bootstrap"
+title: "EGM Bootstrap"
+description: "Bootstrap directory README.md files across a repository subtree."
+category: "Work and knowledge"
+include_in_prompt: true
