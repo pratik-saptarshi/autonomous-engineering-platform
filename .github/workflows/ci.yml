@@ -142,3 +142,17 @@ jobs:
         with:
           persist-credentials: false
       - run: python3 scripts/check_skills_manifest.py --root skills --check
+
+  # Bounded claim: this gate proves no file under skills/ contains the
+  # craft-anything runtime's artifact names, a command-position or
+  # registration-form invocation of it, or a non-negated imperative
+  # instruction to invoke it. The adoption (plan v2.1, Phase 3) took the
+  # protocol, not the engine; this recurring check replaces the one-time
+  # grep and is lifted only as part of an authorized runtime plan.
+  skills-routing-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - run: python3 scripts/check_skills_phantom_capability.py --root skills

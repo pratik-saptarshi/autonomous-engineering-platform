@@ -13,8 +13,8 @@ a5048187207d15a4c65cf2dcf06aeeab9bfe2d167a3d3cc72ce7e2a0f4ef8d93  ./brainstormin
 6ffcb038b53254bd31debaa15e12dcd4ff24bd63d690e0b644ac6396701cf2e2  ./brainstorming/visual-companion.md
 d5b265bfbb213b3360e19fb7c264dc6f42bf9181cac45e6e06f365081d0a6c27  ./catchup/SKILL.md
 d9667c93762aec5805f864c30f75cba57c3a6825e39ac908a278d5ac8889cbed  ./code_explorer/SKILL.md
-462ca7709ec389887e102fd77afd124833c010c52ef9bdcd117fe36d55f53128  ./craft-anything-protocol/FORK.md
-d9b855dc142eae227f27a01b57f427cec7cf8c9739ccb8105e97627c20607c9c  ./craft-anything-protocol/SKILL.md
+aee4f5b559106d766a11c63d15153d1ca93b07b775e57dcceb63d074dffb1931  ./craft-anything-protocol/FORK.md
+bae886fa5950e5f2f66c0dd6ab8bb07911420fe75ad0dc9c4358070092b0b80d  ./craft-anything-protocol/SKILL.md
 dfc15de621d0ddec7c638bb0760e5d41f42de1d208c0b36123881643e0125af0  ./debloat/SKILL.md
 32b534fc55be9747b8376981a2bc370cd2d6da24373fd8ee4f8e146e30d757dd  ./dedash/SKILL.md
 5b0e09dfce526f672cd22b11eaa3644b66cbc1b5f263fc1593580a1c704fc192  ./detool/SKILL.md
@@ -122,7 +122,7 @@ ad031663c912f08c7ac90ea011a4bd208ab4940577751c8433e7f25538c3aa63  ./readchk/SKIL
 9b4c470d63221c1f68f22df70b83e2f12401b317babe0d1b7b5f24a974474d0d  ./research/agents/openai.yaml
 33fbc28568e3146f20fd908b12998bc0ab30aa4f4c87288199a40793efa94696  ./retro/SKILL.md
 cb6fb9d7e6b4be5975f41f6def1dd00a1255bad5d9b02696b124c924a8b8745c  ./retro/agents/openai.yaml
-f4bcb62773f7fea8942fc6d0bcccc46ffe808b699267895e3221b7b31e5ce1d7  ./reverse_engineering/SKILL.md
+a35f9fbea124f1f5bda9bb0d916b4275130fe7bab19475ef16aaaa3854b9ce1a  ./reverse_engineering/SKILL.md
 a789890e6629456a09de62c1227a68cc3a161ee5f9b3a94593e964eab66e892d  ./scrubbing-public-tree/LICENSE
 aef15a498650f5de03ad108d5f5ff13d3e7b7e4fa32047a51d2731b0aef838c0  ./self_test_gym/SKILL.md
 8e81a802dcd3a74390b0bf9703d8e1da9f31c46d06a779abbe47635022792dc1  ./shower/SKILL.md
