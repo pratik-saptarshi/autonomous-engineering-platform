@@ -6,11 +6,11 @@ Bounded claim: this gate proves that no file under ``skills/`` contains
 binaries), (b) a command-position invocation of the engine binary, (c) an
 MCP-server registration entry for it, or (d) a direct imperative
 instruction to run / invoke / install / register / use the Craft Anything
-engine, CLI, or MCP server, where the instruction is not negated earlier
-on the same line. It is a tripwire against phantom-capability drift -- a
-skill silently gaining instructions to invoke a runtime that is not
-authorized here -- not a semantic proof that no paraphrase could instruct
-invocation.
+engine, CLI, or MCP server, where no negation in the instruction's own
+clause governs it (see below). It is a tripwire against
+phantom-capability drift -- a skill silently gaining instructions to
+invoke a runtime that is not authorized here -- not a semantic proof
+that no paraphrase could instruct invocation.
 
 Why it exists: the craft-anything adoption (plan v2.1, Phase 3; wringer
 Risk condition (c)) adopted a protocol, not the engine. The protocol
@@ -19,10 +19,17 @@ the model of honest phrasing this gate protects. A one-time grep is not
 enough; this check recurs on every PR. It is lifted only as part of an
 authorized runtime plan, never by editing a skill alone.
 
-Honest, negated statements are not findings: a line that negates the
-instruction before the verb ("nothing here installs, registers, or calls
-the craft-anything engine") is how a skill states the boundary, and the
-negation guard exempts it from rule (d). Rules (a)-(c) have no guard:
+Honest, negated statements are not findings: a statement that negates
+the instruction in the instruction's own clause ("nothing here installs,
+registers, or calls the craft-anything engine") is how a skill states
+the boundary, and the negation guard exempts it from rule (d). The
+guard is scoped to the clause, not the line: a negation governs a
+verb->target pairing only when it sits inside the pairing's own span or
+before the verb within the same clause -- clauses end at . ! ? ; :,
+and a negation does not carry past a comma that closes a subordinate
+clause ("if it is not installed, install ..."), nor does a negation in
+an earlier sentence exempt a later instruction. Every verb->target
+pairing on the line is evaluated independently. Rules (a)-(c) have no guard:
 honest prose never needs the binary names, a command position, or a
 registration entry. The skill's own name is never a finding: the noun
 pattern refuses a trailing hyphen or word character, so
@@ -63,6 +70,46 @@ IMPERATIVE_RE = re.compile(
 NEGATION_RE = re.compile(r"\b(no|not|never|nothing|none|without)\b|n['’]t\b",
                          re.IGNORECASE)
 
+VERB_RE = re.compile(
+    r"\b(run|invoke|execute|launch|start|call|install|register|use|"
+    r"enable|connect)(s|es|ing|ed|d)?\b",
+    re.IGNORECASE,
+)
+
+SUBORDINATOR_RE = re.compile(
+    r"\b(if|when|once|unless|although|while|because|since)\b",
+    re.IGNORECASE,
+)
+
+CLAUSE_BOUNDARIES = ".!?;:"
+
+
+def _negation_governs(line, match):
+    """True if a negation scopes over this verb->target pairing.
+
+    A negation governs when it sits inside the matched span itself, or
+    before the verb within the same clause. Clauses end at . ! ? ; :,
+    and a negation does not carry past a comma that closes a
+    subordinate clause -- a comma whose preceding clause text contains
+    a subordinator such as "if" or "when" -- because that negation
+    belongs to the subordinate clause, not to what follows the comma.
+    """
+    if NEGATION_RE.search(line[match.start():match.end()]):
+        return True
+    start = match.start()
+    clause_start = max(line.rfind(b, 0, start)
+                       for b in CLAUSE_BOUNDARIES) + 1
+    effective_start = clause_start
+    pos = clause_start
+    while True:
+        comma = line.find(",", pos, start)
+        if comma == -1:
+            break
+        if SUBORDINATOR_RE.search(line[clause_start:comma]):
+            effective_start = comma + 1
+        pos = comma + 1
+    return bool(NEGATION_RE.search(line[effective_start:start]))
+
 
 def check_line(line):
     """Return the name of the first rule that fires on this line, or None."""
@@ -74,9 +121,10 @@ def check_line(line):
         return "command-position invocation"
     if REGISTRATION_RE.search(line):
         return "MCP registration entry"
-    match = IMPERATIVE_RE.search(line)
-    if match and not NEGATION_RE.search(line[: match.start()]):
-        return "imperative invocation instruction"
+    for verb in VERB_RE.finditer(line):
+        match = IMPERATIVE_RE.match(line, verb.start())
+        if match and not _negation_governs(line, match):
+            return "imperative invocation instruction"
     return None
 
 

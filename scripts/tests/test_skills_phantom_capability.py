@@ -84,6 +84,82 @@ class PhantomCapabilityTests(unittest.TestCase):
             "craft-anything engine, its CLI, or its MCP server.\n")
         self.assertEqual(result.returncode, 0, result.stdout)
 
+    def test_subordinate_clause_negation_does_not_exempt(self):
+        # The negation belongs to the if-clause; the main-clause
+        # instruction after the comma is unexempted.
+        result = self.run_check(
+            "If it is not installed, install the Craft Anything "
+            "engine.\n")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("imperative invocation instruction", result.stdout)
+
+    def test_prior_sentence_negation_does_not_exempt(self):
+        result = self.run_check(
+            "Do not use Ghidra. Instead, invoke the Craft Anything "
+            "engine.\n")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("imperative invocation instruction", result.stdout)
+
+    def test_colon_clause_negation_does_not_exempt(self):
+        result = self.run_check(
+            "It is not installed: install the Craft Anything engine.\n")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("imperative invocation instruction", result.stdout)
+
+    def test_guarded_sentence_then_bare_instruction_fails(self):
+        # Pairings are evaluated independently: the exempt first
+        # sentence does not shelter the bare second one.
+        result = self.run_check(
+            "Nothing here installs the craft-anything engine. Install "
+            "the craft-anything engine.\n")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("imperative invocation instruction", result.stdout)
+
+    def test_negation_after_noun_does_not_exempt(self):
+        result = self.run_check(
+            "Install the craft-anything engine, never mind the cost.\n")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("imperative invocation instruction", result.stdout)
+
+    def test_non_goal_sentence_passes(self):
+        # Verbatim guard-dependent line from the protocol skill: the
+        # coordinated verb list is governed by "nothing".
+        result = self.run_check(
+            "No runtime-invocation instructions: nothing here installs, "
+            "registers, or calls the craft-anything engine, its CLI, or "
+            "its MCP server.\n")
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_quoted_status_language_passes(self):
+        # Verbatim guard-dependent line from the protocol skill: the
+        # in-span "never" exempts the pairing.
+        result = self.run_check(
+            'Status language for this adoption is "protocol adopted; '
+            'engine not installed" — never "craft-anything adopted."\n')
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_do_not_verb_list_passes(self):
+        result = self.run_check(
+            "Do not install, register, or call the craft-anything "
+            "engine.\n")
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_does_not_verb_list_passes(self):
+        result = self.run_check(
+            "This skill does not install, register, or call the "
+            "craft-anything engine.\n")
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_quoted_artifact_name_still_fails(self):
+        # Rules (a)-(c) have no negation guard and no quote exemption,
+        # by design; quoting the artifact name inside a skill is still
+        # a finding.
+        result = self.run_check(
+            'Quoting the name is no exemption: "craft-anything-cli" '
+            "still names the artifact.\n")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("artifact name", result.stdout)
+
     def test_clean_tree_of_other_skills_passes(self):
         (self.skills / "other").mkdir()
         result = self.run_check(
