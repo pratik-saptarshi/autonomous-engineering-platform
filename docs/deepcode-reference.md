@@ -2,9 +2,9 @@
 
 ## What it is
 
-HKUDS/DeepCode — DeepCode: Open Agentic Coding: an open agentic coding platform from the University of Hong Kong's Data Science lab (HKUDS). One agent harness serves three clients — a terminal UI, a Desktop app, and a Web app — over a single shared local background service, with goal-driven loop engineering, multi-agent orchestration, and a research line (Paper2Code: research paper → runnable code). Python core with TypeScript Desktop/Web clients and a small Rust component.
+pratik-saptarshi/DeepCode (fork of HKUDS/DeepCode, default branch `develop`) — DeepCode: Open Agentic Coding: an open agentic coding platform from the University of Hong Kong's Data Science lab (HKUDS). One agent harness serves three clients — a terminal UI, a Desktop app, and a Web app — over a single shared local background service, with goal-driven loop engineering, multi-agent orchestration, and a research line (Paper2Code: research paper → runnable code). Python core with TypeScript Desktop/Web clients and a small Rust component.
 
-Reference snapshot: upstream `https://github.com/HKUDS/DeepCode` at `49805ef25e5c18b2a58ae797028f599b6aca161b` (pinned 2026-10-23, MIT). At pin time: ~16.7k stars, 2,176 forks, 723 commits, 18 releases, actively maintained (last push the day before pinning).
+Reference snapshot: fork `https://github.com/pratik-saptarshi/DeepCode` at `49805ef25e5c18b2a58ae797028f599b6aca161b` (pinned 2026-10-23, MIT; upstream HKUDS/DeepCode, same pinned commit, present in the fork's history). At pin time: ~16.7k stars, 2,176 forks, 723 commits, 18 releases, actively maintained (last push the day before pinning).
 
 ## Why a reference, not a vendor
 
@@ -64,7 +64,7 @@ Coordination is by typed resource claims and fenced workspaces, never by inspect
 
 ## Provenance
 
-- Upstream: https://github.com/HKUDS/DeepCode (HKUDS — University of Hong Kong Data Science lab)
+- Fork: https://github.com/pratik-saptarshi/DeepCode (default branch `develop`; upstream HKUDS/DeepCode — University of Hong Kong Data Science lab)
 - Pinned commit: `49805ef25e5c18b2a58ae797028f599b6aca161b`
 - License: MIT
 - Date pinned: 2026-10-23

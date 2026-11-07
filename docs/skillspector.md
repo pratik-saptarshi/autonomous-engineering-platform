@@ -1,6 +1,6 @@
 # SkillSpector — Skill Security Gate
 
-NVIDIA SkillSpector (v2.12.0, Apache-2.0) scans agent skills for security issues before ingestion, installation, or publication. Standing rule: **no skill enters `~/workspace/custom-skills/` without passing the gate.**
+NVIDIA SkillSpector (v2.12.0, Apache-2.0) scans agent skills for security issues before ingestion, installation, or publication. It is installed here from the pratik-saptarshi/SkillSpector fork (default branch `develop`). Standing rule: **no skill enters `~/workspace/custom-skills/` without passing the gate.**
 
 ## What it checks
 
@@ -13,7 +13,7 @@ Scores 0–100 → SAFE (0–20) / CAUTION (21–50) / DO NOT INSTALL (51+).
 The scanner lives in an isolated venv (not committed — 297MB):
 
 ```bash
-git clone https://github.com/nvidia/skillspector /tmp/skillinsp
+git clone https://github.com/pratik-saptarshi/SkillSpector /tmp/skillinsp
 cd /tmp/skillinsp && ~/workspace/skillspector/venv/bin/pip install .  # or fresh venv
 ```
 

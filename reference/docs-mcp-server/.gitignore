@@ -1,0 +1,15 @@
+.DS_Store
+node_modules/
+dist/
+.store/
+public/assets/
+public/index.html
+*.log
+.env*
+!*.env.example
+*.code-workspace
+.tsbuildinfo
+.claude/worktrees/
+.opencode/package-lock.json
+.cache/search-accuracy/
+tests/search-accuracy/results/

@@ -2,7 +2,7 @@
 
 ## Purpose and provenance
 
-This document is the operator reference for three mechanisms AEP adapted from [HKUDS/DeepCode](https://github.com/HKUDS/DeepCode) (pinned commit `49805ef`; see [deepcode-reference.md](deepcode-reference.md) for the study that selected them). No DeepCode code is copied: each mechanism was re-implemented in AEP idiom — a Python stdlib tool, a bash launcher, and data files — and reshaped where DeepCode's design depended on a dispatch point AEP does not have. The [deviations table](#deviations-from-deepcode) at the end records every deliberate difference.
+This document is the operator reference for three mechanisms AEP adapted from [HKUDS/DeepCode](https://github.com/pratik-saptarshi/DeepCode) (pinned commit `49805ef`; see [deepcode-reference.md](deepcode-reference.md) for the study that selected them). No DeepCode code is copied: each mechanism was re-implemented in AEP idiom — a Python stdlib tool, a bash launcher, and data files — and reshaped where DeepCode's design depended on a dispatch point AEP does not have. The [deviations table](#deviations-from-deepcode) at the end records every deliberate difference.
 
 The three mechanisms:
 

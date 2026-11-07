@@ -1,0 +1,83 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.6.3/schema.json",
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
+  "assist": {
+    "actions": {
+      "source": {
+        "organizeImports": "on"
+      }
+    }
+  },
+  "formatter": {
+    "enabled": true,
+    "formatWithErrors": false,
+    "includes": ["**"],
+    "attributePosition": "auto",
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 90,
+    "lineEnding": "lf"
+  },
+  "files": {
+    "includes": ["**/src/**/*.ts", "**/src/**/*.tsx"]
+  },
+  "overrides": [
+    {
+      "includes": ["**/src/web/client/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedGlobals": {
+              "level": "error",
+              "options": {
+                "deniedGlobals": {
+                  "crypto": "crypto.randomUUID and crypto.subtle exist only in secure contexts, and the web portal is often served over plain HTTP on a LAN address, where they throw."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["**/src/services/apiClient.ts"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": ["**", "!@trpc/client", "!superjson", "!./appRouter"],
+                    "message": "The web UI bundles this module, so it may import only @trpc/client, superjson and the AppRouter type."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["**/src/**/*.test.ts", "**/src/**/*.test.tsx"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noNonNullAssertion": "off"
+          },
+          "suspicious": {
+            "noExplicitAny": "off"
+          },
+          "complexity": {
+            "useArrowFunction": "off"
+          }
+        }
+      }
+    }
+  ]
+}

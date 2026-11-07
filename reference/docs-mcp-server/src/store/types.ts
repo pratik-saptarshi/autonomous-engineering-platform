@@ -1,0 +1,660 @@
+import type { ScrapeMode } from "../scraper/types";
+
+/**
+ * Database page record type matching the pages table schema
+ */
+export interface DbPage {
+  id: number;
+  version_id: number;
+  url: string;
+  title: string | null;
+  etag: string | null;
+  last_modified: string | null;
+  source_content_type: string | null;
+  content_type: string | null;
+  depth: number | null;
+  /**
+   * Where this page's content was retrieved from, when that differs from `url`.
+   *
+   * NULL means the two coincide, which is true of every page whose content came
+   * from its own address — and of every row written before representations were
+   * resolved to a shared identity. Readers coalesce to `url`.
+   */
+  content_url: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * Chunk-level metadata stored with each document chunk.
+ * Contains hierarchical information about the chunk's position within the page.
+ */
+export interface DbChunkMetadata {
+  level?: number; // Hierarchical level in document
+  path?: string[]; // Hierarchical path in document
+  // TODO: Check if `types` is properly used
+  types?: string[]; // Types of content in this chunk (e.g., "text", "code", "table")
+  // TODO: Enable additional metadata fields again once we have a clear schema for what metadata we want to store with each chunk.
+  // Allow for additional chunk-specific metadata
+  // [key: string]: unknown;
+}
+
+/**
+ * Database document record type matching the documents table schema
+ */
+export interface DbChunk {
+  id: string;
+  page_id: number; // Foreign key to pages table
+  content: string;
+  metadata: DbChunkMetadata; // Chunk-specific metadata (level, path, etc.)
+  sort_order: number;
+  created_at: string;
+  score: number | null; // Added during search queries
+}
+
+/**
+ * Represents the result of a JOIN between the documents and pages tables.
+ * It includes all fields from a document chunk plus the relevant page-level metadata.
+ */
+export interface DbPageChunk extends DbChunk {
+  url: string;
+  title?: string | null;
+  source_content_type?: string | null;
+  content_type?: string | null;
+  content_url?: string | null;
+}
+
+/**
+ * Represents the ranking information for a search result, including both
+ * vector and full-text search ranks.
+ */
+export interface DbChunkRank {
+  score: number;
+  vec_rank?: number;
+  fts_rank?: number;
+}
+
+/**
+ * Utility type for handling SQLite query results that may be undefined
+ */
+export type DbQueryResult<T> = T | undefined;
+
+/**
+ * Search result type returned by the DocumentRetrieverService
+ */
+export interface StoreSearchResult {
+  url: string;
+  /**
+   * Where the content was actually retrieved from, when that differs from
+   * `url`.
+   *
+   * `url` is the page's identity, which can be derived rather than observed: a
+   * page published as `/guide.md` is recorded as `/guide`, and a site need not
+   * serve anything at the latter. Callers showing a link to the source should
+   * prefer this when it is set, so the link goes somewhere that answers.
+   */
+  contentUrl?: string | null;
+  content: string;
+  score: number | null;
+  mimeType?: string | null;
+  sourceMimeType?: string | null;
+}
+
+/**
+ * Represents the possible states of a version's indexing status.
+ * These statuses are stored in the database and persist across server restarts.
+ */
+export enum VersionStatus {
+  NOT_INDEXED = "not_indexed", // Version created but never indexed
+  QUEUED = "queued", // Waiting in pipeline queue
+  RUNNING = "running", // Currently being indexed
+  COMPLETED = "completed", // Successfully indexed
+  FAILED = "failed", // Indexing failed
+  CANCELLED = "cancelled", // Indexing was cancelled
+  UPDATING = "updating", // Re-indexing existing version
+}
+
+/**
+ * Scraper options stored with each version for reproducible indexing.
+ * Excludes runtime-only fields like signal, library, version, and url.
+ */
+export interface VersionScraperOptions {
+  // Core scraping parameters
+  maxPages?: number;
+  maxDepth?: number;
+  scope?: "subpages" | "hostname" | "domain";
+  followRedirects?: boolean;
+  maxConcurrency?: number;
+  ignoreErrors?: boolean;
+
+  // Content filtering
+  excludeSelectors?: string[];
+  includePatterns?: string[];
+  excludePatterns?: string[];
+
+  // Processing options
+  preserveHashes?: boolean;
+  scrapeMode?: ScrapeMode;
+  headers?: Record<string, string>;
+}
+
+/**
+ * Unified return type for retrieving stored scraping configuration for a version.
+ * Includes the original source URL and the parsed scraper options used during indexing.
+ */
+export interface StoredScraperOptions {
+  sourceUrl: string;
+  options: VersionScraperOptions;
+}
+
+/**
+ * Alias for the unified scraping configuration returned by the service.
+ * Prefer ScraperConfig in new code; StoredScraperOptions remains for backward-compat.
+ */
+export type ScraperConfig = StoredScraperOptions;
+
+/**
+ * Canonical reference to a library version in the domain layer.
+ * Version uses empty string for unversioned content.
+ */
+export interface VersionRef {
+  library: string;
+  version: string; // empty string for unversioned
+}
+
+/** A version found or claimed in the store. */
+export interface ResolvedVersion {
+  versionId: number;
+  /** The library's stored display name. */
+  library: string;
+}
+
+/**
+ * Normalizes a version label for storage and lookup.
+ *
+ * This is the single write contract for version labels: trim surrounding
+ * whitespace, lowercase, and treat an empty result as unversioned. The label is
+ * otherwise stored verbatim — it is never validated, coerced or rejected, since
+ * a version label is not guaranteed to be a semantic version (`stable` and
+ * `1.20` are as legitimate as `1.20.0`).
+ *
+ * @param version Version label as supplied by a caller, if any.
+ * @returns The normalized label, or an empty string for unversioned content.
+ */
+export function normalizeVersionLabel(version?: string | null): string {
+  return (version ?? "").trim().toLowerCase();
+}
+
+/**
+ * Computes a library's lookup key.
+ *
+ * The counterpart to {@link normalizeVersionLabel}: trim and lowercase (the
+ * Unicode default lowercase mapping, without full case folding), so a library
+ * is one row however its name was typed. The key is what `libraries.name`
+ * stores and every lookup compares; the name as entered lives on as the display
+ * name ({@link normalizeLibraryDisplayName}).
+ *
+ * @param library Library name as supplied by a caller.
+ * @returns The lookup key.
+ */
+export function normalizeLibraryName(library: string): string {
+  return library.trim().toLowerCase();
+}
+
+/**
+ * Whether two library names refer to the same library.
+ *
+ * The one comparison every caller-facing lookup uses, so the identity rule
+ * lives in a single place.
+ *
+ * @param a A library name in any casing or padding.
+ * @param b Another library name.
+ */
+export function libraryNamesMatch(a: string, b: string): boolean {
+  return normalizeLibraryName(a) === normalizeLibraryName(b);
+}
+
+/**
+ * Computes a library's display name: the name as entered, trimmed only.
+ *
+ * Case, inner spacing, punctuation and non-ASCII characters are preserved, so
+ * `Next.js Docs` is stored and shown exactly that way.
+ *
+ * @param library Library name as supplied by a caller.
+ * @returns The display name to store for a new library.
+ */
+export function normalizeLibraryDisplayName(library: string): string {
+  return library.trim();
+}
+
+/** Longest name accepted for a new library, counted in Unicode code points. */
+export const MAX_LIBRARY_NAME_LENGTH = 100;
+
+/** Unicode general category Cc: C0 controls, DEL and C1 controls such as tab, newline and ESC. */
+export const CONTROL_CHARACTER = /\p{Cc}/u;
+
+/**
+ * Explains why a name is unacceptable for a new library.
+ *
+ * Only creation is validated; existing libraries stay reachable under their
+ * stored names. Format characters (Cf) are allowed because emoji sequences rely
+ * on the zero-width joiner. Pure, so the web client can show the same message.
+ *
+ * @param displayName Name submitted for a new library; trimmed before checking.
+ * @returns The broken rule as a short phrase, or `null` when the name is valid.
+ */
+export function describeLibraryNameProblem(displayName: string): string | null {
+  const name = normalizeLibraryDisplayName(displayName);
+  if (name.length === 0) {
+    return "is empty";
+  }
+  if (CONTROL_CHARACTER.test(name)) {
+    return "contains a control character";
+  }
+  if ([...name].length > MAX_LIBRARY_NAME_LENGTH) {
+    return `is longer than ${MAX_LIBRARY_NAME_LENGTH} characters`;
+  }
+  return null;
+}
+
+/**
+ * What indexing does when its target library or version already exists.
+ *
+ * - `reject-library`: fail if the library exists at all (the web UI's "Add library").
+ * - `reject-version`: fail if that version exists; create the library if needed (the default).
+ * - `replace`: rebuild an existing version, or create it (`--replace`, `replace: true`, re-index, retry, refresh).
+ */
+export const EXISTING_TARGET_POLICIES = [
+  "reject-library",
+  "reject-version",
+  "replace",
+] as const;
+
+/** One of {@link EXISTING_TARGET_POLICIES}. */
+export type ExistingTargetPolicy = (typeof EXISTING_TARGET_POLICIES)[number];
+
+/** Normalize a VersionRef (lowercase, trim; empty string for unversioned). */
+export function normalizeVersionRef(ref: VersionRef): VersionRef {
+  return {
+    library: normalizeLibraryName(ref.library),
+    version: normalizeVersionLabel(ref.version),
+  };
+}
+
+/**
+ * Summary of a specific version for API/UI consumption.
+ * Aggregates status, progress and document statistics.
+ */
+export interface VersionSummary {
+  id: number;
+  ref: VersionRef;
+  status: VersionStatus;
+  /** Error message recorded when the last indexing attempt failed, else null. */
+  errorMessage?: string | null;
+  /**
+   * Progress information while a version is being indexed.
+   * Omitted once status is COMPLETED to reduce noise.
+   */
+  progress?: { pages: number; maxPages: number };
+  counts: { documents: number; uniqueUrls: number };
+  indexedAt: string | null; // ISO 8601
+  sourceUrl?: string | null;
+  preserveHashes?: boolean;
+}
+
+/**
+ * Summary of a library and its versions for API/UI consumption.
+ */
+export interface LibrarySummary {
+  library: string;
+  versions: VersionSummary[];
+}
+
+/**
+ * Database version record type matching the versions table schema.
+ * Uses snake_case naming to match database column names.
+ */
+export interface DbVersion {
+  id: number;
+  library_id: number;
+  name: string | null; // NULL for unversioned content
+  created_at: string;
+
+  // Status tracking fields (added in migration 005)
+  status: VersionStatus;
+  progress_pages: number;
+  progress_max_pages: number;
+  error_message: string | null;
+  started_at: string | null; // When the indexing job started
+  updated_at: string;
+
+  // Scraper options fields (added in migration 006)
+  source_url: string | null; // Original scraping URL
+  scraper_options: string | null; // JSON string of VersionScraperOptions
+}
+
+/**
+ * Version record with library name included from JOIN query.
+ * Used when we need both version data and the associated library name.
+ */
+export interface DbVersionWithLibrary extends DbVersion {
+  library_name: string;
+}
+
+/**
+ * `versions.updated_at` holds whole seconds (SQLite's `CURRENT_TIMESTAMP`), so
+ * a write can read up to this much older than it happened.
+ */
+export const UPDATED_AT_RESOLUTION_MS = 1000;
+
+/**
+ * How long ago a version was last written, from its `updated_at` (UTC).
+ *
+ * @param version The version as read from the store.
+ * @param now The current time, in milliseconds since the epoch.
+ * @returns Milliseconds since the write, or `Infinity` when the version has no
+ *   readable `updated_at`.
+ */
+export function msSinceWritten(version: DbVersion, now: number): number {
+  const writtenAt = version.updated_at
+    ? Date.parse(`${version.updated_at.replace(" ", "T")}Z`)
+    : Number.NaN;
+  return Number.isNaN(writtenAt) ? Number.POSITIVE_INFINITY : now - writtenAt;
+}
+
+/**
+ * Helper function to convert NULL version name to empty string for API compatibility.
+ * Database stores NULL for unversioned content, but APIs expect empty string.
+ */
+export function normalizeVersionName(name: string | null): string {
+  return name ?? "";
+}
+
+/**
+ * Helper function for version name normalization prior to storage.
+ * Policy:
+ *  - Empty string represents the unversioned variant (stored as '').
+ *  - Names are lower-cased at call sites (see resolveLibraryAndVersionIds) to enforce
+ *    case-insensitive uniqueness; this function only preserves the empty-string rule.
+ */
+export function denormalizeVersionName(name: string): string {
+  // Store unversioned as empty string to leverage UNIQUE(library_id, name)
+  return name === "" ? "" : name;
+}
+
+/**
+ * Result type for findBestVersion, indicating the best semver match
+ * and whether unversioned documents exist.
+ */
+export interface FindVersionResult {
+  bestMatch: string | null;
+  hasUnversioned: boolean;
+}
+
+/**
+ * Gets a human-readable description of a version status.
+ */
+export function getStatusDescription(status: VersionStatus): string {
+  const descriptions: Record<VersionStatus, string> = {
+    [VersionStatus.NOT_INDEXED]: "Version created but not yet indexed",
+    [VersionStatus.QUEUED]: "Waiting in queue for indexing",
+    [VersionStatus.RUNNING]: "Currently being indexed",
+    [VersionStatus.COMPLETED]: "Successfully indexed",
+    [VersionStatus.FAILED]: "Indexing failed",
+    [VersionStatus.CANCELLED]: "Indexing was cancelled",
+    [VersionStatus.UPDATING]: "Re-indexing in progress",
+  };
+
+  return descriptions[status] || "Unknown status";
+}
+
+/**
+ * Checks if a status represents a final state (job completed).
+ */
+export function isFinalStatus(status: VersionStatus): boolean {
+  return [
+    VersionStatus.COMPLETED,
+    VersionStatus.FAILED,
+    VersionStatus.CANCELLED,
+  ].includes(status);
+}
+
+/**
+ * Checks if a status represents an active state (job in progress).
+ */
+export function isActiveStatus(status: VersionStatus): boolean {
+  return [VersionStatus.QUEUED, VersionStatus.RUNNING, VersionStatus.UPDATING].includes(
+    status,
+  );
+}
+
+/**
+ * Library version row returned by queryLibraryVersions.
+ * Aggregates version metadata with document counts and indexing status.
+ */
+export interface DbLibraryVersion {
+  library: string;
+  version: string;
+  versionId: number;
+  status: VersionStatus;
+  errorMessage: string | null;
+  /** Items dequeued and given an outcome. */
+  progressPages: number;
+  /** Items expected to be processed. NOT the configured `maxPages` value. */
+  progressMaxPages: number;
+  /** Items that produced stored content. Null for rows predating this counter. */
+  progressPagesIndexed: number | null;
+  sourceUrl: string | null;
+  documentCount: number;
+  uniqueUrlCount: number;
+  indexedAt: string | null;
+}
+
+/**
+ * A version row as returned to callers, without the library name that groups it.
+ *
+ * Derived from {@link DbLibraryVersion} rather than restated, so the query's
+ * column list and the shape callers receive cannot drift apart.
+ */
+export type LibraryVersionSummary = Omit<DbLibraryVersion, "library">;
+
+/**
+ * A single stored chunk as returned by the admin dashboard's chunk explorer.
+ * Combines chunk content with its position within the parent page and basic
+ * size/embedding metadata, for debugging and insight into how data is stored.
+ */
+export interface VersionChunkListItem {
+  /** Stable identifier for the chunk (the underlying row id, as a string). */
+  id: string;
+  /** URL of the page this chunk belongs to. */
+  url: string;
+  /** Raw chunk content as stored. */
+  content: string;
+  /** Processed MIME type of the page (e.g. "text/html"), if known. */
+  mimeType: string | null;
+  /** 1-based position of this chunk within its page (e.g. 3 of 12). */
+  chunkIndex: number;
+  /** Total number of chunks stored for this chunk's page. */
+  pageChunkCount: number;
+  /** Character count of `content` (JS string length). */
+  charCount: number;
+  /**
+   * Token count for this chunk, if the store has ever recorded one.
+   * The current schema does not persist per-chunk token counts, so this is
+   * always `null` today. The field is kept so a future migration can populate
+   * it without changing the API shape; consumers must treat `null` as
+   * "unavailable", never as zero.
+   */
+  tokenCount: number | null;
+  /** Whether this chunk has a stored embedding vector. */
+  hasEmbedding: boolean;
+}
+
+/** Options for paginating and filtering {@link VersionChunkListItem} results. */
+export interface ListVersionChunksOptions {
+  /** Maximum number of chunks to return. */
+  limit: number;
+  /** Number of matching chunks to skip before returning results. Defaults to 0. */
+  offset?: number;
+  /** Case-insensitive substring filter applied to chunk content. */
+  filter?: string;
+}
+
+/** Paginated result of listing a version's stored chunks. */
+export interface ListVersionChunksResult {
+  /** The requested page of chunks. */
+  chunks: VersionChunkListItem[];
+  /** Total number of chunks matching the filter (ignoring pagination), for computing page counts. */
+  total: number;
+}
+
+/**
+ * Aggregate chunk/page/embedding statistics for a single library version,
+ * used by the chunk explorer's header strip.
+ */
+/** One calendar day of indexing activity, derived from row-creation timestamps (UTC). */
+export interface ActivityDay {
+  /** Calendar day in `YYYY-MM-DD` (UTC). */
+  date: string;
+  /** Pages first indexed on this day. */
+  pages: number;
+  /** Chunks of the pages first indexed on this day. */
+  chunks: number;
+}
+
+/**
+ * Per-day indexing activity over a trailing window, derived from the
+ * `created_at` timestamps already stored on pages. Days with no
+ * activity are present with zero counts, so the series is contiguous and safe
+ * to chart directly.
+ */
+export interface ActivityHistory {
+  /** One entry per day in the window, oldest first, zero-filled. */
+  days: ActivityDay[];
+  /** Inclusive lower bound of the window (`YYYY-MM-DD`, UTC). */
+  since: string;
+  /** Inclusive upper bound of the window — "today" in UTC (`YYYY-MM-DD`). */
+  until: string;
+  /** Total pages indexed across the window. */
+  totalPages: number;
+  /** Total chunks indexed across the window. */
+  totalChunks: number;
+}
+
+export interface VersionChunkStats {
+  /** Number of distinct pages (unique URLs) indexed for this version. */
+  pageCount: number;
+  /** Total number of stored chunks for this version. */
+  chunkCount: number;
+  /** Average chunks per page, or `null` when the version has no pages. */
+  avgChunksPerPage: number | null;
+  /**
+   * Average token count per chunk, or `null` when token data isn't tracked.
+   * Always `null` today since the schema doesn't persist per-chunk token counts.
+   */
+  avgTokensPerChunk: number | null;
+  /** Number of chunks that have a stored embedding vector. */
+  embeddedChunkCount: number;
+}
+
+/**
+ * Serializable view of the active embedding model for the system-health
+ * snapshot. `provider` is widened to `string` because this may describe a
+ * remote worker's configuration fetched over the wire, and it is display-only.
+ */
+export interface EmbeddingConfigInfo {
+  provider: string;
+  model: string;
+  /** Vector dimension, or `null` when the model's size isn't known. */
+  dimensions: number | null;
+}
+
+/** One entry in a per-version page breakdown by MIME type. */
+export interface CompositionBucket {
+  /** MIME type (e.g. `text/html`), or `unknown` when the page has none recorded. */
+  label: string;
+  /** Number of pages of this type. */
+  pages: number;
+}
+
+/**
+ * Per-version content-type breakdown: pages grouped by MIME type, derived from
+ * the stored pages. Powers the library-detail "Content types" panel.
+ */
+export interface VersionComposition {
+  /** Pages grouped by MIME type, most common first. */
+  mimeTypes: CompositionBucket[];
+}
+
+/**
+ * Result of reclaiming unused SQLite pages and truncating the WAL.
+ */
+export interface CompactResult {
+  /** True when the store is in-memory and cannot reclaim disk space. */
+  skipped: boolean;
+  /** True when VACUUM ran. */
+  vacuumed: boolean;
+  /** Combined size of the database, WAL, and SHM files before compaction. */
+  beforeBytes: number;
+  /** Combined size of the database, WAL, and SHM files after compaction. */
+  afterBytes: number;
+  /** Bytes reclaimed (`beforeBytes - afterBytes`, floored at 0). */
+  reclaimedBytes: number;
+}
+
+/**
+ * Options for reading a stored page.
+ */
+export interface PageContentOptions {
+  /** Index of the first chunk to return (default 0). */
+  startChunk?: number;
+  /** Maximum characters to return. Whole chunks only; a single longer chunk is returned on its own. */
+  maxChars?: number;
+}
+
+/**
+ * A window of consecutive chunks of a stored page, assembled for its content type.
+ */
+export interface PageContentResult {
+  url: string;
+  title: string | null;
+  contentType: string | null;
+  content: string;
+  /** Index of the first chunk in `content`. */
+  startChunk: number;
+  totalChunks: number;
+  /** `startChunk` for the next call, or null when `content` reaches the end of the page. */
+  nextChunk: number | null;
+}
+
+/**
+ * Options for listing pages in a library version.
+ */
+export interface ListPagesOptions {
+  /** Keeps only pages whose URL contains this text. */
+  contains?: string;
+  limit?: number;
+  offset?: number;
+}
+
+/**
+ * Item in the list of pages.
+ */
+export interface PageListItem {
+  url: string;
+  title: string | null;
+  depth: number | null;
+}
+
+/**
+ * Result of listing pages for a library version.
+ */
+export interface ListPagesResult {
+  library: string;
+  version: string;
+  total: number;
+  pages: PageListItem[];
+  limit: number;
+  offset: number;
+  hasMore: boolean;
+}

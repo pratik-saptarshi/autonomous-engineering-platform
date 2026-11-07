@@ -2,7 +2,7 @@
 
 ## What it is
 
-Cognilogical/NeuroStrata (vendored from the pratik-saptarshi fork) — a local-first MCP memory server for coding agents, written in Rust. One daemon (`neurostrata-mcp`, 127.0.0.1:34343) serves a hierarchical graph/vector memory (SynapticGraph over an embedded LadybugDB store: dense-embedding distance ranking with a capped usage/provenance boost, then bounded graph expansion), a task subsystem with a completion gate (a task reaches `done` only with an extracted memory), and a behavioral-rule guard that validates state-mutating actions before they land.
+pratik-saptarshi/NeuroStrata (fork of Cognilogical/NeuroStrata, default branch `develop`) — a local-first MCP memory server for coding agents, written in Rust. One daemon (`neurostrata-mcp`, 127.0.0.1:34343) serves a hierarchical graph/vector memory (SynapticGraph over an embedded LadybugDB store: dense-embedding distance ranking with a capped usage/provenance boost, then bounded graph expansion), a task subsystem with a completion gate (a task reaches `done` only with an extracted memory), and a behavioral-rule guard that validates state-mutating actions before they land.
 
 Vendored snapshot: [PROVENANCE.md](../reference/neurostrata/PROVENANCE.md) — fork `https://github.com/pratik-saptarshi/NeuroStrata` at `219e47de604a283c6fb8d4249db77b9824e35188` (2026-10-24, MIT). Upstream: `https://github.com/Cognilogical/NeuroStrata`.
 
@@ -13,7 +13,7 @@ Vendored snapshot: [PROVENANCE.md](../reference/neurostrata/PROVENANCE.md) — f
 | persistent graph memory across sessions | the memory layer every agent session boots against |
 | task gate — `done` requires an extracted lesson | per-task evidence + review gates before anything ships |
 | behavioral rules enforced pre-action | standing rules (deletion rule, push authorization) in agent instructions |
-| watchdog + idle-reaper lifecycle around the daemon | `scripts/watchdog-backup.sh` + the environment-maintenance crons |
+| watchdog + idle-reaper lifecycle around the daemon | canonical lifecycle kit in `ops/` (watchdog, deltas, test, cron record, runbooks) — see `ops/README.md`; `scripts/watchdog-backup.sh` is the legacy always-on-era copy, kept with its test |
 
 ## What runs on this VM
 

@@ -1,6 +1,6 @@
 ---
 name: feature-pr-pipeline
-version: 1.0.0
+version: 1.1.0
 author: pratik-saptarshi
 description: >
   Standardized feature-to-PR workflow — plan, implement with subagent-driven
@@ -56,18 +56,21 @@ Stage 7: Merge      → auto-merge (`gh pr merge --squash --auto`) on repos unde
 ### Stage 1 — Plan
 
 - Follow `writing-plans`. Additionally, give every task a **TDD check script** (shell assertions in `/tmp`, never committed): it must FAIL on the unmodified tree (RED) and PASS after the edit (GREEN).
+- **Idempotence prompt:** if a task touches persistent state, crash recovery, or an ingest boundary, its plan must answer two questions — what happens if the operation runs twice, and what happens if the previous run crashed halfway? — by stating the expected end state compared with a single clean run, or by naming any difference from that end state as accepted.
 - Capture repo-specific rules in the plan's Global Constraints (e.g. no `bd` in worktrees, provenance hash updates, Markdown-only).
 - **Gate:** plan covers every task with a RED-verified check script; Global Constraints recorded.
 
 ### Stage 2 — Implement
 
 - Follow `subagent-driven-development` and `test-driven-development` as written: fresh implementer subagent per task, task reviewer after each, each task check (RED) → edit → check (GREEN) → Conventional Commit.
+- **Premise test inside the per-task fix loop:** when two or more fix attempts that share one premise have failed the same gate, the loop pauses before another fix is dispatched. The implementer writes the shared premise in one sentence in the task ledger and must test it directly: run the cheapest observation that comes out one way if the premise holds and the other way if it does not. The loop then resumes on what that observation showed — if the premise is falsified, the next fix must not assume it, and removing the condition the premise assigned is permitted then, not mandated before the test. Premise-test rounds still count toward `subagent-driven-development`'s 5-round cap, and adjudication still happens only at the cap. This rule governs fix attempts inside a task's loop; it does not replace Stage 6's class-recurrence trigger, which governs findings recurring after a class was claimed fixed.
 - Run continuously — no check-ins between tasks. Rule on ambiguity, record rulings in the ledger, keep going.
 - **Gate:** every task committed GREEN; all task reviews clean.
 
 ### Stage 3 — Independent review
 
 - Assign a FRESH agent (never a task implementer/reviewer) to review the whole branch diff vs base: spec compliance, non-regression of prior safeguards, code/prose quality. Run SDD fix rounds on findings.
+- **Break-the-behavior charge for tests:** for every new or changed test, the reviewer names one concrete change to the behaviour under test that ought to turn that test red — for example giving a wrong result, skipping an effect, or doing an effect twice — and either performs that edit or demands evidence that it was performed. A test that stays green under every such edit is a finding, not coverage.
 - **Gate:** independent review reports no unresolved findings.
 
 ### Stage 4 — Hygiene
@@ -95,3 +98,7 @@ Stage 7: Merge      → auto-merge (`gh pr merge --squash --auto`) on repos unde
 ## Stop Conditions
 
 Stop and ask the user: any irreversible or destructive operation; any action the Authorization rule covers; a plan so broken every path forward is a guess. Everything else: rule on it, record the ruling, keep going.
+
+## Provenance
+
+The premise-test, break-the-behavior, and idempotence prompts in Stages 1–3 are adapted from poteto's pstack principles. Copyright (c) 2026 Lauren Tan, MIT License. The wording here is this skill's own.

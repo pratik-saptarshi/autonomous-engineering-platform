@@ -1,0 +1,119 @@
+/**
+ * Worker command - Starts external pipeline worker (HTTP API).
+ */
+
+import type { Argv } from "yargs";
+import { startAppServer } from "../../app";
+import { openBackend } from "../../services/backend";
+import { TelemetryEvent, telemetry } from "../../telemetry";
+import { loadConfig } from "../../utils/config";
+import { logger } from "../../utils/logger";
+import { withModelChangeOptions, withPublicUrlOptions } from "../options";
+import { registerGlobalServices } from "../services";
+import {
+  type CliContext,
+  createAppServerConfig,
+  ensurePlaywrightBrowsersInstalled,
+  getEventBus,
+  handleEmbeddingModelChange,
+  validateHost,
+  validatePort,
+} from "../utils";
+
+export function createWorkerCommand(cli: Argv) {
+  cli.command(
+    "worker",
+    "Start a background worker for processing scraping jobs",
+    (yargs) => {
+      return withPublicUrlOptions(
+        withModelChangeOptions(yargs)
+          .option("port", {
+            type: "string",
+            description: "Port for worker API",
+          })
+          .option("host", {
+            type: "string",
+            description: "Host to bind the worker API to",
+          }),
+      )
+        .option("embedding-model", {
+          type: "string",
+          description:
+            "Embedding model configuration (e.g., 'openai:text-embedding-3-small')",
+          alias: "embeddingModel",
+        })
+        .option("resume", {
+          type: "boolean",
+          description: "Resume interrupted jobs on startup",
+          default: true,
+        })
+        .option("no-resume", {
+          type: "boolean",
+          // Yargs handles boolean flags specially, --no-resume implies resume=false
+          // But strict mode might complain if we don't define 'resume'
+          // 'resume' defaulting to true handles --no-resume correctly in Yargs
+          hidden: true,
+        });
+    },
+    async (argv) => {
+      await telemetry.track(TelemetryEvent.CLI_COMMAND, {
+        command: "worker",
+        port: argv.port,
+        host: argv.host,
+        resume: argv.resume,
+      });
+
+      const _port = validatePort((argv.port as string) || "8080");
+      const _host = validateHost((argv.host as string) || "127.0.0.1");
+
+      const appConfig = loadConfig(argv, {
+        configPath: argv.config as string,
+        searchDir: argv.storePath as string, // resolved globally in index.ts middleware
+      });
+
+      try {
+        // Ensure browsers are installed for scraping
+        ensurePlaywrightBrowsersInstalled();
+
+        const eventBus = getEventBus(argv as CliContext);
+
+        const backend = await openBackend({
+          appConfig,
+          eventBus,
+          jobs: {
+            interruptedJobs: ((argv.resume as boolean) ?? true) ? "recover" : "fail",
+          },
+          onEmbeddingModelChange: (error, service) =>
+            handleEmbeddingModelChange(
+              error,
+              service,
+              argv.acceptModelChange as boolean | undefined,
+            ),
+        });
+        // Registered first, so shutdown closes it even when a server fails to start
+        registerGlobalServices({ backend });
+
+        // Configure worker-only server
+        const config = createAppServerConfig({
+          enableWebInterface: false,
+          enableMcpServer: false,
+          enableApiServer: true,
+          port: appConfig.server.ports.worker,
+          showLogo: argv.logo as boolean,
+          startupContext: {
+            cliCommand: "worker",
+          },
+        });
+
+        const appServer = await startAppServer(backend, config, appConfig);
+
+        registerGlobalServices({ appServer });
+
+        await new Promise(() => {}); // Keep running forever
+      } catch (error) {
+        logger.error(`❌ Failed to start external pipeline worker: ${error}`);
+        process.exit(1);
+      }
+    },
+  );
+}
