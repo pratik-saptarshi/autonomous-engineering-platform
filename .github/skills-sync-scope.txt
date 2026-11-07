@@ -35,6 +35,13 @@ diagnosing-superpowers
 direct_drive_execution
 dispatching-parallel-agents
 domain-modeling
+egm-bootstrap
+egm-brainstorm
+egm-draft
+egm-drift-report
+egm-resolve
+egm-review
+egm-review-loop
 excalibur-quest
 executing-plans
 factchk
