@@ -238,6 +238,57 @@ install_ghidra() {
   ok ghidra
 }
 
+probe_radare2() {
+  local dir="$HOME/opt/radare2" version_out
+  [ -x "$dir/bin/r2" ] || return 1
+  # r2sdb is laid down last by the install target and the data tree
+  # after binr, so a bin+lib-only tree passes r2 -v while missing both;
+  # they are part of the probe, not afterthoughts.
+  [ -x "$dir/bin/r2sdb" ] || return 1
+  [ -d "$dir/share/radare2/$R2_VERSION/fcnsign" ] || return 1
+  [ -d "$dir/share/radare2/$R2_VERSION/syscall" ] || return 1
+  # Without LD_LIBRARY_PATH every r2 tool fails to load libr_util.so,
+  # so the probe sets it — a healthy install must not look broken.
+  version_out=$(LD_LIBRARY_PATH="$HOME/opt/radare2/lib" "$dir/bin/r2" -v 2>&1) || return 1
+  case "$version_out" in
+  *"$R2_VERSION"*) return 0 ;;
+  *) return 1 ;;
+  esac
+}
+
+install_radare2() {
+  local dir="$HOME/opt/radare2" src="$HOME/opt/dist/radare2-src" head
+  if probe_radare2; then
+    echo "INSTALL-RE: radare2 ok (already installed)"
+    return 0
+  fi
+  # Partial installs are rebuilt, never patched in place.
+  rm -rf "$dir"
+  mkdir -p "$HOME/opt/dist"
+  # Reuse an existing clone only when its HEAD resolves; a corrupt or
+  # partial clone left by a crashed run is removed and re-cloned, so it
+  # cannot fail every future run.
+  if [ -e "$src" ] && ! git -C "$src" rev-parse HEAD >/dev/null 2>&1; then
+    rm -rf "$src"
+  fi
+  if [ ! -e "$src" ]; then
+    git clone "$R2_REPO" "$src" || fail radare2 "clone failed for $R2_REPO"
+  fi
+  git -C "$src" checkout "$R2_VERSION" ||
+    fail radare2 "checkout failed for tag $R2_VERSION"
+  head=$(git -C "$src" rev-parse HEAD) ||
+    fail radare2 "cannot resolve HEAD in $src"
+  if [ "$head" != "$R2_COMMIT" ]; then
+    fail radare2 "HEAD $head != pinned $R2_COMMIT"
+  fi
+  (cd "$src" && ./configure --prefix="$dir") ||
+    fail radare2 "configure failed"
+  (cd "$src" && make -j2) || fail radare2 "build failed (make -j2)"
+  (cd "$src" && make install) || fail radare2 "make install failed"
+  probe_radare2 || fail radare2 "installed tree failed the completeness probe"
+  ok radare2
+}
+
 self_test() {
   local fails=0 pin out rc tool bindir holder tries
   local fixhome badhome goodbin lowbin mem_good mem_low lock_file
@@ -648,6 +699,217 @@ EOF
     pass=1
   fi
   report_stage ghidra-partial-healing "$pass"
+
+  # --- Task 3: radare2 source-build stage ---
+  # Stub git and make in r2bin serve a fixture build: git clone
+  # materializes a source dir whose ./configure is a no-op stub, and
+  # make install copies the complete fixture install tree
+  # ($STAGE_R2_TREE) into $HOME/opt/radare2. Every git/make invocation
+  # is appended to the build log.
+  local r2bin r2_tree build_log
+  r2bin="$selftest_root/r2bin"
+  r2_tree="$selftest_root/src/radare2-tree"
+  build_log="$selftest_root/build.log"
+  mkdir -p "$r2bin" "$r2_tree/bin" \
+    "$r2_tree/share/radare2/$R2_VERSION/fcnsign" \
+    "$r2_tree/share/radare2/$R2_VERSION/syscall"
+  # The fixture r2 exits 1 unless LD_LIBRARY_PATH contains the install
+  # lib dir — mirroring the real tools' libr_util.so failure — so a
+  # passing probe proves the probe sets it (case (c)).
+  cat >"$r2_tree/bin/r2" <<'EOF'
+#!/bin/bash
+case ":${LD_LIBRARY_PATH:-}:" in
+*":$HOME/opt/radare2/lib:"*) ;;
+*) exit 1 ;;
+esac
+echo 'radare2 6.2.6 +1 abi:174 @ linux-x86_64'
+EOF
+  printf '#!/bin/bash\nexit 0\n' >"$r2_tree/bin/r2sdb"
+  printf 'fixture fcnsign data\n' >"$r2_tree/share/radare2/$R2_VERSION/fcnsign/fixture.sdb"
+  printf 'fixture syscall data\n' >"$r2_tree/share/radare2/$R2_VERSION/syscall/fixture.sdb"
+  chmod +x "$r2_tree/bin/r2" "$r2_tree/bin/r2sdb"
+
+  cat >"$r2bin/git" <<'EOF'
+#!/bin/bash
+[ -n "${STAGE_BUILD_LOG:-}" ] && printf 'git %s\n' "$*" >>"$STAGE_BUILD_LOG"
+if [ "${1:-}" = "clone" ]; then
+  dest="${!#}"
+  mkdir -p "$dest"
+  printf '#!/bin/bash\nexit 0\n' >"$dest/configure"
+  chmod +x "$dest/configure"
+  : >"$dest/.stub-git-ok"
+  exit 0
+fi
+dir="$2"
+shift 2
+case "${1:-}" in
+rev-parse)
+  [ -f "$dir/.stub-git-ok" ] || exit 128
+  if [ "${2:-}" = "HEAD" ]; then
+    printf '%s\n' "${STAGE_R2_HEAD:?}"
+  fi
+  ;;
+checkout)
+  [ -f "$dir/.stub-git-ok" ] || exit 128
+  ;;
+*)
+  exit 0
+  ;;
+esac
+EOF
+
+  cat >"$r2bin/make" <<'EOF'
+#!/bin/bash
+[ -n "${STAGE_BUILD_LOG:-}" ] && printf 'make %s\n' "$*" >>"$STAGE_BUILD_LOG"
+case " $* " in
+*" install "*)
+  mkdir -p "$HOME/opt"
+  cp -a "${STAGE_R2_TREE:?}" "$HOME/opt/radare2"
+  ;;
+esac
+exit 0
+EOF
+  chmod +x "$r2bin/git" "$r2bin/make"
+
+  # Per-case radare2 inputs, mutated by each case and read by run_r2
+  # (bash dynamic scoping makes self_test's locals visible to it).
+  local STG_R2HEAD="$R2_COMMIT"
+
+  run_r2() { # $1 = stage function name
+    (
+      HOME="$STG_HOME"
+      PATH="$r2bin:$PATH"
+      STAGE_BUILD_LOG="$build_log"
+      STAGE_R2_HEAD="$STG_R2HEAD"
+      STAGE_R2_TREE="$r2_tree"
+      export HOME PATH STAGE_BUILD_LOG STAGE_R2_HEAD STAGE_R2_TREE
+      "$1"
+    )
+  }
+
+  reset_r2() {
+    reset_stage
+    : >"$build_log"
+    STG_R2HEAD="$R2_COMMIT"
+  }
+
+  # (c) Probe case: the fixture r2 fails without the lib dir in
+  # LD_LIBRARY_PATH, so a silent exit-0 probe proves the probe sets it.
+  reset_r2
+  cp -a "$r2_tree" "$stagehome/opt/radare2"
+  out=$(run_r2 probe_radare2 2>&1) && rc=0 || rc=$?
+  pass=0
+  if [ "$rc" -eq 0 ] && [ -z "$out" ]; then
+    pass=1
+  fi
+  report_stage radare2-probe-ld-library-path "$pass"
+
+  # Probe-pass: a complete fixture radare2 tree is skipped with the
+  # already-installed line and git/make are never invoked.
+  out=$(run_r2 install_radare2 2>&1) && rc=0 || rc=$?
+  pass=0
+  if [ "$rc" -eq 0 ] &&
+    printf '%s\n' "$out" | grep -qF "INSTALL-RE: radare2 ok (already installed)" &&
+    [ ! -s "$build_log" ]; then
+    pass=1
+  fi
+  report_stage radare2-probe-skip "$pass"
+
+  # (a) A HEAD other than the pinned commit after checkout aborts,
+  # naming the got commit against the pin, before any build step.
+  reset_r2
+  STG_R2HEAD="1111111111111111111111111111111111111111"
+  out=$(run_r2 install_radare2 2>&1) && rc=0 || rc=$?
+  pass=0
+  if [ "$rc" -ne 0 ] &&
+    printf '%s\n' "$out" | grep -qF "INSTALL-RE: radare2 FAIL: HEAD 1111111111111111111111111111111111111111 != pinned $R2_COMMIT" &&
+    ! grep -q '^make ' "$build_log"; then
+    pass=1
+  fi
+  report_stage radare2-head-mismatch "$pass"
+
+  # Fresh install: clone, pinned checkout, configure, build, install,
+  # re-probe — ending in the plain ok line.
+  reset_r2
+  out=$(run_r2 install_radare2 2>&1) && rc=0 || rc=$?
+  pass=0
+  if [ "$rc" -eq 0 ] &&
+    printf '%s\n' "$out" | grep -qxF "INSTALL-RE: radare2 ok"; then
+    pass=1
+  fi
+  report_stage radare2-fresh-install "$pass"
+
+  # (b) The build invocation in the log is make -j2 exactly: present as
+  # a whole line, never a bare make line, never an nproc-derived -j.
+  pass=0
+  if grep -qxF "make -j2" "$build_log" &&
+    ! grep -qxF "make" "$build_log" &&
+    ! grep -qF "nproc" "$build_log"; then
+    pass=1
+  fi
+  report_stage radare2-make-j2 "$pass"
+
+  # (d) The fresh install above cloned the upstream repo named by the
+  # pin, and the script text carries no packaged radare2 path and no
+  # fork source (patterns are bracket-escaped so they cannot match
+  # this check's own line).
+  pass=0
+  if grep -qF "git clone $R2_REPO " "$build_log" &&
+    [ "$R2_REPO" = "https://github.com/radareorg/radare2" ] &&
+    ! grep -Eq 'ap[t](-get)?[[:space:]]' "$0" &&
+    ! grep -Eq 'pratik-saptarshi/radare[2]' "$0"; then
+    pass=1
+  fi
+  report_stage radare2-upstream-source "$pass"
+
+  # (e) Partial-install healing: r2 -v works but r2sdb and the whole
+  # share/ data tree are gone — the probe must fail and the stage must
+  # rebuild, not skip (the bin+lib-only tree from the wringer probe).
+  reset_r2
+  cp -a "$r2_tree" "$stagehome/opt/radare2"
+  rm "$stagehome/opt/radare2/bin/r2sdb"
+  rm -rf "$stagehome/opt/radare2/share"
+  out=$(run_r2 install_radare2 2>&1) && rc=0 || rc=$?
+  pass=0
+  if [ "$rc" -eq 0 ] &&
+    printf '%s\n' "$out" | grep -qxF "INSTALL-RE: radare2 ok" &&
+    [ -s "$build_log" ] &&
+    [ -x "$stagehome/opt/radare2/bin/r2sdb" ] &&
+    [ -d "$stagehome/opt/radare2/share/radare2/$R2_VERSION/fcnsign" ] &&
+    [ -d "$stagehome/opt/radare2/share/radare2/$R2_VERSION/syscall" ]; then
+    pass=1
+  fi
+  report_stage radare2-partial-healing "$pass"
+
+  # Corrupt-clone healing: a leftover clone dir whose HEAD does not
+  # resolve is removed and re-cloned, not failed on forever.
+  reset_r2
+  mkdir -p "$stagehome/opt/dist/radare2-src"
+  printf 'partial clone debris\n' >"$stagehome/opt/dist/radare2-src/README"
+  out=$(run_r2 install_radare2 2>&1) && rc=0 || rc=$?
+  pass=0
+  if [ "$rc" -eq 0 ] &&
+    printf '%s\n' "$out" | grep -qxF "INSTALL-RE: radare2 ok" &&
+    grep -qF "git clone $R2_REPO " "$build_log" &&
+    [ -x "$stagehome/opt/radare2/bin/r2sdb" ]; then
+    pass=1
+  fi
+  report_stage radare2-corrupt-clone-healing "$pass"
+
+  # Clone reuse: with the install tree removed but a valid clone left
+  # by the run above, a second run checks the tag out again without
+  # re-cloning.
+  rm -rf "$stagehome/opt/radare2"
+  : >"$build_log"
+  out=$(run_r2 install_radare2 2>&1) && rc=0 || rc=$?
+  pass=0
+  if [ "$rc" -eq 0 ] &&
+    printf '%s\n' "$out" | grep -qxF "INSTALL-RE: radare2 ok" &&
+    ! grep -qF "git clone " "$build_log" &&
+    grep -qF "git -C $stagehome/opt/dist/radare2-src checkout $R2_VERSION" "$build_log"; then
+    pass=1
+  fi
+  report_stage radare2-clone-reuse "$pass"
 
   return "$fails"
 }
