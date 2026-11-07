@@ -206,7 +206,9 @@ If your harness has no subagent tool, run the scout steps inline.
         *   Subagent: `egm-bootstrap-orchestrator` (`../../reference/elephant-goldfish-model/agents/bootstrap_orchestrator.md`) (or a general-purpose subagent)
         *   `Prompt`: "Run egm-bootstrap with path=`[path]`,
             is_worker=true, sub_tree_root=`[partition_root]`,
-            target_filename=`[target_filename]`."
+            target_filename=`[target_filename]`,
+            retained_directories=`[the partition's directory list from the
+            Step 2 discovery map]` — traverse only these directories."
     *   **Unbounded Execution**: Spawn all Sub-Orchestrators in parallel without
         artificial concurrency limits (as authorized by the user during the
         safety gate).
@@ -235,7 +237,14 @@ If your harness has no subagent tool, run the scout steps inline.
     *   `enable_subagent_tools`: `false`
 
 2.  **Post-Order Traversal**: Walk the assigned `sub_tree_root` (or `path`) in
-    post-order (deepest leaves first). For each directory `D`:
+    post-order (deepest leaves first). **Retained-map restriction**: when
+    running as a worker (`is_worker=true`), traverse only the directories in
+    the `retained_directories` list passed by the orchestrator — never walk
+    the raw filesystem subtree, which would reintroduce directories Step 2
+    excluded or pruned (dependency trees, generated output, test-only
+    subtrees) even when they sit inside `sub_tree_root`. If no retained list
+    was passed, reapply Step 2's discovery exclusions before processing any
+    descendant. For each directory `D`:
 
     *   **Correction & Modification Policy**: Check if `target_filename` (default:
         `README.md`) already exists in `D`.
@@ -378,6 +387,12 @@ If your harness has no subagent tool, run the scout steps inline.
         boundary, then classify the directory per Step 4: a directory with
         direct source files is a **Component Package (Peanut)**; one without is
         a **Repository Blueprint (Hay)**.
+    *   **Preservation**: Before generating, check whether `target_filename`
+        already exists in the intermediate directory. If it does, apply Step
+        4's **Correction & Modification Policy** — read the existing contract
+        and retain its content (developer notes, architectural explanations)
+        in the regenerated file, as item 3 below does for the root. Never
+        overwrite an existing intermediate contract unread.
     *   Generate the contract file with the template the classification selects:
         the **Component Package README Template** for source-bearing directories
         (the scout's local symbols, invariants, and side effects go in its

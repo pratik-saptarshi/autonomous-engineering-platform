@@ -396,8 +396,10 @@ plain chat):
 1.  **Invoke Antagonistic Review Loop**: Invoke `egm-review-loop` in-thread on
     `FeatureRange` with reviewers `[egm-design, egm-structural, egm-style]`,
     standards `{"egm-design": "feature-spec-standard", "egm-structural":
-    "feature-spec-standard"}`, and `GoldfishContext`. The loop writes its
-    consolidated report to `goldfish_review_report.md`.
+    "feature-spec-standard"}`, `GoldfishContext`, and `DeferResolution:
+    true` (review-only — this subflow's checkpoint, not the loop, decides
+    whether resolution runs). The loop writes its consolidated report to
+    `goldfish_review_report.md`.
 2.  **Save the Stage Report**: Copy `goldfish_review_report.md` to
     `critic_report.md` (the stage-specific filename) before presenting the
     checkpoint, so the file the checkpoint names exists.
@@ -428,8 +430,10 @@ plain chat):
     `DetailedRange` with reviewers `[egm-implementation-readiness,
     egm-codebase-details, egm-style]` and standards
     `{"egm-implementation-readiness": "implementation-readiness-standard",
-    "egm-codebase-details": "implementation-readiness-standard"}`, and
-    `GoldfishContext`. The loop writes its consolidated report to
+    "egm-codebase-details": "implementation-readiness-standard"}`,
+    `GoldfishContext`, and `DeferResolution: true` (review-only — this
+    subflow's checkpoint, not the loop, decides whether resolution runs).
+    The loop writes its consolidated report to
     `goldfish_review_report.md`.
 2.  **Save the Stage Report**: Copy `goldfish_review_report.md` to
     `implementation_readiness_report.md` (the stage-specific filename) before

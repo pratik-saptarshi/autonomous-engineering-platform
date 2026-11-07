@@ -68,6 +68,12 @@ The caller or user provides exactly these parameters:
     directory) and pass its absolute path instead. If a page cannot be saved,
     ask the user for a local copy and end your turn; if no one can answer,
     as in a headless run, leave it out, tell the user, and keep going.
+*   **`DeferResolution`**: Optional; default `false`. When `true`, run
+    review-only: complete §2.1–§2.2, save `goldfish_review_report.md`, and
+    return the `FindingsList` to the caller without the §2.3 resolution
+    hand-off and without §2.4 iteration. Interactive stage callers (e.g.
+    `egm-review`'s subflows) pass `true` so their checkpoint — not this
+    loop — decides whether resolution runs.
 
 ## Path & Standard Resolution Logic
 
@@ -162,6 +168,12 @@ file` mode is specified, confirm full-file line bounds).
     reviewer as not run.
 
 #### 2.3 Aggregated Resolution Hand-off
+
+**Deferred-resolution gate**: If `DeferResolution` is `true`, stop here —
+save `goldfish_review_report.md` from the §2.2 consolidation and return
+`TargetFile` + `FindingsList` to the caller. Do not categorize findings,
+present the decision gate, or apply repairs; the caller's checkpoint owns
+that decision, and §2.4 iteration does not run.
 
 1.  Pass `TargetFile`, the active line range, and the aggregated `FindingsList`
     to the **`egm-resolve`** workflow.
