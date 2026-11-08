@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"syscall"
 	"time"
 	"unsafe"
 
@@ -20,6 +21,14 @@ type windowsProcessGroup struct {
 }
 
 func newPlatformProcessGroup(cmd *exec.Cmd, grace time.Duration, ctx context.Context) ProcessGroup {
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	// CREATE_SUSPENDED: the child's main thread is created suspended, so no
+	// child code runs until Start has assigned the process to the job
+	// object and resumed it — nothing the child spawns can escape the job.
+	cmd.SysProcAttr.CreationFlags |= windows.CREATE_SUSPENDED
+
 	return &windowsProcessGroup{
 		cmd:         cmd,
 		gracePeriod: grace,
@@ -76,7 +85,67 @@ func (p *windowsProcessGroup) Start() error {
 		return fmt.Errorf("AssignProcessToJobObject failed: %w", err)
 	}
 
+	// The child was created suspended (see the constructor), so no child
+	// code could run before the assignment above. Now that the process is
+	// inside the job, resume its main thread. If the resume fails, fail
+	// closed: Kill terminates the still-suspended child via the job and
+	// closes the job handle, so a suspended process is never left behind.
+	if err := resumeMainThread(uint32(p.cmd.Process.Pid)); err != nil {
+		_ = p.Kill()
+		return fmt.Errorf("resuming the main thread failed: %w", err)
+	}
+
 	return nil
+}
+
+// resumeMainThread resumes the main thread of a process created with
+// CREATE_SUSPENDED. A freshly created process has exactly one thread; it
+// is located via a Toolhelp thread snapshot.
+func resumeMainThread(pid uint32) error {
+	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPTHREAD, 0)
+	if err != nil {
+		return fmt.Errorf("CreateToolhelp32Snapshot failed: %w", err)
+	}
+	if snap == windows.InvalidHandle {
+		return fmt.Errorf("CreateToolhelp32Snapshot returned an invalid handle")
+	}
+	defer windows.CloseHandle(snap)
+
+	var entry windows.ThreadEntry32
+	entry.Size = uint32(unsafe.Sizeof(entry))
+	var tid uint32
+	found := false
+	for err := windows.Thread32First(snap, &entry); err == nil; err = windows.Thread32Next(snap, &entry) {
+		if entry.OwnerProcessID == pid {
+			tid = entry.ThreadID
+			found = true
+			break
+		}
+		entry.Size = uint32(unsafe.Sizeof(entry))
+	}
+	if !found {
+		return fmt.Errorf("no thread found for process %d", pid)
+	}
+
+	hThread, err := windows.OpenThread(windows.THREAD_SUSPEND_RESUME, false, tid)
+	if err != nil {
+		return fmt.Errorf("OpenThread failed: %w", err)
+	}
+	defer windows.CloseHandle(hThread)
+
+	// ResumeThread reports the thread's previous suspend count; the
+	// thread runs once a call reports a count of 1 (or 0 if it was not
+	// suspended). Loop, bounded, in case it was suspended more than once.
+	for i := 0; i < 32; i++ {
+		prev, err := windows.ResumeThread(hThread)
+		if err != nil {
+			return fmt.Errorf("ResumeThread failed: %w", err)
+		}
+		if prev <= 1 {
+			return nil
+		}
+	}
+	return fmt.Errorf("thread %d still suspended after 32 resume attempts", tid)
 }
 
 func (p *windowsProcessGroup) Wait() error {
