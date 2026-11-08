@@ -40,10 +40,17 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.27.2'
       - run: python3 -m unittest discover -s scripts/tests -v
       - run: bash scripts/lane-coord.sh --self-test
       - run: bash scripts/boot-gate.sh --self-test --offline
       - run: bash scripts/tests/test_watchdog.sh
+      - run: bash scripts/tests/test_package_vm.sh
+      - run: bash scripts/tests/test_package_oci.sh
+      - run: bash scripts/tests/test_makefile.sh
+      - run: bash scripts/tests/test_verify_signals.sh
       - run: bash ops/tests/test_watchdog_ops.sh
 
   go-checks:
@@ -55,7 +62,9 @@ jobs:
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: '1.27.2'
-      - run: test -z "$(gofmt -l reference/esf)"
+      - run: test -z "$(gofmt -l cmd internal reference/esf)"
+      - run: go vet ./...
+      - run: go test -v ./...
       - run: cd reference/esf && go vet ./...
 
   security:
