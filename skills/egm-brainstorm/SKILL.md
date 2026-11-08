@@ -105,17 +105,20 @@ If your harness has no subagent tool, stop and tell the user: a review in the sa
 | **Long-Term Tech Debt & Maintenance** | Future maintainability | *Does this introduce tightly coupled dependencies or brittle state machines that will be painful to maintain in 2 years?* |
 | **Inventive Catalyst** | Contradiction elimination & inventive transforms | *What fundamental trade-off is this design accepting as inevitable? How can we resolve this conflict using proven software transforms to achieve the Ideal Final Result without compromise?* |
 
-Each lens is exercised by exactly one spawned persona (Step 2):
+Each lens is exercised by exactly one spawned persona (Step 2), grounded
+in each persona's `IF Mode: BRAINSTORM` mandate:
 Contrarian / YAGNI → `egm-zoom-out` (the skeptical architect; YAGNI and
 reuse are its mandate); Cost, Quota & Token Economics → `egm-design`
 (infrastructure economics and scalability are the design critic's
 mandate); UX & Developer Ergonomics → `egm-comprehension` (the
 naive-reader lens: what a fresh consumer cannot follow); Migration &
-Backward Compatibility → `egm-codebase-details` (grounded in the actual
-codebase and its existing clients and schemas); Observability & SRE
-Debuggability → `egm-implementation-readiness` (an operable plan is an
-actionable plan); Long-Term Tech Debt & Maintenance → `egm-structural`;
-Inventive Catalyst → `egm-inventive-catalyst`.
+Backward Compatibility → `egm-implementation-readiness` (its BRAINSTORM
+mandate is migration, backward compatibility, and rollout safety);
+Observability & SRE Debuggability → `egm-codebase-details` (its
+BRAINSTORM mandate is observability, telemetry, and operational
+debuggability); Long-Term Tech Debt & Maintenance → `egm-structural`
+(its BRAINSTORM mandate is long-term tech debt, coupling risks, and
+maintainability); Inventive Catalyst → `egm-inventive-catalyst`.
 
 ## Execution Workflow
 
