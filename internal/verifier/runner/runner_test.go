@@ -4,6 +4,8 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -114,6 +116,106 @@ func TestRunVerification_Pass(t *testing.T) {
 	}
 	if res.Receipts[0].ExitCode != 0 {
 		t.Fatalf("expected exit code 0, got %d", res.Receipts[0].ExitCode)
+	}
+}
+
+// TestRunVerification_PreservesExitCode pins the N4 contract: a check
+// command exiting with a nonzero status other than 1 must have that
+// actual status recorded in its receipt, not a flattened 1 — consumers
+// of the receipt distinguish e.g. pytest's exit 2 (collection error)
+// from an ordinary test failure. A stub python3 whose exit status the
+// test controls stands in for the discovered pytest command: the stub
+// IS the executed command, so its status is what the receipt must
+// record. (A make fixture cannot serve here — GNU make flattens any
+// failing recipe to make's own exit status 2; see the next test.)
+func TestRunVerification_PreservesExitCode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture uses a POSIX shell stub for python3")
+	}
+
+	stubDir := t.TempDir()
+	stub := "#!/bin/sh\nexit \"$AEP_STUB_EXIT\"\n"
+	if err := os.WriteFile(filepath.Join(stubDir, "python3"), []byte(stub), 0o755); err != nil {
+		t.Fatalf("failed to write python3 stub: %v", err)
+	}
+	t.Setenv("PATH", stubDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	for _, want := range []int{2, 3} {
+		t.Setenv("AEP_STUB_EXIT", strconv.Itoa(want))
+		tmpDir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(tmpDir, "pyproject.toml"), []byte("[project]\nname = \"fixture\"\n"), 0o644); err != nil {
+			t.Fatalf("failed to write fixture: %v", err)
+		}
+
+		res, err := RunVerification(context.Background(), tmpDir, 0, 5*time.Second, 10*time.Second)
+		if err != nil {
+			t.Fatalf("exit %d: RunVerification failed: %v", want, err)
+		}
+		if res.Pass {
+			t.Fatalf("exit %d: expected verification to fail, got %+v", want, res)
+		}
+		if len(res.Receipts) != 1 {
+			t.Fatalf("exit %d: expected 1 receipt, got %d", want, len(res.Receipts))
+		}
+		if res.Receipts[0].ExitCode != want {
+			t.Fatalf("exit %d: expected receipt exit code %d, got %d", want, want, res.Receipts[0].ExitCode)
+		}
+		if res.Receipts[0].TimedOut {
+			t.Fatalf("exit %d: expected receipt TimedOut=false, got %+v", want, res.Receipts[0])
+		}
+	}
+}
+
+// TestRunVerification_MakeFailureRecordsMakeStatus pins the receipt
+// contract on the make-test path: the receipt records the executed
+// command's real status. A recipe exiting 3 makes GNU make itself exit
+// 2 — make flattens recipe failures to its own status — so the receipt
+// is 2 (before the N4 fix it was a further-flattened 1). Preservation
+// of a direct command's exact status is pinned by
+// TestRunVerification_PreservesExitCode above and by the process
+// package's TestExitCode_NormalExit.
+func TestRunVerification_MakeFailureRecordsMakeStatus(t *testing.T) {
+	tmpDir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(tmpDir, "Makefile"), []byte("test:\n\t@exit 3\n"), 0644)
+
+	res, err := RunVerification(context.Background(), tmpDir, 0, 5*time.Second, 10*time.Second)
+	if err != nil {
+		t.Fatalf("RunVerification failed: %v", err)
+	}
+	if res.Pass {
+		t.Fatalf("expected verification to fail, got %+v", res)
+	}
+	if len(res.Receipts) != 1 {
+		t.Fatalf("expected 1 receipt, got %d", len(res.Receipts))
+	}
+	if res.Receipts[0].ExitCode != 2 {
+		t.Fatalf("expected receipt exit code 2 (GNU make's status for a failed recipe), got %d", res.Receipts[0].ExitCode)
+	}
+}
+
+// TestRunVerification_TimeoutContract pins the timeout branch the N4
+// fix must not disturb: a command killed by the per-command deadline
+// records TimedOut=true and the conventional exit code 124, never the
+// kill signal's status.
+func TestRunVerification_TimeoutContract(t *testing.T) {
+	tmpDir := t.TempDir()
+	_ = os.WriteFile(filepath.Join(tmpDir, "Makefile"), []byte("test:\n\t@sleep 5\n"), 0644)
+
+	res, err := RunVerification(context.Background(), tmpDir, 0, 300*time.Millisecond, 10*time.Second)
+	if err != nil {
+		t.Fatalf("RunVerification failed: %v", err)
+	}
+	if res.Pass {
+		t.Fatalf("expected verification to fail on timeout, got %+v", res)
+	}
+	if len(res.Receipts) != 1 {
+		t.Fatalf("expected 1 receipt, got %d", len(res.Receipts))
+	}
+	if !res.Receipts[0].TimedOut {
+		t.Fatalf("expected receipt TimedOut=true, got %+v", res.Receipts[0])
+	}
+	if res.Receipts[0].ExitCode != 124 {
+		t.Fatalf("expected receipt exit code 124 for a timeout, got %d", res.Receipts[0].ExitCode)
 	}
 }
 

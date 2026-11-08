@@ -227,7 +227,11 @@ func RunVerification(ctx context.Context, repoRoot string, minMemBytes uint64, p
 				exitCode = 124
 				_ = pg.Kill()
 			} else if waitErr != nil {
-				exitCode = 1
+				if code, ok := process.ExitCode(waitErr); ok {
+					exitCode = code
+				} else {
+					exitCode = 1
+				}
 			}
 
 			receipt := CommandReceipt{

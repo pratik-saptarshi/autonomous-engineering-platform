@@ -231,3 +231,57 @@ func TestProcessGroup_WaitFastWhenGroupEmpty(t *testing.T) {
 		t.Fatalf("Wait() took %v for a command with an empty group; want < 750ms (fast path)", elapsed)
 	}
 }
+
+// TestExitCode_NormalExit pins the N4 contract at the platform layer:
+// a command exiting with status N must surface (N, true) from ExitCode
+// so callers can record the real status instead of flattening every
+// nonzero exit to 1.
+func TestExitCode_NormalExit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture command uses POSIX sh")
+	}
+
+	pg := NewCommand(context.Background(), "sh", []string{"-c", "exit 3"}, CommandConfig{})
+	if err := pg.Start(); err != nil {
+		t.Fatalf("pg.Start() failed: %v", err)
+	}
+	code, ok := ExitCode(pg.Wait())
+	if !ok {
+		t.Fatalf("ExitCode(Wait error) ok = false, want true for an exit-3 command")
+	}
+	if code != 3 {
+		t.Fatalf("ExitCode(Wait error) = %d, want 3", code)
+	}
+}
+
+// TestExitCode_SignalDeath pins the Python-parity encoding for signal
+// deaths: the status is −signum (−9 for SIGKILL), matching
+// scripts/mechanical_verify.py's raw subprocess returncode.
+func TestExitCode_SignalDeath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("signal-death encoding is POSIX-specific")
+	}
+
+	pg := NewCommand(context.Background(), "sh", []string{"-c", "kill -KILL $$"}, CommandConfig{})
+	if err := pg.Start(); err != nil {
+		t.Fatalf("pg.Start() failed: %v", err)
+	}
+	code, ok := ExitCode(pg.Wait())
+	if !ok {
+		t.Fatalf("ExitCode(Wait error) ok = false, want true for a SIGKILLed command")
+	}
+	if code != -9 {
+		t.Fatalf("ExitCode(Wait error) = %d, want -9 (SIGKILL)", code)
+	}
+}
+
+// TestExitCode_NoStatus pins the fallback contract: errors carrying no
+// exit status (nil, plain errors, context errors) report (0, false) so
+// the caller applies its own default.
+func TestExitCode_NoStatus(t *testing.T) {
+	for _, err := range []error{nil, errors.New("boom"), context.DeadlineExceeded} {
+		if code, ok := ExitCode(err); ok || code != 0 {
+			t.Fatalf("ExitCode(%v) = (%d, %v), want (0, false)", err, code, ok)
+		}
+	}
+}
