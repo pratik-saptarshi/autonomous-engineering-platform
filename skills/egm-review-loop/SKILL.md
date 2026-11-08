@@ -164,7 +164,10 @@ file` mode is specified, confirm full-file line bounds).
         parallel, deduplicates findings, writes the report artifact, and
         returns a single summary message to avoid context pollution in the root
         conversation. Pass it the Failed Reviewers rule below,
-        `GoldfishContext`, and the resolved `Standards` mapping (each
+        `GoldfishContext`, the resolved `ReportFile` (the file the
+        synthesizer must write its report artifact to — when a stage
+        names one, never the `goldfish_review_report.md` default), and
+        the resolved `Standards` mapping (each
         reviewer's designated standard, resolved to its
         `../../reference/elephant-goldfish-model/resources/document_standards/` path),
         and tell it to give those files to each reviewer.
