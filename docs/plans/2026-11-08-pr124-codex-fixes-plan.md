@@ -415,3 +415,17 @@ Standing residuals:
 - **F4 (Windows):** runtime behaviour unverified — validated by cross-compile (`GOOS=windows`) and structural/code inspection only; no Windows runtime exists in this environment.
 - **F5:** the `LDFLAGS` git stamp can lag when a commit changes no Go source, and a deleted Go source file drops out of the prerequisite list without triggering a rebuild (outside the finding; recorded in Task 5).
 - **F3:** the supervisor's boot-failure path is covered structurally only — no runtime exercise of a failing boot gate in the packaged-service environment.
+
+## Stage 6 fix round (addendum, 2026-11-08)
+
+Codex's review of the first fix head (`9916a0e`) confirmed the six original closures in-tree and raised **two new findings**, both adjudicated REAL and fixed in a second SDD round:
+
+- **N1 (P1, thread `PRRT_kwDOVM-V9860-lSU`) — the VM service had no verification root.** The generated systemd unit set no `WorkingDirectory` and no `--root`; the bundle shipped no tree to verify. Fixed in `e5d6834`: the unit pins root `/usr/local/lib/aep/verify` (WorkingDirectory + `--root`), the bundle gains a `verify/` payload whose Makefile `test:` target is an installed-system self-check (`aep boot`, `aep info`, config readable), `install.sh` installs the payload and warns loudly if `make` is absent, and `user-data.yaml` installs `make` and stages the payload via `/tmp/aep-verify`. Permanent regression test `scripts/tests/test_package_vm.sh` in `084109f`; CI wiring (script-tests enumerates shell tests by name) plus a vacuous-pass guard in `1ab25d0`.
+- **N2 (P2, thread `PRRT_kwDOVM-V9860-lSV`) — POSIX group members survived normal leader exit.** A lifecycle census of `internal/platform/process` showed the leak on both POSIX Wait leader-exit paths, while the cancellation path (F1), Windows (job-object close), and Kill are safe. Fixed in `a85087b`: POSIX Wait now terminates remaining group members on leader exit (probe, SIGTERM, bounded grace, SIGKILL), with the contract documented on Wait; fast-path guard test constants tightened in `3a33ee8` so the guard can actually catch a grace-period sleep.
+
+Residuals from this round:
+
+- The payload's `aep boot` leg is the third enforcement of the same 384 MiB floor (ExecStartPre and the supervisor's own per-tick gate are the other two) — defence in depth with identical semantics, kept deliberately.
+- The bundle config's `AEP_MEM_PREFLIGHT_MB=512` (amd64) is not consumed by the boot gate, which uses the hard-coded 384 MiB floor (pre-existing, outside N1's scope).
+- `setsid` escapees remain outside group cleanup on POSIX (documented on Wait); the Python verifier's adoptee sweep is broader and remains the parity reference.
+- The docker-compose route has the same unconfigured-root defect (empty named volume at `/workspace`, no `--root`); filed as issue #126 rather than folded into this PR, as neither thread names it and the fix is a deployment-design choice.
