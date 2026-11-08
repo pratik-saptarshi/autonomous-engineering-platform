@@ -353,6 +353,125 @@ EOF
   PROFILE_ORIGIN="created-by-install-re-runtime"
 }
 
+# Heredoc bookkeeping for the guard scan in install_env_block:
+# appends one (delimiter, <<- flag) pair to the caller's hd_delims /
+# hd_dash arrays (bash dynamic scoping) for every heredoc opened on
+# the line in $1. The scan is a small hand lexer over the line:
+# quotes and backslash escapes are honored (a << inside quotes opens
+# nothing), an unquoted # at a word start ends the code part of the
+# line, <<< herestrings have no body and are skipped, and << inside
+# (( )) is an arithmetic shift, not a heredoc. Only a << at a token
+# boundary (line start, or after whitespace / ; | & ( ) < >) counts,
+# so comparisons and case patterns merely mentioning << stay inert.
+collect_heredoc_openers() { # $1 = one kept line
+  local s="$1" len=${#1} i=0 ch sq=0 dq=0 depth=0
+  local j dash delim q boundary
+  while [ "$i" -lt "$len" ]; do
+    ch="${s:i:1}"
+    if [ "$sq" -eq 1 ]; then
+      [ "$ch" = "'" ] && sq=0
+      i=$((i + 1))
+      continue
+    fi
+    if [ "$dq" -eq 1 ]; then
+      case "$ch" in
+      \\) i=$((i + 2)) ;;
+      '"')
+        dq=0
+        i=$((i + 1))
+        ;;
+      *) i=$((i + 1)) ;;
+      esac
+      continue
+    fi
+    case "$ch" in
+    "'") sq=1 ;;
+    '"') dq=1 ;;
+    \\) i=$((i + 1)) ;;
+    '#')
+      # Comment start: at line start or after whitespace/a metachar.
+      if [ "$i" -eq 0 ]; then
+        break
+      fi
+      case "${s:i-1:1}" in
+      [[:space:]\;\|\&\(\)]) break ;;
+      esac
+      ;;
+    '(')
+      if [ "${s:i+1:1}" = "(" ]; then
+        depth=$((depth + 1))
+        i=$((i + 1))
+      fi
+      ;;
+    ')')
+      if [ "$depth" -gt 0 ] && [ "${s:i+1:1}" = ")" ]; then
+        depth=$((depth - 1))
+        i=$((i + 1))
+      fi
+      ;;
+    '<')
+      if [ "$depth" -eq 0 ] && [ "${s:i+1:1}" = "<" ]; then
+        if [ "${s:i+2:1}" = "<" ]; then
+          # Herestring: no body follows.
+          i=$((i + 2))
+        else
+          boundary=0
+          if [ "$i" -eq 0 ]; then
+            boundary=1
+          else
+            case "${s:i-1:1}" in
+            [[:space:]\;\|\&\(\)\<\>]) boundary=1 ;;
+            esac
+          fi
+          if [ "$boundary" -eq 1 ]; then
+            j=$((i + 2))
+            dash=0
+            if [ "${s:j:1}" = "-" ]; then
+              dash=1
+              j=$((j + 1))
+            fi
+            while [ "$j" -lt "$len" ]; do
+              case "${s:j:1}" in
+              [[:space:]]) j=$((j + 1)) ;;
+              *) break ;;
+              esac
+            done
+            delim=""
+            q="${s:j:1}"
+            if [ "$q" = "'" ] || [ "$q" = '"' ]; then
+              j=$((j + 1))
+              while [ "$j" -lt "$len" ] && [ "${s:j:1}" != "$q" ]; do
+                delim+="${s:j:1}"
+                j=$((j + 1))
+              done
+              j=$((j + 1))
+            else
+              while [ "$j" -lt "$len" ]; do
+                case "${s:j:1}" in
+                [A-Za-z0-9_.-])
+                  delim+="${s:j:1}"
+                  j=$((j + 1))
+                  ;;
+                *) break ;;
+                esac
+              done
+            fi
+            if [ -n "$delim" ]; then
+              hd_delims+=("$delim")
+              hd_dash+=("$dash")
+            fi
+            if [ "$j" -gt $((i + 1)) ]; then
+              i=$((j - 1))
+            fi
+          fi
+        fi
+      fi
+      ;;
+    esac
+    i=$((i + 1))
+  done
+}
+
 install_env_block() {
   ENV_OUTCOME=""
   local bashrc="$HOME/.bashrc"
@@ -422,7 +541,35 @@ install_env_block() {
   # so the relocated layout is the fixed point: re-runs stay
   # byte-identical on stock and guard-free homes alike.
   local block_at=$insert_at guard_at=-1 scan
+  # The scan is heredoc-aware. Lines inside a heredoc body are data,
+  # never guard candidates: a guard-shaped body line (stock guard
+  # text quoted inside a heredoc) must not attract the block into
+  # the body, where it would be swallowed as heredoc text — the
+  # exports would never execute, yet the stage would report ok.
+  # hd_delims / hd_dash are the pending heredoc queue (delimiter and
+  # its <<- flag), filled by collect_heredoc_openers for every code
+  # line the scan passes; heredoc openers and closers themselves are
+  # ordinary kept lines.
+  local -a hd_delims=() hd_dash=()
+  local hd_probe
   for ((scan = 0; scan < ${#kept[@]}; scan++)); do
+    if [ "${#hd_delims[@]}" -gt 0 ]; then
+      # Heredoc body line: never a guard candidate. Only the queue
+      # head's delimiter on a line of its own closes that heredoc
+      # (leading tabs stripped when it was opened with <<-); the
+      # terminator line is consumed as the closer.
+      hd_probe="${kept[scan]}"
+      if [ "${hd_dash[0]}" = "1" ]; then
+        while [ "${hd_probe:0:1}" = $'\t' ]; do
+          hd_probe="${hd_probe:1}"
+        done
+      fi
+      if [ "$hd_probe" = "${hd_delims[0]}" ]; then
+        hd_delims=("${hd_delims[@]:1}")
+        hd_dash=("${hd_dash[@]:1}")
+      fi
+      continue
+    fi
     trimmed="${kept[scan]#"${kept[scan]%%[![:space:]]*}"}"
     case "$trimmed" in
     '#'*) ;;
@@ -435,6 +582,7 @@ install_env_block() {
       break
       ;;
     esac
+    collect_heredoc_openers "${kept[scan]}"
   done
   if [ "$guard_at" -ge 0 ] &&
     { [ "$block_at" -lt 0 ] || [ "$block_at" -gt "$guard_at" ]; }; then
@@ -1770,6 +1918,94 @@ EOF
     pass=1
   fi
   report_stage env-skel-relocation "$pass"
+
+  # (j) A heredoc body quoting guard-shaped text is data, not a
+  # guard: with no real guard present, the block is appended after
+  # the heredoc — inside the body it would be swallowed as heredoc
+  # text, the exports would never execute, and the stage would still
+  # report ok. The guard scan must skip heredoc bodies entirely, and
+  # a second run stays byte-identical.
+  local eof_line
+  reset_env
+  cat >"$envhome/.bashrc" <<'EOF'
+# user bashrc
+cat <<'SCRIPT'
+case $- in
+  *i*) ;;
+esac
+SCRIPT
+export EDITOR=vim
+EOF
+  printf '# user profile\n' >"$envhome/.profile"
+  cp "$envhome/.bashrc" "$selftest_root/env-j-orig"
+  out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
+  cp "$envhome/.bashrc" "$selftest_root/env-j-run1"
+  out2=$(run_env install_env_block 2>&1) && rc2=0 || rc2=$?
+  out="$out2" rc="$rc2"
+  marker_line=$(grep -n -xF '# >>> re-runtime >>>' "$envhome/.bashrc" | cut -d: -f1)
+  eof_line=$(grep -n -xF 'SCRIPT' "$envhome/.bashrc" | cut -d: -f1)
+  # shellcheck disable=SC2016 # the single-quoted string is a program for the child bash; its $-expressions must expand there, not here
+  reach=$(env -i HOME="$envhome" /bin/bash -c '. "$HOME/.bashrc" >/dev/null 2>&1; printf %s "${JAVA_HOME:-}"')
+  pass=0
+  if [ "$rc" -eq 0 ] &&
+    printf '%s\n' "$out" | grep -qxF "INSTALL-RE: env ok" &&
+    [ "$(count_markers '>>>')" = "1" ] &&
+    [ "$(count_markers '<<<')" = "1" ] &&
+    [ -n "$marker_line" ] && [ -n "$eof_line" ] &&
+    [ "$marker_line" -gt "$eof_line" ] &&
+    [ "$(tail -n 1 "$envhome/.bashrc")" = "# <<< re-runtime <<<" ] &&
+    grep -qxF "case \$- in" "$envhome/.bashrc" &&
+    cmp -s "$selftest_root/env-j-run1" "$envhome/.bashrc" &&
+    [ "$reach" = "$envhome/opt/jdk-$TEMURIN_VERSION" ] &&
+    cmp -s "$selftest_root/env-j-orig" "$envhome/.bashrc.install-re-runtime.bak"; then
+    pass=1
+  fi
+  report_stage env-heredoc-false-guard "$pass"
+
+  # (k) Heredoc body first, real guard after: the body quotes the
+  # $PS1/return guard shape, and the stock case guard follows the
+  # heredoc. The block belongs before the REAL guard — not inside
+  # the heredoc (the body's false candidate) and not after the real
+  # guard (unreachable there). A second run stays byte-identical.
+  reset_env
+  cat >"$envhome/.bashrc" <<'EOF'
+# user bashrc
+cat <<'SCRIPT'
+[ -z "$PS1" ] && return
+SCRIPT
+
+# If not running interactively, don't do anything
+case $- in
+    *i*) ;;
+      *) return;;
+esac
+
+export EDITOR=vim
+EOF
+  printf '# user profile\n' >"$envhome/.profile"
+  out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
+  cp "$envhome/.bashrc" "$selftest_root/env-k-run1"
+  out2=$(run_env install_env_block 2>&1) && rc2=0 || rc2=$?
+  out="$out2" rc="$rc2"
+  marker_line=$(grep -n -xF '# >>> re-runtime >>>' "$envhome/.bashrc" | cut -d: -f1)
+  eof_line=$(grep -n -xF 'SCRIPT' "$envhome/.bashrc" | cut -d: -f1)
+  guard_line=$(grep -n -xF "case \$- in" "$envhome/.bashrc" | cut -d: -f1)
+  # shellcheck disable=SC2016 # the single-quoted string is a program for the child bash; its $-expressions must expand there, not here
+  reach=$(env -i HOME="$envhome" /bin/bash -c '. "$HOME/.bashrc" >/dev/null 2>&1; printf %s "${JAVA_HOME:-}"')
+  pass=0
+  if [ "$rc" -eq 0 ] &&
+    printf '%s\n' "$out" | grep -qxF "INSTALL-RE: env ok" &&
+    [ "$(count_markers '>>>')" = "1" ] &&
+    [ "$(count_markers '<<<')" = "1" ] &&
+    [ -n "$marker_line" ] && [ -n "$eof_line" ] && [ -n "$guard_line" ] &&
+    [ "$marker_line" -gt "$eof_line" ] &&
+    [ "$marker_line" -lt "$guard_line" ] &&
+    grep -qxF 'export EDITOR=vim' "$envhome/.bashrc" &&
+    cmp -s "$selftest_root/env-k-run1" "$envhome/.bashrc" &&
+    [ "$reach" = "$envhome/opt/jdk-$TEMURIN_VERSION" ]; then
+    pass=1
+  fi
+  report_stage env-heredoc-real-guard "$pass"
 
   # Fresh-HOME leg: with no .bashrc at all, the stage creates one
   # holding exactly the block (the fixture-HOME full-run shape).
