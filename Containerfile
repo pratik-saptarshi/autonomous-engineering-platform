@@ -21,6 +21,11 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
 RUN apk add --no-cache bash && \
     bash scripts/package-vm.sh linux "${TARGETARCH:-amd64}" /out/aep /bundle
 
+# The generator sets modes only on bin/aep; the profile and payload modes
+# otherwise inherit this builder's umask, and a hardened umask (027/077)
+# would ship them unreadable by the unprivileged aep service user.
+RUN chmod -R a+rX /bundle/verify /bundle/config
+
 FROM ${BASE_IMAGE}
 
 LABEL org.opencontainers.image.title="Autonomous Engineering Platform" \
