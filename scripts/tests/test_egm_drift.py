@@ -97,6 +97,27 @@ class EgmDriftTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("description differs", result.stdout)
 
+    def test_single_quoted_yaml_description_passes(self):
+        # Re-quoting the description with single quotes changes no
+        # character of the value; the old _scalar returned the quotes
+        # as part of the value and flagged it as drift.
+        yaml_path = self.skills / "egm-alpha" / "skill.yaml"
+        yaml_path.write_text(
+            yaml_path.read_text(encoding="utf-8").replace(
+                f'description: "{DESCRIPTION}"',
+                f"description: '{DESCRIPTION}'"),
+            encoding="utf-8")
+        result = self.run_check()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        # A changed word inside the single quotes is still drift.
+        yaml_path.write_text(
+            yaml_path.read_text(encoding="utf-8").replace(
+                "complete and untruncated", "complete and shortened"),
+            encoding="utf-8")
+        result = self.run_check()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("description differs", result.stdout)
+
     def test_wrong_table_shortname_fails(self):
         loop_path = self.skills / "egm-review-loop" / "SKILL.md"
         loop_path.write_text(
@@ -114,6 +135,45 @@ class EgmDriftTests(unittest.TestCase):
         result = self.run_check()
         self.assertEqual(result.returncode, 1)
         self.assertIn("no normalization-table entry", result.stdout)
+
+    def test_prose_pair_cannot_rescue_deleted_table_row(self):
+        # Delete the egm-beta row from the table but mention the same
+        # pair in prose elsewhere in the file. The whole-file scan —
+        # the old rule (b) behaviour — is masked by the prose pair;
+        # the anchored scan must still report the missing row.
+        loop_path = self.skills / "egm-review-loop" / "SKILL.md"
+        loop_path.write_text(
+            loop_path.read_text(encoding="utf-8").replace(
+                ", `egm-beta` →\n`beta`", "")
+            + "\nElsewhere, prose mentions `egm-beta` → `beta`.\n",
+            encoding="utf-8")
+        result = self.run_check()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("no normalization-table entry", result.stdout)
+
+    def test_extra_table_persona_fails(self):
+        # Reverse direction: the table names a persona the bundle
+        # does not carry.
+        loop_path = self.skills / "egm-review-loop" / "SKILL.md"
+        loop_path.write_text(
+            loop_path.read_text(encoding="utf-8").replace(
+                "`beta`.", "`beta`, `egm-ghost` → `ghost`."),
+            encoding="utf-8")
+        result = self.run_check()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("no agent file carries that frontmatter name",
+                      result.stdout)
+
+    def test_duplicate_table_entry_fails(self):
+        loop_path = self.skills / "egm-review-loop" / "SKILL.md"
+        loop_path.write_text(
+            loop_path.read_text(encoding="utf-8").replace(
+                "`egm-alpha` → `alpha`",
+                "`egm-alpha` → `alpha`, `egm-alpha` → `alpha`"),
+            encoding="utf-8")
+        result = self.run_check()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("more than once", result.stdout)
 
     def test_reviewer_missing_from_standards_map_fails(self):
         review_path = self.skills / "egm-review" / "SKILL.md"

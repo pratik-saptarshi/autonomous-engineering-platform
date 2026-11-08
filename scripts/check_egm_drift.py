@@ -40,7 +40,8 @@ Usage:
 ``--bundle`` defaults to ``<root>/../reference/elephant-goldfish-model``.
 
 Exit 0 iff there are no findings; each finding is printed on its own
-line naming the file, the line number, and the rule that fired.
+line naming the file and the inconsistency, and -- where the finding
+is tied to a specific table row or call site -- the line number.
 """
 
 import argparse
@@ -61,8 +62,9 @@ def _scalar(lines, key):
     """Value of a top-level YAML ``key`` in ``lines``, or None.
 
     Handles the scalar shapes the EGM files actually use: a plain
-    single-line value, a double-quoted single-line value, and a
-    ``>``/``|`` block scalar with indented continuation lines.
+    single-line value, a double-quoted or single-quoted single-line
+    value, and a ``>``/``|`` block scalar with indented continuation
+    lines.
     """
     for idx, line in enumerate(lines):
         match = re.match(rf"^{re.escape(key)}:\s*(.*)$", line)
@@ -84,6 +86,9 @@ def _scalar(lines, key):
                 return json.loads(value)
             except json.JSONDecodeError:
                 return value.strip('"')
+        if len(value) >= 2 and value.startswith("'") \
+                and value.endswith("'"):
+            return value[1:-1].replace("''", "'")
         return value
     return None
 
@@ -126,6 +131,24 @@ def check_yaml_parity(root, findings):
                     f"frontmatter: {fm_value!r})")
 
 
+def _normalization_pairs(text):
+    """(name, shortname, lineno) triples from the normalization table.
+
+    The scan is anchored to the table itself -- the paragraph block
+    carrying the most ``name -> shortname`` pairs (ties go to the
+    earliest such block) -- so a pair mentioned in prose elsewhere in
+    the file cannot stand in for a deleted table row.
+    """
+    best = []
+    for start, block in _paragraph_blocks(text):
+        pairs = [(match.group(1), match.group(2),
+                  start + block[:match.start()].count("\n"))
+                 for match in TABLE_PAIR_RE.finditer(block)]
+        if len(pairs) > len(best):
+            best = pairs
+    return best
+
+
 def check_normalization_table(root, bundle, findings):
     """Rule (b): loop normalization table == bundle agent frontmatter."""
     agents_dir = bundle / "agents"
@@ -143,9 +166,13 @@ def check_normalization_table(root, bundle, findings):
         return
     loop_text = loop_file.read_text(encoding="utf-8")
     table = {}
-    for match in TABLE_PAIR_RE.finditer(loop_text):
-        lineno = loop_text.count("\n", 0, match.start()) + 1
-        table[match.group(1)] = (match.group(2), lineno)
+    for name, shortname, lineno in _normalization_pairs(loop_text):
+        if name in table:
+            findings.append(
+                f"egm-review-loop/SKILL.md:{lineno}: normalization "
+                f"table lists {name!r} more than once (first at line "
+                f"{table[name][1]}); the later entry silently wins")
+        table[name] = (shortname, lineno)
     for name, stem in expected.items():
         if name not in table:
             findings.append(
