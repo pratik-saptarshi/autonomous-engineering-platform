@@ -401,7 +401,11 @@ plain chat):
 1.  **Invoke Antagonistic Review Loop**: Invoke `egm-review-loop` in-thread
     with `TargetFile`, `SemanticTarget`: "the feature design above the
     Step 3 split header (`## Detailed Implementation Plan` or the synonym
-    found)" (when no split is in effect — Preset 2, or Step 3 found no
+    found)" (when the user confirmed custom line ranges at the Step 3
+    gate, describe that confirmed range instead — e.g. "the section
+    from line L through line M", using the confirmed `FeatureRange`
+    bounds — so the target the loop re-derives matches `FeatureRange`;
+    when no split is in effect — Preset 2, or Step 3 found no
     implementation plan, so `FeatureRange` covers the whole file — pass
     `SemanticTarget`: "full file" instead), the active range
     `FeatureRange`, reviewers `[egm-design,
@@ -440,10 +444,12 @@ plain chat):
 1.  **Invoke Antagonistic Review Loop**: Invoke `egm-review-loop` in-thread
     with `TargetFile`, `SemanticTarget`: "the Step 3 split section
     (`## Detailed Implementation Plan` or the synonym found) through end
-    of file" (when `DetailedRange` was set from custom line ranges with
-    no split header located, describe that range instead — e.g. "the
-    section from line L through end of file" — so the target the loop
-    re-derives matches `DetailedRange`), the active range `DetailedRange`,
+    of file" (when the user confirmed custom line ranges at the Step 3
+    gate — whether or not a split header was located — describe that
+    confirmed range instead, e.g. "the section from line L through
+    line M" (or "through end of file" when the confirmed range ends
+    there), so the target the loop re-derives matches `DetailedRange`),
+    the active range `DetailedRange`,
     reviewers
     `[egm-implementation-readiness, egm-codebase-details, egm-style]` and
     standards
