@@ -1,0 +1,19 @@
+services:
+  aep:
+    build:
+      context: .
+      dockerfile: Containerfile
+    image: aep:latest
+    container_name: aep-engine
+    restart: unless-stopped
+    environment:
+      - AEP_HARDWARE_TIER=server-vm-x86_64
+      - AEP_MAX_LANES=4
+    volumes:
+      - aep-workspace:/workspace
+      - aep-state:/home/aep/.local/state
+    command: ["supervisor", "--loop"]
+
+volumes:
+  aep-workspace:
+  aep-state:

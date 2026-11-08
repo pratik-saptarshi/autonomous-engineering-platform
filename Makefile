@@ -7,10 +7,11 @@ LDFLAGS := -s -w -X main.version=$(VERSION) -X main.commit=$(GIT_COMMIT)
 
 DIST_BIN := dist/bin
 DIST_VM := dist/vm
+DIST_OCI := dist/oci
 
-.PHONY: all binaries vm clean test
+.PHONY: all binaries vm oci clean test
 
-all: binaries vm
+all: binaries vm oci
 
 test:
 	$(GO) test -v ./...
@@ -40,6 +41,11 @@ dist/vm/linux-amd64: dist/bin/aep-linux-amd64
 
 dist/vm/linux-arm64: dist/bin/aep-linux-arm64
 	@bash scripts/package-vm.sh linux arm64 dist/bin/aep-linux-arm64 $@
+
+oci: dist/oci
+
+dist/oci:
+	@bash scripts/package-oci.sh $(DIST_OCI)
 
 clean:
 	rm -rf dist/
