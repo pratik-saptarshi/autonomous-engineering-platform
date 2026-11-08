@@ -19,7 +19,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - run: npx --yes markdownlint-cli2@0.24.0 "**/*.md" "!reference/esf/**/*.md" "!reference/neurostrata/**/*.md" "!reference/neurostrata-ops/**/*.md" "!reference/harness2/**/*.md" "!reference/security-audit-skill/**/*.md" "!reference/ub-mode/**/*.md" "!reference/grim-prompter/**/*.md" "!reference/docs-mcp-server/**/*.md" "!skills/archify/**/*.md" "!skills/diagnosing-superpowers/**/*.md" "!skills/neurogenesis/**/*.md" "!skills/overseer/**/*.md" "!skills/retro/**/*.md"
+      - run: npx --yes markdownlint-cli2@0.24.0 "**/*.md" "!reference/esf/**/*.md" "!reference/neurostrata/**/*.md" "!reference/neurostrata-ops/**/*.md" "!reference/harness2/**/*.md" "!reference/security-audit-skill/**/*.md" "!reference/ub-mode/**/*.md" "!reference/grim-prompter/**/*.md" "!reference/docs-mcp-server/**/*.md" "!reference/humanizer/**/*.md" "!reference/elephant-goldfish-model/**/*.md" "!skills/archify/**/*.md" "!skills/diagnosing-superpowers/**/*.md" "!skills/neurogenesis/**/*.md" "!skills/overseer/**/*.md" "!skills/retro/**/*.md" "!skills/egm-bootstrap/**/*.md" "!skills/egm-brainstorm/**/*.md" "!skills/egm-draft/**/*.md" "!skills/egm-drift-report/**/*.md" "!skills/egm-resolve/**/*.md" "!skills/egm-review/**/*.md" "!skills/egm-review-loop/**/*.md" "!docs/egm-adoption/**/*.md"
 
   shell-lint:
     runs-on: ubuntu-latest
@@ -52,6 +52,8 @@ jobs:
       - run: bash scripts/tests/test_makefile.sh
       - run: bash scripts/tests/test_verify_signals.sh
       - run: bash ops/tests/test_watchdog_ops.sh
+      - run: bash scripts/install-re-runtime.sh --self-test --offline
+      - run: bash scripts/tests/test_install_re_runtime.sh
 
   go-checks:
     runs-on: ubuntu-latest
@@ -130,6 +132,21 @@ jobs:
           sha256sum -c ../../.github/vendor-docs-mcp-server.sha256
           comm -23 <(find . -type f | sort) <(cut -d' ' -f3- ../../.github/vendor-docs-mcp-server.sha256 | sed 's|^\./|./|' | sort) | grep -q . && { echo "ERROR: unlisted files"; exit 1; } || true
           find . -type l | while read -r link; do test -e "$link" || { echo "ERROR: broken symlink $link"; exit 1; }; done
+      - run: |
+          cd reference/humanizer
+          sha256sum -c ../../.github/vendor-humanizer.sha256
+          comm -23 <(find . -type f | sort) <(cut -d' ' -f3- ../../.github/vendor-humanizer.sha256 | sed 's|^\./|./|' | sort) | grep -q . && { echo "ERROR: unlisted files"; exit 1; } || true
+          find . -type l | while read -r link; do test -e "$link" || { echo "ERROR: broken symlink $link"; exit 1; }; done
+      - run: |
+          cd reference/craft-anything
+          sha256sum -c ../../.github/vendor-craft-anything.sha256
+          comm -23 <(find . -type f | sort) <(cut -d' ' -f3- ../../.github/vendor-craft-anything.sha256 | sed 's|^\./|./|' | sort) | grep -q . && { echo "ERROR: unlisted files"; exit 1; } || true
+          find . -type l | while read -r link; do test -e "$link" || { echo "ERROR: broken symlink $link"; exit 1; }; done
+      - run: |
+          cd reference/elephant-goldfish-model
+          sha256sum -c ../../.github/vendor-elephant-goldfish-model.sha256
+          comm -23 <(find . -type f | sort) <(cut -d' ' -f3- ../../.github/vendor-elephant-goldfish-model.sha256 | sed 's|^\./|./|' | sort) | grep -q . && { echo "ERROR: unlisted files"; exit 1; } || true
+          find . -type l | while read -r link; do test -e "$link" || { echo "ERROR: broken symlink $link"; exit 1; }; done
       - name: Run vendored security-audit validator suites
         run: |
           node --test reference/security-audit-skill/skills/security-audit/validate-findings.test.cjs
@@ -146,3 +163,21 @@ jobs:
         with:
           persist-credentials: false
       - run: python3 scripts/check_skills_manifest.py --root skills --check
+
+  # Bounded claim: this gate proves no file under skills/ contains the
+  # craft-anything runtime's artifact names, a command-position or
+  # registration-form invocation of it, or a non-negated imperative
+  # instruction to invoke it. The adoption (plan v2.1, Phase 3) took the
+  # protocol, not the engine; this recurring check replaces the one-time
+  # grep and is lifted only as part of an authorized runtime plan.
+  skills-routing-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - run: python3 scripts/check_skills_phantom_capability.py --root skills
+      # EGM drift: skill.yaml descriptions verbatim vs frontmatter, the
+      # review-loop normalization table vs bundle agent frontmatter,
+      # and egm-review call-site standards coverage (panel J8/J10/J16).
+      - run: python3 scripts/check_egm_drift.py --root skills

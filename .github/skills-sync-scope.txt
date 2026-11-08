@@ -20,12 +20,14 @@
 # rules from this file; no rule is hardcoded anywhere else.
 
 [skills]
+adopting-external-skills
 agent_operations
 aim
 autobahn
 brainstorming
 catchup
 code_explorer
+craft-anything-protocol
 debloat
 dedash
 detool
@@ -33,19 +35,29 @@ diagnosing-superpowers
 direct_drive_execution
 dispatching-parallel-agents
 domain-modeling
+egm-bootstrap
+egm-brainstorm
+egm-draft
+egm-drift-report
+egm-resolve
+egm-review
+egm-review-loop
 excalibur-quest
 executing-plans
 factchk
 feature-pr-pipeline
 feynman
+filing-validated-issues
 finishing-a-development-branch
 grill-me
 grill-with-docs
 grilling
 handoff
 hate
+humanizer
 macrothink
 mandela
+merging-gated-prs
 modelchk
 nba
 neurogenesis
@@ -82,6 +94,7 @@ ssotize
 subagent-driven-development
 systematic-debugging
 test-driven-development
+untangle-codebase
 using-git-worktrees
 verification-before-completion
 wizard
@@ -91,6 +104,7 @@ writing-skills
 
 [exclude-paths]
 skill.yaml
+humanizer/PROVENANCE.md
 .superpowers/**
 scrubbing-public-tree/SKILL.md
 

@@ -1,6 +1,8 @@
 ---
 name: overnight-parallel-lanes
 description: Use when setting up an unattended coding run — overnight or otherwise — where a milestone should be split into independent workstreams built in parallel with review gating the merge
+fork_of: "pratik-saptarshi/opencode-rountable-review skills/overnight-parallel-lanes"
+fork_version: 1
 ---
 
 # Overnight Parallel Lanes

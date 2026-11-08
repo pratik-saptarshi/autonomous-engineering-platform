@@ -38,6 +38,7 @@ f5d42f3103f06df44d214a207f88a1c550c6a98d47b45a063d10e4bda947e287  ./.claude/skil
 0344e5451150c57b1dca7f083e9dff0a2f035b64276ae28890c0684e36777616  ./.claude/skills/openspec-verify-change/SKILL.md
 b6cc2c1211bc8a1d13a9bce74bdc0922a03bf8bda8788e341b264ec29c100715  ./.dockerignore
 5b062f1a80b3fc2e8db1cd473e957dc343f92c8c223f055f6c3d94a3b2fe5ff9  ./.env.example
+cffddd8c20219634143ed6ffb527167270259199b4b9b9d424c29061e95fd794  ./.github/dependabot.yml
 02be0b03dfd5dd8e2d966b819973c2207887f373a8263c3928a2b364dcce26ed  ./.github/prompts/opsx-apply.prompt.md
 d91b0425797ba4650edfe63557c74a2f26dc068ce1abf1439e62fce87c70019d  ./.github/prompts/opsx-archive.prompt.md
 31e800c5db8ffa3fa3a1c1b77149b3097522e5968298213dd8a6b9b6a956d5ba  ./.github/prompts/opsx-explore.prompt.md
@@ -53,11 +54,11 @@ c0723954fbd0b51666b46af8312b4b1a47d1480ab33438db491bc3b189ad3c0a  ./.github/skil
 c992a1f2f06fee17b5b3d43569d5255082954e07b3b639e6115aef45984dd911  ./.github/skills/openspec-sync-specs/SKILL.md
 1d6f7cd55bbce2f90be0fc3822e9341826a348650435bb9dbd5e90e96354674e  ./.github/skills/openspec-update-change/SKILL.md
 a13b61c4b68720ff37e93dd1353f5d5dc978de6906c236fa33b3f9342e7a743e  ./.github/skills/openspec-verify-change/SKILL.md
-591bc40867b0898af2254c4a38aeddade139e1e20b9cd74ac178045bb1c91502  ./.github/workflows/ci.yml
+bd125da508a03b03d5d9ddd7b7340dc8369a2f63593777c070597d7864c65073  ./.github/workflows/ci.yml
 2a409da7254318b0c6db2966bc765689dd380a1571af4dcdffae7ff7cf3dc8d7  ./.github/workflows/eval.yml
 394e4010edeb61ce362ae26825071648ca94518a2a6c5235aaccfb8f4cef39ca  ./.github/workflows/release.yml
 cbc74fae1fdebfc736402533222a5e19be9bc5d83de7606d3d1876c6bd788171  ./.gitignore
-381ebeb75ceb4394153149ee37044fcfeb3a16b8b7b45e3bf10a50b29a4a5747  ./.husky/commit-msg
+03db64d409126b6de08dc6d3316ffc302899c31f3b14b04a3c572d86d4cbfa2d  ./.husky/commit-msg
 e2b7c9733375d7182af2033bda9a7d2a05d0db5eef5be53d26eb7b5f3df8fbc3  ./.husky/pre-commit
 cd953bc2e5668e8155089a6aba3225a6170cc743ba547d148de507b26827ea73  ./.nvmrc
 fcb822060e027e9f0cecf0c1266e23849dfc34e0e52f9a8ac2d82c6607a17f7d  ./.releaserc.json
@@ -69,7 +70,7 @@ fcb822060e027e9f0cecf0c1266e23849dfc34e0e52f9a8ac2d82c6607a17f7d  ./.releaserc.j
 7efe5519339394a1eab877bd1ad9393464dbabf424ed9f223f7a59888a715506  ./CONTRIBUTING.md
 f77670e147bcaae492a1d7457c742986de95a99bb7f01639eae3bfd14413eea7  ./Dockerfile
 e6cb7201b3a7a41503859e0761ac5f2f755392c6e0826ae81e5a1beadf918a31  ./LICENSE
-8ee7268e31a54e0746b8e53e4f52ba4f9218dcd954f98c4b32590d0c254dcf8d  ./PROVENANCE.md
+312f5d0bfbcfbcd721d27b71d493179b1b26dafef01c30d465d67365e11f8aab  ./PROVENANCE.md
 501917ed151d74b6ad1ab05133492ba0dd66eb2910fa73848b40fcf8ce556c83  ./README.md
 a7c55afcc7ebecf4ca44b080c47b97d481be4a541518c4fc315c5d0de283fed9  ./biome.json
 bea2f03f0d4556e94d6b3bda0592016efee93497252ed81feea315c8241e8614  ./commitlint.config.js
@@ -396,8 +397,8 @@ b6fbfdddbbc134820b25994671213e63c713ac8646809df849884a26ea63c9b6  ./openspec/spe
 702573571b3be8e07cf68ec5ca82fb6c570a88504d8732c6063ed7f3b87b6ac3  ./openspec/specs/url-normalization/spec.md
 b4b8bd43289ded0baa9f76d3d97ecfd3923ed9b8ad2c69df2245465fc53a19a1  ./openspec/specs/version-resolution/spec.md
 e336831f22436d416988cd2ca8af83c9f01786949555ae8281eba2827425bd3b  ./openspec/specs/zip-processing/spec.md
-d55a08ba007ee62d2ad1a693af7b7ffa2e2a53d593d9c587c4f851d0aecf66d1  ./package-lock.json
-3d64fc56f01f0375532213b347f265e24cefaccc83eb54ae254332c40ed995ab  ./package.json
+ddb1ce1f9bbf573ffa5e62f363a0d1b601766a129c54887c3a42e519e59c1bfe  ./package-lock.json
+69b8e9cca24727ce6f69f26b380d3d82444ec75aaee68b0eaaca24e9cf044378  ./package.json
 ee0ed5c163f4ba1f342fda148c8408a3f72153632a9c4d0d3672f9ba77fdcadc  ./public/android-icon-144x144.png
 911032bd2db9daf24904d85fa0461da0ccbb4a6a442289398e15c49dead317ca  ./public/android-icon-192x192.png
 724c734c5ae3f5fb59e55bdecd45760f40c72382f0495ed85ff00093b05f075b  ./public/android-icon-36x36.png
