@@ -103,6 +103,33 @@ rev-parse)
   ;;
 checkout)
   [ -f "$dir/.stub-git-ok" ] || exit 128
+  # Working-tree model: a forced checkout discards tracked
+  # modifications; a plain one leaves them in place (real-git
+  # semantics). Untracked files survive either form.
+  for arg in "$@"; do
+    if [ "$arg" = "-f" ] || [ "$arg" = "--force" ]; then
+      rm -f "$dir/.stub-dirty-tracked"
+    fi
+  done
+  ;;
+clean)
+  [ -f "$dir/.stub-git-ok" ] || exit 128
+  # clean with a force flag removes untracked files; tracked
+  # modifications are not clean's business.
+  for arg in "$@"; do
+    case "$arg" in
+    -*f*) rm -f "$dir/.stub-dirty-untracked" ;;
+    esac
+  done
+  ;;
+status)
+  [ -f "$dir/.stub-git-ok" ] || exit 128
+  if [ -f "$dir/.stub-dirty-tracked" ]; then
+    printf ' M fixture.c\n'
+  fi
+  if [ -f "$dir/.stub-dirty-untracked" ]; then
+    printf '?? fixture-new.c\n'
+  fi
   ;;
 *)
   exit 0
@@ -112,6 +139,16 @@ EOF
 cat >"$SB/bin/make" <<'EOF'
 #!/bin/bash
 [ -n "${HOME:-}" ] && printf 'make %s\n' "$*" >>"$HOME/.stub-calls.log"
+# Record the source tree's dirtiness at build time so a case can
+# prove the build never consumed a dirty clone: make runs with the
+# clone as its working directory.
+if [ -n "${HOME:-}" ]; then
+  built_dirty=0
+  if [ -f ./.stub-dirty-tracked ] || [ -f ./.stub-dirty-untracked ]; then
+    built_dirty=1
+  fi
+  printf 'make built-dirty=%s\n' "$built_dirty" >>"$HOME/.stub-calls.log"
+fi
 case " $* " in
 *" install "*)
   mkdir -p "$HOME/opt"
@@ -397,6 +434,30 @@ G_BASHRC_SHA="$(file_sha "$FH/.bashrc")"
 run_installer "$SERVE_DIR"
 [ "$RC" -eq 0 ] && ok "(g) second run exit 0" || fail "(g) second run exit 0 (got $RC)"
 check "(g) second run leaves .bashrc byte-identical" test "$(file_sha "$FH/.bashrc")" = "$G_BASHRC_SHA"
+
+note "case (h): a dirty staged radare2 clone is restored to the pinned tree before building"
+new_fixture h
+mkdir -p "$FH/opt/dist/radare2-src"
+printf '#!/bin/bash\nexit 0\n' >"$FH/opt/dist/radare2-src/configure"
+chmod +x "$FH/opt/dist/radare2-src/configure"
+: >"$FH/opt/dist/radare2-src/.stub-git-ok"
+: >"$FH/opt/dist/radare2-src/.stub-dirty-tracked"
+: >"$FH/opt/dist/radare2-src/.stub-dirty-untracked"
+run_installer "$SERVE_DIR"
+check "(h) exit 0" test "$RC" -eq 0
+check "(h) radare2 ok line" grep -qxF "INSTALL-RE: radare2 ok" "$OUT"
+check "(h) verify ok is the last line" test "$(tail -1 "$OUT")" = "INSTALL-RE: verify ok"
+check "(h) dirty-clone notice printed" grep -qF "INSTALL-RE: radare2 note: staged clone had local changes" "$OUT"
+check "(h) working tree status checked" grep -qF "status --porcelain" "$FH/.stub-calls.log"
+check "(h) tracked changes force-restored" grep -qF "checkout -f $R2_VERSION" "$FH/.stub-calls.log"
+check "(h) untracked files cleaned" grep -qF "clean -fd" "$FH/.stub-calls.log"
+H_STATUS_LN="$(grep -nF "status --porcelain" "$FH/.stub-calls.log" | head -1 | cut -d: -f1)"
+H_MAKE_LN="$(grep -nF "make -j2" "$FH/.stub-calls.log" | head -1 | cut -d: -f1)"
+check "(h) status check precedes the build" test "$H_STATUS_LN" -lt "$H_MAKE_LN"
+check "(h) build saw a clean tree" grep -qF "built-dirty=0" "$FH/.stub-calls.log"
+check "(h) build never saw a dirty tree" test -z "$(grep -F "built-dirty=1" "$FH/.stub-calls.log")"
+check "(h) tracked dirt removed from the clone" test ! -e "$FH/opt/dist/radare2-src/.stub-dirty-tracked"
+check "(h) untracked dirt removed from the clone" test ! -e "$FH/opt/dist/radare2-src/.stub-dirty-untracked"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then

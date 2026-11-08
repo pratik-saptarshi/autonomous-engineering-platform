@@ -320,6 +320,34 @@ install_radare2() {
   if [ "$head" != "$R2_COMMIT" ]; then
     fail radare2 "HEAD $head != pinned $R2_COMMIT"
   fi
+  # The reuse contract is that the checkout restores the pinned
+  # state, but a plain checkout of the already-checked-out tag
+  # restores nothing: a clone sitting at the pinned commit with
+  # local working-tree changes (an interrupted patch, a hand edit)
+  # would pass the HEAD assert above and be built as-is, silently
+  # voiding the pin. So a dirty tree is restored loudly, never
+  # built: forced checkout for tracked changes, clean for untracked
+  # files, then HEAD and cleanliness are re-asserted. The check
+  # cannot false-positive on a legitimate reuse — a completed build
+  # leaves the clone's porcelain status empty, because every build
+  # output is gitignored. Named residual: files git ignores are
+  # invisible to status --porcelain, so a tampered gitignored
+  # generated file inside the clone is outside this check's reach.
+  if [ -n "$(git -C "$src" status --porcelain 2>/dev/null)" ]; then
+    echo "INSTALL-RE: radare2 note: staged clone had local changes; restoring the pinned tree"
+    git -C "$src" checkout -f "$R2_VERSION" ||
+      fail radare2 "cannot restore the pinned checkout in staged clone $src"
+    git -C "$src" clean -fd >/dev/null ||
+      fail radare2 "cannot clean staged clone $src"
+    head=$(git -C "$src" rev-parse HEAD) ||
+      fail radare2 "cannot resolve HEAD in $src after restore"
+    if [ "$head" != "$R2_COMMIT" ]; then
+      fail radare2 "HEAD $head != pinned $R2_COMMIT after restore"
+    fi
+    if [ -n "$(git -C "$src" status --porcelain 2>/dev/null)" ]; then
+      fail radare2 "staged clone $src could not be restored to the pinned state"
+    fi
+  fi
   (cd "$src" && ./configure --prefix="$dir") ||
     fail radare2 "configure failed"
   (cd "$src" && make -j2) || fail radare2 "build failed (make -j2)"
@@ -1437,6 +1465,33 @@ rev-parse)
   ;;
 checkout)
   [ -f "$dir/.stub-git-ok" ] || exit 128
+  # Working-tree model: a forced checkout discards tracked
+  # modifications; a plain one leaves them in place (real-git
+  # semantics). Untracked files survive either form.
+  for arg in "$@"; do
+    if [ "$arg" = "-f" ] || [ "$arg" = "--force" ]; then
+      rm -f "$dir/.stub-dirty-tracked"
+    fi
+  done
+  ;;
+clean)
+  [ -f "$dir/.stub-git-ok" ] || exit 128
+  # clean with a force flag removes untracked files; tracked
+  # modifications are not clean's business.
+  for arg in "$@"; do
+    case "$arg" in
+    -*f*) rm -f "$dir/.stub-dirty-untracked" ;;
+    esac
+  done
+  ;;
+status)
+  [ -f "$dir/.stub-git-ok" ] || exit 128
+  if [ -f "$dir/.stub-dirty-tracked" ]; then
+    printf ' M fixture.c\n'
+  fi
+  if [ -f "$dir/.stub-dirty-untracked" ]; then
+    printf '?? fixture-new.c\n'
+  fi
   ;;
 *)
   exit 0
@@ -1447,6 +1502,16 @@ EOF
   cat >"$r2bin/make" <<'EOF'
 #!/bin/bash
 [ -n "${STAGE_BUILD_LOG:-}" ] && printf 'make %s\n' "$*" >>"$STAGE_BUILD_LOG"
+# Record the source tree's dirtiness at build time so a case can
+# prove the build never consumed a dirty clone: make runs with the
+# clone as its working directory.
+if [ -n "${STAGE_BUILD_LOG:-}" ]; then
+  built_dirty=0
+  if [ -f ./.stub-dirty-tracked ] || [ -f ./.stub-dirty-untracked ]; then
+    built_dirty=1
+  fi
+  printf 'make built-dirty=%s\n' "$built_dirty" >>"$STAGE_BUILD_LOG"
+fi
 case " $* " in
 *" install "*)
   mkdir -p "$HOME/opt"
@@ -1680,6 +1745,40 @@ EOF
     pass=1
   fi
   report_stage radare2-clone-reuse "$pass"
+
+  # Dirty-clone restore: a reused clone can sit at the pinned commit
+  # with local working-tree changes (an interrupted patch, a hand
+  # edit). A plain checkout restores nothing then, so HEAD equality
+  # alone would build the modified tree and still print ok. The
+  # stage must notice the dirt, restore the pinned tree (forced
+  # checkout for tracked changes, clean for untracked files) BEFORE
+  # building, say so, and leave the clone clean; the stub make's
+  # built-dirty record proves the build saw a clean tree.
+  reset_r2
+  mkdir -p "$stagehome/opt/dist/radare2-src"
+  printf '#!/bin/bash\nexit 0\n' >"$stagehome/opt/dist/radare2-src/configure"
+  chmod +x "$stagehome/opt/dist/radare2-src/configure"
+  : >"$stagehome/opt/dist/radare2-src/.stub-git-ok"
+  : >"$stagehome/opt/dist/radare2-src/.stub-dirty-tracked"
+  : >"$stagehome/opt/dist/radare2-src/.stub-dirty-untracked"
+  out=$(run_r2 install_radare2 2>&1) && rc=0 || rc=$?
+  pass=0
+  r2_status_ln=$(grep -nF "status --porcelain" "$build_log" | head -1 | cut -d: -f1)
+  r2_make_ln=$(grep -nF "make -j2" "$build_log" | head -1 | cut -d: -f1)
+  if [ "$rc" -eq 0 ] &&
+    printf '%s\n' "$out" | grep -qxF "INSTALL-RE: radare2 ok" &&
+    printf '%s\n' "$out" | grep -qF "INSTALL-RE: radare2 note: staged clone had local changes" &&
+    [ -n "$r2_status_ln" ] && [ -n "$r2_make_ln" ] &&
+    [ "$r2_status_ln" -lt "$r2_make_ln" ] &&
+    grep -qF "checkout -f $R2_VERSION" "$build_log" &&
+    grep -qF "clean -fd" "$build_log" &&
+    grep -qF "built-dirty=0" "$build_log" &&
+    ! grep -qF "built-dirty=1" "$build_log" &&
+    [ ! -e "$stagehome/opt/dist/radare2-src/.stub-dirty-tracked" ] &&
+    [ ! -e "$stagehome/opt/dist/radare2-src/.stub-dirty-untracked" ]; then
+    pass=1
+  fi
+  report_stage radare2-dirty-clone-restored "$pass"
 
   # --- Task 4: env block, .profile, REA assertion ---
   # Fixture-HOME cases for install_env_block / ensure_profile /
