@@ -154,6 +154,47 @@ check "payload self-checks via the installed binary path" \
 check "payload self-checks the installed hardware profile" \
   grep -qF "test -r /etc/aep/hardware-profile.conf" "$PAYLOAD/Makefile"
 
+# --- The Compose route must share the bundle's pinned root (N3). ---
+# The Containerfile's builder stage generates THIS SAME bundle with
+# package-vm.sh and its runtime stage installs the profile + payload
+# into the image; docker-compose.yml then launches the supervisor at
+# the same root the unit pins. As with the install routes above: when
+# no root could be derived, every check here fails rather than passing
+# vacuously on an empty grep pattern.
+COMPOSE="$ROOT/docker-compose.yml"
+CONTAINERFILE="$ROOT/Containerfile"
+# shellcheck disable=SC2329 # invoked indirectly via check "$@" below.
+containerfile_apk_installs() { # <pkg> — pkg appears in an apk add block
+  grep -A8 'apk add' "$CONTAINERFILE" | grep -qw "$1"
+}
+if [ -z "$ROOT_PATH" ]; then
+  fail "compose supervisor --root matches the configured root (no root derived from the unit)"
+  fail "compose working_dir matches the configured root (no root derived from the unit)"
+  fail "Containerfile installs the bundle verify payload at the configured root (no root derived from the unit)"
+  fail "Containerfile installs the bundle hardware profile at /etc/aep/hardware-profile.conf (no root derived from the unit)"
+  fail "Containerfile runtime installs make, the payload dependency (no root derived from the unit)"
+  fail "Dockerfile is byte-identical to Containerfile (no root derived from the unit)"
+  fail "bundle layout carries config/hardware-profile.conf, the Containerfile's profile source (no root derived from the unit)"
+  fail "bundle layout carries verify/Makefile, the Containerfile's payload source (no root derived from the unit)"
+else
+  check "compose supervisor --root matches the configured root" \
+    grep -qF -- "--root=$ROOT_PATH" "$COMPOSE"
+  check "compose working_dir matches the configured root" \
+    grep -qF "working_dir: $ROOT_PATH" "$COMPOSE"
+  check "Containerfile installs the bundle verify payload at the configured root" \
+    grep -qF "COPY --from=builder /bundle/verify $ROOT_PATH" "$CONTAINERFILE"
+  check "Containerfile installs the bundle hardware profile at /etc/aep/hardware-profile.conf" \
+    grep -qF "COPY --from=builder /bundle/config/hardware-profile.conf /etc/aep/hardware-profile.conf" "$CONTAINERFILE"
+  check "Containerfile runtime installs make, the payload dependency" \
+    containerfile_apk_installs make
+  check "Dockerfile is byte-identical to Containerfile" \
+    cmp -s "$ROOT/Dockerfile" "$CONTAINERFILE"
+  check "bundle layout carries config/hardware-profile.conf, the Containerfile's profile source" \
+    test -f "$OUT/config/hardware-profile.conf"
+  check "bundle layout carries verify/Makefile, the Containerfile's payload source" \
+    test -f "$OUT/verify/Makefile"
+fi
+
 # --- Runnable: stage what's missing, then verify for real. ---
 note "staging the installed system (only missing pieces; removed on exit if created here)"
 STAGE_OK=1
