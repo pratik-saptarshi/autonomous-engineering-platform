@@ -134,6 +134,7 @@ var errSupervisorBootGate = errors.New("boot gate failed")
 // returned unwrapped, so loop mode can treat it as non-fatal.
 func supervisorTick(ctx context.Context, root string, minMemBytes uint64, perCmdTimeout, totalBudget time.Duration) error {
 	if err := bootGate(); err != nil {
+		fmt.Printf("SUPERVISOR: tick failed: %v\n", err)
 		return fmt.Errorf("%w: %v", errSupervisorBootGate, err)
 	}
 	res, err := runner.RunVerification(ctx, root, minMemBytes, perCmdTimeout, totalBudget)
@@ -150,6 +151,19 @@ func supervisorTick(ctx context.Context, root string, minMemBytes uint64, perCmd
 	return nil
 }
 
+// validateSupervisorFlags checks supervisor flag combinations that
+// would otherwise fail obscurely at runtime. In loop mode the
+// interval drives time.NewTicker, which panics on a non-positive
+// duration, so a non-positive interval is rejected here as a usage
+// error before any tick runs. Outside loop mode the interval is
+// unused and is not validated.
+func validateSupervisorFlags(loop bool, interval time.Duration) error {
+	if loop && interval <= 0 {
+		return fmt.Errorf("invalid --interval %s: must be positive in loop mode", interval)
+	}
+	return nil
+}
+
 func runSupervisor(args []string) {
 	fs := flag.NewFlagSet("supervisor", flag.ExitOnError)
 	loop := fs.Bool("loop", false, "Run ticks continuously on the interval until signalled")
@@ -163,6 +177,11 @@ func runSupervisor(args []string) {
 	budgetSec := fs.Int("budget", 600, "Total execution budget in seconds")
 
 	_ = fs.Parse(args)
+
+	if err := validateSupervisorFlags(*loop, *interval); err != nil {
+		fmt.Fprintf(os.Stderr, "SUPERVISOR: %v\n", err)
+		os.Exit(1)
+	}
 
 	minMemBytes := *minMemMB * 1024 * 1024
 	perCmdTimeout := time.Duration(*timeoutSec) * time.Second
@@ -182,7 +201,6 @@ func runSupervisor(args []string) {
 			return false, false
 		}
 		if errors.Is(err, errSupervisorBootGate) {
-			fmt.Fprintf(os.Stderr, "SUPERVISOR: %v\n", err)
 			return true, true
 		}
 		return false, true

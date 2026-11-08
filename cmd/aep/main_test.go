@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -18,6 +19,38 @@ func TestSupervisorTick_Pass(t *testing.T) {
 	}
 	if err := supervisorTick(context.Background(), dir, 0, 5*time.Second, 10*time.Second); err != nil {
 		t.Fatalf("supervisorTick on passing fixture returned error: %v", err)
+	}
+}
+
+// TestValidateSupervisorFlags: in loop mode a non-positive interval
+// must be rejected (time.NewTicker would panic on it); outside loop
+// mode the interval is unused and must not be rejected.
+func TestValidateSupervisorFlags(t *testing.T) {
+	cases := []struct {
+		name     string
+		loop     bool
+		interval time.Duration
+		wantErr  bool
+	}{
+		{"loop zero interval", true, 0, true},
+		{"loop negative interval", true, -time.Second, true},
+		{"loop positive interval", true, time.Second, false},
+		{"once zero interval", false, 0, false},
+		{"once negative interval", false, -time.Second, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateSupervisorFlags(tc.loop, tc.interval)
+			if tc.wantErr && err == nil {
+				t.Fatalf("validateSupervisorFlags(%v, %v) = nil, want error", tc.loop, tc.interval)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("validateSupervisorFlags(%v, %v) = %v, want nil", tc.loop, tc.interval, err)
+			}
+			if tc.wantErr && !strings.Contains(err.Error(), tc.interval.String()) {
+				t.Fatalf("error %q does not name the interval %q", err, tc.interval)
+			}
+		})
 	}
 }
 
