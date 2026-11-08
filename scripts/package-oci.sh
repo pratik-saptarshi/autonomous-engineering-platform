@@ -18,7 +18,7 @@ IMAGE_TAG="${2:-aep:latest}"
 if [ -z "${TOOL}" ]; then
   echo "NOTICE: Neither 'docker' nor 'podman' found on local host."
   echo "Generating OCI specification and build context artifact in ${OUT_DIR}..."
-  tar -czf "${OUT_DIR}/aep-oci-context.tar.gz" Containerfile Dockerfile docker-compose.yml cmd/ internal/ go.mod go.sum
+  tar -czf "${OUT_DIR}/aep-oci-context.tar.gz" Containerfile Dockerfile docker-compose.yml cmd/ internal/ go.mod go.sum scripts/package-vm.sh
   echo "OCI build context archived to ${OUT_DIR}/aep-oci-context.tar.gz"
   echo "To build on a system with Docker/Podman:"
   echo "  tar -xzf aep-oci-context.tar.gz && docker build -t ${IMAGE_TAG} ."
