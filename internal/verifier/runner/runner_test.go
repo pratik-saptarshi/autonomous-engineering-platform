@@ -273,3 +273,83 @@ func TestRunVerification_UnsupportedProject(t *testing.T) {
 		t.Fatalf("expected Pass=false for unsupported project, got Pass=true")
 	}
 }
+
+// TestRunVerification_SpawnFailureRecordsReceipt pins the N7 contract:
+// a discovered command that cannot be STARTED (here: cargo, made
+// unfindable on any host by shadowing PATH with an empty directory)
+// must still produce a receipt — exit code 127 with the launch error
+// preserved — and must count as executed, so Executed == len(Receipts)
+// holds and a missing tool is diagnosable from the receipts. Before
+// the fix this yielded discovered=1 executed=0 failed=1 receipts=0.
+// RunVerification's error stays nil: a failed check is (result, nil),
+// like every other check failure.
+func TestRunVerification_SpawnFailureRecordsReceipt(t *testing.T) {
+	tmpDir := t.TempDir()
+	cargoToml := "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"
+	if err := os.WriteFile(filepath.Join(tmpDir, "Cargo.toml"), []byte(cargoToml), 0o644); err != nil {
+		t.Fatalf("failed to write fixture: %v", err)
+	}
+	t.Setenv("PATH", t.TempDir()) // empty: cargo unfindable even where installed
+
+	res, err := RunVerification(context.Background(), tmpDir, 0, 5*time.Second, 10*time.Second)
+	if err != nil {
+		t.Fatalf("RunVerification failed: %v", err)
+	}
+	if res.Pass {
+		t.Fatalf("expected verification to fail, got %+v", res)
+	}
+	if res.Discovered != 1 || res.Executed != 1 || res.Failed != 1 {
+		t.Fatalf("expected discovered=1 executed=1 failed=1, got discovered=%d executed=%d failed=%d",
+			res.Discovered, res.Executed, res.Failed)
+	}
+	if len(res.Receipts) != 1 {
+		t.Fatalf("expected 1 receipt, got %d", len(res.Receipts))
+	}
+	r := res.Receipts[0]
+	if r.CommandID != "cargo-test" {
+		t.Fatalf("expected receipt for cargo-test, got %q", r.CommandID)
+	}
+	if r.ExitCode != 127 {
+		t.Fatalf("expected receipt exit code 127 for a launch failure, got %d", r.ExitCode)
+	}
+	if r.TimedOut {
+		t.Fatalf("expected receipt TimedOut=false, got %+v", r)
+	}
+	if r.Error == "" || !strings.Contains(r.Error, "cargo") {
+		t.Fatalf("expected receipt Error to preserve the launch error mentioning cargo, got %q", r.Error)
+	}
+}
+
+// TestRunVerification_SpawnFailureStopsRun pins the second half of the
+// N7 contract: a launch failure stops the run, like every other check
+// failure — later discovered commands are not attempted. Discovery
+// order relied on (DiscoverCommands' pinned order): cargo-test (from
+// Cargo.toml, step 2) precedes make-test (from a Makefile test target,
+// step 5), so with both markers present cargo is attempted first; the
+// single receipt proves make-test never ran.
+func TestRunVerification_SpawnFailureStopsRun(t *testing.T) {
+	tmpDir := t.TempDir()
+	cargoToml := "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"
+	if err := os.WriteFile(filepath.Join(tmpDir, "Cargo.toml"), []byte(cargoToml), 0o644); err != nil {
+		t.Fatalf("failed to write fixture: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "Makefile"), []byte("test:\n\t@echo 'all tests pass'\n"), 0o644); err != nil {
+		t.Fatalf("failed to write fixture: %v", err)
+	}
+	t.Setenv("PATH", t.TempDir()) // empty: cargo unfindable even where installed
+
+	res, err := RunVerification(context.Background(), tmpDir, 0, 5*time.Second, 10*time.Second)
+	if err != nil {
+		t.Fatalf("RunVerification failed: %v", err)
+	}
+	if res.Discovered != 2 {
+		t.Fatalf("expected 2 discovered commands, got %d", res.Discovered)
+	}
+	if res.Executed != 1 || res.Failed != 1 {
+		t.Fatalf("expected executed=1 failed=1 (run stopped at the launch failure), got executed=%d failed=%d",
+			res.Executed, res.Failed)
+	}
+	if len(res.Receipts) != 1 || res.Receipts[0].CommandID != "cargo-test" {
+		t.Fatalf("expected exactly the cargo-test receipt, got %+v", res.Receipts)
+	}
+}
