@@ -28,6 +28,13 @@ The Source column names pratik-saptarshi forks (default branch `develop`) wherev
 | delegate_code_review | pratik-saptarshi/open-code-review | Apache-2.0 | Delegation mode; needs LLM key for full review |
 | detool | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | dispatching-parallel-agents | pratik-saptarshi/superpowers | MIT | |
+| egm-bootstrap | pratik-saptarshi/elephant-goldfish-model | Apache-2.0 | Vendored as bundle (e9e1f06a); wrapper with repo-relative paths |
+| egm-brainstorm | pratik-saptarshi/elephant-goldfish-model | Apache-2.0 | Vendored as bundle (e9e1f06a); wrapper with repo-relative paths |
+| egm-draft | pratik-saptarshi/elephant-goldfish-model | Apache-2.0 | Vendored as bundle (e9e1f06a); wrapper with repo-relative paths |
+| egm-drift-report | pratik-saptarshi/elephant-goldfish-model | Apache-2.0 | Vendored as bundle (e9e1f06a); wrapper with repo-relative paths |
+| egm-resolve | pratik-saptarshi/elephant-goldfish-model | Apache-2.0 | Vendored as bundle (e9e1f06a); wrapper with repo-relative paths |
+| egm-review | pratik-saptarshi/elephant-goldfish-model | Apache-2.0 | Vendored as bundle (e9e1f06a); wrapper with repo-relative paths |
+| egm-review-loop | pratik-saptarshi/elephant-goldfish-model | Apache-2.0 | Vendored as bundle (e9e1f06a); wrapper with repo-relative paths |
 | executing-plans | pratik-saptarshi/superpowers | MIT | Extended locally with git-conventions bullet |
 | factchk | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | feature-pr-pipeline | Authored locally | MIT | Standard feature-to-PR workflow: plan, subagent-driven TDD, independent review, hygiene, PR with CI and review-comment gating |
