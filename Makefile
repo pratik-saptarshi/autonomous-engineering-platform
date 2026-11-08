@@ -10,6 +10,7 @@ DIST_VM := dist/vm
 DIST_OCI := dist/oci
 
 GO_SOURCES := $(shell find cmd internal -type f -name '*.go')
+OCI_INPUTS := $(GO_SOURCES) go.mod go.sum Containerfile Dockerfile docker-compose.yml scripts/package-oci.sh scripts/package-vm.sh
 
 .PHONY: all binaries vm oci clean test
 
@@ -38,15 +39,15 @@ dist/bin/aep-darwin-amd64: $(GO_SOURCES) go.mod go.sum
 
 vm: dist/vm/linux-amd64 dist/vm/linux-arm64
 
-dist/vm/linux-amd64: dist/bin/aep-linux-amd64
+dist/vm/linux-amd64: dist/bin/aep-linux-amd64 scripts/package-vm.sh
 	@bash scripts/package-vm.sh linux amd64 dist/bin/aep-linux-amd64 $@
 
-dist/vm/linux-arm64: dist/bin/aep-linux-arm64
+dist/vm/linux-arm64: dist/bin/aep-linux-arm64 scripts/package-vm.sh
 	@bash scripts/package-vm.sh linux arm64 dist/bin/aep-linux-arm64 $@
 
 oci: dist/oci
 
-dist/oci:
+dist/oci: $(OCI_INPUTS)
 	@bash scripts/package-oci.sh $(DIST_OCI)
 
 clean:
