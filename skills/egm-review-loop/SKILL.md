@@ -104,7 +104,11 @@ When resolving names in `Reviewers` and `Standards`:
     table entry, no shortname with an existing persona file, and no path
     is an error, not an invitation to improvise a mapping: record that
     reviewer as **not run** (see Failed Reviewers) and name the
-    unresolvable string in the report. The table above is verified
+    unresolvable string in the report. The same holds for a `Standards`
+    value: a standard name that resolves to no standard file is
+    likewise an error, not an invitation to improvise a standard —
+    record that reviewer as **not run** and name the unresolvable
+    standard in the report. The table above is verified
     against the persona files' frontmatter by
     `scripts/check_egm_drift.py`; if the table and the frontmatter ever
     disagree, the frontmatter is authoritative.
