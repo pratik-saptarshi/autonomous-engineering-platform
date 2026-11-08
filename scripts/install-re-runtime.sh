@@ -313,6 +313,19 @@ install_radare2() {
   if [ ! -e "$src" ]; then
     git clone "$R2_REPO" "$src" || fail radare2 "clone failed for $R2_REPO"
   fi
+  # A reused clone may predate the pinned release — exactly the
+  # state the documented pin-bump upgrade leaves behind: HEAD
+  # resolves, so the clone above is kept, but the pinned tag and
+  # the objects it points at were never fetched, so the checkout
+  # below would fail deterministically on every run. Fetch exactly
+  # that tag when it is absent (a clone already carrying it makes
+  # no network call). A single-tag fetch cannot churn or clobber
+  # other refs; safety against a moved tag rests on the
+  # HEAD == R2_COMMIT assert after checkout.
+  if ! git -C "$src" rev-parse --verify -q "refs/tags/$R2_VERSION" >/dev/null 2>&1; then
+    git -C "$src" fetch origin tag "$R2_VERSION" ||
+      fail radare2 "cannot fetch tag $R2_VERSION for staged clone $src"
+  fi
   git -C "$src" checkout "$R2_VERSION" ||
     fail radare2 "checkout failed for tag $R2_VERSION"
   head=$(git -C "$src" rev-parse HEAD) ||
@@ -1462,9 +1475,35 @@ rev-parse)
   if [ "${2:-}" = "HEAD" ]; then
     printf '%s\n' "${STAGE_R2_HEAD:?}"
   fi
+  # Tag-presence form: rev-parse --verify -q refs/tags/<v> fails
+  # while .stub-tag-absent is set — a clone that predates the
+  # release: HEAD resolves (the reuse gate keeps it) but the tag
+  # and its objects were never fetched.
+  for arg in "$@"; do
+    case "$arg" in
+    refs/tags/*)
+      [ ! -f "$dir/.stub-tag-absent" ] || exit 1
+      ;;
+    esac
+  done
+  ;;
+fetch)
+  [ -f "$dir/.stub-git-ok" ] || exit 128
+  # fetch origin tag <v> brings in exactly that tag, clearing the
+  # tag-absent state; .stub-fetch-fails models a network failure.
+  if [ -f "$dir/.stub-fetch-fails" ]; then
+    exit 1
+  fi
+  rm -f "$dir/.stub-tag-absent"
   ;;
 checkout)
   [ -f "$dir/.stub-git-ok" ] || exit 128
+  # While the tag is absent from the clone's refs, any checkout of
+  # it fails with a pathspec error, forced or not (real git).
+  if [ -f "$dir/.stub-tag-absent" ]; then
+    printf "error: pathspec '%s' did not match any file(s) known to git\n" "${!#}" >&2
+    exit 1
+  fi
   # Working-tree model: a forced checkout discards tracked
   # modifications; a plain one leaves them in place (real-git
   # semantics). Untracked files survive either form.
@@ -1744,7 +1783,9 @@ EOF
 
   # Clone reuse: with the install tree removed but a valid clone left
   # by the run above, a second run checks the tag out again without
-  # re-cloning.
+  # re-cloning — and without fetching either, because the clone
+  # already carries the pinned tag (the missing-tag fetch is
+  # presence-gated; the common path makes no network call).
   rm -rf "$stagehome/opt/radare2"
   : >"$build_log"
   out=$(run_r2 install_radare2 2>&1) && rc=0 || rc=$?
@@ -1752,6 +1793,7 @@ EOF
   if [ "$rc" -eq 0 ] &&
     printf '%s\n' "$out" | grep -qxF "INSTALL-RE: radare2 ok" &&
     ! grep -qF "git clone " "$build_log" &&
+    ! grep -qF " fetch " "$build_log" &&
     grep -qF "git -C $stagehome/opt/dist/radare2-src checkout $R2_VERSION" "$build_log"; then
     pass=1
   fi
@@ -1824,6 +1866,80 @@ EOF
     pass=1
   fi
   report_stage radare2-dirty-clone-unrestorable "$pass"
+
+  # Missing-tag fetch: a reused clone can predate the pinned
+  # release — exactly the state the documented pin-bump upgrade
+  # procedure leaves behind. Its HEAD resolves, so the reuse gate
+  # keeps it and the corrupt-clone removal can never trigger, but
+  # the pinned tag and its objects were never fetched, so the
+  # checkout fails deterministically on every run. The stage must
+  # fetch exactly that tag before the first checkout. Stub
+  # limitation, stated honestly: HEAD is modelled as its
+  # post-checkout value (as the cases above model it), so the HEAD
+  # assert still binds the fetched tag to the pinned commit.
+  reset_r2
+  mkdir -p "$stagehome/opt/dist/radare2-src"
+  printf '#!/bin/bash\nexit 0\n' >"$stagehome/opt/dist/radare2-src/configure"
+  chmod +x "$stagehome/opt/dist/radare2-src/configure"
+  : >"$stagehome/opt/dist/radare2-src/.stub-git-ok"
+  : >"$stagehome/opt/dist/radare2-src/.stub-tag-absent"
+  out=$(run_r2 install_radare2 2>&1) && rc=0 || rc=$?
+  pass=0
+  r2_fetch_ln=$(grep -nF "fetch origin tag $R2_VERSION" "$build_log" | head -1 | cut -d: -f1)
+  r2_checkout_ln=$(grep -nF "checkout $R2_VERSION" "$build_log" | head -1 | cut -d: -f1)
+  if [ "$rc" -eq 0 ] &&
+    printf '%s\n' "$out" | grep -qxF "INSTALL-RE: radare2 ok" &&
+    [ -n "$r2_fetch_ln" ] && [ -n "$r2_checkout_ln" ] &&
+    [ "$r2_fetch_ln" -lt "$r2_checkout_ln" ] &&
+    ! grep -qF "git clone " "$build_log" &&
+    [ ! -e "$stagehome/opt/dist/radare2-src/.stub-tag-absent" ]; then
+    pass=1
+  fi
+  report_stage radare2-missing-tag-fetched "$pass"
+
+  # Fetched tag, wrong commit: the fetch heals the missing tag and
+  # the checkout now succeeds, but the tag resolves to a commit
+  # other than the pin — the HEAD assert (the fix's stated safety
+  # net) must fire, before any build step.
+  reset_r2
+  STG_R2HEAD="1111111111111111111111111111111111111111"
+  mkdir -p "$stagehome/opt/dist/radare2-src"
+  printf '#!/bin/bash\nexit 0\n' >"$stagehome/opt/dist/radare2-src/configure"
+  chmod +x "$stagehome/opt/dist/radare2-src/configure"
+  : >"$stagehome/opt/dist/radare2-src/.stub-git-ok"
+  : >"$stagehome/opt/dist/radare2-src/.stub-tag-absent"
+  out=$(run_r2 install_radare2 2>&1) && rc=0 || rc=$?
+  pass=0
+  if [ "$rc" -ne 0 ] &&
+    printf '%s\n' "$out" | grep -qF "INSTALL-RE: radare2 FAIL: HEAD 1111111111111111111111111111111111111111 != pinned $R2_COMMIT" &&
+    grep -qF "fetch origin tag $R2_VERSION" "$build_log" &&
+    grep -qF "checkout $R2_VERSION" "$build_log" &&
+    ! grep -q '^make ' "$build_log"; then
+    pass=1
+  fi
+  report_stage radare2-fetched-tag-wrong-commit "$pass"
+
+  # Missing tag, fetch fails: the fetch is attempted and fails
+  # (offline, upstream gone) — the stage must fail there with the
+  # fetch FAIL line naming the tag and the clone, and never reach
+  # the checkout or the build.
+  reset_r2
+  mkdir -p "$stagehome/opt/dist/radare2-src"
+  printf '#!/bin/bash\nexit 0\n' >"$stagehome/opt/dist/radare2-src/configure"
+  chmod +x "$stagehome/opt/dist/radare2-src/configure"
+  : >"$stagehome/opt/dist/radare2-src/.stub-git-ok"
+  : >"$stagehome/opt/dist/radare2-src/.stub-tag-absent"
+  : >"$stagehome/opt/dist/radare2-src/.stub-fetch-fails"
+  out=$(run_r2 install_radare2 2>&1) && rc=0 || rc=$?
+  pass=0
+  if [ "$rc" -ne 0 ] &&
+    printf '%s\n' "$out" | grep -qxF "INSTALL-RE: radare2 FAIL: cannot fetch tag $R2_VERSION for staged clone $stagehome/opt/dist/radare2-src" &&
+    grep -qF "fetch origin tag $R2_VERSION" "$build_log" &&
+    ! grep -qF "checkout" "$build_log" &&
+    ! grep -q '^make ' "$build_log"; then
+    pass=1
+  fi
+  report_stage radare2-missing-tag-fetch-fails "$pass"
 
   # --- Task 4: env block, .profile, REA assertion ---
   # Fixture-HOME cases for install_env_block / ensure_profile /

@@ -100,9 +100,35 @@ rev-parse)
   if [ "${2:-}" = "HEAD" ]; then
     printf '%s\n' "${STUB_R2_HEAD:?}"
   fi
+  # Tag-presence form: rev-parse --verify -q refs/tags/<v> fails
+  # while .stub-tag-absent is set — a clone that predates the
+  # release: HEAD resolves (the reuse gate keeps it) but the tag
+  # and its objects were never fetched.
+  for arg in "$@"; do
+    case "$arg" in
+    refs/tags/*)
+      [ ! -f "$dir/.stub-tag-absent" ] || exit 1
+      ;;
+    esac
+  done
+  ;;
+fetch)
+  [ -f "$dir/.stub-git-ok" ] || exit 128
+  # fetch origin tag <v> brings in exactly that tag, clearing the
+  # tag-absent state; .stub-fetch-fails models a network failure.
+  if [ -f "$dir/.stub-fetch-fails" ]; then
+    exit 1
+  fi
+  rm -f "$dir/.stub-tag-absent"
   ;;
 checkout)
   [ -f "$dir/.stub-git-ok" ] || exit 128
+  # While the tag is absent from the clone's refs, any checkout of
+  # it fails with a pathspec error, forced or not (real git).
+  if [ -f "$dir/.stub-tag-absent" ]; then
+    printf "error: pathspec '%s' did not match any file(s) known to git\n" "${!#}" >&2
+    exit 1
+  fi
   # Working-tree model: a forced checkout discards tracked
   # modifications; a plain one leaves them in place (real-git
   # semantics). Untracked files survive either form.
@@ -493,6 +519,24 @@ check "(i) no make invocation for radare2" test -z "$(grep -E '^make ' "$FH/.stu
 check "(i) no radare2 install tree built" test ! -e "$FH/opt/radare2"
 check "(i) tracked dirt still in the clone" test -e "$FH/opt/dist/radare2-src/.stub-dirty-tracked"
 check "(i) untracked dirt still in the clone" test -e "$FH/opt/dist/radare2-src/.stub-dirty-untracked"
+
+note "case (j): a staged radare2 clone predating the pinned tag is healed by fetching the tag"
+new_fixture j
+mkdir -p "$FH/opt/dist/radare2-src"
+printf '#!/bin/bash\nexit 0\n' >"$FH/opt/dist/radare2-src/configure"
+chmod +x "$FH/opt/dist/radare2-src/configure"
+: >"$FH/opt/dist/radare2-src/.stub-git-ok"
+: >"$FH/opt/dist/radare2-src/.stub-tag-absent"
+run_installer "$SERVE_DIR"
+check "(j) exit 0" test "$RC" -eq 0
+check "(j) radare2 ok line" grep -qxF "INSTALL-RE: radare2 ok" "$OUT"
+check "(j) verify ok is the last line" test "$(tail -1 "$OUT")" = "INSTALL-RE: verify ok"
+check "(j) missing tag fetched" grep -qF "fetch origin tag $R2_VERSION" "$FH/.stub-calls.log"
+check "(j) clone reused, not re-cloned" test -z "$(grep -F "git clone" "$FH/.stub-calls.log" || true)"
+J_FETCH_LN="$(grep -nF "fetch origin tag $R2_VERSION" "$FH/.stub-calls.log" | head -1 | cut -d: -f1)"
+J_CHECKOUT_LN="$(grep -nF "checkout $R2_VERSION" "$FH/.stub-calls.log" | head -1 | cut -d: -f1)"
+check "(j) fetch precedes the checkout" test "$J_FETCH_LN" -lt "$J_CHECKOUT_LN"
+check "(j) tag present in the clone afterwards" test ! -e "$FH/opt/dist/radare2-src/.stub-tag-absent"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then
