@@ -309,6 +309,7 @@ run_installer "$SERVE_BAD_DIR"
 [ "$RC" -eq 1 ] && ok "(e) exit 1" || fail "(e) exit 1 (got $RC)"
 check "(e) verify failure names ghidra" grep -qF "(ghidra)" "$OUT"
 check "(e) ghidra downloaded exactly once" test "$(grep -c "curl .*$GHIDRA_ZIP" "$FH/.stub-calls.log" 2>/dev/null || true)" = "1"
+check "(e) ghidra ok stage line appears exactly once" test "$(grep -cxF "INSTALL-RE: ghidra ok" "$OUT" || true)" = "1"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then
