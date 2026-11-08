@@ -209,8 +209,11 @@ If your harness has no subagent tool, run the scout steps inline.
             target_filename=`[target_filename]`,
             retained_directories=`[the partition's directory list from the
             Step 2 discovery map]` — traverse only these directories.
-            Worker mode means: follow this skill's Step 4 worker flow for
-            the assigned subtree only. The persona file supplies role
+            Worker mode means: follow this skill's Step 4 worker flow in
+            this skill file (`skills/egm-bootstrap/SKILL.md`) for the
+            assigned subtree only. The persona file
+            (`../../reference/elephant-goldfish-model/agents/bootstrap_orchestrator.md`)
+            supplies role
             context; its root-orchestration directives (re-partitioning
             the tree, spawning its own orchestrator swarm) do not apply
             in worker mode. Never re-partition beyond
