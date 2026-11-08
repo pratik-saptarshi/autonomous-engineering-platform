@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -425,4 +426,219 @@ func TestRunVerification_FallbackReceiptRecordsWaitError(t *testing.T) {
 	if r.Error != "context canceled" {
 		t.Fatalf("expected receipt Error to preserve the Wait error text, got %q", r.Error)
 	}
+}
+
+// pidAlive reports whether pid names a live process, via the
+// signal-0 probe: Signal(0) delivers no signal and succeeds while
+// the process exists.
+func pidAlive(pid int) bool {
+	return pid > 0 && syscall.Kill(pid, 0) == nil
+}
+
+// cancelDuringDrain runs RunVerification against a Makefile fixture
+// whose recipe backgrounds a 30s sleeper in the command's own
+// process group (so the sleeper inherits — and holds open — the
+// command's output pipes) and then exits with the given status. It
+// waits for the recipe to start, confirms the run is still blocked
+// in Wait's drain with the pipe-holder alive, then cancels the
+// parent context and returns the finished result and the holder's
+// PID.
+//
+// The drain window is the sleeper's full 30s and the cancel lands
+// 300ms after the recipe's ready flag appears — the leader exits
+// microseconds after the flag — so the cancel lands deep inside the
+// window on both sides and cannot race the drain's natural end. The
+// per-command timeout (60s) and total budget (120s) are set far
+// beyond the window so no timer can impersonate the cancel. Every
+// fixture failure is a loud t.Fatal, never a vacuous pass.
+func cancelDuringDrain(t *testing.T, recipeExit int) (*VerificationResult, error, int) {
+	t.Helper()
+
+	tmpDir := t.TempDir()
+	makefile := "test:\n\t@touch ready.flag; sleep 30 & echo $$! > holder.pid; exit " +
+		strconv.Itoa(recipeExit) + "\n"
+	if err := os.WriteFile(filepath.Join(tmpDir, "Makefile"), []byte(makefile), 0o644); err != nil {
+		t.Fatalf("failed to write fixture: %v", err)
+	}
+
+	holderPid := func() int {
+		data, err := os.ReadFile(filepath.Join(tmpDir, "holder.pid"))
+		if err != nil {
+			return 0
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+		if err != nil {
+			return 0
+		}
+		return pid
+	}
+	// Never leak the 30s sleeper, whatever the test outcome. The
+	// production group kill is expected to reap it; this is the
+	// backstop, by exact PID.
+	t.Cleanup(func() {
+		if pid := holderPid(); pidAlive(pid) {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	type outcome struct {
+		res *VerificationResult
+		err error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		res, err := RunVerification(ctx, tmpDir, 0, 60*time.Second, 120*time.Second)
+		done <- outcome{res, err}
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(filepath.Join(tmpDir, "ready.flag")); err == nil {
+			break
+		}
+		select {
+		case out := <-done:
+			t.Fatalf("RunVerification returned before the fixture started: res=%+v err=%v", out.res, out.err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("fixture recipe never started (ready.flag missing after 5s); probe could not run")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(300 * time.Millisecond)
+
+	select {
+	case out := <-done:
+		t.Fatalf("RunVerification returned before cancellation (res=%+v err=%v); the drain was not in progress, so this test would prove nothing", out.res, out.err)
+	default:
+	}
+	if pid := holderPid(); !pidAlive(pid) {
+		t.Fatalf("pipe-holding child (pid %d) is not alive before cancel; fixture is broken", pid)
+	}
+
+	cancel()
+	select {
+	case out := <-done:
+		return out.res, out.err, holderPid()
+	case <-time.After(15 * time.Second):
+		t.Fatal("RunVerification did not return within 15s of cancellation")
+		return nil, nil, 0
+	}
+}
+
+// assertHolderDead polls briefly for the pipe-holder to disappear:
+// the cancellation's process-group kill must have reaped it before
+// Wait returned, so anything beyond a short reap lag is a leak.
+func assertHolderDead(t *testing.T, pid int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for pidAlive(pid) {
+		if time.Now().After(deadline) {
+			t.Fatalf("pipe-holding child %d still alive after the run returned; the group kill did not reap it", pid)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestRunVerification_CancelDuringDrainRecordsFailure pins N10: a
+// command whose leader exits 0 while an in-group background child
+// holds the output pipes must NOT record a successful receipt when
+// the parent context is canceled during Wait's drain.
+//
+// The route: the leader is reaped with exit 0 before the cancel
+// lands, so the stdlib injects no context error into cmd.Wait —
+// once the cancellation's group kill reaps the pipe-holder and the
+// pipes reach EOF, Wait returns nil. Without a dedicated arm, the
+// runner's receipt logic sees waitErr == nil on a non-deadline
+// context and falls through to a success receipt, and an
+// interrupted `aep verify` reports PASS. The deadline-during-drain
+// control case has always recorded 124; explicit cancellation must
+// record the same no-status failure shape the bounded-drain
+// fallback produces for the setsid case: exit 1, TimedOut=false,
+// Error "context canceled".
+func TestRunVerification_CancelDuringDrainRecordsFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture relies on POSIX process-group and output-pipe semantics")
+	}
+
+	res, err, holder := cancelDuringDrain(t, 0)
+	if err != nil {
+		t.Fatalf("RunVerification failed: %v (a failed check is a result, not an error)", err)
+	}
+	if res == nil {
+		t.Fatal("RunVerification returned a nil result")
+	}
+	if res.Pass {
+		t.Fatalf("expected verification to fail when cancellation ends the drain, got PASS: %+v", res)
+	}
+	if res.Discovered != 1 || res.Executed != 1 || res.Failed != 1 {
+		t.Fatalf("expected discovered=1 executed=1 failed=1, got discovered=%d executed=%d failed=%d",
+			res.Discovered, res.Executed, res.Failed)
+	}
+	if len(res.Receipts) != 1 {
+		t.Fatalf("expected 1 receipt, got %d", len(res.Receipts))
+	}
+	r := res.Receipts[0]
+	if r.CommandID != "make-test" {
+		t.Fatalf("expected receipt for make-test, got %q", r.CommandID)
+	}
+	if r.ExitCode != 1 {
+		t.Fatalf("expected receipt exit code 1 (cancellation failure), got %d", r.ExitCode)
+	}
+	if r.TimedOut {
+		t.Fatalf("expected receipt TimedOut=false (parent cancellation is not the per-command deadline), got %+v", r)
+	}
+	if r.Error != "context canceled" {
+		t.Fatalf("expected receipt Error \"context canceled\", got %q", r.Error)
+	}
+	assertHolderDead(t, holder)
+}
+
+// TestRunVerification_CancelDuringDrainKeepsRealExitCode pins the
+// ordering around the N10 arm: cancellation must guard ONLY the
+// success-shaped path. When the command's leader exits nonzero on
+// its own (the recipe exits 3; GNU make flattens its own failures
+// to exit status 2, and make is the executed command) and a cancel
+// lands during the same drain, the receipt keeps the real exit
+// code with no error text — the N4 contract — instead of being
+// rewritten to the cancellation failure. The run still fails.
+func TestRunVerification_CancelDuringDrainKeepsRealExitCode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture relies on POSIX process-group and output-pipe semantics")
+	}
+
+	res, err, holder := cancelDuringDrain(t, 3)
+	if err != nil {
+		t.Fatalf("RunVerification failed: %v (a failed check is a result, not an error)", err)
+	}
+	if res == nil {
+		t.Fatal("RunVerification returned a nil result")
+	}
+	if res.Pass {
+		t.Fatalf("expected verification to fail, got PASS: %+v", res)
+	}
+	if res.Discovered != 1 || res.Executed != 1 || res.Failed != 1 {
+		t.Fatalf("expected discovered=1 executed=1 failed=1, got discovered=%d executed=%d failed=%d",
+			res.Discovered, res.Executed, res.Failed)
+	}
+	if len(res.Receipts) != 1 {
+		t.Fatalf("expected 1 receipt, got %d", len(res.Receipts))
+	}
+	r := res.Receipts[0]
+	if r.CommandID != "make-test" {
+		t.Fatalf("expected receipt for make-test, got %q", r.CommandID)
+	}
+	if r.ExitCode != 2 {
+		t.Fatalf("expected receipt exit code 2 (make's own failure status, preserved), got %d", r.ExitCode)
+	}
+	if r.TimedOut {
+		t.Fatalf("expected receipt TimedOut=false, got %+v", r)
+	}
+	if r.Error != "" {
+		t.Fatalf("expected receipt Error to stay empty for a real exit status, got %q", r.Error)
+	}
+	assertHolderDead(t, holder)
 }
