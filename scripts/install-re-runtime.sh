@@ -760,8 +760,19 @@ install_env_block() {
 
   # Compose the new file in a same-directory temp file, fsync it,
   # then install it by atomic mv — a crash leaves the old file or the
-  # new one, never a torn one.
-  local i
+  # new one, never a torn one. The temp file is created fresh by the
+  # redirection below, so it carries 0666 & ~umask: without the chmod
+  # after composing, the rename would silently replace an existing
+  # .bashrc's permissions with the umask default (a 0600 .bashrc
+  # becomes 0644 under umask 022, exposing previously private shell
+  # configuration on a traversable home). Capture the existing file's
+  # mode and carry it onto the temp file; with no pre-existing .bashrc
+  # there is no mode to preserve and the temp keeps its umask-derived
+  # mode.
+  local i bashrc_mode=""
+  if [ -e "$bashrc" ]; then
+    bashrc_mode=$(stat -c %a "$bashrc") || fail env "cannot stat $bashrc"
+  fi
   rm -f "$tmp"
   # shellcheck disable=SC2016 # the composed block must contain literal $HOME/$PATH — they expand in the login shell that reads it, not at install time
   {
@@ -779,6 +790,9 @@ install_env_block() {
       printf '%s\n' "${kept[i]}"
     done
   } >"$tmp" || fail env "cannot compose new .bashrc in $tmp"
+  if [ -n "$bashrc_mode" ]; then
+    chmod "$bashrc_mode" "$tmp" || fail env "cannot apply permissions $bashrc_mode to $tmp"
+  fi
   sync "$tmp" || fail env "cannot fsync $tmp"
   mv "$tmp" "$bashrc" || fail env "cannot install new .bashrc over $bashrc"
   ENV_OUTCOME="ok"
@@ -2636,6 +2650,62 @@ FIXTURE
     pass=1
   fi
   report_stage env-creates-bashrc "$pass"
+
+  # Permissions legs: the replacement .bashrc must carry the existing
+  # file's permissions, not the umask default of the fresh temp file
+  # (Codex P2 on PR #131: a 0600 .bashrc became 0644 under umask 022).
+  # The umask-027 twin proves the installed mode comes from the source
+  # file, not from any constant: unfixed, it lands at 0640.
+  reset_env
+  printf '# user bashrc\nexport EDITOR=vim\n' >"$envhome/.bashrc"
+  chmod 600 "$envhome/.bashrc"
+  out=$( (umask 022; run_env install_env_block) 2>&1 ) && rc=0 || rc=$?
+  pass=0
+  if [ "$rc" -eq 0 ] &&
+    printf '%s\n' "$out" | grep -qxF "INSTALL-RE: env ok" &&
+    [ "$(stat -c %a "$envhome/.bashrc")" = "600" ]; then
+    pass=1
+  fi
+  report_stage env-perms-preserved-umask022 "$pass"
+
+  reset_env
+  printf '# user bashrc\nexport EDITOR=vim\n' >"$envhome/.bashrc"
+  chmod 600 "$envhome/.bashrc"
+  out=$( (umask 027; run_env install_env_block) 2>&1 ) && rc=0 || rc=$?
+  pass=0
+  if [ "$rc" -eq 0 ] &&
+    printf '%s\n' "$out" | grep -qxF "INSTALL-RE: env ok" &&
+    [ "$(stat -c %a "$envhome/.bashrc")" = "600" ]; then
+    pass=1
+  fi
+  report_stage env-perms-preserved-umask027 "$pass"
+
+  # Control: a 0644 .bashrc stays 0644 (the fix must copy the mode,
+  # not tighten or loosen it).
+  reset_env
+  printf '# user bashrc\nexport EDITOR=vim\n' >"$envhome/.bashrc"
+  chmod 644 "$envhome/.bashrc"
+  out=$( (umask 022; run_env install_env_block) 2>&1 ) && rc=0 || rc=$?
+  pass=0
+  if [ "$rc" -eq 0 ] &&
+    printf '%s\n' "$out" | grep -qxF "INSTALL-RE: env ok" &&
+    [ "$(stat -c %a "$envhome/.bashrc")" = "644" ]; then
+    pass=1
+  fi
+  report_stage env-perms-control-0644 "$pass"
+
+  # Fresh install: with no pre-existing .bashrc there is no mode to
+  # preserve, and the created file keeps its umask-derived 0644.
+  reset_env
+  out=$( (umask 022; run_env install_env_block) 2>&1 ) && rc=0 || rc=$?
+  pass=0
+  if [ "$rc" -eq 0 ] &&
+    printf '%s\n' "$out" | grep -qxF "INSTALL-RE: env ok" &&
+    [ "$(count_markers '>>>')" = "1" ] &&
+    [ "$(stat -c %a "$envhome/.bashrc")" = "644" ]; then
+    pass=1
+  fi
+  report_stage env-perms-fresh-install "$pass"
 
   # (g) assert_rea with node/npx absent prints the SKIP line and
   # returns 0 — absence never fails the run.
