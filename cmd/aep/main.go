@@ -250,7 +250,10 @@ func runVerify(args []string) {
 	perCmdTimeout := time.Duration(*timeoutSec) * time.Second
 	totalBudget := time.Duration(*budgetSec) * time.Second
 
-	res, err := runner.RunVerification(context.Background(), *root, minMemBytes, perCmdTimeout, totalBudget)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	res, err := runner.RunVerification(ctx, *root, minMemBytes, perCmdTimeout, totalBudget)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Verification failed: %v\n", err)
 		os.Exit(1)
