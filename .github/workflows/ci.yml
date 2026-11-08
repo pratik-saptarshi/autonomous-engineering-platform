@@ -50,6 +50,7 @@ jobs:
       - run: bash scripts/tests/test_package_vm.sh
       - run: bash scripts/tests/test_package_oci.sh
       - run: bash scripts/tests/test_makefile.sh
+      - run: bash scripts/tests/test_verify_signals.sh
       - run: bash ops/tests/test_watchdog_ops.sh
 
   go-checks:
