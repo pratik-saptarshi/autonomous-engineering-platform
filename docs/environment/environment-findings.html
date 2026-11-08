@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Environment Findings — The Muse VM Sandbox &amp; Environment A Emulation</title>
+<style>
+  :root {
+    --ink: #1c2333; --muted: #5a6478; --accent: #5b4bc4; --accent-soft: #efeaff;
+    --line: #dde1ec; --card: #ffffff; --bg: #f6f7fb; --code-bg: #141a2a; --code-ink: #e8eaf2;
+    --ok: #1a7f4b; --warn: #a3540a; --bad: #b3261e;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 16px/1.65 -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+  main { max-width: 880px; margin: 0 auto; padding: 48px 24px 72px; }
+  header { border-bottom: 3px solid var(--accent); padding-bottom: 20px; margin-bottom: 32px; }
+  h1 { font-size: 30px; line-height: 1.25; margin: 0 0 8px; letter-spacing: -0.01em; }
+  .subtitle { color: var(--muted); font-size: 17px; margin: 0; }
+  .meta { color: var(--muted); font-size: 13.5px; margin-top: 14px; }
+  h2 { font-size: 21px; margin: 40px 0 12px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+  h3 { font-size: 17px; margin: 24px 0 8px; }
+  p { margin: 10px 0; }
+  .verdict { background: var(--accent-soft); border: 1px solid var(--accent); border-radius: 10px;
+             padding: 18px 22px; margin: 24px 0; }
+  .verdict strong { color: var(--accent); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+          padding: 18px 22px; margin: 16px 0; }
+  .wall-tag { display: inline-block; font-size: 12px; font-weight: 700; letter-spacing: 0.06em;
+              text-transform: uppercase; padding: 2px 9px; border-radius: 999px; margin-bottom: 6px; }
+  .wall-1 { background: #fdecea; color: var(--bad); }
+  .wall-2 { background: #fdf3e3; color: var(--warn); }
+  .wall-3 { background: #e8f4ec; color: var(--ok); }
+  table { width: 100%; border-collapse: collapse; margin: 14px 0; background: var(--card);
+          border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  th, td { text-align: left; padding: 9px 14px; border-bottom: 1px solid var(--line); font-size: 15px; }
+  th { background: #eef0f7; font-weight: 650; }
+  tr:last-child td { border-bottom: none; }
+  code { font: 13.5px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+         background: #eceef5; padding: 1px 5px; border-radius: 4px; }
+  pre { background: var(--code-bg); color: var(--code-ink); border-radius: 10px;
+        padding: 16px 18px; overflow-x: auto; font-size: 13.5px; line-height: 1.55; }
+  pre code { background: none; padding: 0; color: inherit; }
+  .ok { color: var(--ok); font-weight: 650; }
+  .no { color: var(--bad); font-weight: 650; }
+  ol, ul { margin: 10px 0 10px 22px; padding: 0; }
+  li { margin: 5px 0; }
+  .hazard { border-left: 4px solid var(--bad); background: #fdf1f0; border-radius: 0 10px 10px 0;
+            padding: 14px 20px; margin: 16px 0; }
+  footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--line);
+           color: var(--muted); font-size: 13.5px; }
+</style>
+</head>
+<body>
+<main>
+<header>
+  <h1>Environment Findings — The Muse VM Sandbox &amp; Environment A Emulation</h1>
+  <p class="subtitle">What this VM's sandbox actually permits, how each limit was diagnosed, and the proven recipe for emulating a fresh Ubuntu 24.04 machine inside it.</p>
+  <p class="meta">Recorded 2026-11-07 by Musebot-Astro · <strong>Baseline: 2026-11-07 13:27 CST</strong> · Companion to <code>docs/egm-adoption/</code> (§9, §14 decision 3) · Source record: Environment A smoke test, 2026-11-07</p>
+</header>
+
+<div class="verdict">
+  <strong>Verdict.</strong> A fresh Ubuntu 24.04 environment <em>can</em> be emulated inside this VM and
+  provisioned to the EGM adoption strategy's §9.1 specification — verified end to end on 2026-11-07
+  (git 2.43.0, Python 3.12.3, venv with pytest 9.2.0 + PyYAML 6.0.3). The working route is
+  <strong>chroot + bind mounts</strong>, not systemd-nspawn: the sandbox blocks nspawn's sysfs mount,
+  and three further sandbox behaviours (below) each required a diagnosed workaround.
+</div>
+
+<h2>1. The sandbox in one view</h2>
+<table>
+  <tr><th>Property</th><th>Observed value</th></tr>
+  <tr><td>Host userland</td><td>Ubuntu 24.04.5 LTS (Noble) — identical release to the Environment A target</td></tr>
+  <tr><td>Agent identity</td><td>uid 0 (root) inside a user namespace: uid/gid maps <code>0 → 131072</code>, 65536 ids</td></tr>
+  <tr><td>Init</td><td>systemd is PID 1 (no user D-Bus session)</td></tr>
+  <tr><td>Hardware virtualisation</td><td>None — no <code>/dev/kvm</code></td></tr>
+  <tr><td>Present</td><td><code>systemd-nspawn</code>, <code>debootstrap</code> (both stock Ubuntu)</td></tr>
+  <tr><td>Absent</td><td>docker, podman, qemu, bubblewrap, proot, lxc/incus, multipass, lima</td></tr>
+  <tr><td>Syscalls / mounts</td><td><strong>Bind mounts allowed.</strong> New sysfs mounts and <code>mknod</code> return EPERM despite CAP_SYS_ADMIN / CAP_MKNOD being present in the capability set</td></tr>
+  <tr><td>Egress</td><td>Authenticated HTTP proxy (<code>hatch-egress-proxy:3128</code>) with fake-IP DNS (198.18.0.0/15); standing NO_PROXY + domain-block rules apply</td></tr>
+  <tr><td>Storage</td><td><code>/home</code> volume ≈150G (the restricted-ownership mount, wall 1); root overlay ≈7.5G</td></tr>
+</table>
+
+<h2>2. The three walls</h2>
+<p>Each wall was diagnosed by reproduction with minimal probes, not inferred from the first error message. Debootstrap's own report (<em>"Tried to extract package, but tar failed"</em>) named none of them.</p>
+
+<div class="card">
+  <span class="wall-tag wall-1">Wall 1 — Filesystem</span>
+  <h3>The workspace volume refuses directory ownership changes</h3>
+  <p><strong>Symptom.</strong> <code>debootstrap</code> into <code>~/workspace</code> died extracting the first package (base-files). Manual extraction isolated it: <code>tar: ./var/local: Cannot change ownership to uid 0, gid 50: Operation not permitted</code>.</p>
+  <p><strong>Diagnosis.</strong> File <code>chown</code> succeeds for every probed uid/gid pair; directory <code>chown</code> fails (strace: <code>fchownat(...) = -1 EPERM</code>). The workspace mount is setgid <code>root:nogroup</code> (2770): new directories are forced to group <code>nogroup</code> (65534) with the setgid bit stripped, and their ownership cannot be changed afterwards. The same probes on the root overlay (<code>/tmp</code>, <code>/root</code>, <code>/var/tmp</code>) all succeed.</p>
+  <p><strong>Workaround.</strong> Build root filesystems on the root overlay (e.g. <code>/root/envA/rootfs</code>), never under <code>~/workspace</code>. Note the trade-off: paths outside the home volume do not survive VM replacement — rebuild from the recipe in §3 instead of relying on the artefact persisting.</p>
+</div>
+
+<div class="card">
+  <span class="wall-tag wall-2">Wall 2 — Containers</span>
+  <h3>systemd-nspawn cannot boot; chroot + bind mounts can</h3>
+  <p><strong>Symptom.</strong> <code>systemd-nspawn -D &lt;rootfs&gt;</code> aborts: <em>"Failed to mount sysfs … Operation not permitted"</em>. <code>mknod</code> is likewise blocked, so debootstrap leaves placeholder regular files in <code>/dev</code>.</p>
+  <p><strong>Diagnosis.</strong> Bind mounts — including bind-mounting <code>/proc</code> and individual device files — are permitted. Only fresh mounts of pseudo-filesystems and device-node creation are refused.</p>
+  <p><strong>Workaround.</strong> Enter the rootfs with <code>chroot</code> after bind-mounting <code>/proc</code> and the device files (<code>null</code>, <code>zero</code>, <code>urandom</code>, <code>random</code>, <code>full</code>, <code>ptmx</code>) over the placeholders. The userland and filesystem are genuinely fresh; the cost is isolation fidelity — the container shares the host's PID and UTS namespaces (no own hostname or init).</p>
+</div>
+
+<div class="card">
+  <span class="wall-tag wall-3">Wall 3 — Network</span>
+  <h3>Chrooted processes get no HTTP through the egress proxy</h3>
+  <p><strong>Symptom.</strong> <code>apt-get update</code> inside the chroot fails every fetch (<em>"Connection failed [IP: 198.18.149.67 3128]"</em>), with or without proxy credentials, with retries, and with HTTP pipelining disabled.</p>
+  <p><strong>Diagnosis.</strong> Bare TCP connections from inside the chroot succeed — to the proxy and directly to <code>archive.ubuntu.com:80</code>. A hand-written proxied HTTP GET from inside the chroot receives no response at all. The identical requests from host processes (debootstrap's downloads, host apt) succeed. The discriminator is the process context, not credentials, request shape, or reachability.</p>
+  <p><strong>Workaround.</strong> Host-assisted fetching: run downloads from host processes into the rootfs (host apt for lists and <code>.deb</code>s, host <code>pip download</code> for wheels), then install inside the chroot with networking switched off (<code>apt-get --no-download</code>, <code>pip install --no-index</code>). Consequence for any in-environment validation: operations that fetch from inside the environment (<code>git clone</code>, harness/plugin installs) hit this wall and must be staged from the host.</p>
+</div>
+
+<h2>3. The proven recipe</h2>
+<pre><code># 1. Build the rootfs on the root overlay (wall 1), never under ~/workspace
+debootstrap --variant=minbase noble /root/envA/rootfs http://archive.ubuntu.com/ubuntu/
+
+# 2. Sources: minbase ships "noble main" only, but python3-venv lives in
+#    universe. Write the standard deb822 source (all suites/components,
+#    as a cloud image ships) to etc/apt/sources.list.d/ubuntu.sources
+#    inside the rootfs and remove etc/apt/sources.list.
+
+# 3. Runtime plumbing (wall 2)
+cp /etc/resolv.conf /root/envA/rootfs/etc/resolv.conf
+mount --bind /proc /root/envA/rootfs/proc
+for d in null zero urandom random full ptmx; do
+  touch /root/envA/rootfs/dev/$d
+  mount --bind /dev/$d /root/envA/rootfs/dev/$d
+done
+
+# 4. Host-assisted fetch, in-chroot install (wall 3)
+apt-get -o Dir=/root/envA/rootfs update
+apt-get -o Dir=/root/envA/rootfs -y --download-only install git python3 python3-venv nodejs   # nodejs: required by the §9.5 step 2 tests (finding F1)
+chroot /root/envA/rootfs env DEBIAN_FRONTEND=noninteractive \
+  apt-get -y --no-download install git python3 python3-venv nodejs
+
+# 5. venv + pins from host-downloaded wheels
+pip download pytest==9.2.0 PyYAML==6.0.3 -d /root/envA/rootfs/tmp/wheels   # on the host
+chroot /root/envA/rootfs python3 -m venv /tmp/egm-venv
+chroot /root/envA/rootfs /tmp/egm-venv/bin/pip install \
+  --no-index --find-links /tmp/wheels pytest==9.2.0 PyYAML==6.0.3
+
+# 6. Teardown: umount the binds (proc, dev/*)</code></pre>
+
+<h2>4. Verification against §9.1 (inside the rootfs, 2026-11-07)</h2>
+<table>
+  <tr><th>§9.1 requirement</th><th>Observed</th><th>Result</th></tr>
+  <tr><td>Ubuntu 24.04 fresh image userland</td><td>debootstrap minbase, noble</td><td class="ok">Pass</td></tr>
+  <tr><td>git ≥ 2.43.0</td><td>git 2.43.0</td><td class="ok">Pass</td></tr>
+  <tr><td>python3 ≥ 3.12.3</td><td>Python 3.12.3</td><td class="ok">Pass</td></tr>
+  <tr><td>python3-venv from distro packages</td><td>Installed (universe — see §5)</td><td class="ok">Pass, with note</td></tr>
+  <tr><td>venv creation</td><td><code>python3 -m venv /tmp/egm-venv</code></td><td class="ok">Pass</td></tr>
+  <tr><td>pytest 9.2.0 + PyYAML 6.0.3 in the venv</td><td>Both import cleanly</td><td class="ok">Pass</td></tr>
+  <tr><td>Rootfs size after provisioning</td><td>633M</td><td>—</td></tr>
+</table>
+
+<h2>5. Findings that feed back into the strategy document</h2>
+<ul>
+  <li><strong>§9.1 assumes a cloud image's apt sources.</strong> <code>python3-venv</code> is in noble <em>universe</em>; a bare minbase rootfs enables only <em>main</em>, so the doc's "install from the distro packages" step fails verbatim there. Cloud images enable universe by default, so §9.1 is correct for its stated target — but the assumption is worth one sentence in the document.</li>
+  <li><strong>Phase 3 scope.</strong> Provisioning and §9.5's offline checks are executable in this environment today. The E2E fixture is not, without host-assisted staging: wall 3 blocks the in-environment fetches it needs (repository clone, harness install), and the harness sign-in remains a manual step regardless of environment.</li>
+</ul>
+
+<div class="hazard">
+  <h3 style="margin-top:0">Hazard — <code>apt-get -o Dir=</code> does not provision a rootfs</h3>
+  <p><code>Dir=</code> relocates apt's lists and cache only; dpkg still runs against the <strong>host</strong>. On 2026-11-07 an <code>apt-get -o Dir=&lt;rootfs&gt; install</code> installed the package set on the host and half-configured the host's <code>tzdata</code>: the host's <code>/etc/timezone</code> is a runtime-owned file (<code>nobody:nogroup</code>) that guest root cannot write, so the postinst's unconditional write fails. Repair: bind-mount a writable copy over <code>/etc/timezone</code>, then <code>dpkg --configure -a</code> — host audit clean afterwards. Always pair <code>Dir=</code> with <code>--download-only</code> and install inside the chroot, per the recipe.</p>
+</div>
+
+<h2>6. Deltas vs a true fresh VM</h2>
+<ul>
+  <li>Shared kernel; chroot shares the host PID/UTS namespaces (no own hostname, no init).</li>
+  <li>In-environment HTTP egress is impaired (wall 3); provisioning is host-assisted.</li>
+  <li>Egress traverses this environment's proxy and its domain rules; a cloud VM's would not.</li>
+  <li>Directory ownership inside the rootfs is normal — wall 1 applies to the workspace volume only.</li>
+</ul>
+
+<footer>
+  Evidence: smoke-test logs and probe outputs, 2026-11-07 (debootstrap logs, apt logs, chroot verification runs).
+  Related: <code>docs/egm-adoption/adoption-strategy.md</code> §9 (Environment A), §9.5 (verification), §14 decision 3 (Phase 3 ruling).
+</footer>
+</main>
+</body>
+</html>
