@@ -303,7 +303,7 @@ plain chat):
     *   **Step 5 (Initial Zoom Out)**: Spawn `egm-synthesizer` (or direct
         subagent) with `Mode: REVIEW`, `Reviewers: [zoom_out,
         inventive_catalyst]`, and standards `{"zoom_out":
-        "zoom-out-standard"}` on `full file` → write `zoom_out_report.md`.
+        "zoom-out-standard", "inventive_catalyst": "zoom-out-standard"}` on `full file` → write `zoom_out_report.md`.
     *   **Step 6 (Comprehension Test)**: Spawn the `egm-comprehension`
         subagent directly (not the synthesizer) on `FeatureRange` &
         `DetailedRange` → write its complete result to
