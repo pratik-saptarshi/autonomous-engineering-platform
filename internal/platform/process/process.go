@@ -11,9 +11,14 @@ import (
 type ProcessGroup interface {
 	// Start starts the command within an isolated execution boundary (Job Object / PGID).
 	Start() error
-	// Wait waits for completion or context cancellation.
+	// Wait waits for completion or context cancellation. On cancellation it
+	// terminates the entire group/job and returns promptly: the post-kill
+	// drain is bounded (grace period + 2s), so Wait returns the context
+	// error instead of blocking forever if a group escapee (e.g. a setsid
+	// child) keeps the output pipes open.
 	Wait() error
 	// Kill terminates the entire process tree including any detached children.
+	// It is idempotent: second and later calls are immediate no-ops.
 	Kill() error
 	// Pid returns the leader process PID.
 	Pid() int
@@ -46,5 +51,5 @@ func NewCommand(ctx context.Context, name string, args []string, cfg CommandConf
 		grace = 750 * time.Millisecond
 	}
 
-	return newPlatformProcessGroup(cmd, grace)
+	return newPlatformProcessGroup(cmd, grace, ctx)
 }

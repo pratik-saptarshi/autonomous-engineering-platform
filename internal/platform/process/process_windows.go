@@ -3,6 +3,7 @@
 package process
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"time"
@@ -14,13 +15,15 @@ import (
 type windowsProcessGroup struct {
 	cmd         *exec.Cmd
 	gracePeriod time.Duration
+	ctx         context.Context
 	jobHandle   windows.Handle
 }
 
-func newPlatformProcessGroup(cmd *exec.Cmd, grace time.Duration) ProcessGroup {
+func newPlatformProcessGroup(cmd *exec.Cmd, grace time.Duration, ctx context.Context) ProcessGroup {
 	return &windowsProcessGroup{
 		cmd:         cmd,
 		gracePeriod: grace,
+		ctx:         ctx,
 		jobHandle:   windows.InvalidHandle,
 	}
 }
@@ -83,7 +86,22 @@ func (p *windowsProcessGroup) Wait() error {
 			p.jobHandle = windows.InvalidHandle
 		}
 	}()
-	return p.cmd.Wait()
+	done := make(chan error, 1)
+	go func() { done <- p.cmd.Wait() }()
+	select {
+	case err := <-done:
+		return err
+	case <-p.ctx.Done():
+		_ = p.Kill()
+		select {
+		case err := <-done:
+			return err
+		case <-time.After(p.gracePeriod + 2*time.Second):
+			// Bounded drain: a job escapee may hold the pipes open past
+			// the job termination; do not block forever waiting for EOF.
+			return p.ctx.Err()
+		}
+	}
 }
 
 func (p *windowsProcessGroup) Pid() int {

@@ -3,7 +3,9 @@
 package process
 
 import (
+	"context"
 	"os/exec"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -13,9 +15,11 @@ import (
 type posixProcessGroup struct {
 	cmd         *exec.Cmd
 	gracePeriod time.Duration
+	ctx         context.Context
+	terminated  atomic.Bool
 }
 
-func newPlatformProcessGroup(cmd *exec.Cmd, grace time.Duration) ProcessGroup {
+func newPlatformProcessGroup(cmd *exec.Cmd, grace time.Duration, ctx context.Context) ProcessGroup {
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
@@ -25,6 +29,7 @@ func newPlatformProcessGroup(cmd *exec.Cmd, grace time.Duration) ProcessGroup {
 	return &posixProcessGroup{
 		cmd:         cmd,
 		gracePeriod: grace,
+		ctx:         ctx,
 	}
 }
 
@@ -33,7 +38,22 @@ func (p *posixProcessGroup) Start() error {
 }
 
 func (p *posixProcessGroup) Wait() error {
-	return p.cmd.Wait()
+	done := make(chan error, 1)
+	go func() { done <- p.cmd.Wait() }()
+	select {
+	case err := <-done:
+		return err
+	case <-p.ctx.Done():
+		_ = p.Kill()
+		select {
+		case err := <-done:
+			return err
+		case <-time.After(p.gracePeriod + 2*time.Second):
+			// Bounded drain: a group escapee may hold the pipes open past
+			// the group kill; do not block forever waiting for EOF.
+			return p.ctx.Err()
+		}
+	}
 }
 
 func (p *posixProcessGroup) Pid() int {
@@ -45,6 +65,10 @@ func (p *posixProcessGroup) Pid() int {
 
 func (p *posixProcessGroup) Kill() error {
 	if p.cmd.Process == nil {
+		return nil
+	}
+	if p.terminated.Swap(true) {
+		// Already terminated: idempotent no-op.
 		return nil
 	}
 	pid := p.cmd.Process.Pid
