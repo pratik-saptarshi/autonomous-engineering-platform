@@ -285,3 +285,98 @@ func TestExitCode_NoStatus(t *testing.T) {
 		}
 	}
 }
+
+// TestBatchWrap pins the N9 contract: on Windows, a resolved target that
+// is a batch file (.cmd/.bat, e.g. npm.cmd from a standard Node.js
+// install) is rewritten to run through the command interpreter, because
+// CreateProcess cannot execute batch files directly; any other target
+// passes through unchanged. The transformation is a pure function, so
+// this test runs on every platform even though only the Windows launch
+// path applies it.
+func TestBatchWrap(t *testing.T) {
+	const npmCmd = `C:\Program Files\nodejs\npm.cmd`
+	tests := []struct {
+		name     string
+		path     string
+		args     []string
+		wantPath string
+		wantArgs []string
+		wantWrap bool
+	}{
+		{
+			name:     "cmd shim wraps",
+			path:     npmCmd,
+			args:     []string{"test"},
+			wantPath: "cmd",
+			wantArgs: []string{"/c", npmCmd, "test"},
+			wantWrap: true,
+		},
+		{
+			name:     "bat shim wraps",
+			path:     `C:\tools\build.bat`,
+			args:     []string{"a", "b"},
+			wantPath: "cmd",
+			wantArgs: []string{"/c", `C:\tools\build.bat`, "a", "b"},
+			wantWrap: true,
+		},
+		{
+			name:     "uppercase CMD wraps",
+			path:     `C:\Program Files\nodejs\NPM.CMD`,
+			args:     []string{"test"},
+			wantPath: "cmd",
+			wantArgs: []string{"/c", `C:\Program Files\nodejs\NPM.CMD`, "test"},
+			wantWrap: true,
+		},
+		{
+			name:     "bare batch file with no args",
+			path:     `C:\tools\run.cmd`,
+			args:     nil,
+			wantPath: "cmd",
+			wantArgs: []string{"/c", `C:\tools\run.cmd`},
+			wantWrap: true,
+		},
+		{
+			name:     "args preserved verbatim and in order",
+			path:     `C:\tools\run.cmd`,
+			args:     []string{"-m", "pytest", "two words", "--flag=value"},
+			wantPath: "cmd",
+			wantArgs: []string{"/c", `C:\tools\run.cmd`, "-m", "pytest", "two words", "--flag=value"},
+			wantWrap: true,
+		},
+		{
+			name:     "native exe unchanged",
+			path:     `C:\Program Files\nodejs\node.exe`,
+			args:     []string{"--version"},
+			wantPath: `C:\Program Files\nodejs\node.exe`,
+			wantArgs: []string{"--version"},
+			wantWrap: false,
+		},
+		{
+			name:     "extensionless target unchanged",
+			path:     `C:\Program Files\nodejs\npm`,
+			args:     []string{"test"},
+			wantPath: `C:\Program Files\nodejs\npm`,
+			wantArgs: []string{"test"},
+			wantWrap: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			gotPath, gotArgs, gotWrap := batchWrap(tc.path, tc.args)
+			if gotWrap != tc.wantWrap {
+				t.Fatalf("batchWrap(%q, %v) wrapped = %v, want %v", tc.path, tc.args, gotWrap, tc.wantWrap)
+			}
+			if gotPath != tc.wantPath {
+				t.Fatalf("batchWrap(%q, %v) path = %q, want %q", tc.path, tc.args, gotPath, tc.wantPath)
+			}
+			if len(gotArgs) != len(tc.wantArgs) {
+				t.Fatalf("batchWrap(%q, %v) args = %v, want %v", tc.path, tc.args, gotArgs, tc.wantArgs)
+			}
+			for i := range gotArgs {
+				if gotArgs[i] != tc.wantArgs[i] {
+					t.Fatalf("batchWrap(%q, %v) args = %v, want %v", tc.path, tc.args, gotArgs, tc.wantArgs)
+				}
+			}
+		})
+	}
+}
