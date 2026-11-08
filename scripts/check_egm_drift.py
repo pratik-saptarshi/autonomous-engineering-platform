@@ -40,7 +40,8 @@ Usage:
 ``--bundle`` defaults to ``<root>/../reference/elephant-goldfish-model``.
 
 Exit 0 iff there are no findings; each finding is printed on its own
-line naming the file, the line number, and the rule that fired.
+line naming the file and the inconsistency, and -- where the finding
+is tied to a specific table row or call site -- the line number.
 """
 
 import argparse
@@ -61,8 +62,9 @@ def _scalar(lines, key):
     """Value of a top-level YAML ``key`` in ``lines``, or None.
 
     Handles the scalar shapes the EGM files actually use: a plain
-    single-line value, a double-quoted single-line value, and a
-    ``>``/``|`` block scalar with indented continuation lines.
+    single-line value, a double-quoted or single-quoted single-line
+    value, and a ``>``/``|`` block scalar with indented continuation
+    lines.
     """
     for idx, line in enumerate(lines):
         match = re.match(rf"^{re.escape(key)}:\s*(.*)$", line)
@@ -84,6 +86,9 @@ def _scalar(lines, key):
                 return json.loads(value)
             except json.JSONDecodeError:
                 return value.strip('"')
+        if len(value) >= 2 and value.startswith("'") \
+                and value.endswith("'"):
+            return value[1:-1].replace("''", "'")
         return value
     return None
 

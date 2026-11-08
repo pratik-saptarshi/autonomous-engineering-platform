@@ -97,6 +97,27 @@ class EgmDriftTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("description differs", result.stdout)
 
+    def test_single_quoted_yaml_description_passes(self):
+        # Re-quoting the description with single quotes changes no
+        # character of the value; the old _scalar returned the quotes
+        # as part of the value and flagged it as drift.
+        yaml_path = self.skills / "egm-alpha" / "skill.yaml"
+        yaml_path.write_text(
+            yaml_path.read_text(encoding="utf-8").replace(
+                f'description: "{DESCRIPTION}"',
+                f"description: '{DESCRIPTION}'"),
+            encoding="utf-8")
+        result = self.run_check()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        # A changed word inside the single quotes is still drift.
+        yaml_path.write_text(
+            yaml_path.read_text(encoding="utf-8").replace(
+                "complete and untruncated", "complete and shortened"),
+            encoding="utf-8")
+        result = self.run_check()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("description differs", result.stdout)
+
     def test_wrong_table_shortname_fails(self):
         loop_path = self.skills / "egm-review-loop" / "SKILL.md"
         loop_path.write_text(
