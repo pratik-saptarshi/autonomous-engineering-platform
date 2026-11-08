@@ -1025,6 +1025,45 @@ EOF
   fi
   report_stage temurin-partial-healing "$pass"
 
+  # Partial-install healing, Temurin (javac leg only): java -version
+  # reports the right version and cacerts is present, but bin/javac is
+  # gone — the probe must fail and the stage must rebuild, not skip.
+  reset_stage
+  cp -a "$jdk_src" "$stagehome/opt/"
+  rm "$stagehome/opt/jdk-$TEMURIN_VERSION/bin/javac"
+  out=$(run_stage install_temurin 2>&1) && rc=0 || rc=$?
+  pass=0
+  if [ "$rc" -eq 0 ] &&
+    printf '%s\n' "$out" | grep -qxF "INSTALL-RE: temurin ok" &&
+    [ -s "$curl_log" ] &&
+    [ -x "$stagehome/opt/jdk-$TEMURIN_VERSION/bin/javac" ] &&
+    [ -e "$stagehome/opt/jdk-$TEMURIN_VERSION/lib/security/cacerts" ]; then
+    pass=1
+  fi
+  report_stage temurin-partial-healing-javac "$pass"
+
+  # Wrong-version healing, Temurin (version leg only): the tree is
+  # complete (javac executable, cacerts present) but java -version
+  # prints the wrong version — the probe must fail and the stage must
+  # rebuild, not skip.
+  reset_stage
+  cp -a "$jdk_src" "$stagehome/opt/"
+  cat >"$stagehome/opt/jdk-$TEMURIN_VERSION/bin/java" <<'EOF'
+#!/bin/bash
+echo 'openjdk version "25.0.3" 2025-07-15 LTS' >&2
+EOF
+  chmod +x "$stagehome/opt/jdk-$TEMURIN_VERSION/bin/java"
+  out=$(run_stage install_temurin 2>&1) && rc=0 || rc=$?
+  pass=0
+  if [ "$rc" -eq 0 ] &&
+    printf '%s\n' "$out" | grep -qxF "INSTALL-RE: temurin ok" &&
+    [ -s "$curl_log" ] &&
+    [ -x "$stagehome/opt/jdk-$TEMURIN_VERSION/bin/javac" ] &&
+    [ -e "$stagehome/opt/jdk-$TEMURIN_VERSION/lib/security/cacerts" ]; then
+    pass=1
+  fi
+  report_stage temurin-wrong-version "$pass"
+
   # Probe-pass, Ghidra: a complete fixture tree is skipped with the
   # already-installed line and curl is never invoked.
   reset_stage
@@ -1054,6 +1093,23 @@ EOF
     pass=1
   fi
   report_stage ghidra-partial-healing "$pass"
+
+  # Partial-install healing, Ghidra (analyzeHeadless leg only):
+  # launch.sh is present but support/analyzeHeadless is gone — the
+  # probe must fail and the stage must rebuild, not skip.
+  reset_stage
+  cp -a "$ghidra_src" "$stagehome/opt/"
+  rm "$stagehome/opt/ghidra_${GHIDRA_VERSION}_PUBLIC/support/analyzeHeadless"
+  out=$(run_stage install_ghidra 2>&1) && rc=0 || rc=$?
+  pass=0
+  if [ "$rc" -eq 0 ] &&
+    printf '%s\n' "$out" | grep -qxF "INSTALL-RE: ghidra ok" &&
+    [ -s "$curl_log" ] &&
+    [ -x "$stagehome/opt/ghidra_${GHIDRA_VERSION}_PUBLIC/support/analyzeHeadless" ] &&
+    [ -e "$stagehome/opt/ghidra_${GHIDRA_VERSION}_PUBLIC/support/launch.sh" ]; then
+    pass=1
+  fi
+  report_stage ghidra-partial-healing-headless "$pass"
 
   # --- Task 3: radare2 source-build stage ---
   # Stub git and make in r2bin serve a fixture build: git clone
@@ -1235,6 +1291,89 @@ EOF
     pass=1
   fi
   report_stage radare2-partial-healing "$pass"
+
+  # Partial-install healing, radare2 (r2sdb leg only): r2 -v works and
+  # the share/ data tree is present, but bin/r2sdb is gone — the probe
+  # must fail and the stage must rebuild, not skip.
+  reset_r2
+  cp -a "$r2_tree" "$stagehome/opt/radare2"
+  rm "$stagehome/opt/radare2/bin/r2sdb"
+  out=$(run_r2 install_radare2 2>&1) && rc=0 || rc=$?
+  pass=0
+  if [ "$rc" -eq 0 ] &&
+    printf '%s\n' "$out" | grep -qxF "INSTALL-RE: radare2 ok" &&
+    [ -s "$build_log" ] &&
+    [ -x "$stagehome/opt/radare2/bin/r2sdb" ] &&
+    [ -d "$stagehome/opt/radare2/share/radare2/$R2_VERSION/fcnsign" ] &&
+    [ -d "$stagehome/opt/radare2/share/radare2/$R2_VERSION/syscall" ]; then
+    pass=1
+  fi
+  report_stage radare2-partial-healing-r2sdb "$pass"
+
+  # Partial-install healing, radare2 (fcnsign leg only): r2sdb is
+  # present and the syscall data dir is present, but the fcnsign data
+  # dir is gone — the probe must fail and the stage must rebuild, not
+  # skip.
+  reset_r2
+  cp -a "$r2_tree" "$stagehome/opt/radare2"
+  rm -rf "$stagehome/opt/radare2/share/radare2/$R2_VERSION/fcnsign"
+  out=$(run_r2 install_radare2 2>&1) && rc=0 || rc=$?
+  pass=0
+  if [ "$rc" -eq 0 ] &&
+    printf '%s\n' "$out" | grep -qxF "INSTALL-RE: radare2 ok" &&
+    [ -s "$build_log" ] &&
+    [ -x "$stagehome/opt/radare2/bin/r2sdb" ] &&
+    [ -d "$stagehome/opt/radare2/share/radare2/$R2_VERSION/fcnsign" ] &&
+    [ -d "$stagehome/opt/radare2/share/radare2/$R2_VERSION/syscall" ]; then
+    pass=1
+  fi
+  report_stage radare2-partial-healing-fcnsign "$pass"
+
+  # Partial-install healing, radare2 (syscall leg only): r2sdb is
+  # present and the fcnsign data dir is present, but the syscall data
+  # dir is gone — the probe must fail and the stage must rebuild, not
+  # skip.
+  reset_r2
+  cp -a "$r2_tree" "$stagehome/opt/radare2"
+  rm -rf "$stagehome/opt/radare2/share/radare2/$R2_VERSION/syscall"
+  out=$(run_r2 install_radare2 2>&1) && rc=0 || rc=$?
+  pass=0
+  if [ "$rc" -eq 0 ] &&
+    printf '%s\n' "$out" | grep -qxF "INSTALL-RE: radare2 ok" &&
+    [ -s "$build_log" ] &&
+    [ -x "$stagehome/opt/radare2/bin/r2sdb" ] &&
+    [ -d "$stagehome/opt/radare2/share/radare2/$R2_VERSION/fcnsign" ] &&
+    [ -d "$stagehome/opt/radare2/share/radare2/$R2_VERSION/syscall" ]; then
+    pass=1
+  fi
+  report_stage radare2-partial-healing-syscall "$pass"
+
+  # Wrong-version healing, radare2 (version leg only): the tree is
+  # complete (r2sdb executable, both data dirs present) but r2 -v
+  # prints the wrong version — the probe must fail and the stage must
+  # rebuild, not skip.
+  reset_r2
+  cp -a "$r2_tree" "$stagehome/opt/radare2"
+  cat >"$stagehome/opt/radare2/bin/r2" <<'EOF'
+#!/bin/bash
+case ":${LD_LIBRARY_PATH:-}:" in
+*":$HOME/opt/radare2/lib:"*) ;;
+*) exit 1 ;;
+esac
+echo 'radare2 6.2.5 +1 abi:174 @ linux-x86_64'
+EOF
+  chmod +x "$stagehome/opt/radare2/bin/r2"
+  out=$(run_r2 install_radare2 2>&1) && rc=0 || rc=$?
+  pass=0
+  if [ "$rc" -eq 0 ] &&
+    printf '%s\n' "$out" | grep -qxF "INSTALL-RE: radare2 ok" &&
+    [ -s "$build_log" ] &&
+    [ -x "$stagehome/opt/radare2/bin/r2sdb" ] &&
+    [ -d "$stagehome/opt/radare2/share/radare2/$R2_VERSION/fcnsign" ] &&
+    [ -d "$stagehome/opt/radare2/share/radare2/$R2_VERSION/syscall" ]; then
+    pass=1
+  fi
+  report_stage radare2-wrong-version "$pass"
 
   # Corrupt-clone healing: a leftover clone dir whose HEAD does not
   # resolve is removed and re-cloned, not failed on forever.
