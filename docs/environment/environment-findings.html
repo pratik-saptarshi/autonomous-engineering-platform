@@ -57,6 +57,7 @@
   <h1>Environment Findings — The Muse VM Sandbox &amp; Environment A Emulation</h1>
   <p class="subtitle">What this VM's sandbox actually permits, how each limit was diagnosed, and the proven recipe for emulating a fresh Ubuntu 24.04 machine inside it.</p>
   <p class="meta">Recorded 2026-11-07 by Musebot-Astro · <strong>Baseline: 2026-11-07 13:27 CST</strong> · Companion to <code>docs/egm-adoption/</code> (§9, §14 decision 3) · Source record: Environment A smoke test, 2026-11-07</p>
+  <p class="meta"><strong>Amendment note:</strong> this document was amended after the 13:27 CST baseline, during PR #114 review, by two recipe corrections — <code>91bffd7</code> (§3 step 5: create the venv, stage the wheels into the rootfs) and <code>7931074</code> (§3 step 4: nodejs added to the provisioning set). The backup copy in Drive (<code>environment-findings-baseline-2026-11-07.html</code>, file ID <code>1wHrov9W0DUOoO4tmOaE2zw45pRb4SJ9E</code>) holds the baselined, pre-amendment version — it does not match the current text.</p>
 </header>
 
 <div class="verdict">
@@ -64,7 +65,7 @@
   provisioned to the EGM adoption strategy's §9.1 specification — verified end to end on 2026-11-07
   (git 2.43.0, Python 3.12.3, venv with pytest 9.2.0 + PyYAML 6.0.3). The working route is
   <strong>chroot + bind mounts</strong>, not systemd-nspawn: the sandbox blocks nspawn's sysfs mount,
-  and three further sandbox behaviours (below) each required a diagnosed workaround.
+  and two further sandbox behaviours (below) each required a diagnosed workaround.
 </div>
 
 <h2>1. The sandbox in one view</h2>
@@ -88,7 +89,7 @@
   <span class="wall-tag wall-1">Wall 1 — Filesystem</span>
   <h3>The workspace volume refuses directory ownership changes</h3>
   <p><strong>Symptom.</strong> <code>debootstrap</code> into <code>~/workspace</code> died extracting the first package (base-files). Manual extraction isolated it: <code>tar: ./var/local: Cannot change ownership to uid 0, gid 50: Operation not permitted</code>.</p>
-  <p><strong>Diagnosis.</strong> File <code>chown</code> succeeds for every probed uid/gid pair; directory <code>chown</code> fails (strace: <code>fchownat(...) = -1 EPERM</code>). The workspace mount is setgid <code>root:nogroup</code> (2770): new directories are forced to group <code>nogroup</code> (65534) with the setgid bit stripped, and their ownership cannot be changed afterwards. The same probes on the root overlay (<code>/tmp</code>, <code>/root</code>, <code>/var/tmp</code>) all succeed.</p>
+  <p><strong>Diagnosis.</strong> File <code>chown</code> succeeds for every probed uid/gid pair; directory <code>chown</code> fails (strace: <code>fchownat(...) = -1 EPERM</code>). The workspace mount is setgid <code>root:nogroup</code> (2770): new directories are forced to group <code>nogroup</code> (65534) with the setgid bit stripped, and their ownership cannot be changed afterwards. The same probes (on the root overlay: <code>/root</code>; off the workspace volume generally: <code>/tmp</code>, <code>/root</code>, <code>/var/tmp</code>) all succeed.</p>
   <p><strong>Workaround.</strong> Build root filesystems on the root overlay (e.g. <code>/root/envA/rootfs</code>), never under <code>~/workspace</code>. Note the trade-off: paths outside the home volume do not survive VM replacement — rebuild from the recipe in §3 instead of relying on the artefact persisting.</p>
 </div>
 
@@ -96,7 +97,7 @@
   <span class="wall-tag wall-2">Wall 2 — Containers</span>
   <h3>systemd-nspawn cannot boot; chroot + bind mounts can</h3>
   <p><strong>Symptom.</strong> <code>systemd-nspawn -D &lt;rootfs&gt;</code> aborts: <em>"Failed to mount sysfs … Operation not permitted"</em>. <code>mknod</code> is likewise blocked, so debootstrap leaves placeholder regular files in <code>/dev</code>.</p>
-  <p><strong>Diagnosis.</strong> Bind mounts — including bind-mounting <code>/proc</code> and individual device files — are permitted. Only fresh mounts of pseudo-filesystems and device-node creation are refused.</p>
+  <p><strong>Diagnosis.</strong> Bind mounts — including bind-mounting <code>/proc</code> and individual device files — are permitted. Fresh sysfs mounts and device-node creation are refused (other pseudo-filesystems unprobed).</p>
   <p><strong>Workaround.</strong> Enter the rootfs with <code>chroot</code> after bind-mounting <code>/proc</code> and the device files (<code>null</code>, <code>zero</code>, <code>urandom</code>, <code>random</code>, <code>full</code>, <code>ptmx</code>) over the placeholders. The userland and filesystem are genuinely fresh; the cost is isolation fidelity — the container shares the host's PID and UTS namespaces (no own hostname or init).</p>
 </div>
 
@@ -109,7 +110,12 @@
 </div>
 
 <h2>3. The proven recipe</h2>
-<pre><code># 1. Build the rootfs on the root overlay (wall 1), never under ~/workspace
+<pre><code># Precondition: start from an empty rootfs directory with no live bind
+# mounts — umount any prior run's binds first. A second run over a
+# populated rootfs is not shown safe: re-running over live binds stacks
+# mounts, and debootstrap into a populated tree fails safe.
+
+# 1. Build the rootfs on the root overlay (wall 1), never under ~/workspace
 debootstrap --variant=minbase noble /root/envA/rootfs http://archive.ubuntu.com/ubuntu/
 
 # 2. Sources: minbase ships "noble main" only, but python3-venv lives in
@@ -148,18 +154,18 @@ chroot /root/envA/rootfs /tmp/egm-venv/bin/pip install \
   <tr><td>python3-venv from distro packages</td><td>Installed (universe — see §5)</td><td class="ok">Pass, with note</td></tr>
   <tr><td>venv creation</td><td><code>python3 -m venv /tmp/egm-venv</code></td><td class="ok">Pass</td></tr>
   <tr><td>pytest 9.2.0 + PyYAML 6.0.3 in the venv</td><td>Both import cleanly</td><td class="ok">Pass</td></tr>
-  <tr><td>Rootfs size after provisioning</td><td>633M</td><td>—</td></tr>
+  <tr><td>Rootfs size after provisioning</td><td>633M — the pre-nodejs provisioning size, measured 2026-11-07 (the nodejs install adds ≈107 MB)</td><td>—</td></tr>
 </table>
 
 <h2>5. Findings that feed back into the strategy document</h2>
 <ul>
-  <li><strong>§9.1 assumes a cloud image's apt sources.</strong> <code>python3-venv</code> is in noble <em>universe</em>; a bare minbase rootfs enables only <em>main</em>, so the doc's "install from the distro packages" step fails verbatim there. Cloud images enable universe by default, so §9.1 is correct for its stated target — but the assumption is worth one sentence in the document.</li>
+  <li><strong>§9.1 assumes a cloud image's apt sources.</strong> <code>python3-venv</code> is in noble <em>universe</em>; a bare minbase rootfs enables only <em>main</em>, so the doc's "install from the distro packages" step fails verbatim there. Cloud images enable universe by default, so §9.1 is correct for its stated target — and the assumption is now recorded there: §9.1's provisioning note (1) states that the distro packages are the cloud image's standard set, whose apt sources enable the universe component that <code>python3-venv</code> requires.</li>
   <li><strong>Phase 3 scope.</strong> Provisioning and §9.5's offline checks are executable in this environment today. The E2E fixture is not, without host-assisted staging: wall 3 blocks the in-environment fetches it needs (repository clone, harness install), and the harness sign-in remains a manual step regardless of environment.</li>
 </ul>
 
 <div class="hazard">
   <h3 style="margin-top:0">Hazard — <code>apt-get -o Dir=</code> does not provision a rootfs</h3>
-  <p><code>Dir=</code> relocates apt's lists and cache only; dpkg still runs against the <strong>host</strong>. On 2026-11-07 an <code>apt-get -o Dir=&lt;rootfs&gt; install</code> installed the package set on the host and half-configured the host's <code>tzdata</code>: the host's <code>/etc/timezone</code> is a runtime-owned file (<code>nobody:nogroup</code>) that guest root cannot write, so the postinst's unconditional write fails. Repair: bind-mount a writable copy over <code>/etc/timezone</code>, then <code>dpkg --configure -a</code> — host audit clean afterwards. Always pair <code>Dir=</code> with <code>--download-only</code> and install inside the chroot, per the recipe.</p>
+  <p><code>Dir=</code> relocates apt's lists and cache only; dpkg still runs against the <strong>host</strong>. <code>Dir=</code> also points apt at the rootfs's own <code>etc/apt</code> sources, which step 4's fetch reads. On 2026-11-07 an <code>apt-get -o Dir=&lt;rootfs&gt; install</code> installed the package set on the host and half-configured the host's <code>tzdata</code>: the host's <code>/etc/timezone</code> is a runtime-owned file (<code>nobody:nogroup</code>) that guest root cannot write, so the postinst's unconditional write fails. Repair: bind-mount a writable copy over <code>/etc/timezone</code>, then <code>dpkg --configure -a</code> — host audit clean afterwards. Always pair <code>Dir=</code> with <code>--download-only</code> when installing, and install inside the chroot, per the recipe.</p>
 </div>
 
 <h2>6. Deltas vs a true fresh VM</h2>
