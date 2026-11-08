@@ -353,3 +353,76 @@ func TestRunVerification_SpawnFailureStopsRun(t *testing.T) {
 		t.Fatalf("expected exactly the cargo-test receipt, got %+v", res.Receipts)
 	}
 }
+
+// TestRunVerification_FallbackReceiptRecordsWaitError pins the
+// error-text half of the N4 fallback: when Wait returns an error that
+// carries no exit status, the runner records exit code 1 AND preserves
+// the error's text in the receipt's Error field (the N7 receipt
+// contract — a failure with no record of its cause is not
+// diagnosable).
+//
+// Reaching that fallback through the public surface requires care,
+// because the per-command timeout branch claims most Wait errors
+// first. The route used here:
+//
+//   - The PARENT context is canceled (250ms in), not the per-command
+//     deadline, so cmdCtx.Err() is context.Canceled and the timeout
+//     branch's DeadlineExceeded check cannot intercept. The generous
+//     per-command timeout (30s) and total budget (60s) likewise stay
+//     out of the way.
+//   - The fixture's recipe backgrounds a setsid sleeper. setsid puts
+//     it in a new session, out of reach of the process-group kill,
+//     and it inherits the command's output pipes — so after the group
+//     is killed, cmd.Wait still blocks on the pipes until Wait's
+//     bounded drain (750ms kill grace + 2s) expires and Wait returns
+//     the context error itself: a non-ExitError, which is exactly
+//     what process.ExitCode reports as (0, false), selecting the
+//     fallback.
+//
+// The ~3.75s wall time is inherent to that route (250ms to the
+// cancel, then the drain) and is paid once. Cancellation timing is
+// not racy: the cancel lands long after process start and long
+// before drain expiry.
+func TestRunVerification_FallbackReceiptRecordsWaitError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture relies on POSIX setsid and output-pipe semantics")
+	}
+
+	tmpDir := t.TempDir()
+	makefile := "test:\n\t@setsid sleep 8 & sleep 8\n"
+	if err := os.WriteFile(filepath.Join(tmpDir, "Makefile"), []byte(makefile), 0o644); err != nil {
+		t.Fatalf("failed to write fixture: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	time.AfterFunc(250*time.Millisecond, cancel)
+
+	res, err := RunVerification(ctx, tmpDir, 0, 30*time.Second, 60*time.Second)
+	if err != nil {
+		t.Fatalf("RunVerification failed: %v", err)
+	}
+	if res.Pass {
+		t.Fatalf("expected verification to fail, got %+v", res)
+	}
+	if res.Discovered != 1 || res.Executed != 1 || res.Failed != 1 {
+		t.Fatalf("expected discovered=1 executed=1 failed=1, got discovered=%d executed=%d failed=%d",
+			res.Discovered, res.Executed, res.Failed)
+	}
+	if len(res.Receipts) != 1 {
+		t.Fatalf("expected 1 receipt, got %d", len(res.Receipts))
+	}
+	r := res.Receipts[0]
+	if r.CommandID != "make-test" {
+		t.Fatalf("expected receipt for make-test, got %q", r.CommandID)
+	}
+	if r.ExitCode != 1 {
+		t.Fatalf("expected receipt exit code 1 (no-status fallback), got %d", r.ExitCode)
+	}
+	if r.TimedOut {
+		t.Fatalf("expected receipt TimedOut=false (parent cancellation is not the per-command deadline), got %+v", r)
+	}
+	if r.Error != "context canceled" {
+		t.Fatalf("expected receipt Error to preserve the Wait error text, got %q", r.Error)
+	}
+}
