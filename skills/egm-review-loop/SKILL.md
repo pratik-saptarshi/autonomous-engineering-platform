@@ -69,11 +69,16 @@ The caller or user provides exactly these parameters:
     ask the user for a local copy and end your turn; if no one can answer,
     as in a headless run, leave it out, tell the user, and keep going.
 *   **`DeferResolution`**: Optional; default `false`. When `true`, run
-    review-only: complete §2.1–§2.2, save `goldfish_review_report.md`, and
+    review-only: complete §2.1–§2.2, save the report to `ReportFile`, and
     return the `FindingsList` to the caller without the §2.3 resolution
     hand-off and without §2.4 iteration. Interactive stage callers (e.g.
     `egm-review`'s subflows) pass `true` so their checkpoint — not this
     loop — decides whether resolution runs.
+*   **`ReportFile`**: Optional; default `goldfish_review_report.md`. The
+    file the §2.2 consolidated findings are saved to. Callers running
+    several stages or loops in one working directory pass a stage-specific
+    name (e.g. `critic_report.md`) so one run never overwrites another
+    run's report.
 
 ## Path & Standard Resolution Logic
 
@@ -90,6 +95,19 @@ When resolving names in `Reviewers` and `Standards`:
     `synthesizer`, `egm-bootstrap-orchestrator` → `bootstrap_orchestrator`.
     Apply the same normalization to `Standards` keys, which are keyed by
     reviewer name.
+*   **Undesignated Reviewers**: A reviewer with no entry in `Standards`
+    runs with no designated standard — its persona file's own guidance
+    governs (some personas, e.g. `style`, treat a standard as optional).
+    A partial `Standards` map counts as provided for the reviewers it
+    names; do not prompt for the missing entries.
+*   **Unresolvable Names (fail closed)**: A reviewer name that matches no
+    table entry, no shortname with an existing persona file, and no path
+    is an error, not an invitation to improvise a mapping: record that
+    reviewer as **not run** (see Failed Reviewers) and name the
+    unresolvable string in the report. The table above is verified
+    against the persona files' frontmatter by
+    `scripts/check_egm_drift.py`; if the table and the frontmatter ever
+    disagree, the frontmatter is authoritative.
 *   **Reviewer Shortnames**: Map reviewer shortname (e.g., `design_critic`,
     `structural`, `style`, `implementation_readiness`,
     `codebase_details`, `comprehension`, `zoom_out`) to `../../reference/elephant-goldfish-model/agents/{name}.md`.
@@ -145,8 +163,14 @@ file` mode is specified, confirm full-file line bounds).
         The synthesizer spawns the Goldfish review swarm in
         parallel, deduplicates findings, writes the report artifact, and
         returns a single summary message to avoid context pollution in the root
-        conversation. Pass it the Failed Reviewers rule below and
-        `GoldfishContext`, and tell it to give those files to each reviewer.
+        conversation. Pass it the Failed Reviewers rule below,
+        `GoldfishContext`, the resolved `ReportFile` (the file the
+        synthesizer must write its report artifact to — when a stage
+        names one, never the `goldfish_review_report.md` default), and
+        the resolved `Standards` mapping (each
+        reviewer's designated standard, resolved to its
+        `../../reference/elephant-goldfish-model/resources/document_standards/` path),
+        and tell it to give those files to each reviewer.
         Its summary must give a status, `completed` or `not run`, for each
         requested reviewer.
     *   **Direct Dispatch (Flat Swarm)**: Alternatively, spawn each requested
@@ -170,7 +194,7 @@ file` mode is specified, confirm full-file line bounds).
 #### 2.3 Aggregated Resolution Hand-off
 
 **Deferred-resolution gate**: If `DeferResolution` is `true`, stop here —
-save `goldfish_review_report.md` from the §2.2 consolidation and return
+save `ReportFile` from the §2.2 consolidation and return
 `TargetFile` + `FindingsList` to the caller. Do not categorize findings,
 present the decision gate, or apply repairs; the caller's checkpoint owns
 that decision, and §2.4 iteration does not run.
@@ -178,8 +202,14 @@ that decision, and §2.4 iteration does not run.
 1.  Pass `TargetFile`, the active line range, and the aggregated `FindingsList`
     to the **`egm-resolve`** workflow.
 2.  Execute the resolution workflow in the primary Elephant context:
-    *   Categorize findings into `CONTEST` vs. `PROPOSE FIX`.
-    *   Save `goldfish_review_report.md` with your file-writing tool.
+    *   Categorize findings into `CONTEST`, `ESCALATE`, `PROPOSE FIX`, and
+        `DECLINE` (the four categories `egm-resolve` Step 2 defines;
+        `ESCALATE` items go to the user first, `DECLINE` items are
+        recorded, not fixed).
+    *   Save the annotated resolution report as
+        `goldfish_resolve_report.md` with your file-writing tool. Never
+        overwrite `ReportFile`: it holds the raw pre-resolution findings,
+        and the two files together are the provenance record.
     *   Present the interactive decision gate (Auto accept, Continue, Interactive
         breakdown).
     *   Apply approved text repairs to `TargetFile` using your file-editing tool.

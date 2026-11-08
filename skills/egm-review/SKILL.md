@@ -260,8 +260,11 @@ plain chat):
         Elephant context window on the target range (`FeatureRange` or
         `DetailedRange`), passing the parsed findings from `critic_report.md` or
         `implementation_readiness_report.md`.
-    *   **Resolution Workflow**: The Elephant classifies each finding (`PROPOSE
-        FIX` vs `CONTEST`), writes `goldfish_review_report.md`, and executes
+    *   **Resolution Workflow**: The Elephant classifies each finding
+        (`CONTEST`, `ESCALATE`, `PROPOSE FIX`, or `DECLINE` — the four
+        categories `egm-resolve` Step 2 defines), writes the annotated
+        report to `goldfish_resolve_report.md` (the parsed stage report
+        is its input and is never overwritten), and executes
         approved edits on `TargetFile` via file editing tools.
     *   **Convergence**: After applying fixes, re-read `TargetFile` to
         recalculate line bounds, and either advance to the next stage or re-run
@@ -300,7 +303,7 @@ plain chat):
     *   **Step 5 (Initial Zoom Out)**: Spawn `egm-synthesizer` (or direct
         subagent) with `Mode: REVIEW`, `Reviewers: [zoom_out,
         inventive_catalyst]`, and standards `{"zoom_out":
-        "zoom-out-standard"}` on `full file` → write `zoom_out_report.md`.
+        "zoom-out-standard", "inventive_catalyst": "zoom-out-standard"}` on `full file` → write `zoom_out_report.md`.
     *   **Step 6 (Comprehension Test)**: Spawn the `egm-comprehension`
         subagent directly (not the synthesizer) on `FeatureRange` &
         `DetailedRange` → write its complete result to
@@ -308,7 +311,8 @@ plain chat):
     *   **Step 7 (Critic Review)**: Spawn `egm-synthesizer` (or direct
         subagents) with `Mode: REVIEW`, `Reviewers: [design_critic,
         structural, style]`, and standards `{"design_critic":
-        "feature-spec-standard", "structural": "feature-spec-standard"}` on
+        "feature-spec-standard", "structural": "feature-spec-standard",
+        "style": "feature-spec-standard"}` on
         `FeatureRange` → write `critic_report.md`.
     *   **Step 8 (Intermediate Zoom Out)**: Spawn `egm-synthesizer` (or direct
         subagent) with `Mode: REVIEW`, `Reviewers: [zoom_out]`, and
@@ -318,7 +322,8 @@ plain chat):
         direct subagents) with `Mode: REVIEW`, `Reviewers:
         [implementation_readiness, codebase_details, style]`, and standards
         `{"implementation_readiness": "implementation-readiness-standard",
-        "codebase_details": "implementation-readiness-standard"}` on
+        "codebase_details": "implementation-readiness-standard",
+        "style": "implementation-readiness-standard"}` on
         `DetailedRange` → write `implementation_readiness_report.md`.
 2.  **Cross-Stage Synthesis & Deduplication**:
     *   Collect all findings across the 5 stage reports.
@@ -393,16 +398,27 @@ plain chat):
 
 ### Subflow: Critic Review
 
-1.  **Invoke Antagonistic Review Loop**: Invoke `egm-review-loop` in-thread on
-    `FeatureRange` with reviewers `[egm-design, egm-structural, egm-style]`,
-    standards `{"egm-design": "feature-spec-standard", "egm-structural":
-    "feature-spec-standard"}`, `GoldfishContext`, and `DeferResolution:
+1.  **Invoke Antagonistic Review Loop**: Invoke `egm-review-loop` in-thread
+    with `TargetFile`, `SemanticTarget`: "the feature design above the
+    Step 3 split header (`## Detailed Implementation Plan` or the synonym
+    found)" (when the user confirmed custom line ranges at the Step 3
+    gate, describe that confirmed range instead — e.g. "the section
+    from line L through line M", using the confirmed `FeatureRange`
+    bounds — so the target the loop re-derives matches `FeatureRange`;
+    when no split is in effect — Preset 2, or Step 3 found no
+    implementation plan, so `FeatureRange` covers the whole file — pass
+    `SemanticTarget`: "full file" instead), the active range
+    `FeatureRange`, reviewers `[egm-design,
+    egm-structural, egm-style]`, standards `{"egm-design":
+    "feature-spec-standard", "egm-structural": "feature-spec-standard",
+    "egm-style": "feature-spec-standard"}`, `GoldfishContext`,
+    `ReportFile: critic_report.md`, and `DeferResolution:
     true` (review-only — this subflow's checkpoint, not the loop, decides
-    whether resolution runs). The loop writes its consolidated report to
-    `goldfish_review_report.md`.
-2.  **Save the Stage Report**: Copy `goldfish_review_report.md` to
-    `critic_report.md` (the stage-specific filename) before presenting the
-    checkpoint, so the file the checkpoint names exists.
+    whether resolution runs). The loop writes its consolidated report
+    directly to `critic_report.md`.
+2.  **Verify the Stage Report**: Confirm `critic_report.md` exists (the
+    loop wrote it via `ReportFile`) before presenting the checkpoint, so
+    the file the checkpoint names exists.
 3.  **Notify User (No Chat Dumps)**: Notify user that findings are written to
     `critic_report.md` (give its path).
 4.  **Checkpoint Gate**: Present the Stage 7 gate:
@@ -417,8 +433,7 @@ plain chat):
     *   Option 3: `"Pause Review (save progress and exit)"`
 5.  **Remediation & Resolution (Option 1)**:
     *   Invoke `egm-resolve` in the primary Elephant context on `FeatureRange`,
-        passing findings from `critic_report.md` (or
-        `goldfish_review_report.md`).
+        passing findings from `critic_report.md`.
     *   Execute approved fixes directly on `TargetFile` using file editing
         tools.
     *   After fixes are applied, re-read `TargetFile` to recalculate line
@@ -426,18 +441,30 @@ plain chat):
 
 ### Subflow: Implementation Readiness Test
 
-1.  **Invoke Antagonistic Review Loop**: Invoke `egm-review-loop` in-thread on
-    `DetailedRange` with reviewers `[egm-implementation-readiness,
-    egm-codebase-details, egm-style]` and standards
+1.  **Invoke Antagonistic Review Loop**: Invoke `egm-review-loop` in-thread
+    with `TargetFile`, `SemanticTarget`: "the Step 3 split section
+    (`## Detailed Implementation Plan` or the synonym found) through end
+    of file" (when the user confirmed custom line ranges at the Step 3
+    gate — whether or not a split header was located — describe that
+    confirmed range instead, e.g. "the section from line L through
+    line M" (or "through end of file" when the confirmed range ends
+    there), so the target the loop re-derives matches `DetailedRange`),
+    the active range `DetailedRange`,
+    reviewers
+    `[egm-implementation-readiness, egm-codebase-details, egm-style]` and
+    standards
     `{"egm-implementation-readiness": "implementation-readiness-standard",
-    "egm-codebase-details": "implementation-readiness-standard"}`,
-    `GoldfishContext`, and `DeferResolution: true` (review-only — this
-    subflow's checkpoint, not the loop, decides whether resolution runs).
-    The loop writes its consolidated report to
-    `goldfish_review_report.md`.
-2.  **Save the Stage Report**: Copy `goldfish_review_report.md` to
-    `implementation_readiness_report.md` (the stage-specific filename) before
-    presenting the checkpoint, so the file the checkpoint names exists.
+    "egm-codebase-details": "implementation-readiness-standard",
+    "egm-style": "implementation-readiness-standard"}`,
+    `GoldfishContext`, `ReportFile: implementation_readiness_report.md`,
+    and `DeferResolution: true` (review-only — this subflow's checkpoint,
+    not the loop, decides whether resolution runs).
+    The loop writes its consolidated report directly to
+    `implementation_readiness_report.md`.
+2.  **Verify the Stage Report**: Confirm
+    `implementation_readiness_report.md` exists (the loop wrote it via
+    `ReportFile`) before presenting the checkpoint, so the file the
+    checkpoint names exists.
 3.  **Notify User (No Chat Dumps)**: Notify user that findings are written to
     `implementation_readiness_report.md` (give its path).
 4.  **Terminal Checkpoint Gate**: Present the Stage 9 terminal gate:
@@ -452,8 +479,7 @@ plain chat):
     *   Option 3: `"Pause Review (save progress and exit)"`
 5.  **Remediation & Resolution (Option 1)**:
     *   Invoke `egm-resolve` in the primary Elephant context on `DetailedRange`,
-        passing findings from `implementation_readiness_report.md` (or
-        `goldfish_review_report.md`).
+        passing findings from `implementation_readiness_report.md`.
     *   Execute approved fixes directly on `TargetFile` using file editing
         tools.
     *   After fixes are applied, re-read `TargetFile` to recalculate line

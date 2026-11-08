@@ -203,12 +203,18 @@ If your harness has no subagent tool, run the scout steps inline.
             retained directory unvisited.
     *   **Spawn Unbounded Sub-Orchestrators**: For each partition subtree root,
         use your harness's subagent tool to spawn a parallel worker:
-        *   Subagent: `egm-bootstrap-orchestrator` (`../../reference/elephant-goldfish-model/agents/bootstrap_orchestrator.md`) (or a general-purpose subagent)
-        *   `Prompt`: "Run egm-bootstrap with path=`[path]`,
+        *   Subagent: `egm-bootstrap-orchestrator` (`../../reference/elephant-goldfish-model/agents/bootstrap_orchestrator.md`) (or a general-purpose subagent — tell it to read this skill file and the persona file first, per Delegation)
+        *   `Prompt`: "Run egm-bootstrap in worker mode with path=`[path]`,
             is_worker=true, sub_tree_root=`[partition_root]`,
             target_filename=`[target_filename]`,
             retained_directories=`[the partition's directory list from the
-            Step 2 discovery map]` — traverse only these directories."
+            Step 2 discovery map]` — traverse only these directories.
+            Worker mode means: follow this skill's Step 4 worker flow for
+            the assigned subtree only. The persona file supplies role
+            context; its root-orchestration directives (re-partitioning
+            the tree, spawning its own orchestrator swarm) do not apply
+            in worker mode. Never re-partition beyond
+            `retained_directories`, and never spawn sub-orchestrators."
     *   **Unbounded Execution**: Spawn all Sub-Orchestrators in parallel without
         artificial concurrency limits (as authorized by the user during the
         safety gate).
@@ -235,6 +241,11 @@ If your harness has no subagent tool, run the scout steps inline.
         code.
     *   `enable_write_tools`: `false`
     *   `enable_subagent_tools`: `false`
+
+    **Cannot-nest fallback**: A worker is itself a subagent, so spawning
+    the scout is depth-2 nesting. If your harness cannot nest subagents,
+    run the scout steps inline under the same read-only discipline (scan
+    and summarize; write nothing) instead of spawning `goldfish-explorer`.
 
 2.  **Post-Order Traversal**: Walk the assigned `sub_tree_root` (or `path`) in
     post-order (deepest leaves first). **Retained-map restriction**: when
@@ -449,11 +460,14 @@ If your harness has no subagent tool, run the scout steps inline.
         contract updates to check for consistency with the codebase?"
     *   `options`: `["(Recommended) Yes, run drift report on modified contracts",
         "No, skip drift review"]`
-    *   If the user selects "Yes", run the `egm-drift-report` skill targeting
-        the modified contracts to verify both missing code coverage and
+    *   If the user selects "Yes", run the `egm-drift-report` skill on the
+        bootstrapped directory (`path`) to verify both missing code coverage and
         doc-to-code hallucinations (verifying every documented method, route,
         enum, database table, and invariant against local source files and
-        recording discrepancies in the drift report for human triage). (Note:
+        recording discrepancies in the drift report for human triage).
+        `egm-drift-report` accepts a directory, not a file list: scope it
+        to the bootstrapped tree and direct it to check the modified
+        contracts within that tree. (Note:
         While `egm-drift-report` is often used for design documents, it can be
         applied to EGM-compliant contracts as a variant).
 

@@ -161,3 +161,7 @@ jobs:
         with:
           persist-credentials: false
       - run: python3 scripts/check_skills_phantom_capability.py --root skills
+      # EGM drift: skill.yaml descriptions verbatim vs frontmatter, the
+      # review-loop normalization table vs bundle agent frontmatter,
+      # and egm-review call-site standards coverage (panel J8/J10/J16).
+      - run: python3 scripts/check_egm_drift.py --root skills
