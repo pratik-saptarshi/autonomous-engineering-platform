@@ -126,6 +126,24 @@ def check_yaml_parity(root, findings):
                     f"frontmatter: {fm_value!r})")
 
 
+def _normalization_pairs(text):
+    """(name, shortname, lineno) triples from the normalization table.
+
+    The scan is anchored to the table itself -- the paragraph block
+    carrying the most ``name -> shortname`` pairs (ties go to the
+    earliest such block) -- so a pair mentioned in prose elsewhere in
+    the file cannot stand in for a deleted table row.
+    """
+    best = []
+    for start, block in _paragraph_blocks(text):
+        pairs = [(match.group(1), match.group(2),
+                  start + block[:match.start()].count("\n"))
+                 for match in TABLE_PAIR_RE.finditer(block)]
+        if len(pairs) > len(best):
+            best = pairs
+    return best
+
+
 def check_normalization_table(root, bundle, findings):
     """Rule (b): loop normalization table == bundle agent frontmatter."""
     agents_dir = bundle / "agents"
@@ -143,9 +161,13 @@ def check_normalization_table(root, bundle, findings):
         return
     loop_text = loop_file.read_text(encoding="utf-8")
     table = {}
-    for match in TABLE_PAIR_RE.finditer(loop_text):
-        lineno = loop_text.count("\n", 0, match.start()) + 1
-        table[match.group(1)] = (match.group(2), lineno)
+    for name, shortname, lineno in _normalization_pairs(loop_text):
+        if name in table:
+            findings.append(
+                f"egm-review-loop/SKILL.md:{lineno}: normalization "
+                f"table lists {name!r} more than once (first at line "
+                f"{table[name][1]}); the later entry silently wins")
+        table[name] = (shortname, lineno)
     for name, stem in expected.items():
         if name not in table:
             findings.append(
