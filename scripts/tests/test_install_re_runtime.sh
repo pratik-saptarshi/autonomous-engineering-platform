@@ -106,19 +106,30 @@ checkout)
   # Working-tree model: a forced checkout discards tracked
   # modifications; a plain one leaves them in place (real-git
   # semantics). Untracked files survive either form.
+  # Unrestorable state (.stub-unrestorable set): the forced
+  # checkout still exits 0 but clears nothing — a restore that
+  # reports success without healing the tree, as real git does
+  # e.g. when clean -fd refuses an untracked nested git repo.
   for arg in "$@"; do
     if [ "$arg" = "-f" ] || [ "$arg" = "--force" ]; then
-      rm -f "$dir/.stub-dirty-tracked"
+      if [ ! -f "$dir/.stub-unrestorable" ]; then
+        rm -f "$dir/.stub-dirty-tracked"
+      fi
     fi
   done
   ;;
 clean)
   [ -f "$dir/.stub-git-ok" ] || exit 128
   # clean with a force flag removes untracked files; tracked
-  # modifications are not clean's business.
+  # modifications are not clean's business. In the unrestorable
+  # state (see checkout) it likewise exits 0 but removes nothing.
   for arg in "$@"; do
     case "$arg" in
-    -*f*) rm -f "$dir/.stub-dirty-untracked" ;;
+    -*f*)
+      if [ ! -f "$dir/.stub-unrestorable" ]; then
+        rm -f "$dir/.stub-dirty-untracked"
+      fi
+      ;;
     esac
   done
   ;;
@@ -458,6 +469,30 @@ check "(h) build saw a clean tree" grep -qF "built-dirty=0" "$FH/.stub-calls.log
 check "(h) build never saw a dirty tree" test -z "$(grep -F "built-dirty=1" "$FH/.stub-calls.log")"
 check "(h) tracked dirt removed from the clone" test ! -e "$FH/opt/dist/radare2-src/.stub-dirty-tracked"
 check "(h) untracked dirt removed from the clone" test ! -e "$FH/opt/dist/radare2-src/.stub-dirty-untracked"
+
+note "case (i): an unrestorable dirty staged radare2 clone fails the run at radare2, naming the clone"
+new_fixture i
+mkdir -p "$FH/opt/dist/radare2-src"
+printf '#!/bin/bash\nexit 0\n' >"$FH/opt/dist/radare2-src/configure"
+chmod +x "$FH/opt/dist/radare2-src/configure"
+: >"$FH/opt/dist/radare2-src/.stub-git-ok"
+: >"$FH/opt/dist/radare2-src/.stub-dirty-tracked"
+: >"$FH/opt/dist/radare2-src/.stub-dirty-untracked"
+: >"$FH/opt/dist/radare2-src/.stub-unrestorable"
+run_installer "$SERVE_DIR"
+check "(i) exit 1" test "$RC" -eq 1
+check "(i) temurin ok before radare2" grep -qxF "INSTALL-RE: temurin ok" "$OUT"
+check "(i) ghidra ok before radare2" grep -qxF "INSTALL-RE: ghidra ok" "$OUT"
+check "(i) dirty-clone notice printed" grep -qF "INSTALL-RE: radare2 note: staged clone had local changes" "$OUT"
+check "(i) restore attempted via forced checkout" grep -qF "checkout -f $R2_VERSION" "$FH/.stub-calls.log"
+check "(i) restore attempted via clean" grep -qF "clean -fd" "$FH/.stub-calls.log"
+check "(i) radare2 FAIL names the staged clone" grep -qxF "INSTALL-RE: radare2 FAIL: staged clone $FH/opt/dist/radare2-src could not be restored to the pinned state" "$OUT"
+check "(i) no radare2 ok line" test -z "$(grep -F "INSTALL-RE: radare2 ok" "$OUT" || true)"
+check "(i) no verify ok line" test -z "$(grep -F "INSTALL-RE: verify ok" "$OUT" || true)"
+check "(i) no make invocation for radare2" test -z "$(grep -E '^make ' "$FH/.stub-calls.log" || true)"
+check "(i) no radare2 install tree built" test ! -e "$FH/opt/radare2"
+check "(i) tracked dirt still in the clone" test -e "$FH/opt/dist/radare2-src/.stub-dirty-tracked"
+check "(i) untracked dirt still in the clone" test -e "$FH/opt/dist/radare2-src/.stub-dirty-untracked"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then

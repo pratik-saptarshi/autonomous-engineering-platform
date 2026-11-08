@@ -1468,19 +1468,30 @@ checkout)
   # Working-tree model: a forced checkout discards tracked
   # modifications; a plain one leaves them in place (real-git
   # semantics). Untracked files survive either form.
+  # Unrestorable state (.stub-unrestorable set): the forced
+  # checkout still exits 0 but clears nothing — a restore that
+  # reports success without healing the tree, as real git does
+  # e.g. when clean -fd refuses an untracked nested git repo.
   for arg in "$@"; do
     if [ "$arg" = "-f" ] || [ "$arg" = "--force" ]; then
-      rm -f "$dir/.stub-dirty-tracked"
+      if [ ! -f "$dir/.stub-unrestorable" ]; then
+        rm -f "$dir/.stub-dirty-tracked"
+      fi
     fi
   done
   ;;
 clean)
   [ -f "$dir/.stub-git-ok" ] || exit 128
   # clean with a force flag removes untracked files; tracked
-  # modifications are not clean's business.
+  # modifications are not clean's business. In the unrestorable
+  # state (see checkout) it likewise exits 0 but removes nothing.
   for arg in "$@"; do
     case "$arg" in
-    -*f*) rm -f "$dir/.stub-dirty-untracked" ;;
+    -*f*)
+      if [ ! -f "$dir/.stub-unrestorable" ]; then
+        rm -f "$dir/.stub-dirty-untracked"
+      fi
+      ;;
     esac
   done
   ;;
@@ -1779,6 +1790,40 @@ EOF
     pass=1
   fi
   report_stage radare2-dirty-clone-restored "$pass"
+
+  # Dirty-clone unrestorable: the same dirty clone, but the restore
+  # does not heal it — forced checkout and clean -fd report success
+  # yet the tree stays dirty (the stub's .stub-unrestorable state,
+  # modelling e.g. an untracked nested git repo that clean -fd
+  # refuses). The post-restore re-assert (HEAD + cleanliness, FAIL
+  # naming the clone) is then the only guard: the stage must fail
+  # there, before any build step runs. Deleting that re-assert
+  # block turns this case red — the stage goes on to build the
+  # dirty tree — while the restored and clone-reuse cases above
+  # stay green, so this case is the re-assert leg's sole
+  # discriminator (mutation M4 in the dirty-clone fix's review).
+  reset_r2
+  mkdir -p "$stagehome/opt/dist/radare2-src"
+  printf '#!/bin/bash\nexit 0\n' >"$stagehome/opt/dist/radare2-src/configure"
+  chmod +x "$stagehome/opt/dist/radare2-src/configure"
+  : >"$stagehome/opt/dist/radare2-src/.stub-git-ok"
+  : >"$stagehome/opt/dist/radare2-src/.stub-dirty-tracked"
+  : >"$stagehome/opt/dist/radare2-src/.stub-dirty-untracked"
+  : >"$stagehome/opt/dist/radare2-src/.stub-unrestorable"
+  out=$(run_r2 install_radare2 2>&1) && rc=0 || rc=$?
+  pass=0
+  if [ "$rc" -ne 0 ] &&
+    printf '%s\n' "$out" | grep -qF "INSTALL-RE: radare2 note: staged clone had local changes" &&
+    printf '%s\n' "$out" | grep -qxF "INSTALL-RE: radare2 FAIL: staged clone $stagehome/opt/dist/radare2-src could not be restored to the pinned state" &&
+    grep -qF "checkout -f $R2_VERSION" "$build_log" &&
+    grep -qF "clean -fd" "$build_log" &&
+    ! grep -q '^make ' "$build_log" &&
+    ! grep -q 'configure' "$build_log" &&
+    [ -e "$stagehome/opt/dist/radare2-src/.stub-dirty-tracked" ] &&
+    [ -e "$stagehome/opt/dist/radare2-src/.stub-dirty-untracked" ]; then
+    pass=1
+  fi
+  report_stage radare2-dirty-clone-unrestorable "$pass"
 
   # --- Task 4: env block, .profile, REA assertion ---
   # Fixture-HOME cases for install_env_block / ensure_profile /
