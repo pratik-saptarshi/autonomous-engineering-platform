@@ -1,0 +1,45 @@
+# Dependabot version updates for this fork.
+# Fork note: this file lives on `develop` (the fork's default/working branch);
+# `main` stays a pristine upstream mirror and carries no fork-only config.
+# Security updates are enabled in repo Settings and land as their own PRs —
+# they are what propose major bumps when a fix requires one. The grouped
+# version updates below cover routine minor/patch freshness only. The
+# ignore rules enforce that at the ecosystem level (group update-types
+# alone would still let Dependabot open individual major PRs); an
+# update-types ignore does not apply to security updates, so majors
+# required by a security fix still arrive as security-update PRs.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    groups:
+      npm-production:
+        dependency-type: production
+        update-types:
+          - minor
+          - patch
+      npm-development:
+        dependency-type: development
+        update-types:
+          - minor
+          - patch
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    groups:
+      github-actions:
+        update-types:
+          - minor
+          - patch
