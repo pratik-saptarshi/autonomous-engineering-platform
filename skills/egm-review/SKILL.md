@@ -401,7 +401,10 @@ plain chat):
 1.  **Invoke Antagonistic Review Loop**: Invoke `egm-review-loop` in-thread
     with `TargetFile`, `SemanticTarget`: "the feature design above the
     Step 3 split header (`## Detailed Implementation Plan` or the synonym
-    found)", the active range `FeatureRange`, reviewers `[egm-design,
+    found)" (when no split is in effect — Preset 2, or Step 3 found no
+    implementation plan, so `FeatureRange` covers the whole file — pass
+    `SemanticTarget`: "full file" instead), the active range
+    `FeatureRange`, reviewers `[egm-design,
     egm-structural, egm-style]`, standards `{"egm-design":
     "feature-spec-standard", "egm-structural": "feature-spec-standard",
     "egm-style": "feature-spec-standard"}`, `GoldfishContext`,
@@ -437,7 +440,11 @@ plain chat):
 1.  **Invoke Antagonistic Review Loop**: Invoke `egm-review-loop` in-thread
     with `TargetFile`, `SemanticTarget`: "the Step 3 split section
     (`## Detailed Implementation Plan` or the synonym found) through end
-    of file", the active range `DetailedRange`, reviewers
+    of file" (when `DetailedRange` was set from custom line ranges with
+    no split header located, describe that range instead — e.g. "the
+    section from line L through end of file" — so the target the loop
+    re-derives matches `DetailedRange`), the active range `DetailedRange`,
+    reviewers
     `[egm-implementation-readiness, egm-codebase-details, egm-style]` and
     standards
     `{"egm-implementation-readiness": "implementation-readiness-standard",
