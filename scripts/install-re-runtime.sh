@@ -410,6 +410,36 @@ install_env_block() {
     *JAVA_HOME=* | *GHIDRA_INSTALL_DIR=*) unmarked=1 ;;
     esac
   done
+  # Insertion point, with the stock-skel reachability rule. On
+  # Debian/Ubuntu homes the stock .bashrc (/etc/skel/.bashrc) returns
+  # early for noninteractive shells — the `case $- in ... *) return;;`
+  # guard near the top — and a login shell is noninteractive too, so
+  # a block appended after that guard never executes and verify_env
+  # (bash -lc) resolves nothing on a stock home. When a guard is
+  # present in the kept content, the block belongs immediately before
+  # it, and a block already sitting after the guard is relocated
+  # there. A block already at or before the guard keeps its position,
+  # so the relocated layout is the fixed point: re-runs stay
+  # byte-identical on stock and guard-free homes alike.
+  local block_at=$insert_at guard_at=-1 scan
+  for ((scan = 0; scan < ${#kept[@]}; scan++)); do
+    trimmed="${kept[scan]#"${kept[scan]%%[![:space:]]*}"}"
+    case "$trimmed" in
+    '#'*) ;;
+    'case '*"\$-"*)
+      guard_at=$scan
+      break
+      ;;
+    *"\$-"*'return'* | *"\$PS1"*'return'*)
+      guard_at=$scan
+      break
+      ;;
+    esac
+  done
+  if [ "$guard_at" -ge 0 ] &&
+    { [ "$block_at" -lt 0 ] || [ "$block_at" -gt "$guard_at" ]; }; then
+    insert_at=$guard_at
+  fi
   if [ "$insert_at" -lt 0 ]; then
     insert_at=${#kept[@]}
   fi
@@ -1624,6 +1654,107 @@ EOF
     pass=1
   fi
   report_stage env-damaged-bashrc "$pass"
+
+  # (h) Stock-skel home (the Codex P1 configuration): the fixture
+  # .bashrc carries the standard Debian/Ubuntu noninteractive return
+  # guard (case $- in ... *) return;; esac) near the top, with user
+  # content after it. The block must land BEFORE the guard — appended
+  # after it, the block never executes in a noninteractive shell, and
+  # verify_env's login shell (bash -lc is noninteractive) resolves
+  # nothing. A second run stays byte-identical, and sourcing the file
+  # in a noninteractive shell actually executes the exports.
+  local marker_line guard_line reach
+  reset_env
+  cat >"$envhome/.bashrc" <<'EOF'
+# ~/.bashrc: executed by bash(1) for non-login shells.
+
+# If not running interactively, don't do anything
+case $- in
+    *i*) ;;
+      *) return;;
+esac
+
+# user content after the guard
+export EDITOR=vim
+EOF
+  cat >"$envhome/.profile" <<'EOF'
+# ~/.profile: executed by the command interpreter for login shells.
+if [ -n "$BASH_VERSION" ]; then
+    if [ -f "$HOME/.bashrc" ]; then
+        . "$HOME/.bashrc"
+    fi
+fi
+EOF
+  cp "$envhome/.bashrc" "$selftest_root/env-h-orig"
+  out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
+  cp "$envhome/.bashrc" "$selftest_root/env-h-run1"
+  out2=$(run_env install_env_block 2>&1) && rc2=0 || rc2=$?
+  out="$out2" rc="$rc2"
+  marker_line=$(grep -n -xF '# >>> re-runtime >>>' "$envhome/.bashrc" | cut -d: -f1)
+  guard_line=$(grep -n -xF "case \$- in" "$envhome/.bashrc" | cut -d: -f1)
+  reach=$(env -i HOME="$envhome" /bin/bash -c '. "$HOME/.bashrc" >/dev/null 2>&1; printf %s "${JAVA_HOME:-}"')
+  pass=0
+  if [ "$rc" -eq 0 ] &&
+    printf '%s\n' "$out" | grep -qxF "INSTALL-RE: env ok" &&
+    [ "$(count_markers '>>>')" = "1" ] &&
+    [ "$(count_markers '<<<')" = "1" ] &&
+    [ -n "$marker_line" ] && [ -n "$guard_line" ] &&
+    [ "$marker_line" -lt "$guard_line" ] &&
+    cmp -s "$selftest_root/env-h-run1" "$envhome/.bashrc" &&
+    grep -qxF 'export EDITOR=vim' "$envhome/.bashrc" &&
+    [ "$reach" = "$envhome/opt/jdk-$TEMURIN_VERSION" ] &&
+    cmp -s "$selftest_root/env-h-orig" "$envhome/.bashrc.install-re-runtime.bak"; then
+    pass=1
+  fi
+  report_stage env-skel-guard "$pass"
+
+  # (i) Relocation: a stock-skel .bashrc whose block already sits
+  # AFTER the guard (the pre-fix script's output on a stock home —
+  # installed but unreachable) is healed on the next run: the block
+  # moves before the guard, user content survives, the one-time
+  # backup holds the as-found stranded layout, and a further run is
+  # byte-identical (the relocated position is the fixed point).
+  reset_env
+  cat >"$envhome/.bashrc" <<'EOF'
+# ~/.bashrc: executed by bash(1) for non-login shells.
+
+# If not running interactively, don't do anything
+case $- in
+    *i*) ;;
+      *) return;;
+esac
+
+# user content after the guard
+export EDITOR=vim
+# >>> re-runtime >>>
+# profile: pre-existing
+export JAVA_HOME="$HOME/opt/jdk-25.0.4.1+1"
+export GHIDRA_INSTALL_DIR="$HOME/opt/ghidra_12.1.4_PUBLIC"
+export PATH="$JAVA_HOME/bin:$GHIDRA_INSTALL_DIR/support:$HOME/opt/radare2/bin:$PATH"
+export LD_LIBRARY_PATH="$HOME/opt/radare2/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+# <<< re-runtime <<<
+EOF
+  printf '# user profile\n' >"$envhome/.profile"
+  cp "$envhome/.bashrc" "$selftest_root/env-i-orig"
+  out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
+  cp "$envhome/.bashrc" "$selftest_root/env-i-run1"
+  out2=$(run_env install_env_block 2>&1) && rc2=0 || rc2=$?
+  out="$out2" rc="$rc2"
+  marker_line=$(grep -n -xF '# >>> re-runtime >>>' "$envhome/.bashrc" | cut -d: -f1)
+  guard_line=$(grep -n -xF "case \$- in" "$envhome/.bashrc" | cut -d: -f1)
+  pass=0
+  if [ "$rc" -eq 0 ] &&
+    printf '%s\n' "$out" | grep -qxF "INSTALL-RE: env ok" &&
+    [ "$(count_markers '>>>')" = "1" ] &&
+    [ "$(count_markers '<<<')" = "1" ] &&
+    [ -n "$marker_line" ] && [ -n "$guard_line" ] &&
+    [ "$marker_line" -lt "$guard_line" ] &&
+    cmp -s "$selftest_root/env-i-run1" "$envhome/.bashrc" &&
+    grep -qxF 'export EDITOR=vim' "$envhome/.bashrc" &&
+    cmp -s "$selftest_root/env-i-orig" "$envhome/.bashrc.install-re-runtime.bak"; then
+    pass=1
+  fi
+  report_stage env-skel-relocation "$pass"
 
   # Fresh-HOME leg: with no .bashrc at all, the stage creates one
   # holding exactly the block (the fixture-HOME full-run shape).

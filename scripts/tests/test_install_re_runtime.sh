@@ -311,6 +311,93 @@ check "(e) verify failure names ghidra" grep -qF "(ghidra)" "$OUT"
 check "(e) ghidra downloaded exactly once" test "$(grep -c "curl .*$GHIDRA_ZIP" "$FH/.stub-calls.log" 2>/dev/null || true)" = "1"
 check "(e) ghidra ok stage line appears exactly once" test "$(grep -cxF "INSTALL-RE: ghidra ok" "$OUT" || true)" = "1"
 
+note "case (f): stock-skel HOME — full run verifies green through the real login shell"
+new_fixture f
+cat >"$FH/.bashrc" <<'EOF'
+# ~/.bashrc: executed by bash(1) for non-login shells.
+
+# If not running interactively, don't do anything
+case $- in
+    *i*) ;;
+      *) return;;
+esac
+
+# user content after the guard
+export EDITOR=vim
+EOF
+cat >"$FH/.profile" <<'EOF'
+# ~/.profile: executed by the command interpreter for login shells.
+if [ -n "$BASH_VERSION" ]; then
+    if [ -f "$HOME/.bashrc" ]; then
+        . "$HOME/.bashrc"
+    fi
+fi
+EOF
+run_installer "$SERVE_DIR"
+[ "$RC" -eq 0 ] && ok "(f) exit 0" || fail "(f) exit 0 (got $RC)"
+check "(f) verify ok is the last line" test "$(tail -1 "$OUT")" = "INSTALL-RE: verify ok"
+F_MARKER="$(grep -n -xF '# >>> re-runtime >>>' "$FH/.bashrc" | cut -d: -f1)"
+F_GUARD="$(grep -n -xF "case \$- in" "$FH/.bashrc" | cut -d: -f1)"
+check "(f) env block sits before the noninteractive guard" test "$F_MARKER" -lt "$F_GUARD"
+LOGIN_PATHS="$(env -i HOME="$FH" /bin/bash -lc 'command -v java; command -v analyzeHeadless; command -v r2' 2>/dev/null)"
+check "(f) login shell resolves java" grep -qxF "$FH/opt/jdk-$TEMURIN_VERSION/bin/java" <<<"$LOGIN_PATHS"
+check "(f) login shell resolves analyzeHeadless" grep -qxF "$FH/opt/ghidra_${GHIDRA_VERSION}_PUBLIC/support/analyzeHeadless" <<<"$LOGIN_PATHS"
+check "(f) login shell resolves r2" grep -qxF "$FH/opt/radare2/bin/r2" <<<"$LOGIN_PATHS"
+F_BASHRC_SHA="$(file_sha "$FH/.bashrc")"
+run_installer "$SERVE_DIR"
+[ "$RC" -eq 0 ] && ok "(f) second run exit 0" || fail "(f) second run exit 0 (got $RC)"
+check "(f) second run leaves .bashrc byte-identical" test "$(file_sha "$FH/.bashrc")" = "$F_BASHRC_SHA"
+
+note "case (g): skel HOME with the block stranded after the guard is healed by relocation"
+new_fixture g
+mkdir -p "$FH/opt"
+cp -r "$JDK_SRC" "$FH/opt/"
+cp -r "$GHIDRA_SRC" "$FH/opt/"
+cp -r "$R2_TREE" "$FH/opt/radare2"
+cat >"$FH/.bashrc" <<'EOF'
+# ~/.bashrc: executed by bash(1) for non-login shells.
+
+# If not running interactively, don't do anything
+case $- in
+    *i*) ;;
+      *) return;;
+esac
+
+# user content after the guard
+export EDITOR=vim
+EOF
+cat >>"$FH/.bashrc" <<EOF
+# >>> re-runtime >>>
+# profile: pre-existing
+export JAVA_HOME="\$HOME/opt/jdk-$TEMURIN_VERSION"
+export GHIDRA_INSTALL_DIR="\$HOME/opt/ghidra_${GHIDRA_VERSION}_PUBLIC"
+export PATH="\$JAVA_HOME/bin:\$GHIDRA_INSTALL_DIR/support:\$HOME/opt/radare2/bin:\$PATH"
+export LD_LIBRARY_PATH="\$HOME/opt/radare2/lib\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
+# <<< re-runtime <<<
+EOF
+cat >"$FH/.profile" <<'EOF'
+# ~/.profile: executed by the command interpreter for login shells.
+if [ -n "$BASH_VERSION" ]; then
+    if [ -f "$HOME/.bashrc" ]; then
+        . "$HOME/.bashrc"
+    fi
+fi
+EOF
+run_installer "$SERVE_DIR"
+[ "$RC" -eq 0 ] && ok "(g) exit 0" || fail "(g) exit 0 (got $RC)"
+check "(g) verify ok is the last line" test "$(tail -1 "$OUT")" = "INSTALL-RE: verify ok"
+G_MARKER="$(grep -n -xF '# >>> re-runtime >>>' "$FH/.bashrc" | cut -d: -f1)"
+G_GUARD="$(grep -n -xF "case \$- in" "$FH/.bashrc" | cut -d: -f1)"
+check "(g) env block relocated before the guard" test "$G_MARKER" -lt "$G_GUARD"
+LOGIN_PATHS="$(env -i HOME="$FH" /bin/bash -lc 'command -v java; command -v analyzeHeadless; command -v r2' 2>/dev/null)"
+check "(g) login shell resolves java" grep -qxF "$FH/opt/jdk-$TEMURIN_VERSION/bin/java" <<<"$LOGIN_PATHS"
+check "(g) login shell resolves analyzeHeadless" grep -qxF "$FH/opt/ghidra_${GHIDRA_VERSION}_PUBLIC/support/analyzeHeadless" <<<"$LOGIN_PATHS"
+check "(g) login shell resolves r2" grep -qxF "$FH/opt/radare2/bin/r2" <<<"$LOGIN_PATHS"
+G_BASHRC_SHA="$(file_sha "$FH/.bashrc")"
+run_installer "$SERVE_DIR"
+[ "$RC" -eq 0 ] && ok "(g) second run exit 0" || fail "(g) second run exit 0 (got $RC)"
+check "(g) second run leaves .bashrc byte-identical" test "$(file_sha "$FH/.bashrc")" = "$G_BASHRC_SHA"
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "test_install_re_runtime: ALL PASS (sandbox $SB)"
