@@ -628,6 +628,13 @@ print_plan() {
 self_test() {
   local fails=0 pin out rc tool bindir holder tries
   local fixhome badhome goodbin lowbin mem_good mem_low lock_file
+  # Independent, hard-coded enumeration of the 10 plan-mandated
+  # preflight tools (plan Task 1 Step 3), written literally here in
+  # the self-test and NOT derived from REQUIRED_TOOLS. The tool-list
+  # assertion and the missing-tool cases below both use this list, so
+  # removing a tool from REQUIRED_TOOLS can no longer remove its own
+  # test case in lockstep.
+  local EXPECTED_REQUIRED_TOOLS=(curl git gcc make unzip sha256sum tar pkg-config flock df)
   # NB: selftest_root is intentionally global (not local) so the EXIT trap
   # can still see it under `set -u` after this function returns.
   selftest_root=$(mktemp -d)
@@ -740,15 +747,27 @@ EOF
   expect_pf_fail preflight-low-disk "INSTALL-RE: preflight FAIL: disk:"
   ST_PATH="$goodbin:$PATH"
 
+  # REQUIRED_TOOLS must equal the independent literal enumeration
+  # above, in plan order; any drift (removal, addition, reorder)
+  # fails this case even if every other case would still pass.
+  if [ "${REQUIRED_TOOLS[*]}" = "${EXPECTED_REQUIRED_TOOLS[*]}" ]; then
+    echo "SELF-TEST: preflight-tool-list ok"
+  else
+    echo "SELF-TEST: preflight-tool-list FAIL: REQUIRED_TOOLS=(${REQUIRED_TOOLS[*]}) expected (${EXPECTED_REQUIRED_TOOLS[*]})"
+    fails=$((fails + 1))
+  fi
+
   # (c) Each required tool removed from the PATH in turn fails closed,
   # naming the missing tool. The restricted bin holds stubs for every
   # other required tool plus the real awk; nothing else leaks in.
+  # Iterates the independent literal enumeration, not REQUIRED_TOOLS,
+  # so deleting a tool from REQUIRED_TOOLS cannot delete its case.
   local missing_fails=0
-  for tool in "${REQUIRED_TOOLS[@]}"; do
+  for tool in "${EXPECTED_REQUIRED_TOOLS[@]}"; do
     bindir="$selftest_root/nobin-$tool"
     mkdir -p "$bindir"
     local other
-    for other in "${REQUIRED_TOOLS[@]}"; do
+    for other in "${EXPECTED_REQUIRED_TOOLS[@]}"; do
       [ "$other" = "$tool" ] && continue
       cp "$goodbin/$other" "$bindir/$other" 2>/dev/null ||
         ln -s "$(command -v "$other")" "$bindir/$other"
