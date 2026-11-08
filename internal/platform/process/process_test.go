@@ -208,13 +208,16 @@ func TestProcessGroup_WaitCleansUpSurvivorsOnErrorExit(t *testing.T) {
 
 // TestProcessGroup_WaitFastWhenGroupEmpty guards the fast path: a
 // well-behaved command with an empty group pays no grace delay in Wait.
+// The configured grace (2s) is deliberately far above the 750ms elapsed
+// threshold: if the ESRCH fast path regressed into an unconditional
+// one-grace sleep, Wait would take the full 2s and this test would fail.
 func TestProcessGroup_WaitFastWhenGroupEmpty(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("process-group survivor cleanup is POSIX-specific")
 	}
 
 	pg := NewCommand(context.Background(), "sh", []string{"-c", "exit 0"}, CommandConfig{
-		GracePeriod: 100 * time.Millisecond,
+		GracePeriod: 2 * time.Second,
 	})
 	if err := pg.Start(); err != nil {
 		t.Fatalf("pg.Start() failed: %v", err)
