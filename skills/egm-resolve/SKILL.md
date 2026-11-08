@@ -90,8 +90,11 @@ Apply these rules:
 ### Step 3: Report Fixes
 
 Construct the final report and save it named
-`goldfish_review_report.md` in the working directory (or your harness's artifact directory, if it has one)
-using your file-writing tool. Use this layout:
+`goldfish_resolve_report.md` in the working directory (or your harness's artifact directory, if it has one)
+using your file-writing tool. Never overwrite the file your input
+findings came from (e.g. `goldfish_review_report.md`): that file is the
+raw-findings provenance record, and this annotated report supersedes it
+only by reference. Use this layout:
 
 ```markdown
 # Goldfish Annotated Review Report
@@ -119,10 +122,10 @@ If any finding is `ESCALATE`, list those findings first in the chat message.
 They need the user's knowledge, not only approval.
 
 Before proceeding, output a visible chat message to the user: *"I have compiled
-the audit findings into `goldfish_review_report.md`. Please review the findings there and choose how you would like to
+the audit findings into `goldfish_resolve_report.md`. Please review the findings there and choose how you would like to
 proceed:
 
--   **Comment directly on the file**: Review `goldfish_review_report.md` in
+-   **Comment directly on the file**: Review `goldfish_resolve_report.md` in
     chat or the file and leave comments/edits to approve, reject, or contest
     specific items.
 -   **Auto accept**: Reply "auto accept" to batch-apply all proposed fixes

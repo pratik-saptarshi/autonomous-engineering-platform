@@ -105,6 +105,18 @@ If your harness has no subagent tool, stop and tell the user: a review in the sa
 | **Long-Term Tech Debt & Maintenance** | Future maintainability | *Does this introduce tightly coupled dependencies or brittle state machines that will be painful to maintain in 2 years?* |
 | **Inventive Catalyst** | Contradiction elimination & inventive transforms | *What fundamental trade-off is this design accepting as inevitable? How can we resolve this conflict using proven software transforms to achieve the Ideal Final Result without compromise?* |
 
+Each lens is exercised by exactly one spawned persona (Step 2):
+Contrarian / YAGNI → `egm-zoom-out` (the skeptical architect; YAGNI and
+reuse are its mandate); Cost, Quota & Token Economics → `egm-design`
+(infrastructure economics and scalability are the design critic's
+mandate); UX & Developer Ergonomics → `egm-comprehension` (the
+naive-reader lens: what a fresh consumer cannot follow); Migration &
+Backward Compatibility → `egm-codebase-details` (grounded in the actual
+codebase and its existing clients and schemas); Observability & SRE
+Debuggability → `egm-implementation-readiness` (an operable plan is an
+actionable plan); Long-Term Tech Debt & Maintenance → `egm-structural`;
+Inventive Catalyst → `egm-inventive-catalyst`.
+
 ## Execution Workflow
 
 ### Step 1: Deep Clarification & Problem Statement Drilling
@@ -173,11 +185,13 @@ If your harness has no subagent tool, stop and tell the user: a review in the sa
         `[AnchoredFeatureHypothesis]`. Mode: `BRAINSTORM`. Reviewers:
         `[egm-design, egm-codebase-details, egm-zoom-out, egm-comprehension,
         egm-implementation-readiness, egm-structural, egm-inventive-catalyst]`.
-2.  **Synthesizer Execution**: The `egm-synthesizer` subagent launches the
-    parallel Goldfish reviewers across the specialized lenses (`egm-design`,
-    `egm-codebase-details`, `egm-zoom-out`, `egm-comprehension`,
-    `egm-implementation-readiness`, `egm-structural`,
-    `egm-inventive-catalyst`) with `Mode: BRAINSTORM`.
+2.  **Synthesizer Execution**: In `Mode: BRAINSTORM` the synthesizer
+    ignores the `Reviewers` list above and launches its own built-in
+    seven-persona swarm (`design_critic`, `codebase_details`, `zoom_out`,
+    `comprehension`, `implementation_readiness`, `structural`,
+    `inventive_catalyst`) — the same seven personas named in the prompt,
+    exercising the seven lenses per the mapping above. The prompt's list
+    records intent; coverage does not depend on it.
 3.  **Deduplication**: Collect the raw findings from the Goldfish reviewers,
     deduplicate overlapping points, and format them into a cohesive analysis.
 4.  **Write/Update Artifact**: Format and write the synthesized brief to
