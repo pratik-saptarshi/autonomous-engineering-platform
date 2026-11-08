@@ -240,6 +240,25 @@ func RunVerification(ctx context.Context, repoRoot string, minMemBytes uint64, p
 					exitCode = 1
 					errText = waitErr.Error()
 				}
+			} else if ctxBudget.Err() == context.Canceled {
+				// Wait returned nil — the leader exited 0 — but the
+				// run was canceled while Wait was still draining the
+				// command's output: a surviving group member held
+				// the pipes, and the cancellation's group kill is
+				// what ended the wait (the stdlib injects no context
+				// error into Wait when the leader was already reaped
+				// with exit 0). The command's tree did not run to
+				// completion, so the zero status is not a completed
+				// check: record the same no-status failure the
+				// bounded-drain fallback produces for the setsid
+				// case. This arm guards only the success-shaped
+				// path — a genuine exit status above keeps its real
+				// code even when a cancel lands during its drain.
+				// ctxBudget reports Canceled only when the caller
+				// explicitly canceled; its own expiry is
+				// DeadlineExceeded, claimed by the timeout arm.
+				exitCode = 1
+				errText = context.Canceled.Error()
 			}
 		}
 
