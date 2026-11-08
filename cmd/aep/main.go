@@ -3,10 +3,13 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"runtime"
+	"syscall"
 	"time"
 
 	"github.com/pratik-saptarshi/autonomous-engineering-platform/internal/platform/lock"
@@ -38,6 +41,9 @@ func main() {
 	case "verify":
 		runVerify(os.Args[2:])
 
+	case "supervisor":
+		runSupervisor(os.Args[2:])
+
 	case "lock-test":
 		runLockTest(os.Args[2:])
 
@@ -59,6 +65,7 @@ Commands:
   info          Display system metrics, memory, and hardware tier
   boot          Execute preflight sanity and environment gate
   verify        Run bounded allowlist mechanical verification with hash receipts
+  supervisor    Run the execution loop (boot gate + verification ticks)
   lock-test     Test cross-platform file locking on a path
 `, version)
 }
@@ -85,23 +92,130 @@ func runInfo() {
 	fmt.Printf("Hardware Tier:   %s\n", tier)
 }
 
-func runBootGate() {
-	fmt.Println("BOOT-GATE: probing platform...")
+// bootGate runs the boot-gate checks — memory probe, 384 MiB floor,
+// platform line — and returns an error instead of exiting, so callers
+// (the boot subcommand, the supervisor) decide how a failure is
+// handled. The progress lines are printed here because they carry the
+// probed values; the caller owns the header, failure, and result lines.
+func bootGate() error {
 	info, err := memory.GetMemoryInfo()
 	if err != nil {
-		fmt.Printf("BOOT-GATE: memory FAIL: %v\n", err)
-		os.Exit(1)
+		return err
 	}
 	fmt.Printf("BOOT-GATE: memory ok (%d MiB available)\n", info.AvailableBytes/(1024*1024))
 
 	// Preflight memory minimum (384 MiB)
 	if info.AvailableBytes < 384*1024*1024 {
-		fmt.Printf("BOOT-GATE: memory FAIL: less than 384 MiB available\n")
-		os.Exit(1)
+		return fmt.Errorf("less than 384 MiB available")
 	}
 
 	fmt.Printf("BOOT-GATE: platform ok (%s/%s)\n", runtime.GOOS, runtime.GOARCH)
+	return nil
+}
+
+func runBootGate() {
+	fmt.Println("BOOT-GATE: probing platform...")
+	if err := bootGate(); err != nil {
+		fmt.Printf("BOOT-GATE: memory FAIL: %v\n", err)
+		os.Exit(1)
+	}
 	fmt.Println("BOOT-GATE-RESULT: SYSTEM-OK")
+}
+
+// errSupervisorBootGate marks a supervisor tick failure caused by the
+// boot gate. It is fatal in every mode: the environment is unfit, and
+// systemd's Restart policy owns the retry cadence.
+var errSupervisorBootGate = errors.New("boot gate failed")
+
+// supervisorTick runs one supervisor tick: the boot gate followed by
+// one bounded verification pass. It returns nil only when the boot
+// gate passes and verification passes. A boot-gate failure is wrapped
+// in errSupervisorBootGate; a verification failure is logged and
+// returned unwrapped, so loop mode can treat it as non-fatal.
+func supervisorTick(ctx context.Context, root string, minMemBytes uint64, perCmdTimeout, totalBudget time.Duration) error {
+	if err := bootGate(); err != nil {
+		return fmt.Errorf("%w: %v", errSupervisorBootGate, err)
+	}
+	res, err := runner.RunVerification(ctx, root, minMemBytes, perCmdTimeout, totalBudget)
+	if err != nil {
+		fmt.Printf("SUPERVISOR: tick failed: %v\n", err)
+		return err
+	}
+	if !res.Pass {
+		err := fmt.Errorf("verification failed (%d of %d executed checks failed)", res.Failed, res.Executed)
+		fmt.Printf("SUPERVISOR: tick failed: %v\n", err)
+		return err
+	}
+	fmt.Printf("SUPERVISOR: tick ok (discovered=%d executed=%d)\n", res.Discovered, res.Executed)
+	return nil
+}
+
+func runSupervisor(args []string) {
+	fs := flag.NewFlagSet("supervisor", flag.ExitOnError)
+	loop := fs.Bool("loop", false, "Run ticks continuously on the interval until signalled")
+	// --once names the default behaviour (exactly one tick) explicitly;
+	// the flag is parsed for symmetry with the packaged unit's flags.
+	_ = fs.Bool("once", false, "Run exactly one tick and exit (the behaviour without --loop)")
+	interval := fs.Duration("interval", 2*time.Hour, "Interval between ticks in loop mode")
+	root := fs.String("root", ".", "Path to repository root")
+	minMemMB := fs.Uint64("min-mem", 384, "Minimum available memory in MiB")
+	timeoutSec := fs.Int("timeout", 300, "Per-command timeout in seconds")
+	budgetSec := fs.Int("budget", 600, "Total execution budget in seconds")
+
+	_ = fs.Parse(args)
+
+	minMemBytes := *minMemMB * 1024 * 1024
+	perCmdTimeout := time.Duration(*timeoutSec) * time.Second
+	totalBudget := time.Duration(*budgetSec) * time.Second
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// tick runs one supervisor tick and reports whether the supervisor
+	// must exit, and with failure. A boot-gate failure is fatal in
+	// every mode; a verification failure (already logged by the tick)
+	// is fatal only outside loop mode, so a failing check cannot
+	// crash-loop the service.
+	tick := func() (fatal, failed bool) {
+		err := supervisorTick(ctx, *root, minMemBytes, perCmdTimeout, totalBudget)
+		if err == nil {
+			return false, false
+		}
+		if errors.Is(err, errSupervisorBootGate) {
+			fmt.Fprintf(os.Stderr, "SUPERVISOR: %v\n", err)
+			return true, true
+		}
+		return false, true
+	}
+
+	if !*loop {
+		// --once, or a bare `aep supervisor`: exactly one tick, then
+		// exit with the tick's status.
+		if _, failed := tick(); failed {
+			os.Exit(1)
+		}
+		return
+	}
+
+	// Loop mode: tick immediately, then on the ticker until SIGINT or
+	// SIGTERM, then exit 0. Ticks are sequential, so a tick longer
+	// than the interval delays the next one; the ticker drops missed
+	// beats instead of queueing them, so ticks never overlap.
+	if fatal, _ := tick(); fatal {
+		os.Exit(1)
+	}
+	ticker := time.NewTicker(*interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if fatal, _ := tick(); fatal {
+				os.Exit(1)
+			}
+		}
+	}
 }
 
 func runVerify(args []string) {
