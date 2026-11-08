@@ -483,6 +483,7 @@ install_env_block() {
   # new one, never a torn one.
   local i
   rm -f "$tmp"
+  # shellcheck disable=SC2016 # the composed block must contain literal $HOME/$PATH — they expand in the login shell that reads it, not at install time
   {
     for ((i = 0; i < insert_at; i++)); do
       printf '%s\n' "${kept[i]}"
@@ -715,6 +716,7 @@ EOF
   local ST_HOME="$fixhome" ST_PATH="$goodbin:$PATH" ST_MEM="$mem_good" ST_LOCK=0
 
   run_pf() {
+    # shellcheck disable=SC2030 # fixture isolation is the point: HOME/PATH are subshell-scoped on purpose; results return via stdout and exit status
     (
       HOME="$ST_HOME"
       PATH="$ST_PATH"
@@ -773,8 +775,10 @@ EOF
   fi
 
   # (b) Stub df reporting < 4 GiB free under $HOME fails closed on disk.
+  # shellcheck disable=SC2031 # composes the fixture PATH from this process's real PATH; the runners' subshell isolation is deliberate
   ST_PATH="$lowbin:$goodbin:$PATH"
   expect_pf_fail preflight-low-disk "INSTALL-RE: preflight FAIL: disk:"
+  # shellcheck disable=SC2031 # restores the fixture PATH composed from this process's real PATH
   ST_PATH="$goodbin:$PATH"
 
   # REQUIRED_TOOLS must equal the independent literal enumeration
@@ -812,6 +816,7 @@ EOF
       missing_fails=$((missing_fails + 1))
     fi
   done
+  # shellcheck disable=SC2031 # restores the fixture PATH composed from this process's real PATH
   ST_PATH="$goodbin:$PATH"
   if [ "$missing_fails" -eq 0 ]; then
     echo "SELF-TEST: preflight-missing-tool ok"
@@ -923,6 +928,7 @@ EOF
   local STG_HOME="$stagehome" STG_SERVE="$serve_dir" STG_TSHA="$temurin_sha" STG_GSHA="$ghidra_sha"
 
   run_stage() { # $1 = stage function name
+    # shellcheck disable=SC2030,SC2031 # fixture isolation is the point: HOME/PATH are subshell-scoped on purpose; results return via stdout and exit status
     (
       HOME="$STG_HOME"
       PATH="$stagebin:$PATH"
@@ -1217,6 +1223,7 @@ EOF
   local STG_R2HEAD="$R2_COMMIT"
 
   run_r2() { # $1 = stage function name
+    # shellcheck disable=SC2030,SC2031 # fixture isolation is the point: HOME/PATH are subshell-scoped on purpose; results return via stdout and exit status
     (
       HOME="$STG_HOME"
       PATH="$r2bin:$PATH"
@@ -1460,9 +1467,11 @@ EOF
 
   # Per-case env inputs, mutated by each case and read by run_env /
   # run_rea (bash dynamic scoping makes self_test's locals visible).
+  # shellcheck disable=SC2031 # initializes the fixture PATHs from this process's real PATH; the runners' subshell isolation is deliberate
   local ENV_HOME="$envhome" ENV_PATH="$PATH" REA_PATH="$PATH"
 
   run_env() { # $1 = env stage function name
+    # shellcheck disable=SC2030 # fixture isolation is the point: HOME/PATH are subshell-scoped on purpose; results return via stdout, exit status, and fixture files
     (
       HOME="$ENV_HOME"
       PATH="$ENV_PATH"
@@ -1472,6 +1481,7 @@ EOF
   }
 
   run_rea() {
+    # shellcheck disable=SC2030 # fixture isolation is the point: HOME/PATH are subshell-scoped on purpose; results return via stdout and exit status
     (
       HOME="$ENV_HOME"
       PATH="$REA_PATH"
@@ -1480,6 +1490,7 @@ EOF
     )
   }
 
+  # shellcheck disable=SC2031 # resets the fixture PATHs from this process's real PATH; the runners' subshell isolation is deliberate
   reset_env() {
     rm -rf "$envhome"
     mkdir -p "$envhome"
@@ -1509,6 +1520,7 @@ EOF
   out2=$(run_env install_env_block 2>&1) && rc2=0 || rc2=$?
   out="$out2" rc="$rc2"
   pass=0
+  # shellcheck disable=SC2016 # the grep patterns match the composed block's literal lines byte-for-byte
   if [ "$rc" -eq 0 ] &&
     printf '%s\n' "$out" | grep -qxF "INSTALL-RE: env ok" &&
     [ "$(count_markers '>>>')" = "1" ] &&
@@ -1603,6 +1615,7 @@ EOF
   printf '# user profile\n' >"$envhome/.profile"
   out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
   pass=0
+  # shellcheck disable=SC2016 # the grep pattern matches the composed block's literal line
   if [ "$rc" -eq 0 ] &&
     [ "$(count_markers '>>>')" = "1" ] &&
     [ "$(count_markers '<<<')" = "1" ] &&
@@ -1617,6 +1630,7 @@ EOF
   # and changes nothing (.bashrc byte-identical, no .profile created,
   # no markers added); only the mandated as-found backup appears.
   reset_env
+  # shellcheck disable=SC2016 # fixture file content: a hand-written .bashrc whose literal $-exports are the fixture
   cat >"$envhome/.bashrc" <<'EOF'
 # hand-installed bench
 export JAVA_HOME="$HOME/opt/jdk-25.0.4.1+1"
@@ -1692,6 +1706,7 @@ EOF
   out="$out2" rc="$rc2"
   marker_line=$(grep -n -xF '# >>> re-runtime >>>' "$envhome/.bashrc" | cut -d: -f1)
   guard_line=$(grep -n -xF "case \$- in" "$envhome/.bashrc" | cut -d: -f1)
+  # shellcheck disable=SC2016 # the single-quoted string is a program for the child bash; its $-expressions must expand there, not here
   reach=$(env -i HOME="$envhome" /bin/bash -c '. "$HOME/.bashrc" >/dev/null 2>&1; printf %s "${JAVA_HOME:-}"')
   pass=0
   if [ "$rc" -eq 0 ] &&
@@ -1761,6 +1776,7 @@ EOF
   reset_env
   out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
   pass=0
+  # shellcheck disable=SC2016 # the grep pattern matches the composed block's literal line byte-for-byte
   if [ "$rc" -eq 0 ] &&
     [ "$(count_markers '>>>')" = "1" ] &&
     [ "$(count_markers '<<<')" = "1" ] &&
@@ -1782,6 +1798,7 @@ EOF
 
   # assert_rea with stub node/npx present prints the ok line naming
   # the pinned invocation and recording the node version.
+  # shellcheck disable=SC2031 # composes the fixture PATH from this process's real PATH; the runners' subshell isolation is deliberate
   REA_PATH="$envbin:$PATH"
   out=$(run_rea 2>&1) && rc=0 || rc=$?
   pass=0
@@ -1791,6 +1808,7 @@ EOF
     pass=1
   fi
   report_stage rea-ok-with-node "$pass"
+  # shellcheck disable=SC2031 # restores the fixture PATH composed from this process's real PATH
   REA_PATH="$PATH"
 
   return "$fails"
@@ -1861,6 +1879,7 @@ main() {
     if [ "$state" != "skipped" ]; then
       fail verify "$component failed verification after a fresh install this run"
     fi
+    # shellcheck disable=SC2031 # $HOME here is the installer's real home; the subshell assignment shellcheck pairs it with is self-test fixture isolation, which never runs in this mode
     case "$component" in
     temurin)
       rm -rf "$HOME/opt/jdk-$TEMURIN_VERSION"
