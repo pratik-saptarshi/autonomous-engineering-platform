@@ -183,8 +183,40 @@ def _paragraph_blocks(text):
     return blocks
 
 
+def _standards_maps(block):
+    """Yield (offset, pairs, malformed) per standards-map-shaped group.
+
+    A brace group is standards-map-shaped when every key is a
+    reviewer-name token and every value is a single token (no
+    whitespace): standards maps map reviewer names to standard
+    identifiers. Groups whose values are prose sentences (e.g.
+    gate-question JSON) are not standards maps and are ignored.
+    Within a shaped group, ``malformed`` holds the (key, value) pairs
+    whose value is not a valid standard identifier; the group still
+    counts as a map — a malformed value is a finding, never a reason
+    to discard the whole group.
+    """
+    for match in re.finditer(r"\{[^{}]*\}", block):
+        pairs = MAP_PAIR_RE.findall(match.group(0))
+        if not pairs:
+            continue
+        if not all(NAME_TOKEN_RE.match(key) for key, _ in pairs):
+            continue
+        if any(any(ch.isspace() for ch in value) for _, value in pairs):
+            continue
+        malformed = [(key, value) for key, value in pairs
+                     if not STANDARD_NAME_RE.match(value)]
+        yield match.start(), pairs, malformed
+
+
 def check_standards_coverage(root, bundle, findings):
-    """Rule (c): egm-review call-site standards maps cover their reviewers."""
+    """Rule (c): egm-review call-site standards maps cover their reviewers.
+
+    Coverage is judged per call site: within a paragraph block, each
+    reviewer bracket list opens a call site, and only the standards
+    maps that follow it (up to the next reviewer list) count toward
+    its coverage — maps are never pooled across call sites.
+    """
     review_file = root / "egm-review" / "SKILL.md"
     if not review_file.is_file():
         findings.append("egm-review: missing SKILL.md")
@@ -192,37 +224,41 @@ def check_standards_coverage(root, bundle, findings):
     standards_dir = bundle / "resources" / "document_standards"
     text = review_file.read_text(encoding="utf-8")
     for start, block in _paragraph_blocks(text):
-        maps = []
-        for brace in re.findall(r"\{[^{}]*\}", block):
-            pairs = MAP_PAIR_RE.findall(brace)
-            # A standards map maps reviewer names to standard shortnames;
-            # brace groups whose values are prose (e.g. gate-question
-            # JSON) are not standards maps.
-            if pairs and all(STANDARD_NAME_RE.match(value)
-                             for _, value in pairs):
-                maps.append(dict(pairs))
-        if not maps:
-            continue
-        reviewers = []
-        for bracket in BRACKET_LIST_RE.findall(block):
-            tokens = [token.strip() for token in bracket.split(",")]
-            if tokens and all(NAME_TOKEN_RE.match(t) for t in tokens):
-                reviewers.extend(tokens)
-        covered = set()
-        for standards_map in maps:
-            covered.update(standards_map)
-            for standard in standards_map.values():
+        maps = list(_standards_maps(block))
+        for offset, pairs, malformed in maps:
+            line = start + block[:offset].count("\n")
+            malformed_pairs = set(malformed)
+            for key, value in malformed:
+                findings.append(
+                    f"egm-review/SKILL.md:{line}: standard name "
+                    f"{value!r} for reviewer {key!r} is malformed "
+                    f"(expected a kebab-case standard identifier)")
+            for key, standard in pairs:
+                if (key, standard) in malformed_pairs:
+                    continue
                 if not (standards_dir / f"{standard}.md").is_file():
                     findings.append(
-                        f"egm-review/SKILL.md:{start}: standard "
+                        f"egm-review/SKILL.md:{line}: standard "
                         f"{standard!r} has no file in "
                         f"resources/document_standards/")
-        for reviewer in reviewers:
-            if reviewer not in covered:
-                findings.append(
-                    f"egm-review/SKILL.md:{start}: reviewer "
-                    f"{reviewer!r} has no entry in the call site's "
-                    f"standards map")
+        sites = []
+        for match in BRACKET_LIST_RE.finditer(block):
+            tokens = [token.strip() for token in match.group(1).split(",")]
+            if tokens and all(NAME_TOKEN_RE.match(t) for t in tokens):
+                sites.append((match.start(), tokens))
+        for idx, (offset, tokens) in enumerate(sites):
+            end = sites[idx + 1][0] if idx + 1 < len(sites) else len(block)
+            covered = set()
+            for map_offset, pairs, _malformed in maps:
+                if offset <= map_offset < end:
+                    covered.update(key for key, _ in pairs)
+            line = start + block[:offset].count("\n")
+            for reviewer in tokens:
+                if reviewer not in covered:
+                    findings.append(
+                        f"egm-review/SKILL.md:{line}: reviewer "
+                        f"{reviewer!r} has no entry in the call site's "
+                        f"standards map")
 
 
 def main(argv=None):

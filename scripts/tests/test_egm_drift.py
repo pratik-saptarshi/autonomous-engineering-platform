@@ -136,6 +136,38 @@ class EgmDriftTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("has no file in", result.stdout)
 
+    def test_pooled_block_omission_fails(self):
+        # Two call sites in ONE paragraph block (no blank line between
+        # them): the second site's map omits egm-beta, which the first
+        # site's map covers. Pooling the block's maps — the old rule
+        # (c) behaviour — would mask the omission.
+        review_path = self.skills / "egm-review" / "SKILL.md"
+        review_path.write_text(
+            review_path.read_text(encoding="utf-8").replace(
+                "Invoke with reviewers `[egm-alpha, egm-beta]`, standards "
+                '`{"egm-alpha": "std-one", "egm-beta": "std-one"}`.',
+                "Invoke `[egm-alpha, egm-beta]`, standards "
+                '`{"egm-alpha": "std-one", "egm-beta": "std-one"}`; '
+                "invoke again `[egm-alpha, egm-beta]`, standards "
+                '`{"egm-alpha": "std-one"}`.'),
+            encoding="utf-8")
+        result = self.run_check()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("no entry in the call site's standards map",
+                      result.stdout)
+
+    def test_malformed_standard_name_fails(self):
+        # A snake_case standard name is the natural drift shape; the
+        # old rule (c) discarded the whole map as prose and passed.
+        review_path = self.skills / "egm-review" / "SKILL.md"
+        review_path.write_text(
+            review_path.read_text(encoding="utf-8").replace(
+                '"egm-beta": "std-one"', '"egm-beta": "std_one"'),
+            encoding="utf-8")
+        result = self.run_check()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("is malformed", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
