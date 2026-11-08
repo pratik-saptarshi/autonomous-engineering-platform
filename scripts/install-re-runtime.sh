@@ -16,8 +16,8 @@
 # Run with --self-test to execute the stub-based negative tests (each
 # prints "SELF-TEST: <case> ok"). `--self-test --offline` runs the same
 # fully self-contained stub cases, so it passes on a stock CI runner.
-# --dry-run runs pins + preflight only (no lock, no writes) until Task 5
-# gives it its plan-lines semantics.
+# --dry-run runs pins + preflight only (no lock, no writes) and prints
+# the INSTALL-RE: plan lines for the current probe state.
 #
 # Pin bumps and rollback: a bump updates the pin block below in a reviewed
 # PR, with dual-source evidence for the new value (local sha256sum over
@@ -53,6 +53,12 @@ REQUIRED_TOOLS=(curl git gcc make unzip sha256sum tar pkg-config flock df)
 
 OFFLINE=0
 DRY_RUN=0
+
+# Set by install_env_block: "ok" after a written block, "skip" when the
+# adoption guard fired (unmarked RE exports). main's verify rebuild
+# cycle reads it to tell a retryable env failure from the SKIP state,
+# which is terminal for the run (manual adoption).
+ENV_OUTCOME=""
 
 fail() { # $1 = check name, $2 = reason
   echo "INSTALL-RE: $1 FAIL: $2"
@@ -315,6 +321,7 @@ EOF
 }
 
 install_env_block() {
+  ENV_OUTCOME=""
   local bashrc="$HOME/.bashrc"
   local bak="$HOME/.bashrc.install-re-runtime.bak"
   local tmp="$HOME/.bashrc.install-re-runtime.tmp"
@@ -390,6 +397,7 @@ install_env_block() {
   # step, not this stage's.
   if [ "$unmarked" -eq 1 ]; then
     echo "INSTALL-RE: env SKIP: unmarked RE exports present — manual adoption required"
+    ENV_OUTCOME="skip"
     return 0
   fi
 
@@ -429,6 +437,7 @@ install_env_block() {
   } >"$tmp" || fail env "cannot compose new .bashrc in $tmp"
   sync "$tmp" || fail env "cannot fsync $tmp"
   mv "$tmp" "$bashrc" || fail env "cannot install new .bashrc over $bashrc"
+  ENV_OUTCOME="ok"
   ok env
 }
 
@@ -444,6 +453,143 @@ assert_rea() {
   # never installs Node.
   echo "INSTALL-RE: rea SKIP: node/npx not found — REA unavailable; this script does not install Node"
   return 0
+}
+
+# Set by verify_all: the component a failed check belongs to
+# (temurin|ghidra|radare2|env), read by main's rebuild cycle.
+VERIFY_FAILED_COMPONENT=""
+
+export_bench_env() {
+  # verify_all exports the bench environment into its own process:
+  # writing the .bashrc block does not mutate the running shell, and
+  # without this a healthy bench fails verification (analyzeHeadless
+  # in a non-login invocation finds no Java).
+  export JAVA_HOME="$HOME/opt/jdk-$TEMURIN_VERSION"
+  export GHIDRA_INSTALL_DIR="$HOME/opt/ghidra_${GHIDRA_VERSION}_PUBLIC"
+  export PATH="$JAVA_HOME/bin:$GHIDRA_INSTALL_DIR/support:$HOME/opt/radare2/bin:$PATH"
+  export LD_LIBRARY_PATH="$HOME/opt/radare2/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+}
+
+verify_temurin() {
+  local out
+  out=$(java -version 2>&1) || true
+  case "$out" in
+  *"${TEMURIN_VERSION%%+*}"*) return 0 ;;
+  esac
+  echo "INSTALL-RE: verify FAIL: java -version does not print ${TEMURIN_VERSION%%+*} (temurin)"
+  return 1
+}
+
+verify_ghidra() {
+  local out
+  # Output-based by contract: analyzeHeadless with no arguments exits
+  # 1 while printing the usage, so the exit code is ignored and only
+  # the output decides. MAXMEM=1G caps the headless heap so the
+  # verification boot cannot OOM against the VM's memory balloon.
+  out=$(MAXMEM=1G analyzeHeadless 2>&1) || true
+  case "$out" in
+  *"Headless Analyzer"*) return 0 ;;
+  esac
+  echo "INSTALL-RE: verify FAIL: analyzeHeadless output does not contain the Headless Analyzer usage text (ghidra)"
+  return 1
+}
+
+verify_radare2() {
+  local out scratch rc
+  out=$(r2 -v 2>&1) || true
+  case "$out" in
+  *"$R2_VERSION"*) ;;
+  *)
+    echo "INSTALL-RE: verify FAIL: r2 -v does not print $R2_VERSION (radare2)"
+    return 1
+    ;;
+  esac
+  out=$(rabin2 -v 2>&1) || true
+  case "$out" in
+  *"$R2_VERSION"*) ;;
+  *)
+    echo "INSTALL-RE: verify FAIL: rabin2 -v does not print $R2_VERSION (radare2)"
+    return 1
+    ;;
+  esac
+  out=$(rabin2 -I /bin/ls 2>&1) || true
+  case "$out" in
+  *"ELF64"*) ;;
+  *)
+    echo "INSTALL-RE: verify FAIL: rabin2 -I /bin/ls does not identify ELF64 (radare2)"
+    return 1
+    ;;
+  esac
+  # radiff2 on two identical files is clean: exit 0, no output. The
+  # scratch pair is this script's only /tmp use (test scratch).
+  scratch=$(mktemp -d)
+  printf 'install-re-runtime verify fixture\n' >"$scratch/a"
+  printf 'install-re-runtime verify fixture\n' >"$scratch/b"
+  out=$(radiff2 "$scratch/a" "$scratch/b" 2>&1) && rc=0 || rc=$?
+  rm -rf "$scratch"
+  if [ "$rc" -ne 0 ] || [ -n "$out" ]; then
+    echo "INSTALL-RE: verify FAIL: radiff2 on two identical files is not clean (radare2)"
+    return 1
+  fi
+  return 0
+}
+
+verify_env() {
+  local out
+  # A fresh login shell must resolve the bench tools from PATH through
+  # the env stage's wiring alone, so the environment is scrubbed
+  # (env -i) first: paths inherited from this process's own exports
+  # would make the check pass even with a broken .bashrc block. The
+  # real /bin/bash -lc is used — never a PATH-resolved bash.
+  out=$(env -i HOME="$HOME" /bin/bash -lc 'command -v java; command -v analyzeHeadless; command -v r2' 2>&1) || true
+  if printf '%s\n' "$out" | grep -qxF "$HOME/opt/jdk-$TEMURIN_VERSION/bin/java" &&
+    printf '%s\n' "$out" | grep -qxF "$HOME/opt/ghidra_${GHIDRA_VERSION}_PUBLIC/support/analyzeHeadless" &&
+    printf '%s\n' "$out" | grep -qxF "$HOME/opt/radare2/bin/r2"; then
+    return 0
+  fi
+  echo "INSTALL-RE: verify FAIL: bash -lc does not resolve java, analyzeHeadless, and r2 from the bench PATH (env)"
+  return 1
+}
+
+verify_all() {
+  export_bench_env
+  VERIFY_FAILED_COMPONENT=""
+  verify_temurin || {
+    VERIFY_FAILED_COMPONENT="temurin"
+    return 1
+  }
+  verify_ghidra || {
+    VERIFY_FAILED_COMPONENT="ghidra"
+    return 1
+  }
+  verify_radare2 || {
+    VERIFY_FAILED_COMPONENT="radare2"
+    return 1
+  }
+  verify_env || {
+    VERIFY_FAILED_COMPONENT="env"
+    return 1
+  }
+  ok verify
+  return 0
+}
+
+print_plan() {
+  if probe_temurin; then
+    echo "INSTALL-RE: plan temurin: already installed (skip)"
+  else
+    echo "INSTALL-RE: plan temurin: install Temurin JDK $TEMURIN_VERSION"
+  fi
+  if probe_ghidra; then
+    echo "INSTALL-RE: plan ghidra: already installed (skip)"
+  else
+    echo "INSTALL-RE: plan ghidra: install Ghidra $GHIDRA_VERSION"
+  fi
+  if probe_radare2; then
+    echo "INSTALL-RE: plan radare2: already installed (skip)"
+  else
+    echo "INSTALL-RE: plan radare2: install radare2 $R2_VERSION (source build)"
+  fi
 }
 
 self_test() {
@@ -1331,14 +1477,83 @@ EOF
 main() {
   assert_pins
   if [ "$DRY_RUN" -eq 1 ]; then
-    # Dry runs short-circuit before the lock and create nothing; the full
-    # plan-lines semantics land in Task 5. Until then the skeleton stays
-    # fail-closed.
+    # Dry runs short-circuit before the lock and create nothing: pins +
+    # preflight, then the plan lines for the current probe state.
     preflight
-    fail main "stages not yet implemented"
+    print_plan
+    return 0
   fi
   preflight --with-lock
-  fail main "stages not yet implemented"
+
+  # Record each component stage's outcome (skipped on a probe pass, or
+  # fresh) before running it: the verify rebuild cycle below treats
+  # the two differently.
+  local temurin_state=fresh ghidra_state=fresh radare2_state=fresh
+  if probe_temurin; then
+    temurin_state=skipped
+  fi
+  install_temurin
+  if probe_ghidra; then
+    ghidra_state=skipped
+  fi
+  install_ghidra
+  if probe_radare2; then
+    radare2_state=skipped
+  fi
+  install_radare2
+  install_env_block
+  assert_rea
+
+  # Rebuild cycle: a verify failure on a component whose stage skipped
+  # is a recovery trigger — remove its directory, re-run its install
+  # stage once, and re-verify (verify_all re-runs, so the rebuilt
+  # component's checks run again in context). A failure on a component
+  # installed fresh this run exits 1 immediately (its re-probe already
+  # failed-closed), as does any second failure. An env-attributed
+  # failure re-runs install_env_block once — unless it answers with
+  # its SKIP (unmarked exports) or its case-(f) damage refusal, which
+  # exit 1 immediately, naming the state for manual adoption/repair
+  # (the refusal is install_env_block's own fail, which exits).
+  local component state rebuilt=" "
+  while ! verify_all; do
+    component="$VERIFY_FAILED_COMPONENT"
+    case "$rebuilt" in
+    *" $component "*)
+      fail verify "$component still failing after one rebuild"
+      ;;
+    esac
+    rebuilt="$rebuilt$component "
+    if [ "$component" = "env" ]; then
+      install_env_block
+      if [ "$ENV_OUTCOME" = "skip" ]; then
+        fail verify "env stage SKIP: unmarked RE exports present — manual adoption required"
+      fi
+      continue
+    fi
+    case "$component" in
+    temurin) state="$temurin_state" ;;
+    ghidra) state="$ghidra_state" ;;
+    radare2) state="$radare2_state" ;;
+    *) fail verify "unattributed verify failure" ;;
+    esac
+    if [ "$state" != "skipped" ]; then
+      fail verify "$component failed verification after a fresh install this run"
+    fi
+    case "$component" in
+    temurin)
+      rm -rf "$HOME/opt/jdk-$TEMURIN_VERSION"
+      install_temurin
+      ;;
+    ghidra)
+      rm -rf "$HOME/opt/ghidra_${GHIDRA_VERSION}_PUBLIC"
+      install_ghidra
+      ;;
+    radare2)
+      rm -rf "$HOME/opt/radare2"
+      install_radare2
+      ;;
+    esac
+  done
 }
 
 case "${1:-}" in

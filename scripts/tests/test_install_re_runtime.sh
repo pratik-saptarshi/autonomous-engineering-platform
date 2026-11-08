@@ -1,0 +1,320 @@
+#!/usr/bin/env bash
+# test_install_re_runtime.sh — behavioral tests for
+# scripts/install-re-runtime.sh.
+#
+# Every case runs the real installer against a fixture HOME with stub
+# tools (curl/git/make/sha256sum) on the fixture PATH, covering what
+# the script's stub-based --self-test cannot: end-to-end stage
+# sequencing, --dry-run plan lines, and verify_all.
+#
+# Two rules are load-bearing (wringer amendment):
+# - The script under test is launched by absolute path
+#   (/bin/bash <script>), never via a stub-PATH bash — a stub bash
+#   would intercept the launch itself.
+# - No bash stub is ever placed on the fixture PATH, because a stubbed
+#   `bash -lc` proves only that the words were invoked. Case (c) is
+#   proven through the real /bin/bash -lc against the fixture HOME.
+#
+# Checksum seam: the sha256sum stub passes `-c` verification and
+# delegates everything else to the real tool. The pin hashes cover the
+# real upstream artifacts, which fixture tarballs cannot match;
+# checksum integrity itself is covered by the script's --self-test
+# mismatch/truncation cases, and this harness proves wiring.
+#
+# Fixture HOMEs live under the real $HOME, not /tmp: preflight
+# requires >= 4 GiB free under $HOME and /tmp is a 512 MiB tmpfs.
+set -uo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+SCRIPT="$ROOT/scripts/install-re-runtime.sh"
+SB="$(mktemp -d "$HOME/.test-install-re-runtime.XXXXXX")"
+FAILURES=0
+
+note() { echo "# $*"; }
+ok() { echo "ok - $*"; }
+fail() {
+  echo "FAIL - $*"
+  FAILURES=$((FAILURES + 1))
+}
+check() { # check <description> <command...>
+  local desc="$1"
+  shift
+  if "$@" >/dev/null 2>&1; then ok "$desc"; else fail "$desc"; fi
+}
+
+file_sha() { sha256sum "$1" | awk '{print $1}'; }
+
+# Pinned values the fixture trees must print, read from the script's
+# own pin block so a pin bump updates the fixtures with it.
+pin_value() { grep "^$1=" "$SCRIPT" | head -1 | cut -d'"' -f2; }
+TEMURIN_VERSION="$(pin_value TEMURIN_VERSION)"
+GHIDRA_VERSION="$(pin_value GHIDRA_VERSION)"
+R2_VERSION="$(pin_value R2_VERSION)"
+R2_COMMIT="$(pin_value R2_COMMIT)"
+TEMURIN_TARBALL="$(pin_value TEMURIN_TARBALL)"
+GHIDRA_ZIP="$(pin_value GHIDRA_ZIP)"
+TEMURIN_SHORT="${TEMURIN_VERSION%%+*}"
+
+# --- Stub bin: curl/git/make/sha256sum. Never a bash stub. ---
+mkdir -p "$SB/bin"
+cat >"$SB/bin/curl" <<'EOF'
+#!/bin/bash
+[ -n "${HOME:-}" ] && printf 'curl %s\n' "$*" >>"$HOME/.stub-calls.log"
+out=""
+url=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+  -o)
+    out="$2"
+    shift 2
+    ;;
+  -*)
+    shift
+    ;;
+  *)
+    url="$1"
+    shift
+    ;;
+  esac
+done
+src="${STUB_SERVE_DIR:?}/${url##*/}"
+[ -f "$src" ] || exit 22
+cp "$src" "$out"
+EOF
+cat >"$SB/bin/git" <<'EOF'
+#!/bin/bash
+[ -n "${HOME:-}" ] && printf 'git %s\n' "$*" >>"$HOME/.stub-calls.log"
+if [ "${1:-}" = "clone" ]; then
+  dest="${!#}"
+  mkdir -p "$dest"
+  printf '#!/bin/bash\nexit 0\n' >"$dest/configure"
+  chmod +x "$dest/configure"
+  : >"$dest/.stub-git-ok"
+  exit 0
+fi
+dir="$2"
+shift 2
+case "${1:-}" in
+rev-parse)
+  [ -f "$dir/.stub-git-ok" ] || exit 128
+  if [ "${2:-}" = "HEAD" ]; then
+    printf '%s\n' "${STUB_R2_HEAD:?}"
+  fi
+  ;;
+checkout)
+  [ -f "$dir/.stub-git-ok" ] || exit 128
+  ;;
+*)
+  exit 0
+  ;;
+esac
+EOF
+cat >"$SB/bin/make" <<'EOF'
+#!/bin/bash
+[ -n "${HOME:-}" ] && printf 'make %s\n' "$*" >>"$HOME/.stub-calls.log"
+case " $* " in
+*" install "*)
+  mkdir -p "$HOME/opt"
+  cp -r "${STUB_R2_TREE:?}" "$HOME/opt/radare2"
+  ;;
+esac
+exit 0
+EOF
+cat >"$SB/bin/sha256sum" <<'EOF'
+#!/bin/bash
+# Fixture seam (see header): `-c` verification passes; every other
+# invocation delegates to the real sha256sum.
+if [ "${1:-}" = "-c" ]; then
+  cat >/dev/null 2>&1 || true
+  exit 0
+fi
+exec /usr/bin/sha256sum "$@"
+EOF
+chmod +x "$SB/bin"/*
+
+# --- Fixture install trees (the stub tools print the pinned versions). ---
+JDK_SRC="$SB/src/jdk-$TEMURIN_VERSION"
+GHIDRA_SRC="$SB/src/ghidra_${GHIDRA_VERSION}_PUBLIC"
+GHIDRA_BAD_SRC="$SB/src-bad/ghidra_${GHIDRA_VERSION}_PUBLIC"
+R2_TREE="$SB/src/radare2-tree"
+mkdir -p "$JDK_SRC/bin" "$JDK_SRC/lib/security" \
+  "$GHIDRA_SRC/support" "$GHIDRA_BAD_SRC/support" \
+  "$R2_TREE/bin" "$R2_TREE/lib" \
+  "$R2_TREE/share/radare2/$R2_VERSION/fcnsign" \
+  "$R2_TREE/share/radare2/$R2_VERSION/syscall"
+cat >"$JDK_SRC/bin/java" <<EOF
+#!/bin/bash
+echo 'openjdk version "$TEMURIN_SHORT" 2025-10-21 LTS' >&2
+echo 'OpenJDK Runtime Environment Temurin-$TEMURIN_VERSION (build $TEMURIN_SHORT+1-LTS)' >&2
+exit 0
+EOF
+printf '#!/bin/bash\nexit 0\n' >"$JDK_SRC/bin/javac"
+printf 'fixture trust store\n' >"$JDK_SRC/lib/security/cacerts"
+# The analyzeHeadless stub mirrors the real tool's no-argument shape:
+# it prints the Headless Analyzer usage text and exits 1.
+cat >"$GHIDRA_SRC/support/analyzeHeadless" <<'EOF'
+#!/bin/bash
+echo 'Headless Analyzer Usage: analyzeHeadless <project_location> <project_name> [-import <directory|file>+] [options]'
+exit 1
+EOF
+# The bad Ghidra stub passes the completeness probe (file present and
+# executable, launch.sh present) but prints no usage text, so only
+# verify_all can catch it — that divergence drives cases (d) and (e).
+cat >"$GHIDRA_BAD_SRC/support/analyzeHeadless" <<'EOF'
+#!/bin/bash
+echo 'stub headless tool: no usage text here'
+exit 1
+EOF
+printf '# fixture launch script\n' >"$GHIDRA_SRC/support/launch.sh"
+printf '# fixture launch script\n' >"$GHIDRA_BAD_SRC/support/launch.sh"
+# The fixture r2 exits 1 unless LD_LIBRARY_PATH contains the install
+# lib dir — mirroring the real tools' libr_util.so failure.
+cat >"$R2_TREE/bin/r2" <<EOF
+#!/bin/bash
+case ":\${LD_LIBRARY_PATH:-}:" in
+*":\$HOME/opt/radare2/lib:"*) ;;
+*) exit 1 ;;
+esac
+echo 'radare2 $R2_VERSION +1 abi:174 @ linux-x86_64'
+EOF
+cat >"$R2_TREE/bin/rabin2" <<EOF
+#!/bin/bash
+if [ "\${1:-}" = "-v" ]; then
+  echo 'rabin2 $R2_VERSION +1 abi:174 @ linux-x86_64'
+  exit 0
+fi
+if [ "\${1:-}" = "-I" ]; then
+  printf 'arch     ELF64 x86_64\nbits     64\nclass    ELF64\n'
+  exit 0
+fi
+exit 0
+EOF
+printf '#!/bin/bash\nexit 0\n' >"$R2_TREE/bin/radiff2"
+printf '#!/bin/bash\nexit 0\n' >"$R2_TREE/bin/r2sdb"
+printf 'fixture libr_util\n' >"$R2_TREE/lib/libr_util.so"
+printf 'fixture fcnsign data\n' >"$R2_TREE/share/radare2/$R2_VERSION/fcnsign/fixture.sdb"
+printf 'fixture syscall data\n' >"$R2_TREE/share/radare2/$R2_VERSION/syscall/fixture.sdb"
+chmod +x "$JDK_SRC/bin/java" "$JDK_SRC/bin/javac" \
+  "$GHIDRA_SRC/support/analyzeHeadless" "$GHIDRA_BAD_SRC/support/analyzeHeadless" \
+  "$R2_TREE/bin/r2" "$R2_TREE/bin/rabin2" "$R2_TREE/bin/radiff2" "$R2_TREE/bin/r2sdb"
+
+# --- Fixture archives, served by the stub curl. ---
+SERVE_DIR="$SB/serve"
+SERVE_BAD_DIR="$SB/serve-bad"
+mkdir -p "$SERVE_DIR" "$SERVE_BAD_DIR"
+# The tarball records root:root ownership explicitly: this suite runs
+# as uid 0 on an idmapped home volume whose files read back as
+# 0:65534, and tar-as-root (--same-owner by default) cannot chown to
+# gid 65534 there, which would fail the extraction the harness exists
+# to exercise.
+tar --owner=0 --group=0 --numeric-owner -czf "$SERVE_DIR/$TEMURIN_TARBALL" -C "$SB/src" "jdk-$TEMURIN_VERSION"
+(cd "$SB/src" && zip -qr "$SERVE_DIR/$GHIDRA_ZIP" "ghidra_${GHIDRA_VERSION}_PUBLIC")
+cp "$SERVE_DIR/$TEMURIN_TARBALL" "$SERVE_BAD_DIR/$TEMURIN_TARBALL"
+(cd "$SB/src-bad" && zip -qr "$SERVE_BAD_DIR/$GHIDRA_ZIP" "ghidra_${GHIDRA_VERSION}_PUBLIC")
+
+printf 'MemTotal:        8000000 kB\nMemAvailable:    1048576 kB\n' >"$SB/meminfo-good"
+
+# --- Runner: absolute-path launch, fixture HOME, stub PATH. ---
+FH=""
+OUT=""
+RC=0
+new_fixture() {
+  FH="$SB/case-$1/home"
+  mkdir -p "$FH"
+}
+run_installer() { # run_installer <serve-dir> [script args...]
+  local serve_dir="$1"
+  shift
+  OUT="$FH/out.log"
+  env HOME="$FH" PATH="$SB/bin:$PATH" \
+    INSTALL_RE_MEMINFO_FILE="$SB/meminfo-good" \
+    STUB_SERVE_DIR="$serve_dir" STUB_R2_HEAD="$R2_COMMIT" STUB_R2_TREE="$R2_TREE" \
+    /bin/bash "$SCRIPT" "$@" >"$OUT" 2>&1
+  RC=$?
+}
+stub_calls() { grep -c "^$1 " "$FH/.stub-calls.log" 2>/dev/null || true; }
+
+# ================= Cases =================
+
+note "case (a): --dry-run on an empty fixture HOME prints install plans, writes nothing"
+new_fixture a
+run_installer "$SERVE_DIR" --dry-run
+[ "$RC" -eq 0 ] && ok "(a) exit 0" || fail "(a) exit 0 (got $RC)"
+for comp in temurin ghidra radare2; do
+  check "(a) plan line: $comp install" grep -qF "INSTALL-RE: plan $comp: install" "$OUT"
+done
+check "(a) no opt/ created" test ! -e "$FH/opt"
+check "(a) no .bashrc created" test ! -e "$FH/.bashrc"
+check "(a) no lock taken" test ! -e "$FH/.install-re-runtime.lock"
+
+note "case (b): --dry-run with probe-passing stubs prints already installed, writes nothing"
+new_fixture b
+mkdir -p "$FH/opt"
+cp -r "$JDK_SRC" "$FH/opt/"
+cp -r "$GHIDRA_SRC" "$FH/opt/"
+cp -r "$R2_TREE" "$FH/opt/radare2"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+BASHRC_SHA_BEFORE="$(file_sha "$FH/.bashrc")"
+run_installer "$SERVE_DIR" --dry-run
+[ "$RC" -eq 0 ] && ok "(b) exit 0" || fail "(b) exit 0 (got $RC)"
+for comp in temurin ghidra radare2; do
+  check "(b) plan line: $comp already installed" grep -qF "INSTALL-RE: plan $comp: already installed" "$OUT"
+done
+check "(b) .bashrc byte-identical" test "$(file_sha "$FH/.bashrc")" = "$BASHRC_SHA_BEFORE"
+check "(b) no env backup written" test ! -e "$FH/.bashrc.install-re-runtime.bak"
+check "(b) no .profile created" test ! -e "$FH/.profile"
+check "(b) no lock taken" test ! -e "$FH/.install-re-runtime.lock"
+check "(b) nothing downloaded" test ! -e "$FH/.stub-calls.log"
+
+note "case (c): full stubbed run — verify_all's login-shell check runs via the real /bin/bash -lc"
+new_fixture c
+run_installer "$SERVE_DIR"
+[ "$RC" -eq 0 ] && ok "(c) exit 0" || fail "(c) exit 0 (got $RC)"
+for line in "INSTALL-RE: temurin ok" "INSTALL-RE: ghidra ok" "INSTALL-RE: radare2 ok" "INSTALL-RE: env ok" "INSTALL-RE: verify ok"; do
+  check "(c) stage line: $line" grep -qxF "$line" "$OUT"
+done
+check "(c) verify ok is the last line" test "$(tail -1 "$OUT")" = "INSTALL-RE: verify ok"
+check "(c) temurin tarball downloaded" test "$(stub_calls curl)" -ge 2
+check "(c) radare2 cloned via stub git" grep -qF "git clone" "$FH/.stub-calls.log"
+check "(c) radare2 built via stub make install" grep -qF "make install" "$FH/.stub-calls.log"
+check "(c) env block written" grep -qxF "# >>> re-runtime >>>" "$FH/.bashrc"
+check "(c) .profile created" test -f "$FH/.profile"
+# Independent proof, outside the script: the real login shell, with a
+# scrubbed environment, resolves the bench tools from the fixture
+# .profile/.bashrc wiring alone.
+LOGIN_PATHS="$(env -i HOME="$FH" /bin/bash -lc 'command -v java; command -v analyzeHeadless; command -v r2' 2>/dev/null)"
+check "(c) login shell resolves java" grep -qxF "$FH/opt/jdk-$TEMURIN_VERSION/bin/java" <<<"$LOGIN_PATHS"
+check "(c) login shell resolves analyzeHeadless" grep -qxF "$FH/opt/ghidra_${GHIDRA_VERSION}_PUBLIC/support/analyzeHeadless" <<<"$LOGIN_PATHS"
+check "(c) login shell resolves r2" grep -qxF "$FH/opt/radare2/bin/r2" <<<"$LOGIN_PATHS"
+
+note "case (d): skipped-but-broken Ghidra is rebuilt once by the verify cycle"
+new_fixture d
+mkdir -p "$FH/opt"
+cp -r "$JDK_SRC" "$FH/opt/"
+cp -r "$GHIDRA_BAD_SRC" "$FH/opt/"
+cp -r "$R2_TREE" "$FH/opt/radare2"
+run_installer "$SERVE_DIR"
+[ "$RC" -eq 0 ] && ok "(d) exit 0" || fail "(d) exit 0 (got $RC)"
+check "(d) first verify failed on ghidra" grep -qF "INSTALL-RE: verify FAIL:" "$OUT"
+check "(d) ghidra reinstalled fresh (not skipped)" grep -qxF "INSTALL-RE: ghidra ok" "$OUT"
+check "(d) final verify ok" test "$(tail -1 "$OUT")" = "INSTALL-RE: verify ok"
+check "(d) rebuilt analyzeHeadless prints usage" grep -qF "Headless Analyzer" "$FH/opt/ghidra_${GHIDRA_VERSION}_PUBLIC/support/analyzeHeadless"
+
+note "case (e): fresh-installed but verify-broken Ghidra exits 1 with no rebuild attempt"
+new_fixture e
+mkdir -p "$FH/opt"
+cp -r "$JDK_SRC" "$FH/opt/"
+cp -r "$R2_TREE" "$FH/opt/radare2"
+run_installer "$SERVE_BAD_DIR"
+[ "$RC" -eq 1 ] && ok "(e) exit 1" || fail "(e) exit 1 (got $RC)"
+check "(e) verify failure names ghidra" grep -qF "(ghidra)" "$OUT"
+check "(e) ghidra downloaded exactly once" test "$(grep -c "curl .*$GHIDRA_ZIP" "$FH/.stub-calls.log" 2>/dev/null || true)" = "1"
+
+echo
+if [ "$FAILURES" -eq 0 ]; then
+  echo "test_install_re_runtime: ALL PASS (sandbox $SB)"
+  rm -rf "$SB"
+  exit 0
+fi
+echo "test_install_re_runtime: $FAILURES failure(s) (sandbox kept at $SB)"
+exit 1
