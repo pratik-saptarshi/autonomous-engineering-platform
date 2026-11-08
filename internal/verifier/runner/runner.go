@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -145,8 +146,9 @@ func DiscoverCommands(repoRoot string) ([]DiscoveredCommand, error) {
 		})
 	}
 
-	// 5. make test (Makefile)
-	if fileExists(filepath.Join(repoRoot, "Makefile")) {
+	// 5. make test (Makefile with a declared test target)
+	makefilePath := filepath.Join(repoRoot, "Makefile")
+	if fileExists(makefilePath) && hasMakeTestTarget(makefilePath) {
 		cmds = append(cmds, DiscoveredCommand{
 			ID:   "make-test",
 			Name: "make",
@@ -265,6 +267,21 @@ func fileExists(path string) bool {
 		return false
 	}
 	return !info.IsDir()
+}
+
+var makeTestTargetRe = regexp.MustCompile(`(?m)^test:`)
+
+// hasMakeTestTarget reports whether the Makefile declares a test target.
+// The check is deliberately byte-parity with scripts/mechanical_verify.py,
+// which requires a line matching ^test: before scheduling make test: a
+// `test :` line (with a space) does not count, and a `test:` inside a
+// comment does — matching the Python verifier's behaviour is the point.
+func hasMakeTestTarget(makefilePath string) bool {
+	data, err := os.ReadFile(makefilePath)
+	if err != nil {
+		return false
+	}
+	return makeTestTargetRe.Match(data)
 }
 
 func hasNPMTestScript(pkgJSONPath string) bool {

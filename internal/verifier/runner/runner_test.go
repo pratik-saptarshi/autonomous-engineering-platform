@@ -50,6 +50,39 @@ func TestDiscoverCommands(t *testing.T) {
 	}
 }
 
+func TestDiscoverCommands_MakeTarget(t *testing.T) {
+	hasMakeTest := func(cmds []DiscoveredCommand) bool {
+		for _, c := range cmds {
+			if c.ID == "make-test" {
+				return true
+			}
+		}
+		return false
+	}
+
+	// (a) Makefile with only a build target: make-test must NOT be scheduled.
+	buildOnly := t.TempDir()
+	_ = os.WriteFile(filepath.Join(buildOnly, "Makefile"), []byte("build:\n\t@true\n"), 0644)
+	cmds, err := DiscoverCommands(buildOnly)
+	if err != nil {
+		t.Fatalf("DiscoverCommands failed: %v", err)
+	}
+	if hasMakeTest(cmds) {
+		t.Fatalf("expected no make-test for a build-only Makefile, got %+v", cmds)
+	}
+
+	// (b) Makefile with a test target: make-test must be scheduled.
+	withTest := t.TempDir()
+	_ = os.WriteFile(filepath.Join(withTest, "Makefile"), []byte("test:\n\t@true\n"), 0644)
+	cmds, err = DiscoverCommands(withTest)
+	if err != nil {
+		t.Fatalf("DiscoverCommands failed: %v", err)
+	}
+	if !hasMakeTest(cmds) {
+		t.Fatalf("expected make-test for a Makefile with a test target, got %+v", cmds)
+	}
+}
+
 func TestRunVerification_Pass(t *testing.T) {
 	tmpDir := t.TempDir()
 	// Create a dummy Makefile with a passing test target
