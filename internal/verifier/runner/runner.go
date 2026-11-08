@@ -33,6 +33,7 @@ type CommandReceipt struct {
 	StdoutTailSha  string `json:"stdout_tail_sha256"`
 	StderrTailSha  string `json:"stderr_tail_sha256"`
 	ExecutionProof string `json:"execution_proof,omitempty"`
+	Error          string `json:"error,omitempty"`
 }
 
 // VerificationResult summarizes the execution of all discovered verification checks.
@@ -213,14 +214,20 @@ func RunVerification(ctx context.Context, repoRoot string, minMemBytes uint64, p
 		startErr := pg.Start()
 		var exitCode int
 		var timedOut bool
+		var errText string
 
 		if startErr != nil {
+			// The command could not be launched at all. Record the
+			// attempt like any other failed check — receipt, executed
+			// count, preserved launch error — so a missing tool on the
+			// host is diagnosable from the receipts instead of leaving
+			// failed > executed with no record. Python parity:
+			// mechanical_verify.py returns a full record for a spawn
+			// failure too, with the launch error as its error text.
 			exitCode = 127
-			result.Pass = false
-			result.Failed++
+			errText = startErr.Error()
 		} else {
 			waitErr := pg.Wait()
-			cmdDuration := time.Since(cmdStart)
 
 			if cmdCtx.Err() == context.DeadlineExceeded {
 				timedOut = true
@@ -231,27 +238,29 @@ func RunVerification(ctx context.Context, repoRoot string, minMemBytes uint64, p
 					exitCode = code
 				} else {
 					exitCode = 1
+					errText = waitErr.Error()
 				}
 			}
+		}
 
-			receipt := CommandReceipt{
-				CommandID:     cmd.ID,
-				ExitCode:      exitCode,
-				TimedOut:      timedOut,
-				DurationMs:    cmdDuration.Milliseconds(),
-				StdoutTailSha: stdoutTail.Sha256Hex(),
-				StderrTailSha: stderrTail.StderrTailSha(),
-			}
+		receipt := CommandReceipt{
+			CommandID:     cmd.ID,
+			ExitCode:      exitCode,
+			TimedOut:      timedOut,
+			DurationMs:    time.Since(cmdStart).Milliseconds(),
+			StdoutTailSha: stdoutTail.Sha256Hex(),
+			StderrTailSha: stderrTail.StderrTailSha(),
+			Error:         errText,
+		}
 
-			result.Receipts = append(result.Receipts, receipt)
-			result.Executed++
+		result.Receipts = append(result.Receipts, receipt)
+		result.Executed++
 
-			if exitCode != 0 {
-				result.Pass = false
-				result.Failed++
-				cancelCmd()
-				break
-			}
+		if exitCode != 0 {
+			result.Pass = false
+			result.Failed++
+			cancelCmd()
+			break
 		}
 
 		cancelCmd()

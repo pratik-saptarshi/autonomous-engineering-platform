@@ -266,8 +266,12 @@ func runVerify(args []string) {
 		fmt.Printf("  Failed:     %d\n", res.Failed)
 		fmt.Printf("  Status:     %s\n", map[bool]string{true: "PASS", false: "FAIL"}[res.Pass])
 		for _, r := range res.Receipts {
-			fmt.Printf("    [%s] exit=%d timed_out=%v duration=%dms stdout_sha=%s\n",
+			line := fmt.Sprintf("    [%s] exit=%d timed_out=%v duration=%dms stdout_sha=%s",
 				r.CommandID, r.ExitCode, r.TimedOut, r.DurationMs, r.StdoutTailSha[:8])
+			if r.Error != "" {
+				line += fmt.Sprintf(" error=%q", r.Error)
+			}
+			fmt.Println(line)
 		}
 	}
 
