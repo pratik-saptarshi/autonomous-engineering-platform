@@ -19,12 +19,45 @@
 # --dry-run runs pins + preflight only (no lock, no writes) and prints
 # the INSTALL-RE: plan lines for the current probe state.
 #
-# Pin bumps and rollback: a bump updates the pin block below in a reviewed
-# PR, with dual-source evidence for the new value (local sha256sum over
-# the staged artifact plus the upstream-published value). The full
-# pin-bump and rollback procedure lands in Task 7 of the plan
-# (docs/plans/2026-11-07-re-runtime-install.md); this skeleton is a branch
-# state, never a releasable one.
+# Operator note
+#
+# Run: bash scripts/install-re-runtime.sh
+#   Installs (or verifies and heals) the whole bench under $HOME, then
+#   verifies it end to end; re-running on a healthy bench is a no-op.
+#   --dry-run prints the plan for the current probe state without
+#   writing anything. --self-test --offline runs the stub-based tests
+#   offline (wired into CI's script-tests job, together with the
+#   fixture harness scripts/tests/test_install_re_runtime.sh).
+#
+# Bump a pin: pin-only PR — change nothing but the pin block below.
+#   Quote dual-source checksum evidence in the PR body: the
+#   upstream-published checksum for the new artifact AND the locally
+#   computed sha256sum over the staged artifact, both verbatim. For
+#   radare2 there is no tarball checksum: resolve the release tag to
+#   the exact commit it points at and pin that commit as R2_COMMIT,
+#   quoting the resolution in the PR body the same way. Acceptance is
+#   a post-merge run of this script on this VM: the bump is not done
+#   until that run is green. Gate: the Stage 3 independent reviewer
+#   verifies a bump PR's two quoted sources against the pin block
+#   before the PR proceeds — a bump whose evidence is single-source
+#   does not pass review. There is no pin-bypass flag, by design:
+#   an empty or unverified pin aborts the run, and no option
+#   overrides that.
+#
+# Roll back: delete the install dirs individually —
+#   ~/opt/jdk-25.0.4.1+1, ~/opt/ghidra_12.1.4_PUBLIC, ~/opt/radare2 —
+#   and the script's staged artifacts in ~/opt/dist/ individually
+#   (the file named by TEMURIN_TARBALL, the file named by GHIDRA_ZIP,
+#   and the radare2-src clone): never delete ~/opt/dist wholesale, it
+#   is shared. Remove the marker block (the lines between the
+#   "# >>> re-runtime >>>" and "# <<< re-runtime <<<" markers) from
+#   ~/.bashrc. Remove
+#   ~/.profile only if the block header records "# profile:
+#   created-by-install-re-runtime" — a "pre-existing" profile is the
+#   operator's own file and stays. If the env stage's state is in
+#   doubt, the one-time as-found backup
+#   ~/.bashrc.install-re-runtime.bak may be restored over ~/.bashrc
+#   instead.
 set -euo pipefail
 
 # --- Pin block (exact values from the plan's Pin Block table) ---

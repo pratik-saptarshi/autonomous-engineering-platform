@@ -40,6 +40,8 @@ jobs:
       - run: bash scripts/lane-coord.sh --self-test
       - run: bash scripts/boot-gate.sh --self-test --offline
       - run: bash scripts/tests/test_watchdog.sh
+      - run: bash scripts/install-re-runtime.sh --self-test --offline
+      - run: bash scripts/tests/test_install_re_runtime.sh
 
   go-checks:
     runs-on: ubuntu-latest
