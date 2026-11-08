@@ -111,20 +111,32 @@ check "unit still pre-flights with aep boot" \
   grep -qF "ExecStartPre=/usr/local/bin/aep boot" "$UNIT"
 
 # --- Both install routes must create/populate that exact path. ---
-check "install.sh references the configured root" \
-  grep -qF "$ROOT_PATH" "$OUT/install.sh"
-check "install.sh clean-replaces the payload at the configured root" \
-  grep -qF "rm -rf $ROOT_PATH" "$OUT/install.sh"
-check "install.sh copies the bundle payload to the configured root" \
-  grep -qF "cp -r \"\${DIR}/verify\" $ROOT_PATH" "$OUT/install.sh"
-check "install.sh warns loudly (stderr) when make is missing" \
-  grep -q "WARNING: 'make' is not installed" "$OUT/install.sh"
-check "user-data.yaml references the configured root" \
-  grep -qF "$ROOT_PATH" "$OUT/user-data.yaml"
-check "user-data.yaml stages the payload from /tmp/aep-verify" \
-  grep -qF "cp -r /tmp/aep-verify $ROOT_PATH" "$OUT/user-data.yaml"
-check "user-data.yaml installs make (payload dependency)" \
-  grep -qF "  - make" "$OUT/user-data.yaml"
+# With an empty derived root, grep -qF "$ROOT_PATH" matches every line
+# and these checks would pass vacuously; fail each one instead.
+if [ -z "$ROOT_PATH" ]; then
+  fail "install.sh references the configured root (no root derived from the unit)"
+  fail "install.sh clean-replaces the payload at the configured root (no root derived from the unit)"
+  fail "install.sh copies the bundle payload to the configured root (no root derived from the unit)"
+  fail "install.sh warns loudly (stderr) when make is missing (no root derived from the unit)"
+  fail "user-data.yaml references the configured root (no root derived from the unit)"
+  fail "user-data.yaml stages the payload from /tmp/aep-verify (no root derived from the unit)"
+  fail "user-data.yaml installs make (payload dependency) (no root derived from the unit)"
+else
+  check "install.sh references the configured root" \
+    grep -qF "$ROOT_PATH" "$OUT/install.sh"
+  check "install.sh clean-replaces the payload at the configured root" \
+    grep -qF "rm -rf $ROOT_PATH" "$OUT/install.sh"
+  check "install.sh copies the bundle payload to the configured root" \
+    grep -qF "cp -r \"\${DIR}/verify\" $ROOT_PATH" "$OUT/install.sh"
+  check "install.sh warns loudly (stderr) when make is missing" \
+    grep -q "WARNING: 'make' is not installed" "$OUT/install.sh"
+  check "user-data.yaml references the configured root" \
+    grep -qF "$ROOT_PATH" "$OUT/user-data.yaml"
+  check "user-data.yaml stages the payload from /tmp/aep-verify" \
+    grep -qF "cp -r /tmp/aep-verify $ROOT_PATH" "$OUT/user-data.yaml"
+  check "user-data.yaml installs make (payload dependency)" \
+    grep -qF "  - make" "$OUT/user-data.yaml"
+fi
 
 # --- The bundle payload itself. ---
 PAYLOAD="$OUT/verify"
