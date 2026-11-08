@@ -69,3 +69,35 @@ func TestRunVerification_Pass(t *testing.T) {
 		t.Fatalf("expected exit code 0, got %d", res.Receipts[0].ExitCode)
 	}
 }
+
+func TestRunVerification_NonexistentRoot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "does-not-exist")
+	_, err := RunVerification(context.Background(), root, 0, 5*time.Second, 10*time.Second)
+	if err == nil {
+		t.Fatalf("expected error for nonexistent root, got nil")
+	}
+}
+
+func TestRunVerification_EmptyDirNoChecks(t *testing.T) {
+	res, err := RunVerification(context.Background(), t.TempDir(), 0, 5*time.Second, 10*time.Second)
+	if err == nil {
+		t.Fatalf("expected error when zero checks are discovered, got nil")
+	}
+	if res != nil && res.Pass {
+		t.Fatalf("expected Pass=false when zero checks are discovered, got Pass=true")
+	}
+}
+
+func TestRunVerification_UnsupportedProject(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, "README.md"), []byte("# nothing to verify\n"), 0o644); err != nil {
+		t.Fatalf("failed to write fixture: %v", err)
+	}
+	res, err := RunVerification(context.Background(), tmpDir, 0, 5*time.Second, 10*time.Second)
+	if err == nil {
+		t.Fatalf("expected error for unsupported project with zero checks, got nil")
+	}
+	if res != nil && res.Pass {
+		t.Fatalf("expected Pass=false for unsupported project, got Pass=true")
+	}
+}

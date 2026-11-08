@@ -165,6 +165,11 @@ func RunVerification(ctx context.Context, repoRoot string, minMemBytes uint64, p
 		return nil, fmt.Errorf("preflight memory refusal: %d bytes available, minimum %d bytes required", availMem, minMemBytes)
 	}
 
+	info, err := os.Stat(repoRoot)
+	if err != nil || !info.IsDir() {
+		return nil, fmt.Errorf("verification root %q does not exist or is not a directory", repoRoot)
+	}
+
 	cmds, err := DiscoverCommands(repoRoot)
 	if err != nil {
 		return nil, fmt.Errorf("failed to discover verification commands: %w", err)
@@ -176,7 +181,8 @@ func RunVerification(ctx context.Context, repoRoot string, minMemBytes uint64, p
 	}
 
 	if len(cmds) == 0 {
-		return result, nil
+		result.Pass = false
+		return result, fmt.Errorf("no verification checks discovered at %q: refusing to report success without mechanical evidence", repoRoot)
 	}
 
 	startTime := time.Now()
