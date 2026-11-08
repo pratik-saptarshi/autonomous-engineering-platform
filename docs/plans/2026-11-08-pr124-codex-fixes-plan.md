@@ -441,3 +441,9 @@ Residuals from this round:
 
 - Spawn failures still emit no receipt (pre-existing, outside N4's thread) — filed as issue #127.
 - The Compose test pins the `--root=<path>` spelling; a future two-token rewrite of the Compose command would false-red the suite (fail-safe direction, recorded deliberately).
+
+## Stage 6 round 4 (addendum, 2026-11-08)
+
+Codex's review of the round-3 head (`67cdfe2`, CI 9/9 green) raised **one further finding**, a direct knock-on of the N3 fix:
+
+- **N5 (P2, thread `PRRT_kwDOVM-V9860-1CX`) — the OCI fallback context archive omitted the script the Containerfile now invokes.** `scripts/package-oci.sh`'s no-container-tool fallback archives a hardcoded build-context list that predates N3, so an archive transferred to a container-capable host failed at bundle generation. A generalization census over every Containerfile build-context input confirmed exactly one missing input and exactly one stale include list in the repo. Fixed in `efa23e6` (the tar list gains the single file `scripts/package-vm.sh`, not `scripts/` wholesale) with a permanent hermetic test in `95549c6`: `scripts/tests/test_package_oci.sh` forces the fallback via PATH shadowing, asserts every pinned input, and carries a derived guard — every `scripts/` path the Containerfile references must be archived, with an empty derivation failing explicitly — wired into CI's script-tests job.
