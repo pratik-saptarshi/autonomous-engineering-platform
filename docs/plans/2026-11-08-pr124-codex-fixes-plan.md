@@ -191,7 +191,7 @@ git commit -m "fix(verifier): refuse success when no checks are discovered"
 - One tick = boot-gate checks (memory probe + 384MiB floor + platform line, refactored to return an error) followed by `runner.RunVerification`. Tick outcome logged to stdout as `SUPERVISOR: tick ok (discovered=N executed=M)` or `SUPERVISOR: tick failed: <err>`.
 - Boot-gate failure inside a tick is fatal: `supervisor` exits 1 (environment unfit; systemd's `Restart=on-failure` + `RestartSec` own the retry policy). A verification failure (error or `!Pass`) is logged and, in loop mode, does **not** exit — a failing check must not crash-loop the service; in `--once` mode it exits 1.
 - Loop mode (`--loop`, or default when neither flag is given? — no: pinned the other way) — behaviour: with `--loop`, tick immediately, then on a `time.Ticker(interval)` until SIGINT/SIGTERM, then exit 0. Without `--loop` and without `--once`, run exactly one tick and exit with the tick's status (so a bare `aep supervisor` always terminates). Ticks are sequential — a tick longer than the interval delays the next one; missed beats are dropped by the ticker, never queued.
-- Usage text gains: `  supervisor    Run the execution loop (boot gate + verification ticks)`.
+- Usage text gains the line `supervisor    Run the execution loop (boot gate + verification ticks)`, indented two spaces to align with the other usage entries.
 
 **Files:**
 - Modify: `cmd/aep/main.go` (dispatch case, usage line, `runSupervisor` + `supervisorTick`, refactor `runBootGate` into `bootGate() error` with the existing `boot` subcommand keeping its exact output/exit behaviour)
