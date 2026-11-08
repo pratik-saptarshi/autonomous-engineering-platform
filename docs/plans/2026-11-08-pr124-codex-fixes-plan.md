@@ -429,3 +429,15 @@ Residuals from this round:
 - The bundle config's `AEP_MEM_PREFLIGHT_MB=512` (amd64) is not consumed by the boot gate, which uses the hard-coded 384 MiB floor (pre-existing, outside N1's scope).
 - `setsid` escapees remain outside group cleanup on POSIX (documented on Wait); the Python verifier's adoptee sweep is broader and remains the parity reference.
 - The docker-compose route has the same unconfigured-root defect (empty named volume at `/workspace`, no `--root`); filed as issue #126 rather than folded into this PR, as neither thread names it and the fix is a deployment-design choice.
+
+## Stage 6 round 3 (addendum, 2026-11-08)
+
+Codex's review of the Stage 6 head (`c2b6218`, CI 9/9 green) raised **two further findings**, both adjudicated REAL and fixed in a third SDD round:
+
+- **N3 (P2, thread `PRRT_kwDOVM-V9860-ute`) — the Compose route had the same unconfigured-root defect as N1.** A launch-site census (5 sites) found only the Compose/Containerfile route deficient. Fixed in `215bee1` by mirroring N1 from a single source: the Containerfile's builder stage generates the bundle with `scripts/package-vm.sh`, the runtime stage installs `make`, the bundle hardware profile, and the `verify/` payload at the same pinned root, and Compose runs the supervisor with that root as `--root` and `working_dir` (a checkout mounted at `/workspace` remains a documented override). `Dockerfile` is a symlink to `Containerfile`, so the pair cannot drift; the cross-route assertions live in `scripts/tests/test_package_vm.sh` (`b10f200`), and `2297a15` makes the payload/profile modes umask-independent in the image. Issue #126 (filed for this defect before Codex raised it on the PR) is closed by this fix. Container runtime verification remains unavailable in this environment (no Docker; podman not in verified-working config) — the gate is the static plus generation-level test suite.
+- **N4 (P2, thread `PRRT_kwDOVM-V9860-uth`) — receipts flattened every nonzero exit code to 1.** Fixed in `24cd595`: a per-platform `process.ExitCode` helper extracts the real status from the Wait error (real code on exit; negative signal number on POSIX signal death, matching the Python verifier's encoding; no-status errors keep the fallback 1), and the runner's non-timeout error branch uses it. The timeout contract (timed_out flag plus exit code 124) is deliberately unchanged and pinned by a test. One evidence-backed correction to the adjudication's check design: GNU make flattens a failing recipe to make's own exit status 2, so a Makefile fixture cannot produce a receipt of 3 under any correct implementation — exact-status tests therefore drive a stub executable directly, with a separate leg pinning the make path at 2.
+
+Residuals from this round:
+
+- Spawn failures still emit no receipt (pre-existing, outside N4's thread) — filed as issue #127.
+- The Compose test pins the `--root=<path>` spelling; a future two-token rewrite of the Compose command would false-red the suite (fail-safe direction, recorded deliberately).
