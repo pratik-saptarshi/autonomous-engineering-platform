@@ -4,6 +4,7 @@ package process
 
 import (
 	"context"
+	"errors"
 	"os/exec"
 	"sync/atomic"
 	"syscall"
@@ -42,6 +43,10 @@ func (p *posixProcessGroup) Wait() error {
 	go func() { done <- p.cmd.Wait() }()
 	select {
 	case err := <-done:
+		// The leader exited on its own (any exit code). Terminate any
+		// group members that outlived it before returning, per Wait's
+		// contract: when Wait returns, nothing in the group is running.
+		p.terminateRemaining()
 		return err
 	case <-p.ctx.Done():
 		_ = p.Kill()
@@ -54,6 +59,40 @@ func (p *posixProcessGroup) Wait() error {
 			return p.ctx.Err()
 		}
 	}
+}
+
+// terminateRemaining terminates any group members that outlived the
+// leader. It claims the terminated flag up front, so a later Kill is a
+// no-op (termination has already been handled here). Members that
+// escaped the group beforehand (setsid) are out of reach.
+func (p *posixProcessGroup) terminateRemaining() {
+	if p.cmd.Process == nil {
+		return
+	}
+	if p.terminated.Swap(true) {
+		// Termination already handled (e.g. Kill ran): nothing to do.
+		return
+	}
+	pgid := p.cmd.Process.Pid
+
+	// Fast path: probe the group with signal 0. If it is already empty
+	// (ESRCH), a well-behaved command pays one syscall and no grace delay.
+	if err := unix.Kill(-pgid, 0); errors.Is(err, unix.ESRCH) {
+		return
+	}
+
+	// SIGTERM the survivors, then poll for the group to empty.
+	_ = unix.Kill(-pgid, syscall.SIGTERM)
+	deadline := time.Now().Add(p.gracePeriod)
+	for time.Now().Before(deadline) {
+		if err := unix.Kill(-pgid, 0); errors.Is(err, unix.ESRCH) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// SIGKILL any stubborn survivors.
+	_ = unix.Kill(-pgid, syscall.SIGKILL)
 }
 
 func (p *posixProcessGroup) Pid() int {

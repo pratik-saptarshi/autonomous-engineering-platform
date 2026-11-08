@@ -16,6 +16,11 @@ type ProcessGroup interface {
 	// drain is bounded (grace period + 2s), so Wait returns the context
 	// error instead of blocking forever if a group escapee (e.g. a setsid
 	// child) keeps the output pipes open.
+	//
+	// When Wait returns, no member of the group/job is left running:
+	// members that outlive the leader are terminated before Wait returns.
+	// A process that escaped the group (setsid) or job beforehand is out
+	// of reach and may survive — a documented residual.
 	Wait() error
 	// Kill terminates the entire process tree including any detached children.
 	// It is idempotent: second and later calls are immediate no-ops.

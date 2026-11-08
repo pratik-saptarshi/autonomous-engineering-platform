@@ -149,6 +149,7 @@ func resumeMainThread(pid uint32) error {
 }
 
 func (p *windowsProcessGroup) Wait() error {
+	// The deferred job-handle close is Wait's normal-completion cleanup mechanism: KILL_ON_JOB_CLOSE reaps any job members that outlived the leader.
 	defer func() {
 		if p.jobHandle != windows.InvalidHandle {
 			_ = windows.CloseHandle(p.jobHandle)
