@@ -363,9 +363,19 @@ EOF
 # (( )) is an arithmetic shift, not a heredoc. Only a << at a token
 # boundary (line start, or after whitespace / ; | & ( ) < >) counts,
 # so comparisons and case patterns merely mentioning << stay inert.
+# The delimiter word is scanned with bash's full word rule (quote
+# removal over the whole word) — see the delimiter scan below.
+# Named residuals of this lexer (env-scan census, PR #112):
+# openers attached to a preceding word or fd (cat<<EOF, 2<<EOF,
+# {fd}<<EOF) are not recognized — the boundary rule above requires
+# whitespace or a metacharacter before the <<; a delimiter word
+# continued onto the next line by a trailing backslash is read per
+# physical line; quote state is per-line, so a << inside a quoted
+# string spanning lines can be misread (an unbalanced quote fails
+# the stage's bash -n damage check before the scan runs).
 collect_heredoc_openers() { # $1 = one kept line
   local s="$1" len=${#1} i=0 ch sq=0 dq=0 depth=0
-  local j dash delim q boundary
+  local j dash delim q boundary word_seen wch nxt ansi
   while [ "$i" -lt "$len" ]; do
     ch="${s:i:1}"
     if [ "$sq" -eq 1 ]; then
@@ -436,27 +446,100 @@ collect_heredoc_openers() { # $1 = one kept line
               *) break ;;
               esac
             done
+            # The delimiter word, scanned the way bash reads it:
+            # one word, ending at a blank or a shell metacharacter,
+            # with quote removal applied over the whole word —
+            # '...' and "..." group anywhere in the word (inside
+            # "...", a backslash escapes only $ ` " \ and is
+            # otherwise literal), $'...' / $"..." drop the $, an
+            # unquoted backslash escapes the next character (even a
+            # blank or a metacharacter), and every other character
+            # — $ and # included — is an ordinary word character.
+            # The queued delimiter is the word after quote removal.
+            # word_seen tracks word presence separately from the
+            # content: an explicitly empty word (<<'') still opens
+            # a heredoc, terminated by an empty line.
             delim=""
-            q="${s:j:1}"
-            if [ "$q" = "'" ] || [ "$q" = '"' ]; then
-              j=$((j + 1))
-              while [ "$j" -lt "$len" ] && [ "${s:j:1}" != "$q" ]; do
-                delim+="${s:j:1}"
-                j=$((j + 1))
-              done
-              j=$((j + 1))
-            else
-              while [ "$j" -lt "$len" ]; do
-                case "${s:j:1}" in
-                [A-Za-z0-9_.-])
+            word_seen=0
+            while [ "$j" -lt "$len" ]; do
+              wch="${s:j:1}"
+              case "$wch" in
+              [[:space:]\|\&\;\(\)\<\>]) break ;;
+              \\)
+                if [ $((j + 1)) -lt "$len" ]; then
+                  word_seen=1
+                  delim+="${s:j+1:1}"
+                  j=$((j + 2))
+                else
+                  # A trailing backslash continues the word on the
+                  # next physical line in bash; the scan is
+                  # per-line — named residual (see the header).
+                  j=$((j + 1))
+                fi
+                ;;
+              "'" | '"' | '$')
+                if [ "$wch" = '$' ]; then
+                  case "${s:j+1:1}" in
+                  "'" | '"') ;;
+                  *)
+                    # A $ not starting a quoting construct is an
+                    # ordinary word character (no expansion applies
+                    # to a heredoc delimiter).
+                    word_seen=1
+                    delim+="$wch"
+                    j=$((j + 1))
+                    continue
+                    ;;
+                  esac
+                  q="${s:j+1:1}"
+                  if [ "$q" = "'" ]; then
+                    ansi=1
+                  else
+                    ansi=0
+                  fi
+                  j=$((j + 2))
+                else
+                  q="$wch"
+                  ansi=0
+                  j=$((j + 1))
+                fi
+                word_seen=1
+                while [ "$j" -lt "$len" ] && [ "${s:j:1}" != "$q" ]; do
+                  if [ "${s:j:1}" = "\\" ] &&
+                    [ $((j + 1)) -lt "$len" ]; then
+                    nxt="${s:j+1:1}"
+                    if [ "$ansi" -eq 1 ]; then
+                      case "$nxt" in
+                      n) delim+=$'\n' ;;
+                      t) delim+=$'\t' ;;
+                      *) delim+="$nxt" ;;
+                      esac
+                      j=$((j + 2))
+                      continue
+                    fi
+                    if [ "$q" = '"' ]; then
+                      case "$nxt" in
+                      \$ | \` | '"' | \\)
+                        delim+="$nxt"
+                        j=$((j + 2))
+                        continue
+                        ;;
+                      esac
+                    fi
+                  fi
                   delim+="${s:j:1}"
                   j=$((j + 1))
-                  ;;
-                *) break ;;
-                esac
-              done
-            fi
-            if [ -n "$delim" ]; then
+                done
+                j=$((j + 1))
+                ;;
+              *)
+                word_seen=1
+                delim+="$wch"
+                j=$((j + 1))
+                ;;
+              esac
+            done
+            if [ "$word_seen" -eq 1 ]; then
               hd_delims+=("$delim")
               hd_dash+=("$dash")
             fi
@@ -550,6 +633,14 @@ install_env_block() {
   # its <<- flag), filled by collect_heredoc_openers for every code
   # line the scan passes; heredoc openers and closers themselves are
   # ordinary kept lines.
+  # Named residual: the guard patterns are line-shaped — they match
+  # guard text inside strings and comments as well as code, and any
+  # `case` over $- counts as the guard even without a return arm. At
+  # the top level a false match only moves the block earlier than
+  # strictly needed (it still executes). Guard spellings the
+  # patterns do not cover, and guards nested in functions or
+  # conditionals, are tracked as GitHub issues (env-scan residuals,
+  # PR #112), not accepted here.
   local -a hd_delims=() hd_dash=()
   local hd_probe
   for ((scan = 0; scan < ${#kept[@]}; scan++)); do
@@ -2006,6 +2097,271 @@ EOF
     pass=1
   fi
   report_stage env-heredoc-real-guard "$pass"
+
+  # (l) The delimiter word follows bash's rule, not a character
+  # whitelist: a backslash escape inside the word is quote removal
+  # (<<E\OF opens a heredoc whose delimiter is EOF). Truncating the
+  # word at the backslash queues E, the heredoc never closes in the
+  # scan, and the real guard after it is read as body — the block
+  # lands after the guard, stranded at a stable wrong fixed point.
+  reset_env
+  cat >"$envhome/.bashrc" <<'FIXTURE'
+# user bashrc
+cat <<E\OF
+case $- in
+  *i*) ;;
+esac
+EOF
+
+case $- in
+    *i*) ;;
+      *) return;;
+esac
+
+export EDITOR=vim
+FIXTURE
+  printf '# user profile\n' >"$envhome/.profile"
+  out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
+  cp "$envhome/.bashrc" "$selftest_root/env-l-run1"
+  out2=$(run_env install_env_block 2>&1) && rc2=0 || rc2=$?
+  out="$out2" rc="$rc2"
+  marker_line=$(grep -n -xF '# >>> re-runtime >>>' "$envhome/.bashrc" | cut -d: -f1)
+  eof_line=$(grep -n -xF 'EOF' "$envhome/.bashrc" | cut -d: -f1)
+  guard_line=$(grep -n -xF "case \$- in" "$envhome/.bashrc" | tail -1 | cut -d: -f1)
+  # shellcheck disable=SC2016 # the single-quoted string is a program for the child bash; its $-expressions must expand there, not here
+  reach=$(env -i HOME="$envhome" /bin/bash -c '. "$HOME/.bashrc" >/dev/null 2>&1; printf %s "${JAVA_HOME:-}"')
+  pass=0
+  if [ "$rc" -eq 0 ] &&
+    printf '%s\n' "$out" | grep -qxF "INSTALL-RE: env ok" &&
+    [ "$(count_markers '>>>')" = "1" ] &&
+    [ "$(count_markers '<<<')" = "1" ] &&
+    [ -n "$marker_line" ] && [ -n "$eof_line" ] && [ -n "$guard_line" ] &&
+    [ "$marker_line" -gt "$eof_line" ] &&
+    [ "$marker_line" -lt "$guard_line" ] &&
+    grep -qxF 'export EDITOR=vim' "$envhome/.bashrc" &&
+    cmp -s "$selftest_root/env-l-run1" "$envhome/.bashrc" &&
+    [ "$reach" = "$envhome/opt/jdk-$TEMURIN_VERSION" ]; then
+    pass=1
+  fi
+  report_stage env-heredoc-escaped-delim "$pass"
+
+  # (m) Characters outside the old whitelist are word characters in
+  # bash: <<E+OF opens a heredoc whose delimiter is E+OF. Same
+  # stranding shape as (l) when the word is truncated at the +.
+  reset_env
+  cat >"$envhome/.bashrc" <<'FIXTURE'
+# user bashrc
+cat <<E+OF
+[ -z "$PS1" ] && return
+E+OF
+
+case $- in
+    *i*) ;;
+      *) return;;
+esac
+
+export EDITOR=vim
+FIXTURE
+  printf '# user profile\n' >"$envhome/.profile"
+  out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
+  cp "$envhome/.bashrc" "$selftest_root/env-m-run1"
+  out2=$(run_env install_env_block 2>&1) && rc2=0 || rc2=$?
+  out="$out2" rc="$rc2"
+  marker_line=$(grep -n -xF '# >>> re-runtime >>>' "$envhome/.bashrc" | cut -d: -f1)
+  eof_line=$(grep -n -xF 'E+OF' "$envhome/.bashrc" | cut -d: -f1)
+  guard_line=$(grep -n -xF "case \$- in" "$envhome/.bashrc" | cut -d: -f1)
+  # shellcheck disable=SC2016 # the single-quoted string is a program for the child bash; its $-expressions must expand there, not here
+  reach=$(env -i HOME="$envhome" /bin/bash -c '. "$HOME/.bashrc" >/dev/null 2>&1; printf %s "${JAVA_HOME:-}"')
+  pass=0
+  if [ "$rc" -eq 0 ] &&
+    printf '%s\n' "$out" | grep -qxF "INSTALL-RE: env ok" &&
+    [ "$(count_markers '>>>')" = "1" ] &&
+    [ "$(count_markers '<<<')" = "1" ] &&
+    [ -n "$marker_line" ] && [ -n "$eof_line" ] && [ -n "$guard_line" ] &&
+    [ "$marker_line" -gt "$eof_line" ] &&
+    [ "$marker_line" -lt "$guard_line" ] &&
+    grep -qxF 'export EDITOR=vim' "$envhome/.bashrc" &&
+    cmp -s "$selftest_root/env-m-run1" "$envhome/.bashrc" &&
+    [ "$reach" = "$envhome/opt/jdk-$TEMURIN_VERSION" ]; then
+    pass=1
+  fi
+  report_stage env-heredoc-metachar-delim "$pass"
+
+  # (n) Quotes group anywhere in the delimiter word, not only at
+  # its start: <<E"O"F is a heredoc whose delimiter is EOF. Reading
+  # only a leading quoted segment (or truncating at the quote)
+  # queues the wrong delimiter, with the same stranding shape.
+  reset_env
+  cat >"$envhome/.bashrc" <<'FIXTURE'
+# user bashrc
+cat <<E"O"F
+case $- in
+  *i*) ;;
+esac
+EOF
+
+case $- in
+    *i*) ;;
+      *) return;;
+esac
+
+export EDITOR=vim
+FIXTURE
+  printf '# user profile\n' >"$envhome/.profile"
+  out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
+  cp "$envhome/.bashrc" "$selftest_root/env-n-run1"
+  out2=$(run_env install_env_block 2>&1) && rc2=0 || rc2=$?
+  out="$out2" rc="$rc2"
+  marker_line=$(grep -n -xF '# >>> re-runtime >>>' "$envhome/.bashrc" | cut -d: -f1)
+  eof_line=$(grep -n -xF 'EOF' "$envhome/.bashrc" | cut -d: -f1)
+  guard_line=$(grep -n -xF "case \$- in" "$envhome/.bashrc" | tail -1 | cut -d: -f1)
+  # shellcheck disable=SC2016 # the single-quoted string is a program for the child bash; its $-expressions must expand there, not here
+  reach=$(env -i HOME="$envhome" /bin/bash -c '. "$HOME/.bashrc" >/dev/null 2>&1; printf %s "${JAVA_HOME:-}"')
+  pass=0
+  if [ "$rc" -eq 0 ] &&
+    printf '%s\n' "$out" | grep -qxF "INSTALL-RE: env ok" &&
+    [ "$(count_markers '>>>')" = "1" ] &&
+    [ "$(count_markers '<<<')" = "1" ] &&
+    [ -n "$marker_line" ] && [ -n "$eof_line" ] && [ -n "$guard_line" ] &&
+    [ "$marker_line" -gt "$eof_line" ] &&
+    [ "$marker_line" -lt "$guard_line" ] &&
+    grep -qxF 'export EDITOR=vim' "$envhome/.bashrc" &&
+    cmp -s "$selftest_root/env-n-run1" "$envhome/.bashrc" &&
+    [ "$reach" = "$envhome/opt/jdk-$TEMURIN_VERSION" ]; then
+    pass=1
+  fi
+  report_stage env-heredoc-quoted-segment-delim "$pass"
+
+  # (o) An explicitly empty delimiter word still opens a heredoc:
+  # <<'' is terminated by an empty line. Dropping the opener as
+  # "no delimiter" reads the body as code, and a guard-shaped body
+  # line attracts the block into the body.
+  reset_env
+  cat >"$envhome/.bashrc" <<'FIXTURE'
+# user bashrc
+cat <<''
+case $- in
+
+case $- in
+    *i*) ;;
+      *) return;;
+esac
+export EDITOR=vim
+FIXTURE
+  printf '# user profile\n' >"$envhome/.profile"
+  out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
+  cp "$envhome/.bashrc" "$selftest_root/env-o-run1"
+  out2=$(run_env install_env_block 2>&1) && rc2=0 || rc2=$?
+  out="$out2" rc="$rc2"
+  marker_line=$(grep -n -xF '# >>> re-runtime >>>' "$envhome/.bashrc" | cut -d: -f1)
+  eof_line=$(grep -n -xF "case \$- in" "$envhome/.bashrc" | head -1 | cut -d: -f1)
+  guard_line=$(grep -n -xF "case \$- in" "$envhome/.bashrc" | tail -1 | cut -d: -f1)
+  # shellcheck disable=SC2016 # the single-quoted string is a program for the child bash; its $-expressions must expand there, not here
+  reach=$(env -i HOME="$envhome" /bin/bash -c '. "$HOME/.bashrc" >/dev/null 2>&1; printf %s "${JAVA_HOME:-}"')
+  pass=0
+  if [ "$rc" -eq 0 ] &&
+    printf '%s\n' "$out" | grep -qxF "INSTALL-RE: env ok" &&
+    [ "$(count_markers '>>>')" = "1" ] &&
+    [ "$(count_markers '<<<')" = "1" ] &&
+    [ -n "$marker_line" ] && [ -n "$eof_line" ] && [ -n "$guard_line" ] &&
+    [ "$marker_line" -gt "$eof_line" ] &&
+    [ "$marker_line" -lt "$guard_line" ] &&
+    grep -qxF 'export EDITOR=vim' "$envhome/.bashrc" &&
+    cmp -s "$selftest_root/env-o-run1" "$envhome/.bashrc" &&
+    [ "$reach" = "$envhome/opt/jdk-$TEMURIN_VERSION" ]; then
+    pass=1
+  fi
+  report_stage env-heredoc-empty-delim "$pass"
+
+  # (p) $'...' is a quoting construct in the delimiter word, not a
+  # word character followed by a quote: <<$'EOF' opens a heredoc
+  # whose delimiter is EOF. Dropping the whole opener (the $ is
+  # outside the old whitelist) reads the body as code.
+  reset_env
+  cat >"$envhome/.bashrc" <<'FIXTURE'
+# user bashrc
+cat <<$'EOF'
+case $- in
+  *i*) ;;
+esac
+EOF
+
+case $- in
+    *i*) ;;
+      *) return;;
+esac
+
+export EDITOR=vim
+FIXTURE
+  printf '# user profile\n' >"$envhome/.profile"
+  out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
+  cp "$envhome/.bashrc" "$selftest_root/env-p-run1"
+  out2=$(run_env install_env_block 2>&1) && rc2=0 || rc2=$?
+  out="$out2" rc="$rc2"
+  marker_line=$(grep -n -xF '# >>> re-runtime >>>' "$envhome/.bashrc" | cut -d: -f1)
+  eof_line=$(grep -n -xF 'EOF' "$envhome/.bashrc" | cut -d: -f1)
+  guard_line=$(grep -n -xF "case \$- in" "$envhome/.bashrc" | tail -1 | cut -d: -f1)
+  # shellcheck disable=SC2016 # the single-quoted string is a program for the child bash; its $-expressions must expand there, not here
+  reach=$(env -i HOME="$envhome" /bin/bash -c '. "$HOME/.bashrc" >/dev/null 2>&1; printf %s "${JAVA_HOME:-}"')
+  pass=0
+  if [ "$rc" -eq 0 ] &&
+    printf '%s\n' "$out" | grep -qxF "INSTALL-RE: env ok" &&
+    [ "$(count_markers '>>>')" = "1" ] &&
+    [ "$(count_markers '<<<')" = "1" ] &&
+    [ -n "$marker_line" ] && [ -n "$eof_line" ] && [ -n "$guard_line" ] &&
+    [ "$marker_line" -gt "$eof_line" ] &&
+    [ "$marker_line" -lt "$guard_line" ] &&
+    grep -qxF 'export EDITOR=vim' "$envhome/.bashrc" &&
+    cmp -s "$selftest_root/env-p-run1" "$envhome/.bashrc" &&
+    [ "$reach" = "$envhome/opt/jdk-$TEMURIN_VERSION" ]; then
+    pass=1
+  fi
+  report_stage env-heredoc-ansi-quote-delim "$pass"
+
+  # (q) An unquoted $ or # inside the delimiter word is an ordinary
+  # word character (no expansion or comment starts inside a word):
+  # <<E$OF and <<E#OF open heredocs with those literal delimiters.
+  reset_env
+  cat >"$envhome/.bashrc" <<'FIXTURE'
+# user bashrc
+cat <<E$OF
+case $- in
+E$OF
+cat <<E#OF
+[ -z "$PS1" ] && return
+E#OF
+
+case $- in
+    *i*) ;;
+      *) return;;
+esac
+
+export EDITOR=vim
+FIXTURE
+  printf '# user profile\n' >"$envhome/.profile"
+  out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
+  cp "$envhome/.bashrc" "$selftest_root/env-q-run1"
+  out2=$(run_env install_env_block 2>&1) && rc2=0 || rc2=$?
+  out="$out2" rc="$rc2"
+  marker_line=$(grep -n -xF '# >>> re-runtime >>>' "$envhome/.bashrc" | cut -d: -f1)
+  eof_line=$(grep -n -xF 'E#OF' "$envhome/.bashrc" | cut -d: -f1)
+  guard_line=$(grep -n -xF "case \$- in" "$envhome/.bashrc" | tail -1 | cut -d: -f1)
+  # shellcheck disable=SC2016 # the single-quoted string is a program for the child bash; its $-expressions must expand there, not here
+  reach=$(env -i HOME="$envhome" /bin/bash -c '. "$HOME/.bashrc" >/dev/null 2>&1; printf %s "${JAVA_HOME:-}"')
+  pass=0
+  if [ "$rc" -eq 0 ] &&
+    printf '%s\n' "$out" | grep -qxF "INSTALL-RE: env ok" &&
+    [ "$(count_markers '>>>')" = "1" ] &&
+    [ "$(count_markers '<<<')" = "1" ] &&
+    [ -n "$marker_line" ] && [ -n "$eof_line" ] && [ -n "$guard_line" ] &&
+    [ "$marker_line" -gt "$eof_line" ] &&
+    [ "$marker_line" -lt "$guard_line" ] &&
+    grep -qxF 'export EDITOR=vim' "$envhome/.bashrc" &&
+    cmp -s "$selftest_root/env-q-run1" "$envhome/.bashrc" &&
+    [ "$reach" = "$envhome/opt/jdk-$TEMURIN_VERSION" ]; then
+    pass=1
+  fi
+  report_stage env-heredoc-dollar-hash-delims "$pass"
 
   # Fresh-HOME leg: with no .bashrc at all, the stage creates one
   # holding exactly the block (the fixture-HOME full-run shape).
