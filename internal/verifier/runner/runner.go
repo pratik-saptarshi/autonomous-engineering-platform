@@ -274,8 +274,11 @@ var makeTestTargetRe = regexp.MustCompile(`(?m)^test:`)
 // hasMakeTestTarget reports whether the Makefile declares a test target.
 // The check is deliberately byte-parity with scripts/mechanical_verify.py,
 // which requires a line matching ^test: before scheduling make test: a
-// `test :` line (with a space) does not count, and a `test:` inside a
-// comment does — matching the Python verifier's behaviour is the point.
+// `test :` line (with a space) does not count, and neither does a
+// commented-out `# test:` line, which does not begin with test:. A line
+// that does begin with test: matches in both implementations even when
+// it is not a real rule — e.g. inside a define block — and matching the
+// Python verifier's behaviour is the point.
 func hasMakeTestTarget(makefilePath string) bool {
 	data, err := os.ReadFile(makefilePath)
 	if err != nil {

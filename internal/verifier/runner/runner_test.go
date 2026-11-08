@@ -81,6 +81,19 @@ func TestDiscoverCommands_MakeTarget(t *testing.T) {
 	if !hasMakeTest(cmds) {
 		t.Fatalf("expected make-test for a Makefile with a test target, got %+v", cmds)
 	}
+
+	// (c) Makefile whose only test-like line is a testify: target (plus a
+	// normal build target): the regex's colon pins the match to a real
+	// test: target, so make-test must NOT be scheduled.
+	testifyOnly := t.TempDir()
+	_ = os.WriteFile(filepath.Join(testifyOnly, "Makefile"), []byte("build:\n\t@true\n\ntestify:\n\t@true\n"), 0644)
+	cmds, err = DiscoverCommands(testifyOnly)
+	if err != nil {
+		t.Fatalf("DiscoverCommands failed: %v", err)
+	}
+	if hasMakeTest(cmds) {
+		t.Fatalf("expected no make-test for a Makefile with only a testify: target, got %+v", cmds)
+	}
 }
 
 func TestRunVerification_Pass(t *testing.T) {
