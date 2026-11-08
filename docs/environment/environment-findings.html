@@ -131,8 +131,9 @@ apt-get -o Dir=/root/envA/rootfs -y --download-only install git python3 python3-
 chroot /root/envA/rootfs env DEBIAN_FRONTEND=noninteractive \
   apt-get -y --no-download install git python3 python3-venv
 
-# 5. venv pins from host-downloaded wheels
-pip download pytest==9.2.0 PyYAML==6.0.3 -d wheels        # on the host
+# 5. venv + pins from host-downloaded wheels
+pip download pytest==9.2.0 PyYAML==6.0.3 -d /root/envA/rootfs/tmp/wheels   # on the host
+chroot /root/envA/rootfs python3 -m venv /tmp/egm-venv
 chroot /root/envA/rootfs /tmp/egm-venv/bin/pip install \
   --no-index --find-links /tmp/wheels pytest==9.2.0 PyYAML==6.0.3
 
