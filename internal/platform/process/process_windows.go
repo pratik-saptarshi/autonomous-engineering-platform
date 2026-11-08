@@ -21,6 +21,22 @@ type windowsProcessGroup struct {
 }
 
 func newPlatformProcessGroup(cmd *exec.Cmd, grace time.Duration, ctx context.Context) ProcessGroup {
+	// Batch-file shims (e.g. npm.cmd from a standard Node.js install)
+	// cannot be executed by CreateProcess directly, so route them
+	// through the command interpreter (see batchWrap). The wrap happens
+	// here, before Start, so the interpreter is the process created
+	// suspended below, assigned to the job, and resumed; the shim and
+	// everything it spawns live inside the job object.
+	if len(cmd.Args) > 0 {
+		if path, args, wrapped := batchWrap(cmd.Path, cmd.Args[1:]); wrapped {
+			cmd.Path = path
+			if resolved, err := exec.LookPath(path); err == nil {
+				cmd.Path = resolved
+			}
+			cmd.Args = append([]string{path}, args...)
+		}
+	}
+
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
