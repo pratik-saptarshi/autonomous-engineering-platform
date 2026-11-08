@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -72,9 +73,32 @@ func TestRunVerification_Pass(t *testing.T) {
 
 func TestRunVerification_NonexistentRoot(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "does-not-exist")
-	_, err := RunVerification(context.Background(), root, 0, 5*time.Second, 10*time.Second)
+	res, err := RunVerification(context.Background(), root, 0, 5*time.Second, 10*time.Second)
 	if err == nil {
 		t.Fatalf("expected error for nonexistent root, got nil")
+	}
+	if res != nil {
+		t.Fatalf("expected nil result for nonexistent root, got %+v", res)
+	}
+	if !strings.Contains(err.Error(), "does not exist or is not a directory") {
+		t.Fatalf("expected root-guard error for nonexistent root, got: %v", err)
+	}
+}
+
+func TestRunVerification_FileRoot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "a-regular-file")
+	if err := os.WriteFile(root, []byte("not a directory\n"), 0o644); err != nil {
+		t.Fatalf("failed to write fixture: %v", err)
+	}
+	res, err := RunVerification(context.Background(), root, 0, 5*time.Second, 10*time.Second)
+	if err == nil {
+		t.Fatalf("expected error for regular-file root, got nil")
+	}
+	if res != nil {
+		t.Fatalf("expected nil result for regular-file root, got %+v", res)
+	}
+	if !strings.Contains(err.Error(), "does not exist or is not a directory") {
+		t.Fatalf("expected root-guard error for regular-file root, got: %v", err)
 	}
 }
 
