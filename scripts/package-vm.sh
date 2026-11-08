@@ -45,7 +45,8 @@ After=network.target
 Type=simple
 EnvironmentFile=-/etc/aep/hardware-profile.conf
 ExecStartPre=/usr/local/bin/aep boot
-ExecStart=/usr/local/bin/aep supervisor --loop
+WorkingDirectory=/usr/local/lib/aep/verify
+ExecStart=/usr/local/bin/aep supervisor --loop --root /usr/local/lib/aep/verify
 Restart=on-failure
 RestartSec=10s
 LimitNOFILE=65536
@@ -68,6 +69,20 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
+# 4b. Verification payload: the self-check tree the bundle installs at
+# /usr/local/lib/aep/verify — the supervisor's pinned verification root
+# (see the unit above). Its single Makefile test target self-checks the
+# installed system using only /bin/sh, coreutils, and the installed aep
+# binary. Recipe lines below begin with literal TAB characters, as make
+# requires; the quoted heredoc preserves them byte-for-byte.
+mkdir -p "${OUT_DIR}/verify"
+cat <<'EOF' >"${OUT_DIR}/verify/Makefile"
+test:
+	@/usr/local/bin/aep boot
+	@/usr/local/bin/aep info >/dev/null
+	@test -r /etc/aep/hardware-profile.conf
+EOF
+
 # 5. Cloud-init user data configuration for VM provisioning
 cat <<EOF >"${OUT_DIR}/user-data.yaml"
 #cloud-config
@@ -77,6 +92,7 @@ packages:
   - git
   - tar
   - jq
+  - make
 
 write_files:
   - path: /etc/aep/hardware-profile.conf
@@ -88,6 +104,8 @@ runcmd:
   - install -m 755 /tmp/aep /usr/local/bin/aep
   - cp /tmp/aep-ralph.service /etc/systemd/system/
   - cp /tmp/aep-ralph.timer /etc/systemd/system/
+  - mkdir -p /usr/local/lib/aep
+  - cp -r /tmp/aep-verify /usr/local/lib/aep/verify
   - systemctl daemon-reload
   - systemctl enable --now aep-ralph.timer
 EOF
@@ -103,6 +121,14 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 sudo install -m 755 "${DIR}/bin/aep" /usr/local/bin/aep
 sudo mkdir -p /etc/aep
 sudo cp "${DIR}/config/hardware-profile.conf" /etc/aep/
+
+sudo mkdir -p /usr/local/lib/aep
+sudo rm -rf /usr/local/lib/aep/verify
+sudo cp -r "${DIR}/verify" /usr/local/lib/aep/verify
+
+if ! command -v make >/dev/null 2>&1; then
+  echo "WARNING: 'make' is not installed. The AEP verification payload at /usr/local/lib/aep/verify needs make to run its self-check; without it every supervisor verification tick will fail. Install make with your system package manager." >&2
+fi
 
 if command -v systemctl >/dev/null 2>&1; then
   sudo cp "${DIR}/systemd/aep-ralph.service" /etc/systemd/system/
