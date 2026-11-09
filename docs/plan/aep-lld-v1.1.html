@@ -326,7 +326,7 @@ Lanes run with <code>--network none</code> (or an internal isolated bridge) and 
 <table>
   <tr><th>Failure</th><th>Detection</th><th>Behaviour</th></tr>
   <tr><td>NeuroStrata down at dispatch</td><td><code>memoryd.Status</code></td><td>Boot fails closed (exit 1). Supervisor in loop mode treats it as fatal and lets the service manager own retry cadence.</td></tr>
-  <tr><td>Tier-2 task on host without KVM</td><td><code>!profile.Tier2Supported</code></td><td><code>quarantine</code>: labeled <code>blocked:unsupported-tier2-no-kvm</code>. Never auto-downgraded to Tier 1.</td></tr>
+  <tr><td>Tier-2 task when all local sandboxes (KVM, libkrun, gVisor) unavailable</td><td><code>!profile.Tier2Supported</code></td><td><code>quarantine</code>: labeled <code>blocked:unsupported-tier2-no-sandbox</code>. Never auto-downgraded to Tier 1.</td></tr>
   <tr><td>Egress probe fails or unverified</td><td><code>VerifyEgressProbe</code></td><td><code>quarantine</code>: run evidence rejected; PR creation blocked; never merged.</td></tr>
   <tr><td>Relay socket communication error</td><td><code>ECONNREFUSED / EPIPE</code></td><td>Lane execution pauses; alerts supervisor; never falls back to direct network calls.</td></tr>
   <tr><td>Launcher crashes mid-lane</td><td>fence free</td><td>Lane marked reapable only if the container is also gone; otherwise left running and reported.</td></tr>
@@ -353,23 +353,23 @@ Lanes run with <code>--network none</code> (or an internal isolated bridge) and 
 <table>
   <tr><th>ID</th><th>Task</th><th>Files</th><th>Acceptance</th></tr>
   <tr><td><strong>T0 ✅ DONE 2026-11-09</strong></td><td>Feasibility spike: KVM / nested virt on macOS (Colima) — <strong>confirmed</strong></td><td>this doc §9.1 evidence note</td><td><code>/dev/kvm</code> exists in-VM with <code>--nested-virtualization</code> (M3 Max, Colima 0.10.3); QEMU <code>accel=kvm</code> accepted; Docker + Temporal run in-VM. Remaining: CubeSandbox-in-Colima + lane RSS measurement. <strong>T9 unblocked; T10 still needs CubeSandbox validation.</strong></td></tr>
-  <tr><td>T1</td><td><code>profile</code> package + <code>aep profile detect|show</code></td><td><code>internal/profile/*</code>, <code>cmd/aep</code></td><td>Validate rejects over-committed budgets; nano, small, medium, workstation presets load; KVM detected.</td></tr>
+  <tr><td>T1</td><td><code>profile</code> package + <code>aep profile detect|show</code></td><td><code>internal/profile/*</code>, <code>cmd/aep</code></td><td>Validate rejects over-committed budgets; nano, small, medium, workstation presets load; KVM, libkrun, and gVisor backends detected.</td></tr>
   <tr><td>T1b</td><td><code>gateway</code> package (<code>aep gwd</code> / ghg IPC relay)</td><td><code>internal/gateway/*</code>, <code>cmd/aep</code></td><td>Socket relay executes <code>ghg.py</code>; rate caps and poller coalescing verified without leaking PAT.</td></tr>
   <tr><td>T2</td><td><code>policy</code> package; HEAD-blob verification</td><td><code>internal/policy/*</code></td><td>Matches <code>boot-gate.sh</code> behaviour incl. <code>POLICY-INACTIVE</code>; tamper test fails gate.</td></tr>
   <tr><td>T3</td><td><code>memoryd</code> host relay client + <code>aep boot</code> full parity</td><td><code>internal/memoryd/*</code>, <code>cmd/aep</code></td><td>Parity test vs shell gate passes; socket relay forwards to <code>127.0.0.1:34343</code>.</td></tr>
-  <tr><td>T4</td><td><code>admission</code> controller</td><td><code>internal/admission/*</code></td><td>Race test: one winner for last slot; budget, ceiling, and KVM availability enforced.</td></tr>
+  <tr><td>T4</td><td><code>admission</code> controller</td><td><code>internal/admission/*</code></td><td>Race test: one winner for last slot; budget, ceiling, and sandbox backend availability enforced.</td></tr>
   <tr><td>T5</td><td><code>ledger</code> beads adapter + tier-tag rules</td><td><code>internal/ledger/*</code></td><td>Missing-tag policy enforced; <code>bd</code> JSON fixtures parsed.</td></tr>
   <tr><td>T6</td><td><code>lane</code> manifest + fence + Go <code>claim/release/reap</code> (runtime driver behind interface, fake in tests)</td><td><code>internal/lane/*</code></td><td>Launcher-dead-but-container-alive is refused; socket mounts plumbed.</td></tr>
-  <tr><td>T7</td><td><code>dispatch</code> decision engine + <code>aep dispatch --dry-run</code></td><td><code>internal/dispatch/*</code></td><td>Every §7 row covered; quarantine-first on missing KVM; decision records written.</td></tr>
+  <tr><td>T7</td><td><code>dispatch</code> decision engine + <code>aep dispatch --dry-run</code></td><td><code>internal/dispatch/*</code></td><td>Every §7 row covered; quarantine-first on missing local sandbox; decision records written.</td></tr>
   <tr><td>T8</td><td>Supervisor <code>--dispatch</code> opt-in</td><td><code>cmd/aep</code></td><td>Default behaviour byte-identical to today; new path behind the flag.</td></tr>
   <tr><td>T9</td><td>Compose topology + substrate relays + lane image</td><td><code>deploy/compose/*</code>, <code>Containerfile</code></td><td>Substrate comes up; lane container enforces memory cap and communicates over sockets. <em>Needs runtime (T0).</em></td></tr>
-  <tr><td>T10</td><td><code>factory</code> client + egress probe verification + <code>boot --factory</code></td><td><code>internal/factory/*</code></td><td>Open-egress config rejected; probe digest verified; quarantine path exercised. <em>Needs Temporal + Cube + KVM.</em></td></tr>
-  <tr><td>T11</td><td>Patch re-verification inside disposable microVM; <code>bd close</code> + NeuroStrata inscription</td><td><code>internal/factory</code>, <code>internal/dispatch</code></td><td>Untrusted patch re-verified in isolated microVM before PR creation.</td></tr>
+  <tr><td>T10</td><td><code>factory</code> client + sandbox adapters + egress probe verification + <code>boot --factory</code></td><td><code>internal/factory/*</code></td><td>Local backends (Cube/KVM, libkrun, gVisor) supported; open-egress config rejected; probe digest verified; quarantine path exercised; emergency remote fallback connector.</td></tr>
+  <tr><td>T11</td><td>Patch re-verification inside disposable sandbox; <code>bd close</code> + NeuroStrata inscription</td><td><code>internal/factory</code>, <code>internal/dispatch</code></td><td>Untrusted patch re-verified in isolated microVM/sandbox before PR creation.</td></tr>
 </table>
 
 <h2>13. Open items carried from the HLD</h2>
 <ul>
-  <li>Hardware virtualization availability across environments (T0) — determines whether Tier 2 can run locally or must quarantine/dispatch remotely.</li>
+  <li>Local sandbox runtime availability across environments (T0) — determines whether Tier 2 runs locally via Cube/KVM, libkrun, or gVisor, or must quarantine (with remote cluster strictly as an emergency fallback of last resort).</li>
   <li>NeuroStrata socket relay wire protocol vs CLI-only integration (§4.4).</li>
   <li>Doc location: <code>docs/plan/</code> (this folder) vs the existing <code>docs/plans/</code>.</li>
   <li>Independent adversarial review of this LLD before T9–T11.</li>

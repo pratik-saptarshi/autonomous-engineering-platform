@@ -223,11 +223,11 @@
               v (Tier 1: Fast Inner Loop)                                           v (Tier 2: Outer Factory)
 +---------------------------------------------+       +---------------------------------------------+
 |    <span class="hl-pri">PARALLEL RALPH-LOOP CONTAINER LANES</span>      |       |      <span class="hl-sec">PARALLEL ESF FACTORY PIPELINES</span>         |
-|  * Concurrency: <span class="hl-pri">1–2 (Nano) to 8–10 (Max)</span>    |       |  * Concurrency: <span class="hl-sec">Disabled (Nano) to 4–6 (Max)</span>|
-|  * Fabric: OCI Container + Git Worktree     |       |  * Fabric: Temporal Worker + Cube microVM   |
-|  * Memory per Lane: ~1.5 - 2 GB             |       |  * Memory per Pipeline: ~4 - 6 GB (KVM req) |
+|  * Concurrency: <span class="hl-pri">1–2 (Nano) to 8–10 (Max)</span>    |       |  * Concurrency: <span class="hl-sec">1 (Nano) to 4–6 (Max)</span>       |
+|  * Fabric: OCI Container + Git Worktree     |       |  * Fabric: Temporal + Local Sandbox        |
+|  * Memory per Lane: ~1.5 - 2 GB             |       |  * Isolation: Cube/KVM, libkrun, or gVisor |
 |  * Engine: Subagent-driven TDD & review     |       |  * Engine: OpenCode / Claude Code / Pi v1   |
-|  * Verification: Go-native `aep verify`     |       |  * Verification: Deterministic build.sh/test|
+|  * Verification: Go-native `aep verify`     |       |  * Remote: Emergency last-resort fallback  |
 |  * Output: Git branches & verified PRs      |       |  * Output: Cryptographic patch & evidence   |
 +---------------------+-----------------------+       +---------------------+-----------------------+
                       |                                                     |
@@ -274,14 +274,20 @@
         Profiles are two-axis: <strong>Host Family</strong> (how the OS runs containers) &times; <strong>Size Tier</strong> (how much hardware). The host family decides the runtime and whether Tier 2 microVM sandboxing is possible; the size tier decides admission limits and lane budgets.
       </p>
       <table>
-        <thead><tr><th>Host Family</th><th>OS / Workstation</th><th>Runtime Model</th><th>Tier 2 (microVM / KVM)</th></tr></thead>
+        <thead><tr><th>Host Family</th><th>OS / Workstation</th><th>Runtime Model</th><th>Tier 2 Sandbox Engine</th></tr></thead>
         <tbody>
-          <tr><td><strong>mac-colima-vz</strong></td><td>macOS (Apple Silicon / Intel) — primary dev host</td><td><strong>One large shared Colima VM</strong> (<code>vz</code> + <code>virtiofs</code>); Docker/Podman containers spawned on demand inside that VM</td><td><strong>Supported iff</strong> VM started with <code>--nested-virtualization</code> (<code>-z</code>) and <code>/dev/kvm</code> probes present — <em>confirmed</em> on M3 Max / Colima 0.10.3 (see evidence note below); otherwise quarantine</td></tr>
-          <tr><td><strong>linux-native</strong></td><td>Linux x86_64/ARM64 workstation, server, or cloud VM</td><td>Podman (rootless) / Docker directly on host (cgroups v2); no Colima, no one-VM-per-lane</td><td><strong>Supported if</strong> <code>/dev/kvm</code> present; otherwise quarantine</td></tr>
+          <tr><td><strong>mac-colima-vz / mac-native-vz</strong></td><td>macOS (Apple Silicon / Intel) — primary dev host</td><td><strong>One large shared Colima VM</strong> (<code>vz</code> + <code>virtiofs</code>) for lanes; Tier 2 runs via Colima nested KVM (<code>--nested-virtualization</code>, confirmed on M3 Max) <strong>OR</strong> native hardware microVMs via <code>libkrun</code> using Apple's <code>Virtualization.framework</code> (<code>vz</code>)</td><td>Hardware microVM (Colima KVM or native <code>libkrun</code>)</td></tr>
+          <tr><td><strong>linux-native</strong></td><td>Linux x86_64/ARM64 workstation, server, or cloud VM</td><td>Podman (rootless) / Docker directly on host (cgroups v2); no Colima, no one-VM-per-lane</td><td>Hardware microVM via <code>cube-kvm</code> (if <code>/dev/kvm</code> present)</td></tr>
+          <tr><td><strong>linux-gvisor</strong></td><td>KVM-free Linux, edge nodes (Intel N100, RPi 5), cloud VMs</td><td>Podman / Docker with <code>runsc</code> runtime in <code>systrap</code> mode; intercepts all syscalls in user space</td><td>User-space kernel sandbox (no KVM required)</td></tr>
         </tbody>
       </table>
       <p><strong>Mac / Colima best practices (mac-colima-vz family):</strong> run a <em>single</em> Colima VM sized for the workstation, keep it warm, and spawn ephemeral lane containers inside it on demand — never one VM per lane. Use <code>--vm-type vz --mount-type virtiofs --nested-virtualization</code> (not QEMU/KVM flags for the outer VM; nested-virt is the <em>inner</em> KVM opt-in), mount worktrees via virtiofs into the VM, and let the in-VM supervisor + admission controller bound container count/RAM. Substrate services and lanes are all containers in the same VM; cross-boundary traffic uses supervisor socket relays, not host loopback.</p>
       <p><strong>Confirmed 2026-11-09</strong> on Apple M3 Max (macOS 27.2, Colima 0.10.3, <code>vz</code> + <code>virtiofs</code>): <code>colima start --nested-virtualization</code> exposes <code>/dev/kvm</code> inside the VM (and in <code>--privileged</code> containers); QEMU <code>accel=kvm</code> is accepted for a nested L2 guest; Docker 29.5.2 containers run in-VM; Temporal (sqlite dev server) serves UI on <code>:8233</code>. Without <code>--nested-virtualization</code>, <code>/dev/kvm</code> is absent — the flag is required.</p>
+
+      <div class="callout callout-hate" style="margin: 1rem 0;">
+        <strong>Local-First Sandbox Hierarchy:</strong>
+        AEP prioritizes on-node execution across all profiles: (1) hardware microVMs via Linux KVM or macOS <code>libkrun</code> (<code>vz</code>); (2) user-space kernel sandbox via <code>gVisor</code> (<code>runsc systrap</code>) on KVM-free hosts. <strong>Remote sandbox clusters are strictly an emergency fallback of last resort</strong> if and only if all local options fail.
+      </div>
 
       <table>
         <thead>
@@ -292,7 +298,7 @@
             <th>Substrate</th>
             <th>Tier 1 (Ralph Lanes)</th>
             <th>Tier 2 (ESF Pipelines)</th>
-            <th>KVM Required</th>
+            <th>Isolation Engine</th>
           </tr>
         </thead>
         <tbody>
@@ -302,8 +308,8 @@
             <td>2 vCPU · 8 GB RAM · 30 GB Disk</td>
             <td>1 vCPU · 2.5 GB RAM · 10 GB Disk</td>
             <td>4.0 GB budget (1–2 lanes @ 2GB)</td>
-            <td><em>Disabled</em> (tasks quarantined or remote)</td>
-            <td>No</td>
+            <td>1.5 GB budget (1 lane via gVisor)</td>
+            <td>gVisor systrap (no KVM req)</td>
           </tr>
           <tr>
             <td><strong>small-16g</strong></td>
@@ -312,7 +318,7 @@
             <td>1 vCPU · 3.5 GB RAM · 15 GB Disk</td>
             <td>6.5 GB budget (2–3 lanes @ 2GB)</td>
             <td>6.0 GB budget (1 pipeline @ 6GB)</td>
-            <td>Yes (/dev/kvm)</td>
+            <td>Cube/KVM or gVisor</td>
           </tr>
           <tr>
             <td><strong>medium-32g</strong></td>
@@ -321,7 +327,7 @@
             <td>2 vCPU · 4.5 GB RAM · 25 GB Disk</td>
             <td>12.0 GB budget (4–6 lanes @ 2GB)</td>
             <td>15.0 GB budget (2–3 pipelines @ 5GB)</td>
-            <td>Yes (/dev/kvm)</td>
+            <td>Cube/KVM or libkrun (vz)</td>
           </tr>
           <tr>
             <td><strong>workstation-48g</strong></td>
@@ -330,14 +336,14 @@
             <td>2 vCPU · 8.0 GB RAM · 30 GB Disk</td>
             <td>16.0 GB budget (8–10 lanes @ 1.5–2GB)</td>
             <td>24.0 GB budget (4–6 pipelines @ 4–6GB)</td>
-            <td>Both families: Yes iff <code>/dev/kvm</code> probed (<code>linux-native</code> host KVM; <code>mac-colima-vz</code> requires <code>--nested-virtualization</code>)</td>
+            <td>libkrun/vz (macOS) or Cube/KVM (Linux)</td>
           </tr>
         </tbody>
       </table>
 
       <h3>Runtime Profile Auto-Detection</h3>
       <p>
-        <code>aep profile detect</code> returns <code>{host_os, host_family, size_tier, container_runtime, kvm_available, recommended_profile}</code>. On macOS it selects <code>mac-colima-vz</code>; Tier 2 is on iff the VM was started with <code>--nested-virtualization</code> and <code>/dev/kvm</code> probes present (confirmed on M3 Max). On Linux it selects <code>linux-native</code>; Tier 2 is on iff host <code>/dev/kvm</code> is present. If virtualization is absent, Tier 2 is disabled and <code>tier:factory</code> tasks quarantine — never downgrade.
+        <code>aep profile detect</code> returns <code>{host_os, host_family, size_tier, container_runtime, sandbox_backend, recommended_profile}</code>. Sandbox backend selection follows the local-first hierarchy: (1) native KVM, (2) macOS <code>libkrun</code> (<code>vz</code>), (3) <code>gVisor</code> (<code>runsc systrap</code>). If all local sandbox engines are unavailable, Tier 2 is disabled and <code>tier:factory</code> tasks quarantine (with remote cluster strictly as an emergency fallback of last resort) — never silent downgrade.
       </p>
       <pre><code># macOS / mac-colima-vz — ONE shared large VM, containers spawned on demand inside it:
 colima start --profile aep --cpu 12 --memory 48 --disk 220 --vm-type vz --mount-type virtiofs --nested-virtualization
@@ -372,7 +378,7 @@ aep boot --profile linux-native-8g --runtime podman   # or -16g / -32g / -48g by
             <strong>PR Review Finding (C2):</strong> Automatic downgrade of Tier-2 tasks to Tier 1 when ESF/Cube is unavailable removes the hardware microVM sandbox boundary that justified Tier-2 routing. Elevated review gates cannot prevent malware or exploit payloads that execute during test runs.
           </p>
           <p>
-            <strong>Remediation:</strong> When Temporal, Cube, or KVM is unavailable, tasks tagged <code>tier:factory</code> are <strong>strictly QUARANTINED</strong> (status <code>quarantined_esf_unavailable</code> or <code>quarantined_unsupported_tier2</code>). Automatic downgrade to Tier 1 is strictly forbidden. Downgrade to Tier 1 requires an explicit, authenticated operator risk reassessment override (<code>aep dispatch --override-tier1-risk-reassessment --reason="..."</code>).
+            <strong>Remediation:</strong> When Temporal, Cube, or local sandbox runtimes (KVM, libkrun, gVisor) are unavailable, tasks tagged <code>tier:factory</code> are <strong>strictly QUARANTINED</strong> (status <code>quarantined_esf_unavailable</code> or <code>quarantined_unsupported_tier2</code>). Connecting to an external remote sandbox cluster is strictly an emergency fallback of last resort if all local options fail. Automatic downgrade to Tier 1 is strictly forbidden; downgrade requires an explicit, authenticated operator risk reassessment override (<code>aep dispatch --override-tier1-risk-reassessment --reason="..."</code>).
           </p>
         </div>
       </div>
