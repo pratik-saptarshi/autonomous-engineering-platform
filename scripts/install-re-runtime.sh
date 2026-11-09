@@ -768,10 +768,12 @@ install_env_block() {
   # configuration on a traversable home). Capture the existing file's
   # mode and carry it onto the temp file; with no pre-existing .bashrc
   # there is no mode to preserve and the temp keeps its umask-derived
-  # mode.
+  # mode. The stat must dereference (-L): for a symlinked .bashrc the
+  # plain stat reports the link's own mode (0777), and the rename would
+  # install a world-writable file (Codex P1 on PR #135).
   local i bashrc_mode=""
   if [ -e "$bashrc" ]; then
-    bashrc_mode=$(stat -c %a "$bashrc") || fail env "cannot stat $bashrc"
+    bashrc_mode=$(stat -L -c %a "$bashrc") || fail env "cannot stat $bashrc"
   fi
   rm -f "$tmp"
   # shellcheck disable=SC2016 # the composed block must contain literal $HOME/$PATH — they expand in the login shell that reads it, not at install time
@@ -2659,7 +2661,10 @@ FIXTURE
   reset_env
   printf '# user bashrc\nexport EDITOR=vim\n' >"$envhome/.bashrc"
   chmod 600 "$envhome/.bashrc"
-  out=$( (umask 022; run_env install_env_block) 2>&1 ) && rc=0 || rc=$?
+  out=$( (
+    umask 022
+    run_env install_env_block
+  ) 2>&1) && rc=0 || rc=$?
   pass=0
   if [ "$rc" -eq 0 ] &&
     printf '%s\n' "$out" | grep -qxF "INSTALL-RE: env ok" &&
@@ -2671,7 +2676,10 @@ FIXTURE
   reset_env
   printf '# user bashrc\nexport EDITOR=vim\n' >"$envhome/.bashrc"
   chmod 600 "$envhome/.bashrc"
-  out=$( (umask 027; run_env install_env_block) 2>&1 ) && rc=0 || rc=$?
+  out=$( (
+    umask 027
+    run_env install_env_block
+  ) 2>&1) && rc=0 || rc=$?
   pass=0
   if [ "$rc" -eq 0 ] &&
     printf '%s\n' "$out" | grep -qxF "INSTALL-RE: env ok" &&
@@ -2685,7 +2693,10 @@ FIXTURE
   reset_env
   printf '# user bashrc\nexport EDITOR=vim\n' >"$envhome/.bashrc"
   chmod 644 "$envhome/.bashrc"
-  out=$( (umask 022; run_env install_env_block) 2>&1 ) && rc=0 || rc=$?
+  out=$( (
+    umask 022
+    run_env install_env_block
+  ) 2>&1) && rc=0 || rc=$?
   pass=0
   if [ "$rc" -eq 0 ] &&
     printf '%s\n' "$out" | grep -qxF "INSTALL-RE: env ok" &&
@@ -2697,7 +2708,10 @@ FIXTURE
   # Fresh install: with no pre-existing .bashrc there is no mode to
   # preserve, and the created file keeps its umask-derived 0644.
   reset_env
-  out=$( (umask 022; run_env install_env_block) 2>&1 ) && rc=0 || rc=$?
+  out=$( (
+    umask 022
+    run_env install_env_block
+  ) 2>&1) && rc=0 || rc=$?
   pass=0
   if [ "$rc" -eq 0 ] &&
     printf '%s\n' "$out" | grep -qxF "INSTALL-RE: env ok" &&
@@ -2706,6 +2720,26 @@ FIXTURE
     pass=1
   fi
   report_stage env-perms-fresh-install "$pass"
+
+  # Symlink leg: a .bashrc that is a symlink to a 0600 target must
+  # install at the target's 0600. Without dereference the capture reads
+  # the link's own 0777 and the rename installs a world-writable file
+  # (Codex P1 on PR #135); this case is its discriminating oracle.
+  reset_env
+  printf '# user bashrc\nexport EDITOR=vim\n' >"$envhome/.bashrc-target"
+  chmod 600 "$envhome/.bashrc-target"
+  ln -s ".bashrc-target" "$envhome/.bashrc"
+  out=$( (
+    umask 022
+    run_env install_env_block
+  ) 2>&1) && rc=0 || rc=$?
+  pass=0
+  if [ "$rc" -eq 0 ] &&
+    printf '%s\n' "$out" | grep -qxF "INSTALL-RE: env ok" &&
+    [ "$(stat -c %a "$envhome/.bashrc")" = "600" ]; then
+    pass=1
+  fi
+  report_stage env-perms-symlink-target "$pass"
 
   # (g) assert_rea with node/npx absent prints the SKIP line and
   # returns 0 — absence never fails the run.
