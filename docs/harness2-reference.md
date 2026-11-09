@@ -4,7 +4,7 @@
 
 pratik-saptarshi/harness2 — Harness², a plug-and-play framework for recursive agent harnessing in an open world (the implementation behind the Harness² paper, arXiv 2610.14224). A *harness* is the system around a model — prompts, tools, memory, skills, orchestration — and *harnessing* is optimizing that system while model weights stay fixed. Harness² connects two levels of recursion: task-level recursion refines the execution harness for the current task through a contrastive Propose–Probe–Compose step (propose edits, probe their effects on the same task, compose a refined harness from behavioral contrasts, without ground-truth feedback), and harnessing-level recursion updates a persistent *improvement harness* with adopted harnesses and evidence-supported lessons from each task.
 
-Vendored snapshot: [PROVENANCE.md](../reference/harness2/PROVENANCE.md) — upstream `https://github.com/pratik-saptarshi/harness2` (default branch `develop`) at `1cfe254e8d25b15f37048c3730134686abe60335` (2026-10-26, Apache License 2.0).
+Vendored snapshot: [PROVENANCE.md](../reference/harness2/PROVENANCE.md) — upstream `https://github.com/pratik-saptarshi/harness2` (default branch `develop`) at `e5cda48c48d1072f6d855ff4cb88eabdc2ede147` (2026-11-09, Apache License 2.0).
 
 ## Mapping to the AEP loop
 
