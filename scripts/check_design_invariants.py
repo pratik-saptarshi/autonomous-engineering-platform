@@ -194,16 +194,35 @@ def check_c12(docs, errors):
     lld3 = section(docs["lld"], "3. As-built")
     lld11 = section(docs["lld"], "11. Test plan")
     draft = docs["draft"]
-    combined = pr11b + hld9 + lld3 + lld11
     if not pr11b:
         add(errors, "C12", "missing backlog PR-11b")
-    need(errors, "C12", "StdoutSha", combined, r"StdoutSha|stdout_sha")
-    need(errors, "C12", "StderrSha", combined, r"StderrSha|stderr_sha")
-    need(errors, "C12", "Nonce", combined, r"Nonce")
-    need(errors, "C12", "LedgerSeq", combined, r"LedgerSeq")
-    need(errors, "C12", "Signature", combined, r"Signature|Ed25519")
+    else:
+        need(errors, "C12", "PR-11b StdoutSha", pr11b, r"StdoutSha|stdout_sha")
+        need(errors, "C12", "PR-11b StderrSha", pr11b, r"StderrSha|stderr_sha")
+        need(errors, "C12", "PR-11b Nonce", pr11b, r"Nonce")
+        need(errors, "C12", "PR-11b IssuedAt", pr11b, r"IssuedAt")
+        need(errors, "C12", "PR-11b LedgerSeq", pr11b, r"LedgerSeq")
+        need(errors, "C12", "PR-11b KeyID", pr11b, r"KeyID")
+        need(errors, "C12", "PR-11b Signature", pr11b, r"Signature|Ed25519")
+    need(errors, "C12", "HLD §9 StdoutSha", hld9, r"StdoutSha|stdout_sha")
+    need(errors, "C12", "HLD §9 StderrSha", hld9, r"StderrSha|stderr_sha")
+    need(errors, "C12", "HLD §9 Nonce", hld9, r"Nonce")
+    need(errors, "C12", "HLD §9 IssuedAt", hld9, r"IssuedAt")
+    need(errors, "C12", "HLD §9 LedgerSeq", hld9, r"LedgerSeq")
+    need(errors, "C12", "HLD §9 KeyID", hld9, r"KeyID")
+    need(errors, "C12", "HLD §9 Signature", hld9, r"Signature|Ed25519")
+    need(errors, "C12", "LLD §3 StdoutSha", lld3, r"StdoutSha|stdout_sha")
+    need(errors, "C12", "LLD §3 StderrSha", lld3, r"StderrSha|stderr_sha")
+    need(errors, "C12", "LLD §11 StdoutSha", lld11, r"StdoutSha|stdout_sha")
+    need(errors, "C12", "LLD §11 StderrSha", lld11, r"StderrSha|stderr_sha")
+    need(errors, "C12", "LLD §11 Nonce", lld11, r"Nonce")
+    need(errors, "C12", "LLD §11 LedgerSeq", lld11, r"LedgerSeq|ledger\s+sequence")
+    need(errors, "C12", "LLD §11 Signature", lld11, r"Signature|signature")
     forbid(errors, "C12", "tail-only digest claim", draft, r"tail\s+digest")
-    need(errors, "C12", "full-stream digest", draft, r"full[-\s]?stream\s+digest")
+    need(errors, "C12", "draft full-stream digest", draft, r"full[-\s]?stream\s+digest")
+    need(errors, "C12", "draft Nonce", draft, r"nonce")
+    need(errors, "C12", "draft ledger sequence", draft, r"ledger\s+sequence")
+    need(errors, "C12", "draft signature", draft, r"Ed25519|signature")
 
 
 def check_c8(docs, errors):
@@ -267,6 +286,7 @@ def check_c3(docs, errors):
     need(errors, "C3", "ghg.sock", combined, r"ghg\.sock")
     need(errors, "C3", "compose NeuroStrata endpoint", combined, r"neurostrata:34343")
     need(errors, "C3", "private compose network", combined, r"aep-net")
+    need(errors, "C3", "supervisor GitHub egress network", combined, r"aep-egress")
 
 
 CHECKS = [

@@ -386,9 +386,12 @@ aep boot --profile nano-8g --runtime podman</code></pre>
       NEUROSTRATA_ENDPOINT: "neurostrata:34343"
     volumes: [aep-state:/state, aep-sockets:/run/aep, "${AEP_REPO}:/repo:ro"]
     mem_limit: 512m
-    networks: [aep-net]
+    networks: [aep-net, aep-egress]
 volumes: { ns-data: {}, aep-state: {}, aep-sockets: {} }
-networks: { aep-net: { driver: bridge, internal: true } }</code></pre>
+networks:
+  aep-net: { driver: bridge, internal: true }   # NeuroStrata only; no external route
+  aep-egress: { driver: bridge }                # ghg.py/GitHub egress for the supervisor only</code></pre>
+<p>The trusted supervisor joins <code>aep-egress</code> so <code>ghg.py</code> can reach GitHub; <code>aep-supervisor</code> keeps <code>aep-net</code> for NeuroStrata. <code>neurostrata</code> joins only <code>aep-net</code>, and lane containers join neither network (<code>--network none</code>). The two-network split keeps memory private while giving the GitHub relay an external route.</p>
 <p>The substrate supervisor manages four IPC relays in <code>aep-sockets</code>: <code>memory.sock</code> (NeuroStrata), <code>ghg.sock</code> (GitHub), <code>exec.sock</code> (allowlisted command execution), and <code>git.sock</code> (host-side status/diff/commit). All four implement one <code>relay.Handler</code> contract with peer authentication, framing, size caps, and one audit record; they are not four ad-hoc protocols.</p>
 
 <h3>9.3 Lane container run spec</h3>
