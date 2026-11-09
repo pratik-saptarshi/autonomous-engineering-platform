@@ -1,505 +1,618 @@
-# PR #133 Open-Finding Remediation Implementation Plan
+# PR #133 Open-Finding Remediation Implementation Plan (v2)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Close the seven open P2 findings on PR #133 by making the Tier-2 capability model, zero-egress lane I/O, admission arithmetic, and receipt semantics internally consistent across the four design documents, with mechanically checkable acceptance criteria that prevent recurrence.
+**Goal:** Close the open P2 findings on PR #133 (C6-C12) and re-audit the earlier fixes (C1-C5, with C4/C5 reopened) by making the Tier-2 capability model, lane boundaries, admission arithmetic, and receipt semantics internally consistent and mechanically checkable at head `080e28b`.
 
-**Architecture:** Treat `docs/plan/aep-lld-v1.1.html` §4.1 and §7 as the canonical capability model. Derive `Tier2Supported` from the resolved sandbox backend and carry an explicit `IsolationClass` (hardware microVM > user-space kernel > remote). Add a host-mediated `model.sock` relay beside the existing `memory.sock` and `ghg.sock` relays. Make re-verification use the same-or-stronger isolation class as the original run. Fix the unsigned subtraction and the total-vs-available RAM criteria, bind test-output digests into a signed receipt, and add one small consistency script to CI.
+**Architecture:** One attested capability value type replaces the stored `Tier2Supported` boolean and the unranked `IsolationClass` string. Re-verification is gated by a task risk floor, not by the origin run's class. Model execution moves outside the lane; the lane exposes an `exec.sock` tool relay instead of a model relay. Git control moves to a host-side `git.sock` relay; no host `.git` directory is mounted into a lane. Memory arithmetic uses typed units and a checked predicate. Receipts hash full output streams and carry a nonce, ledger sequence, and Ed25519 signature. A structural invariant checker, written before the fixes, guards every claim.
 
-**Tech Stack:** HTML design docs, Chromium headless PDF rendering, Go interface sketches (design-only where packages do not exist yet), Bash + ripgrep for invariant checks, GitHub Actions `docs-lint` job.
+**Tech Stack:** HTML design docs; Python 3.9 stdlib invariant checker with negative fixtures; Go 1.27 interface sketches and tests; Docker or CI Chromium for PDF rendering; GitHub Actions `docs-lint` job.
 
-**Spec:** `docs/plan/aep-hld-v1.1.html`, `docs/plan/aep-lld-v1.1.html`, `docs/plan/aep-backlog-v1.1.html`, `docs/draft-proposal.html`; PR #133 review findings C6-C12.
+**Spec:** `docs/plan/aep-hld-v1.1.html`, `docs/plan/aep-lld-v1.1.html`, `docs/plan/aep-backlog-v1.1.html`, `docs/draft-proposal.html`; PR #133 findings C1-C12.
+
+**Baseline:** `080e28b` (`docs/plan/aep-backlog-v1.1.html` is 525 lines; CAP-08/11/12 no longer exist; C11 is already fixed in AC-07.1; C12 must be retargeted to `internal/verifier/runner` and PR-11b/PR-12).
+
+## Decision Log
+
+- **D1: Capability is a value, not a field.** `Profile.Backend` carries kind, isolation, provenance, and probe evidence. `Tier2Supported()` is a method; `KVMProbe` is evidence only. This makes `Tier2Supported=true` with no backend unrepresentable.
+- **D2: Re-verification uses a risk floor.** A task's `MinIsolation` is set by its risk class (`tier:factory` untrusted -> hardware microVM; explicitly gVisor-eligible -> user-space kernel). The origin run never lowers the floor. If the floor is unavailable, quarantine before execution.
+- **D3: The model runs outside the lane.** The trusted host harness performs inference and selects the model tier; the lane exposes `exec.sock` for allowlisted commands. No `model.sock`, no provider credential, no arbitrary prompt channel.
+- **D4: Git control runs on the host.** Tier 1 lanes use `git.sock` for status/diff/commit/push; the worktree is mounted without `.git`. Tier 2 uses an independent clone and the host fetches the patch after verification.
+- **D5: Receipts are signed and full-stream.** `StdoutSha`/`StderrSha` hash every byte; tails are display-only. `Nonce`, `IssuedAt`, `LedgerSeq`, and `KeyID` make replay detectable. Ed25519 is used so an external auditor can verify without the host key.
 
 ## Global Constraints
 
-- Do not weaken an isolation guarantee to resolve a contradiction. Choose the stronger implementable rule and record it.
-- One fact lives in one place. The LLD §4.1/§7 model is canonical; HLD, backlog, and draft proposal reference it instead of restating a different rule.
-- Lanes have no direct network egress and no provider, GitHub, or memory credentials. All cross-boundary traffic is host-mediated over a Unix socket (Tier 1) or vsock/outbox (Tier 2).
-- A task's re-verification isolation class MUST be at least as strong as its execution isolation class. Never re-verify weaker.
-- Unknown or unavailable capability fails closed: quarantine before execution, never silent downgrade.
-- Keep HTML well-formed. Re-render the committed PDFs from the same HTML with Chromium headless.
-- Conventional Commits, one commit per task. Use `docs(plan): ...` for doc-only tasks and `test(docs): ...` for the invariant check.
-- Do not resolve review threads until the fixing commit is pushed and CI is green.
+- Fail closed: an unknown backend, unattested isolation, missing model boundary, or missing Git relay must quarantine or refuse, never silently degrade.
+- One fact lives in one place: LLD §4.1/§4.9 defines the capability types; HLD, backlog, and draft reference that anchor. Do not restate a different enum or table.
+- No lane has direct network egress, provider credentials, GitHub credentials, or host Git metadata.
+- Units are explicit: `MiB` and `Bytes` are distinct types; profile minimum uses total RAM, admission uses available RAM.
+- Re-verification isolation must meet the task's `MinIsolation`; it is never origin-relative.
+- No stored derived booleans. If a value can disagree with its source, derive it.
+- Write the failing invariant check first; run it after every task.
+- Conventional Commits, one commit per task. Prefix doc tasks with `docs(plan):` and checker tasks with `test(docs):`.
+- Do not resolve C4 or C5 until the four documents agree. Do not resolve any thread before its fixing commit is pushed and CI is green.
+- Do not commit a stale PDF. Render from the same HTML or leave the PDF unchanged and record a follow-up.
 
 ## Review Focus
 
-- A KVM-free host with gVisor must not be told Tier 2 is unsupported while §7 admits it, and must not be admitted for hardware-only re-verification.
-- A `--network none` lane must still be able to infer, read memory, use GitHub, inspect its branch, and commit without credentials.
-- Admission must reject, not admit, when available memory is below the request.
-- A receipt must change when test output changes, and an unsigned receipt must not verify.
-- A busy but correctly sized host must not be rejected by the minimum-hardware check.
+- A KVM-free host with gVisor must be admitted for gVisor-eligible work and must quarantine hardware-floor work before execution, not after.
+- A `--network none` lane must still execute tests and commit through host relays, with no model or Git credential in the lane.
+- Available memory below the request must reject, not wrap.
+- A receipt must change when any test-output byte changes, and a replayed receipt must fail.
+- A busy but correctly sized host must pass profile detection and fail only admission.
+- `nano-8g` must have one coherent Tier-2 story across HLD, LLD, backlog, and draft.
 
 ---
 
-### Task 1: Canonicalize the sandbox capability model (C9)
+### Task 0: Write the failing invariant checker first
 
 **Files:**
-- Modify: `docs/plan/aep-lld-v1.1.html` §4.1 (line ~79), §7 (line ~239), §10 (line ~325)
-- Modify: `docs/plan/aep-hld-v1.1.html` §6 table (line ~142), §9 invariant (line ~176), §11 risk row (line ~204)
-- Modify: `docs/plan/aep-backlog-v1.1.html` CAP-02/AC-02, CAP-07/AC-07, CAP-08/AC-08
-- Test: `scripts/check-design-invariants.sh` (created in Task 8)
+- Create: `scripts/check_design_invariants.py`
+- Create: `scripts/tests/fixtures/design-invariants/*.html`
+- Test: the checker's own fixtures; expected to fail on current docs
 
 **Interfaces:**
-- Produces: `SandboxBackend`, `IsolationClass`, `Profile.KVMProbe`, `Profile.Tier2Supported`, `Profile.ResolveSandboxBackend()`, `Profile.CanReverify(original IsolationClass) bool`.
+- Produces: `check_design_invariants.py --check` and `--self-test`.
 
-- [ ] **Step 1: Write the failing check**
+- [ ] **Step 1: Write the checker**
 
-Add these assertions to the Task 8 script now, or run them ad hoc:
+Use Python 3.9 stdlib only. Read the four docs as text and assert:
 
-```bash
-! rg -n 'Tier2Supported\s+bool\s+// true iff /dev/kvm' docs/plan/aep-lld-v1.1.html
-rg -n 'Tier2Supported.*ResolveSandboxBackend|ResolveSandboxBackend.*Tier2Supported' docs/plan/aep-lld-v1.1.html
-rg -n 'IsolationClass' docs/plan/aep-lld-v1.1.html docs/plan/aep-hld-v1.1.html
-```
+1. **C9:** LLD defines `type Backend struct`, `type Isolation struct`, and `AtLeast`; no `Tier2Supported bool` field; `Tier2Supported()` is a method; `KVMProbe` is separate.
+2. **C9:** no sentence equating `Tier2Supported` with `/dev/kvm`; HLD references the LLD anchor.
+3. **C6:** no `host - req.MemMiB` subtraction; a `host < reqBytes` comparison exists; zero and overflow requests are rejected.
+4. **C7:** `exec.sock` appears in the run spec; `model.sock` does not; HLD says model execution is outside the lane; no provider key in the lane env.
+5. **C10:** `git.sock` appears in the run spec; no `-v .../.git:` mount; the lane test plan includes a relay commit.
+6. **C11:** `TotalRAM >= 7.5 GiB` is present; `< 8 GB available RAM` is absent; admission uses available RAM plus floor.
+7. **C12:** receipt fields include `StdoutSha`, `StderrSha`, `Nonce`, `IssuedAt`, `LedgerSeq`, `KeyID`, `Signature`; the AC binds full output, not only tails.
+8. **C8/C4:** no unconditional "hardware-isolated microVM" rule for all re-verification; `MinIsolation` appears in LLD and HLD; gVisor is allowed only for gVisor-eligible tasks.
+9. **C5:** no "Tier 2 disabled" for `nano-8g`; nano's lane size matches the HLD 1.5 GB budget.
+10. **C1:** LLD §4.9 contains the `VerifyEgressProbe` digest sentence.
 
-Expected: the first command fails today because line 93 still defines `Tier2Supported` from `/dev/kvm`.
+- [ ] **Step 2: Add negative fixtures**
 
-- [ ] **Step 2: Replace the profile struct in LLD §4.1**
+For each check, add one `bad-<n>.html` fixture containing the negation ("we do not use X") and one deletion fixture. The self-test must fail every bad fixture and pass every good fixture. This is the first nail: a presence-only grep is not acceptable.
 
-```go
-type IsolationClass string
-
-const (
-    IsolationNone          IsolationClass = ""
-    IsolationHardwareVM    IsolationClass = "hardware-microvm"
-    IsolationUserSpace     IsolationClass = "user-space-kernel"
-    IsolationRemote        IsolationClass = "remote"
-)
-
-type Profile struct {
-    // ... existing sizing fields ...
-    KVMProbe        bool           // /dev/kvm probe result; never the capability definition
-    SandboxBackend  SandboxBackend // resolved at boot; BackendNone when none available
-    IsolationClass  IsolationClass // class of SandboxBackend
-    Tier2Supported  bool           // == (SandboxBackend != BackendNone)
-}
-
-func (p Profile) ResolveSandboxBackend() SandboxBackend // cube-kvm -> libkrun -> gvisor -> remote if configured
-func (p Profile) CanReverify(original IsolationClass) bool // verification class >= original class
-```
-
-Add `BackendNone SandboxBackend = ""` to the backend constants next to `BackendCubeKVM`, `BackendLibkrun`, `BackendGVisor`, `BackendRemote`.
-
-- [ ] **Step 3: Rewrite the host-family rule in LLD §4.1**
-
-Replace "`Tier2Supported` iff `/dev/kvm` probes present" with:
-
-> `Tier2Supported` is derived from `ResolveSandboxBackend()`, never from `/dev/kvm` alone. The KVM probe is recorded in `KVMProbe` and only selects the `cube-kvm` candidate. macOS may resolve `libkrun` without nested KVM; KVM-free Linux may resolve `gvisor`; `remote-api` counts only when a remote endpoint is explicitly configured.
-
-- [ ] **Step 4: Update the HLD risk row and invariant**
-
-In HLD §11, replace "set `Tier2Supported` from the result [of the `/dev/kvm` probe]" with "set `KVMProbe` from the result; set `Tier2Supported` from `ResolveSandboxBackend()`". In HLD §9, add:
-
-> Tier-2 support is a function of the resolved backend, not host family or KVM alone. A KVM-free host with `runsc` is Tier-2 capable; a host with no local backend and no configured remote endpoint quarantines.
-
-- [ ] **Step 5: Align the backlog acceptance criteria**
-
-Update AC-02.1.1.1 to require `ResolveBackend` for all three local backends, and AC-07.1.1.1/AC-08 to state that `Tier2Supported` is true when gVisor resolves. Add a negative AC: GIVEN no local backend and no remote endpoint, THEN `Tier2Supported=false` and Tier-2 tasks quarantine.
-
-- [ ] **Step 6: Run the check and commit**
+- [ ] **Step 3: Run the failing check**
 
 ```bash
-bash scripts/check-design-invariants.sh
-git add docs/plan/aep-lld-v1.1.html docs/plan/aep-hld-v1.1.html docs/plan/aep-backlog-v1.1.html
-git commit -m "docs(plan): derive tier-2 capability from resolved sandbox backend"
+python3 scripts/check_design_invariants.py --self-test   # expected: pass
+python3 scripts/check_design_invariants.py --check       # expected: fail, listing C5-C12/C1
 ```
 
----
-
-### Task 2: Make re-verification isolation-aware (C8)
-
-**Files:**
-- Modify: `docs/plan/aep-hld-v1.1.html` §9 invariant
-- Modify: `docs/plan/aep-lld-v1.1.html` §10 failure matrix, §12 T11, §11 test plan
-- Modify: `docs/plan/aep-backlog-v1.1.html` CAP-11 / AC-11.1.1
-- Test: `scripts/check-design-invariants.sh`
-
-**Interfaces:**
-- Consumes: `IsolationClass`, `CanReverify` from Task 1.
-- Produces: `VerifyResult.IsolationClass` and the policy that verification class >= execution class.
-
-- [ ] **Step 1: Write the failing check**
-
-```bash
-! rg -n 'must execute inside a fresh hardware-isolated microVM' docs/plan/aep-hld-v1.1.html
-rg -n 'same or stronger isolation|CanReverify|IsolationClass' docs/plan/aep-hld-v1.1.html docs/plan/aep-lld-v1.1.html
-```
-
-Expected: fails today because HLD §9 still requires a hardware microVM unconditionally.
-
-- [ ] **Step 2: Rewrite the invariant**
-
-Replace the unconditional sentence with:
-
-> Independent re-verification of a Tier-2 patch MUST execute in a fresh, disposable sandbox whose `IsolationClass` is at least as strong as the class used for the original run. Hardware microVM is required when the original run used hardware isolation; gVisor is acceptable only for gVisor-origin work. A host that cannot provide the required class quarantines before execution. Tier 1 still performs static analysis only.
-
-- [ ] **Step 3: Update the failure matrix and T11**
-
-Add a row: "Re-verification class unavailable" -> `CanReverify` false -> `quarantine: blocked:reverify-isolation-unavailable`. Update T11 acceptance criteria to record `isolation_class` in `VerifyResult` and to reject a weaker class.
-
-- [ ] **Step 4: Update backlog CAP-11**
-
-Change "inside fresh, disposable hardware microVMs or gVisor sandboxes" to the class-ordered rule. Add AC-11.1.1.3: GIVEN a gVisor-origin run on a KVM-free host, WHEN re-verification runs, THEN it uses a fresh gVisor sandbox and records `isolation_class=user-space-kernel`; GIVEN a hardware-microVM-origin run, THEN a gVisor-only host quarantines before re-verification.
-
-- [ ] **Step 5: Run the check and commit**
-
-```bash
-bash scripts/check-design-invariants.sh
-git add docs/plan/aep-hld-v1.1.html docs/plan/aep-lld-v1.1.html docs/plan/aep-backlog-v1.1.html
-git commit -m "docs(plan): require same-or-stronger isolation for re-verification"
-```
-
----
-
-### Task 3: Add the model relay to zero-egress lanes (C7)
-
-**Files:**
-- Modify: `docs/plan/aep-lld-v1.1.html` §4.5 or new §4.10, §9.2 compose, §9.3 run spec, §10 failure matrix
-- Modify: `docs/plan/aep-hld-v1.1.html` §5.1 services, §9 invariant, §11 risk
-- Modify: `docs/plan/aep-backlog-v1.1.html` Domain 2 relay CAP and ACs
-- Modify: `docs/draft-proposal.html` core-services table and lane lifecycle
-- Test: `scripts/check-design-invariants.sh`
-
-**Interfaces:**
-- Produces: `internal/modeld` (`aep modeld`), `model.sock`, request/response schema, `ModelRelayPolicy`.
-
-- [ ] **Step 1: Write the failing check**
-
-```bash
-rg -n 'model\.sock|aep modeld|model relay' docs/plan/aep-lld-v1.1.html docs/plan/aep-hld-v1.1.html
-```
-
-Expected: no matches today; the only services are `memory.sock` and `ghg.sock`.
-
-- [ ] **Step 2: Specify the relay**
-
-Add to LLD §4.5 (or §4.10):
-
-> `aep modeld` is a host-side relay that holds provider credentials and serves `model.sock` to lanes. It accepts a bounded JSON request (`model`, `messages`, `max_tokens`, `tools`, `request_id`), forwards only to an allowlisted provider endpoint, streams the response, and writes an audit record with prompt/response digests and token counts. It strips arbitrary headers, enforces request/response size caps, and never exposes provider keys to the lane. A rejected model or endpoint returns a typed policy error.
-
-- [ ] **Step 3: Update the run spec and compose file**
-
-Add to the LLD §9.2 substrate compose services: `modeld` with the provider secret mounted on the host side only. Add to §9.3:
-
-```bash
--v "$AEP_SOCKETS/model.sock:/run/aep/model.sock:rw" \
---env AEP_MODEL_SOCKET=/run/aep/model.sock \
-# no provider key in --env-file
-```
-
-The lane client must connect to the socket; `--network none` remains unchanged.
-
-- [ ] **Step 4: Add the failure mode and invariants**
-
-Failure matrix: "Model relay down or policy-denied" -> pause the lane and retry with backoff; after the bounded retry, quarantine `blocked:model-relay-unavailable`; never fall back to direct provider network. HLD §9 add: "Lanes hold no model credentials and reach inference only through `aep modeld`." Draft proposal adds model relay to the core-services list and the lane lifecycle.
-
-- [ ] **Step 5: Add backlog ACs**
-
-AC: GIVEN a lane with `--network none`, WHEN it requests inference, THEN the request reaches `model.sock` and no provider credential exists in the lane. GIVEN a non-allowlisted model, THEN the relay rejects it. GIVEN the relay is down, THEN the lane does not open direct egress.
-
-- [ ] **Step 6: Run the check and commit**
-
-```bash
-bash scripts/check-design-invariants.sh
-git add docs/plan/aep-lld-v1.1.html docs/plan/aep-hld-v1.1.html docs/plan/aep-backlog-v1.1.html docs/draft-proposal.html
-git commit -m "docs(plan): add host-mediated model relay for zero-egress lanes"
-```
-
----
-
-### Task 4: Mount linked-worktree Git metadata into lanes (C10)
-
-**Files:**
-- Modify: `docs/plan/aep-lld-v1.1.html` §8.1 manifest, §9.3 run spec, §11 test plan
-- Modify: `docs/plan/aep-backlog-v1.1.html` lane lifecycle CAP/AC
-- Test: `scripts/check-design-invariants.sh`
-
-**Interfaces:**
-- Produces: a container-visible Git layout: worktree at `/workspace`, repository metadata at the same absolute path as the host, writable only for `.git/worktrees/<laneId>`.
-
-- [ ] **Step 1: Write the failing check**
-
-```bash
-rg -n '\.git/worktrees|relative-paths|independent clone' docs/plan/aep-lld-v1.1.html
-```
-
-Expected: no matches today; §9.3 mounts only `<worktree>:/workspace`.
-
-- [ ] **Step 2: Add the mount layout**
-
-Use relative-path worktrees where Git supports it, otherwise bind-mount at identical absolute paths:
-
-```bash
-# Preferred: create with relative paths so the .git file is self-contained
-git -C "$repo" worktree add --relative-paths -b "$branch" "$wt_path" "$base_sha"
-
-# Fallback: expose the repo metadata at the same absolute path inside the lane
--v "$repo/.git:$repo/.git:ro" \
--v "$repo/.git/worktrees/$lane_id:$repo/.git/worktrees/$lane_id:rw" \
--v "$wt_path:/workspace" -w /workspace
-```
-
-For Tier 2 microVMs, use an independent clone or a read-only metadata mount; never give a Tier-2 guest writable host Git metadata.
-
-- [ ] **Step 3: Add the lane verification step**
-
-Add to §11 Test Plan and the lane lifecycle AC:
-
-```bash
-git -C /workspace rev-parse --git-dir
-git -C /workspace status --porcelain
-git -C /workspace commit --allow-empty -m "lane smoke"
-git -C /workspace log -1 --format=%H
-```
-
-Expected: all succeed inside the lane, and the commit appears on the lane branch in the host repository.
-
-- [ ] **Step 4: Run the check and commit**
-
-```bash
-bash scripts/check-design-invariants.sh
-git add docs/plan/aep-lld-v1.1.html docs/plan/aep-backlog-v1.1.html
-git commit -m "docs(plan): expose linked-worktree metadata to lanes"
-```
-
----
-
-### Task 5: Fix the admission underflow (C6)
-
-**Files:**
-- Modify: `docs/plan/aep-lld-v1.1.html` §6 admission algorithm, §11 test plan
-- Modify: `docs/plan/aep-backlog-v1.1.html` CAP-08 ACs
-- Test: `scripts/check-design-invariants.sh`
-
-**Interfaces:**
-- Produces: an underflow-safe admission predicate with explicit overflow rejection.
-
-- [ ] **Step 1: Write the failing check**
-
-```bash
-! rg -n 'host\s*-\s*req\.MemMiB\*MiB\s*<' docs/plan/aep-lld-v1.1.html
-rg -n 'host\s*<\s*req\.MemMiB\*MiB|budget\s*-\s*used' docs/plan/aep-lld-v1.1.html
-```
-
-Expected: fails today because §6 still subtracts before comparing.
-
-- [ ] **Step 2: Replace the predicate**
-
-```text
-reqBytes := req.MemMiB * MiB
-if req.MemMiB != 0 && reqBytes/MiB != req.MemMiB -> ErrInvalidRequest("memory overflow")
-if host < reqBytes                              -> ErrNoCapacity("host floor")
-if host - reqBytes < profile.MemFloorMiB*MiB    -> ErrNoCapacity("host floor")
-if used > budget || req.MemMiB > budget - used  -> ErrNoCapacity("tier memory budget")
-```
-
-Keep the existing ceiling and reservation logic unchanged.
-
-- [ ] **Step 3: Add the admission test table**
-
-Add to LLD §11 and CAP-08 AC:
-
-| Available | Request | Floor | Expected |
-|---|---|---|---|
-| 1 GiB | 2 GiB | 384 MiB | reject (`host floor`) |
-| 2.5 GiB | 2 GiB | 384 MiB | admit |
-| 2.375 GiB | 2 GiB | 384 MiB | reject (below floor) |
-| 8 GiB | `math.MaxUint64` | 384 MiB | reject (`invalid request`) |
-| used=budget | 1 MiB | 384 MiB | reject (`tier memory budget`) |
-
-- [ ] **Step 4: Run the check and commit**
-
-```bash
-bash scripts/check-design-invariants.sh
-git add docs/plan/aep-lld-v1.1.html docs/plan/aep-backlog-v1.1.html
-git commit -m "docs(plan): make admission memory check underflow-safe"
-```
-
----
-
-### Task 6: Validate minimum host size against total RAM (C11)
-
-**Files:**
-- Modify: `docs/plan/aep-backlog-v1.1.html` AC-07.1.1.3
-- Modify: `docs/plan/aep-hld-v1.1.html` §6 profile table note
-- Test: `scripts/check-design-invariants.sh`
-
-- [ ] **Step 1: Write the failing check**
-
-```bash
-! rg -n 'less than 8 GB available RAM|with < 8 GB available RAM' docs/plan/aep-backlog-v1.1.html
-rg -n 'total RAM' docs/plan/aep-backlog-v1.1.html
-```
-
-- [ ] **Step 2: Rewrite the AC**
-
-> **AC-07.1.1.3 (Minimum Hardware):** GIVEN a host with less than 8 GB of **total** RAM, WHEN `profile.Validate` runs, THEN it returns an error and refuses to start the substrate. Available RAM is not a minimum-hardware signal.
-
-Add AC-07.1.1.4:
-
-> **AC-07.1.1.4 (Busy Host Admission):** GIVEN a correctly sized host whose current available RAM is below 8 GB because other workloads are running, WHEN the supervisor restarts, THEN `profile.Validate` succeeds and admission alone decides lane capacity using `AvailableBytes`, the request, and `MemFloorMiB`.
-
-- [ ] **Step 3: Add the HLD note**
-
-In HLD §6, add: "Profile selection uses total RAM; admission uses available RAM. A busy host is not a mis-sized host."
-
-- [ ] **Step 4: Run the check and commit**
-
-```bash
-bash scripts/check-design-invariants.sh
-git add docs/plan/aep-backlog-v1.1.html docs/plan/aep-hld-v1.1.html
-git commit -m "docs(plan): validate minimum hardware against total RAM"
-```
-
----
-
-### Task 7: Bind test output into signed receipts (C12)
-
-**Files:**
-- Modify: `docs/plan/aep-backlog-v1.1.html` CAP-12 struct/functions/ACs
-- Modify: `docs/plan/aep-lld-v1.1.html` receipt interface, if present, and §11 test plan
-- Modify: `docs/plan/aep-hld-v1.1.html` §9 invariant
-- Test: `scripts/check-design-invariants.sh`
-
-**Interfaces:**
-- Produces: `Receipt.StdoutDigest`, `Receipt.StderrDigest`, `Receipt.TailDigest`, `Receipt.MemoryDigest`, `Receipt.Signature`; `Generate` and `VerifyReceipt`.
-
-- [ ] **Step 1: Write the failing check**
-
-```bash
-rg -n 'stdout_digest|stderr_digest|tail_digest' docs/plan/aep-backlog-v1.1.html
-rg -n 'signature|HMAC' docs/plan/aep-backlog-v1.1.html
-```
-
-Expected: `tail_digest` exists as a field but is absent from the AC formula; no signature field exists.
-
-- [ ] **Step 2: Replace the receipt definition**
-
-```go
-type Receipt struct {
-    IssueID       string `json:"issue_id"`
-    CommitSHA     string `json:"commit_sha"`
-    PatchDigest   string `json:"patch_digest"`
-    EgressProof   string `json:"egress_proof"`
-    StdoutDigest  string `json:"stdout_digest"`
-    StderrDigest  string `json:"stderr_digest"`
-    TailDigest    string `json:"tail_digest"`
-    MemoryDigest  string `json:"memory_digest"`
-    Signature     string `json:"signature"`
-}
-```
-
-`Generate` canonicalizes all fields except `Signature`, computes SHA-256 for `TailDigest`, then HMAC-SHA256 signs the canonical bytes with a host-held key. `VerifyReceipt` recomputes the digest and verifies the HMAC in constant time.
-
-- [ ] **Step 3: Rewrite the acceptance criteria**
-
-> **AC-12.1.1.1 (Output-Bound Digest):** GIVEN a completed task, WHEN `Generate` runs, THEN the digest covers `commit_sha`, `patch_digest`, `egress_proof`, `stdout_digest`, `stderr_digest`, and `memory_digest`. Two runs with identical commit/patch/egress but different test output MUST produce different receipts.
-
-> **AC-12.1.1.3 (Signature Required):** GIVEN a receipt with a missing, altered, or wrong-key signature, WHEN `VerifyReceipt` runs, THEN it returns false and `CloseWithReceipt` refuses the close.
-
-- [ ] **Step 4: Add the negative tests**
-
-List in LLD §11 / CAP-12: altered stdout -> verify false; altered stderr -> verify false; changed commit -> verify false; replayed receipt with old signature -> verify false; valid receipt -> verify true.
-
-- [ ] **Step 5: Run the check and commit**
-
-```bash
-bash scripts/check-design-invariants.sh
-git add docs/plan/aep-backlog-v1.1.html docs/plan/aep-lld-v1.1.html docs/plan/aep-hld-v1.1.html
-git commit -m "docs(plan): bind test output into signed run receipts"
-```
-
----
-
-### Task 8: Add the design-invariant check to CI
-
-**Files:**
-- Create: `scripts/check-design-invariants.sh`
-- Modify: `.github/workflows/ci.yml` docs-lint job
-- Test: run locally, then introduce one regression and confirm it fails
-
-- [ ] **Step 1: Write the script**
-
-The script must fail on:
-
-1. `Tier2Supported` defined from `/dev/kvm` in LLD/HLD.
-2. Missing `ResolveSandboxBackend` in LLD §4.1 and §7.
-3. Missing `IsolationClass` in LLD and HLD.
-4. `host - req.MemMiB*MiB <` in LLD §6.
-5. Missing `model.sock` / `aep modeld` in LLD and HLD.
-6. Missing `.git/worktrees` or `relative-paths` in LLD §9.3.
-7. `< 8 GB available RAM` in backlog.
-8. Receipt AC that omits `stdout_digest` or `stderr_digest`.
-9. Receipt `Signature` field missing.
-
-Use `rg -q` and print one line per failure; exit non-zero on any.
-
-- [ ] **Step 2: Wire it into CI**
-
-In `.github/workflows/ci.yml`, add a step to the `docs-lint` job:
-
-```yaml
-- name: Check design invariants
-  run: bash scripts/check-design-invariants.sh
-```
-
-- [ ] **Step 3: Verify the guard catches drift**
-
-```bash
-bash scripts/check-design-invariants.sh          # expect pass
-# temporarily revert one fix, e.g. reintroduce the /dev/kvm definition
-bash scripts/check-design-invariants.sh          # expect fail
-git checkout -- docs/plan/aep-lld-v1.1.html
-bash scripts/check-design-invariants.sh          # expect pass
-```
+Do not wire `--check` into CI yet; it is red until Task 7.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add scripts/check-design-invariants.sh .github/workflows/ci.yml
-git commit -m "test(docs): guard PR #133 design invariants in CI"
+git add scripts/check_design_invariants.py scripts/tests/fixtures/design-invariants
+git commit -m "test(docs): add failing structural invariant checker for PR #133"
 ```
 
 ---
 
-### Task 9: Resolve threads and regenerate artifacts
+### Task 1: Replace the capability model and set the re-verification floor (C9, C8, C4, C5)
 
 **Files:**
-- Modify: `docs/plan/*.pdf` (regenerated), review threads (GitHub)
-- Test: CI + thread state
+- Modify: `docs/plan/aep-lld-v1.1.html` §4.1, §4.9, §7, §10, §12 T4/T10/T11
+- Modify: `docs/plan/aep-hld-v1.1.html` §6, §9, §11
+- Modify: `docs/plan/aep-backlog-v1.1.html` CAP-02, CAP-07, PR-10/PR-11
+- Modify: `docs/draft-proposal.html` profile matrix and C4/C5 cards
+- Test: `check_design_invariants.py`
 
-- [ ] **Step 1: Re-render the PDFs**
+**Interfaces:**
+- Produces: `BackendKind`, `IsolationKind`, `Provenance`, `Backend`, `Isolation`, `Isolation.AtLeast`, `Profile.Backend`, `Profile.KVMProbe`, `Profile.Tier2Supported()`, `Task.MinIsolation`.
+
+- [ ] **Step 1: Run the failing checks**
 
 ```bash
-for f in docs/plan/aep-hld-v1.1 docs/plan/aep-lld-v1.1 docs/plan/aep-backlog-v1.1; do
-  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
-    --headless --disable-gpu --no-pdf-header-footer \
-    --print-to-pdf="$f.pdf" "file://$PWD/$f.html"
-done
+python3 scripts/check_design_invariants.py --check
 ```
 
-Verify each PDF opens, has the expected page count, and reports `Producer: Skia/PDF` (Chromium).
+Expected: checks 1, 2, 8, and 9 fail.
+
+- [ ] **Step 2: Define the value types in LLD §4.1/§4.9**
+
+```go
+type BackendKind uint8
+
+const (
+    BackendNone BackendKind = iota
+    BackendCubeKVM
+    BackendLibkrun
+    BackendGVisor
+    BackendRemote
+)
+
+type IsolationKind uint8
+
+const (
+    IsolationNone IsolationKind = iota
+    IsolationUserSpaceKernel
+    IsolationHardwareMicroVM
+)
+
+type Provenance uint8
+
+const (
+    ProvenanceLocal Provenance = iota
+    ProvenanceRemote
+)
+
+type Isolation struct {
+    kind     IsolationKind
+    evidence [32]byte // probe or attestation digest; zero means unusable
+}
+
+func (i Isolation) Valid() bool { return i.kind != IsolationNone && i.evidence != ([32]byte{}) }
+func (i Isolation) AtLeast(min Isolation) bool {
+    return i.Valid() && min.Valid() && i.kind >= min.kind
+}
+
+type Backend struct {
+    kind       BackendKind
+    isolation  Isolation
+    provenance Provenance
+    evidence   [32]byte
+}
+
+func (b Backend) Usable() bool { return b.kind != BackendNone && b.isolation.Valid() && b.evidence != ([32]byte{}) }
+func (b Backend) Isolation() Isolation { return b.isolation }
+
+type Profile struct {
+    // ... existing sizing fields ...
+    Backend  Backend     // zero value means no backend
+    KVMProbe ProbeResult // evidence only; never the capability definition
+}
+
+func (p Profile) Tier2Supported() bool { return p.Backend.Usable() }
+func (p Profile) Tier2Admissible(req ReservationReq) error
+```
+
+`Tier2Supported` is not a field. `Provenance` is not a strength. A remote hardware VM must carry attestation evidence; a remote user-space backend does not become hardware because it is remote.
+
+- [ ] **Step 3: Separate capability from capacity**
+
+Update the LLD failure matrix and dispatch table:
+
+- No usable backend -> `blocked:unsupported-tier2-no-sandbox`.
+- Usable backend but `MaxTier2Lanes == 0` or budget below `Tier2LaneMiB` -> `blocked:tier2-capacity-exhausted` (terminal for this profile; do not wait forever).
+- `Tier2Supported()` is capability only; `Tier2Admissible()` is capacity.
+
+Set profile-specific Tier-2 values. For `nano-8g`, choose the documented one-lane gVisor story:
+
+```text
+nano-8g: Tier2BudgetMiB=1536, Tier2LaneMiB=1536, MaxTier2Lanes=1
+```
+
+Remove "Tier 2 disabled" from `docs/draft-proposal.html` and update LLD line 90/92 so the default is not a global 4096-6144 reservation. Add AC: `Admit(Tier2, nano, 1536)` succeeds; a 2048 request returns `ErrNoCapacity` with the capacity reason.
+
+- [ ] **Step 4: Gate dispatch and re-verification on `MinIsolation`**
+
+Add to the task model:
+
+```go
+type Task struct {
+    // ...
+    MinIsolation Isolation // risk-derived, not origin-derived
+}
+```
+
+Rules:
+
+- `tier:factory` with untrusted native code -> `IsolationHardwareMicroVM`.
+- Explicitly gVisor-eligible task (recorded risk reassessment) -> `IsolationUserSpaceKernel`.
+- A hardware-origin run never lowers its floor; it must re-verify in hardware isolation.
+- If the resolved backend cannot meet `MinIsolation`, quarantine before execution.
+- `VerifyResult` records the actual `Isolation` and `BackendEvidence`; the post-run value is audit data, not the gate.
+
+Update HLD §5.2 line 172, §9 line 183, LLD T11, draft lines 367/402, and backlog PR-11. Replace every unconditional "hardware-isolated microVM" sentence with the floor rule.
+
+- [ ] **Step 5: Restore the C1 egress sentence**
+
+In LLD §4.9, restore: "`VerifyEgressProbe` checks the SHA-256 digest of the in-VM probe evidence; a missing or mismatched digest rejects the run." Keep the acknowledgement guard as a separate check.
+
+- [ ] **Step 6: Run the check and commit**
+
+```bash
+python3 scripts/check_design_invariants.py --check
+git add docs/plan/aep-lld-v1.1.html docs/plan/aep-hld-v1.1.html docs/plan/aep-backlog-v1.1.html docs/draft-proposal.html
+git commit -m "docs(plan): model capability as an attested value and gate re-verification by risk"
+```
+
+---
+
+### Task 2: Move model execution outside the lane (C7)
+
+**Files:**
+- Modify: `docs/plan/aep-lld-v1.1.html` §4.4/§4.5, §9.2, §9.3, §10
+- Modify: `docs/plan/aep-hld-v1.1.html` §5.2, §9, §11
+- Modify: `docs/plan/aep-backlog-v1.1.html` CAP-01, PR-06/PR-07
+- Modify: `docs/draft-proposal.html` core services and lane lifecycle
+- Test: `check_design_invariants.py`
+
+**Interfaces:**
+- Produces: `internal/execd` (`exec.sock`), `ExecRequest{Argv, Cwd, Timeout, Env}`, `ExecPolicy`, and a common relay contract shared with `memoryd`/`gwd`/`gitd`.
+
+- [ ] **Step 1: Run the failing check**
+
+```bash
+python3 scripts/check_design_invariants.py --check
+```
+
+Expected: check 4 fails because the docs have no model path and no `exec.sock`.
+
+- [ ] **Step 2: Make the boundary decision explicit**
+
+Write in HLD §5.2 and LLD §9.3:
+
+> The trusted host harness runs the agent loop and all model inference. A lane is a tool executor: it receives allowlisted commands over `exec.sock`, runs them under its cgroup and `--network none`, and returns stdout/stderr/exit status. Lanes hold no provider key and cannot make model requests. The host harness selects the model tier (standard/measured for Ralph, frontier/thorough for factory) before dispatching commands.
+
+If offline lane autonomy is a hard requirement, that is a separate ADR; it is not implemented here. Do not reintroduce `model.sock` as a caveat.
+
+- [ ] **Step 3: Define the exec relay**
+
+Add to LLD:
+
+```go
+type ExecRequest struct {
+    LaneID  string
+    Argv    []string
+    Cwd     string
+    Timeout time.Duration
+    Env     map[string]string // allowlisted keys only
+}
+
+type ExecPolicy interface {
+    Allow(laneID string, argv []string) error
+    ScrubEnv(env map[string]string) map[string]string
+}
+```
+
+The relay authenticates the lane with `SO_PEERCRED` or a per-lane token, rejects path traversal and non-allowlisted binaries, caps output, and writes an audit record. It is one implementation of the common `relay.Handler` contract; do not create a fourth ad-hoc protocol.
+
+- [ ] **Step 4: Update the run spec and failure matrix**
+
+Replace the model/credentials assumption in LLD §9.3:
+
+```bash
+--network none \
+-v "$AEP_LANE_SOCKETS:/run/aep:rw" \
+--env AEP_EXEC_SOCKET=/run/aep/exec.sock \
+--env-file <scrubbed.env>   # no provider or GitHub keys
+```
+
+Failure: `exec.sock` down -> pause and retry with a bound, then quarantine `blocked:exec-relay-unavailable`; no model fallback in the lane. Update HLD §9: "Model inference occurs outside the lane; lanes have no model credential."
+
+- [ ] **Step 5: Update the backlog and draft**
+
+Add an AC to CAP-01: GIVEN a `--network none` lane, WHEN it attempts a provider call, THEN it fails with `ENETUNREACH`; WHEN it runs an allowlisted command via `exec.sock`, THEN it succeeds. Add a canary test: a file containing `CANARY-<random>` cannot appear in any model request because the lane cannot make one.
+
+- [ ] **Step 6: Run the check and commit**
+
+```bash
+python3 scripts/check_design_invariants.py --check
+git add docs/plan/aep-lld-v1.1.html docs/plan/aep-hld-v1.1.html docs/plan/aep-backlog-v1.1.html docs/draft-proposal.html
+git commit -m "docs(plan): run model inference outside zero-egress lanes"
+```
+
+---
+
+### Task 3: Move Git control to a host relay (C10)
+
+**Files:**
+- Modify: `docs/plan/aep-lld-v1.1.html` §8.1, §9.3, §11
+- Modify: `docs/plan/aep-backlog-v1.1.html` CAP-01, PR-07
+- Modify: `docs/plan/aep-hld-v1.1.html` §5.2, §9
+- Test: `check_design_invariants.py`
+
+**Interfaces:**
+- Produces: `internal/gitd` (`git.sock`), `GitRequest{Op, Paths, Message, Branch}`, `GitPolicy`.
+
+- [ ] **Step 1: Run the failing check**
+
+```bash
+python3 scripts/check_design_invariants.py --check
+```
+
+Expected: check 5 fails because only `<worktree>:/workspace` is mounted.
+
+- [ ] **Step 2: Remove the `.git` mount**
+
+Do not mount the host `.git` directory. Mount the worktree read-write at `/workspace`; the lane has no `.git`. All Git operations go through `git.sock`:
+
+```text
+status, diff, add, commit, log, branch, push
+```
+
+The host runs the operation in the lane's worktree with `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_SYSTEM=/dev/null`, `GIT_OPTIONAL_LOCKS=0`, and hooks disabled or host-controlled. The relay rejects paths outside the lane worktree, rejects `-C` and arbitrary config, and keeps credentials on the host. Build tools that need VCS metadata run with `GOFLAGS=-buildvcs=false` or receive a read-only generated stamp.
+
+- [ ] **Step 3: Define the Tier-2 path**
+
+Tier 2 uses an independent clone inside the guest. The host fetches the patch or branch after verification; the guest never sees host `.git`. The receipt records the host-side commit SHA, not a guest-local SHA.
+
+- [ ] **Step 4: Update the manifest and run spec**
+
+Replace the `worktree`-only assumption in LLD §8.1 with `worktree` plus `git_relay: /run/aep/git.sock`. Add the `git.sock` mount to §9.3. Add the lane test:
+
+```bash
+# Through the relay, not the lane shell:
+git.sock status --porcelain
+git.sock commit -m "lane smoke"
+# Host verification:
+git -C "$AEP_REPO" log -1 --format=%H -- "$worktree"
+```
+
+Expected: the commit exists on the host branch; no `.git` is visible in `/workspace`; a direct `git` invocation in the lane fails or is absent.
+
+- [ ] **Step 5: Update CAP-01 and PR-07**
+
+Add AC: GIVEN a lane with a host worktree, WHEN it commits through `git.sock`, THEN the commit appears on the lane branch in the host repository and no host `.git` directory is mounted. Add a negative test: a path traversal or hook injection is rejected.
+
+- [ ] **Step 6: Run the check and commit**
+
+```bash
+python3 scripts/check_design_invariants.py --check
+git add docs/plan/aep-lld-v1.1.html docs/plan/aep-hld-v1.1.html docs/plan/aep-backlog-v1.1.html
+git commit -m "docs(plan): commit through a host git relay without mounting .git"
+```
+
+---
+
+### Task 4: Fix memory semantics and admission (C6, C11)
+
+**Files:**
+- Modify: `docs/plan/aep-lld-v1.1.html` §4.1, §6, §11
+- Modify: `docs/plan/aep-backlog-v1.1.html` CAP-07, AC-07
+- Modify: `docs/plan/aep-hld-v1.1.html` §6 note
+- Test: `check_design_invariants.py`
+
+**Interfaces:**
+- Produces: `MiB`, `Bytes`, `MemoryView{Total, Available, Limit}`, `Admit(req) error`.
+
+- [ ] **Step 1: Run the failing checks**
+
+```bash
+python3 scripts/check_design_invariants.py --check
+```
+
+Expected: checks 3 and 6 fail; the backlog AC-07.1 is already fixed but the LLD predicate is not.
+
+- [ ] **Step 2: Introduce typed units and one vantage point**
+
+```go
+type MiB uint64
+type Bytes uint64
+
+func (m MiB) Bytes() (Bytes, error) // rejects overflow
+type MemoryView struct {
+    Total     Bytes // profile minimum
+    Available Bytes // admission
+    Limit     Bytes // cgroup or VM limit; zero means none
+}
+```
+
+State the vantage explicitly: `aep boot` runs on the host; profile minimum uses host total; on `mac-colima-vz` the VM budget comes from the Colima config; inside a container, admission uses the cgroup `memory.max`/`memory.current` view. A 4 GB container on a 64 GB host must not pass an 8 GB profile check by reading host total.
+
+- [ ] **Step 3: Replace the predicate**
+
+```text
+reqBytes, ok := req.MemMiB.Bytes()
+if !ok || req.MemMiB == 0 -> ErrInvalidRequest
+if host < reqBytes -> ErrNoCapacity("host floor")
+if host-reqBytes < floorBytes -> ErrNoCapacity("host floor")
+if used > budget || req.MemMiB > budget-used -> ErrNoCapacity("tier memory budget")
+```
+
+Remove the subtraction. Keep the ceiling check. Define reservation/start ordering: write the reservation, start the container, then mark it active; a crash between steps is reaped by `aep lane reap` (reservation without a container is garbage-collected).
+
+- [ ] **Step 4: Replace the test table**
+
+| Available | Request | Floor | Expected |
+|---|---|---|---|
+| 1 GiB | 2 GiB | 384 MiB | reject (`host floor`) |
+| 2.375 GiB | 2 GiB | 384 MiB | admit (exact floor) |
+| 2.374 GiB | 2 GiB | 384 MiB | reject (below floor) |
+| 0 | 0 | 384 MiB | reject (`invalid request`) |
+| 8 GiB | `math.MaxUint64` MiB | 384 MiB | reject (`invalid request`) |
+| used=budget | 1 MiB | 384 MiB | reject (`tier memory budget`) |
+
+- [ ] **Step 5: Add the busy-host AC**
+
+In CAP-07:
+
+> **AC-07.3 (Busy Host):** GIVEN an 8 GB physical host with only 1 GB currently available, WHEN `aep profile detect` runs, THEN it selects `nano-8g` (total >= 7.5 GiB); WHEN a 2 GB lane is admitted, THEN it receives `ErrNoCapacity` from admission, not a profile error.
+
+- [ ] **Step 6: Run the check and commit**
+
+```bash
+python3 scripts/check_design_invariants.py --check
+git add docs/plan/aep-lld-v1.1.html docs/plan/aep-hld-v1.1.html docs/plan/aep-backlog-v1.1.html
+git commit -m "docs(plan): use typed memory and checked admission arithmetic"
+```
+
+---
+
+### Task 5: Bind full output into signed receipts (C12)
+
+**Files:**
+- Modify: `docs/plan/aep-lld-v1.1.html` §3, §11
+- Modify: `docs/plan/aep-backlog-v1.1.html` PR-11b, PR-12
+- Modify: `docs/plan/aep-hld-v1.1.html` §9
+- Modify: `docs/draft-proposal.html` receipt card
+- Modify: `internal/verifier/runner/runner.go` (follow-up implementation slice)
+- Test: `check_design_invariants.py` plus future Go tests
+
+**Interfaces:**
+- Produces: `CommandReceipt.StdoutSha`, `CommandReceipt.StderrSha`, `RunReceipt{Nonce, IssuedAt, LedgerSeq, KeyID, Signature}`, `HashingWriter`.
+
+- [ ] **Step 1: Run the failing check**
+
+```bash
+python3 scripts/check_design_invariants.py --check
+```
+
+Expected: check 7 fails; the current runner has only 64 KiB tail hashes.
+
+- [ ] **Step 2: Add full-stream hashing**
+
+`TailCappedBuffer` keeps the tail for display. Add a `HashingWriter` that hashes every byte and retains the tail:
+
+```go
+type HashingWriter struct {
+    h   hash.Hash
+    tail *TailCappedBuffer
+}
+func (w *HashingWriter) Write(p []byte) (int, error) // hash + tail
+func (w *HashingWriter) Sum() string                 // full-stream SHA-256
+```
+
+`CommandReceipt` gains `StdoutSha` and `StderrSha`; `StdoutTailSha`/`StderrTailSha` remain display-only. A difference at byte 0 of a 128 KiB stream must change `StdoutSha`.
+
+- [ ] **Step 3: Define the signed receipt**
+
+```go
+type RunReceipt struct {
+    IssueID                 string
+    CommitSHA               string
+    PatchDigest             string
+    EgressProof             string
+    Commands                []CommandReceipt
+    StdoutSha               string
+    StderrSha               string
+    MemoryInscriptionDigest string
+    Nonce                   string
+    IssuedAt                time.Time
+    LedgerSeq               uint64
+    KeyID                   string
+    Signature               string
+}
+```
+
+Sign RFC 8785 canonical JSON of all fields except `Signature` with Ed25519. The public key is distributed in the repo/config; the private key stays in the host keyring. `VerifyReceipt` checks the signature, the `Nonce`, and a monotonic `LedgerSeq` against ledger state. A missing or stale `MemoryInscriptionDigest` refuses `CloseWithReceipt`.
+
+- [ ] **Step 4: Replace the acceptance criteria**
+
+> **AC-12.1:** GIVEN two runs with the same commit, patch, and egress proof but different test output, WHEN receipts are generated, THEN the receipts differ in `StdoutSha`/`StderrSha` and `Signature`.
+>
+> **AC-12.2:** GIVEN a valid receipt replayed with an old nonce or ledger sequence, WHEN `VerifyReceipt` runs, THEN it returns false.
+>
+> **AC-12.3:** GIVEN a receipt with an altered output byte, wrong key, or missing signature, WHEN verified, THEN it returns false.
+
+- [ ] **Step 5: Add negative tests**
+
+List: altered byte 0 of a 128 KiB stdout, altered stderr, replayed nonce, wrong `KeyID`, missing signature, non-monotonic `LedgerSeq`, missing memory inscription. Each must fail verification; the valid case must pass.
+
+- [ ] **Step 6: Run the check and commit**
+
+```bash
+python3 scripts/check_design_invariants.py --check
+git add docs/plan/aep-lld-v1.1.html docs/plan/aep-hld-v1.1.html docs/plan/aep-backlog-v1.1.html docs/draft-proposal.html internal/verifier/runner/runner.go
+git commit -m "docs(plan): bind full test output into signed run receipts"
+```
+
+---
+
+### Task 6: Re-audit C1-C5 at head and align all four documents
+
+**Files:**
+- Modify: whichever of the four docs still carries a stale statement
+- Test: `check_design_invariants.py`
+
+- [ ] **Step 1: Run the check**
+
+```bash
+python3 scripts/check_design_invariants.py --check
+```
+
+Expected: all checks pass except any stale C1-C5 wording.
+
+- [ ] **Step 2: Verify C1-C3**
+
+- C1: LLD §4.9 has the `VerifyEgressProbe` digest sentence; HLD §9 and draft C1 card agree.
+- C2: no automatic Tier-1 downgrade; the override is explicit and audited.
+- C3: `memory.sock`/`ghg.sock` use the common relay contract; no host loopback from a lane.
+
+- [ ] **Step 3: Fix C4 and C5, do not resolve them early**
+
+- C4: replace every unconditional microVM-only re-verification sentence in HLD 172/183, LLD T11, draft 367/402, and backlog PR-11 with the `MinIsolation` rule.
+- C5: make the nano-8g Tier-2 story consistent: HLD 1.5 GB / 1 lane, LLD 1536 MiB / 1 lane, draft no "Tier 2 disabled", backlog AC matches.
+
+- [ ] **Step 4: Add cross-document anchors**
+
+Link HLD/backlog/draft to the LLD capability anchor. Do not duplicate the enum. The checker asserts a single definition site.
+
+- [ ] **Step 5: Run the check and commit**
+
+```bash
+python3 scripts/check_design_invariants.py --check
+git add docs/plan/aep-lld-v1.1.html docs/plan/aep-hld-v1.1.html docs/plan/aep-backlog-v1.1.html docs/draft-proposal.html
+git commit -m "docs(plan): align C1-C5 and cross-document capability references"
+```
+
+---
+
+### Task 7: Wire the guard, render artifacts, and close threads
+
+**Files:**
+- Modify: `.github/workflows/ci.yml` docs-lint job
+- Modify: `docs/plan/*.pdf` only if rendered successfully
+- GitHub review threads
+
+- [ ] **Step 1: Wire the checker into CI**
+
+Add to the `docs-lint` job:
+
+```yaml
+- name: Design invariants
+  run: |
+    python3 scripts/check_design_invariants.py --self-test
+    python3 scripts/check_design_invariants.py --check
+```
+
+The self-test must fail on the negative fixtures and pass on the good ones. The check must fail on the pre-fix docs; it is expected to pass only after Tasks 1-6.
 
 - [ ] **Step 2: Run the full local gate**
 
 ```bash
-bash scripts/check-design-invariants.sh
+python3 scripts/check_design_invariants.py --self-test
+python3 scripts/check_design_invariants.py --check
+go test ./...
 git diff --check
-npx --yes markdownlint-cli2@0.24.0 "docs/superpowers/plans/2026-11-09-pr133-open-findings-remediation.md"
 ```
 
-- [ ] **Step 3: Reply to and resolve the five outdated threads**
+- [ ] **Step 3: Render PDFs with a pinned renderer**
 
-For each of C1-C5, reply with the fixing commit SHA and a one-line statement of what changed, then resolve the thread. Do not resolve C6-C12 until their checks pass.
+Do not hardcode `/Applications/Google Chrome.app`. Use a pinned Chromium container or the CI render job. Example, only if the image is available:
 
-- [ ] **Step 4: Push and request re-review**
+```bash
+docker run --rm -v "$PWD:/work" -w /work zenika/alpine-chrome:with-puppeteer \
+  --headless --disable-gpu --no-sandbox \
+  --print-to-pdf=docs/plan/aep-hld-v1.1.pdf \
+  file:///work/docs/plan/aep-hld-v1.1.html
+```
+
+Repeat for the LLD and backlog. Verify `Creator (Chromium)` and a non-zero page count:
+
+```bash
+strings docs/plan/aep-hld-v1.1.pdf | grep -m1 'Creator (Chromium)'
+mdls -name kMDItemNumberOfPages docs/plan/aep-hld-v1.1.pdf
+```
+
+If no pinned renderer is available, leave the PDF unchanged and record a follow-up. Do not commit a PDF from a different renderer without checking the visual diff.
+
+- [ ] **Step 4: Push before resolving**
 
 ```bash
 git push
 gh pr checks 133 --repo pratik-saptarshi/autonomous-engineering-platform
 ```
 
-Do not mark the PR ready or merge it until CI is green and the bot/ human reviewer has re-reviewed.
+Do not resolve any thread until the fixing commit is on the branch and CI is green. Reply to C1-C3 with the fixing SHA; reply to C4-C12 only after their specific checks pass. Resolve C4/C5 last, after the four documents agree.
+
+- [ ] **Step 5: Request re-review**
+
+Do not mark the PR ready or merge. Post a summary mapping each C-ID to its commit and check, then request a fresh Codex/human review.
 
 ---
 
@@ -507,24 +620,37 @@ Do not mark the PR ready or merge it until CI is green and the bot/ human review
 
 | Check | Command | Expected |
 |---|---|---|
-| Capability model | `bash scripts/check-design-invariants.sh` | pass |
-| Admission underflow | grep check from Task 5 | no unchecked subtraction |
-| Total-vs-available RAM | grep check from Task 6 | only total RAM gates minimum size |
-| Model relay | grep `model.sock`/`aep modeld` | present in LLD and HLD |
-| Worktree metadata | grep `.git/worktrees`/`relative-paths` | present in LLD §9.3 |
-| Receipt binding | grep `stdout_digest`/`stderr_digest`/`Signature` | present in CAP-12 |
-| HTML validity | `npx html-validate docs/plan/*.html` (if available) or browser open | no parse errors |
-| PDFs | open each PDF; check page count and Creator | Chromium-rendered, non-empty |
-| CI | `gh pr checks 133` | all green |
+| Checker self-test | `python3 scripts/check_design_invariants.py --self-test` | pass; every negative fixture fails |
+| Checker on docs | `python3 scripts/check_design_invariants.py --check` | pass after Tasks 1-6 |
+| Go tests | `go test ./...` | pass |
+| Capability rank | `TestIsolationAtLeast` | none < user-space < hardware; remote is provenance, not strength |
+| Nano capacity | `TestTier2AdmissionNano` | 1536 MiB admits; 2048 returns capacity error; no backend quarantines |
+| Re-verification floor | `TestMinIsolationQuarantine` | hardware floor on gVisor-only host quarantines before execution |
+| Admission | `TestAdmitMemoryTable` | six rows above pass |
+| Receipt output | `TestReceiptFullStream` | byte 0 difference changes `StdoutSha` |
+| Receipt replay | `TestReceiptReplay` | old nonce/sequence fails |
+| Git relay | `TestGitRelayCommit` | commit visible on host; no `.git` in lane |
+| Model boundary | `TestLaneCannotInfer` | provider call fails; `exec.sock` command succeeds |
+| PDF | `strings` + `mdls` | Chromium creator; expected page count |
+| CI | `gh pr checks 133` | green |
 
 ## Acceptance Criteria
 
-- C6: admission pseudocode uses an underflow-safe comparison and includes the five-case test table.
-- C7: `model.sock` / `aep modeld` is specified in LLD and HLD; lanes remain `--network none`; no provider credential enters the lane; relay failure quarantines.
-- C8: re-verification requires the same-or-stronger `IsolationClass`; gVisor-only hosts can re-verify gVisor-origin work and quarantine hardware-origin work.
-- C9: `Tier2Supported` is derived from `ResolveSandboxBackend()` in LLD, HLD, and backlog; `/dev/kvm` is only `KVMProbe`.
-- C10: lane run spec exposes linked-worktree metadata; the lane can run `git rev-parse`, `git status`, and a smoke commit.
-- C11: minimum hardware is validated against total RAM; a separate AC covers busy-host admission.
-- C12: receipt digest includes stdout/stderr/tail/memory digests; HMAC signature is required and verified; negative tests are listed.
-- C1-C5: each outdated thread has a reply with the fixing commit and is resolved.
-- CI is green; PDFs are regenerated; no unresolved P2 thread remains.
+- C6: admission has no unsigned subtraction; zero, overflow, exact floor, below floor, and full-budget cases pass the table.
+- C7: model execution is outside the lane; `exec.sock` is the only tool channel; no `model.sock`; no provider credential in the lane; canary test passes.
+- C8: re-verification uses `MinIsolation`; gVisor-only hosts quarantine hardware-floor work before execution; gVisor-eligible work re-verifies in gVisor.
+- C9: `Tier2Supported()` is derived from an attested `Backend`; `/dev/kvm` is only `KVMProbe`; capability and capacity have distinct failure reasons.
+- C10: no host `.git` mount; `git.sock` commit appears on the host branch; Tier 2 uses an independent clone.
+- C11: profile minimum uses `TotalRAM >= 7.5 GiB`; admission uses available RAM and floor; busy-host AC passes.
+- C12: full stdout/stderr digests, nonce, ledger sequence, and Ed25519 signature are present; altered output and replay fail verification.
+- C1-C3 remain fixed; C4/C5 are fixed and only then resolved.
+- `nano-8g` has one Tier-2 story across all four docs.
+- CI green; PDFs consistent or explicitly deferred; no unresolved P2 thread remains.
+
+## Scope Rulings
+
+- **Delivers the fixes but does not merge the PR.** The implementation plan changes docs and one code slice; merge still waits on re-review.
+- **C4/C5 are reopened.** Do not claim they were closed by `6287a93`; later commits changed the surrounding facts.
+- **No new `internal/receipt` package.** Receipts live with the existing runner and ledger primitives.
+- **No new `model.sock`.** The model boundary is the host harness; the lane gets `exec.sock`.
+- **No `.git` mount.** Git control is a host relay; Tier 2 uses an independent clone.
