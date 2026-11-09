@@ -269,10 +269,18 @@
     </section>
 
     <section id="resource-specification">
-      <h2>3. Scalable Hardware Profiles: From Nano (2 vCPU / 8 GB) to Max (12 vCPU / 48 GB)</h2>
+      <h2>3. Recommended Profiles by OS &amp; Workstation Type</h2>
       <p>
-        AEP adapts across hardware tiers: from edge/budget devices (Intel N100, AMD Ryzen 5, Cloud 2vCPU VMs) up to top-spec developer workstations (Apple Silicon M3 Max). Hardware profiles govern admission limits, memory budgets, and whether Tier 2 (microVM sandboxing requiring hardware virtualization / KVM) is enabled.
+        Profiles are two-axis: <strong>Host Family</strong> (how the OS runs containers) &times; <strong>Size Tier</strong> (how much hardware). The host family decides the runtime and whether Tier 2 microVM sandboxing is possible; the size tier decides admission limits and lane budgets.
       </p>
+      <table>
+        <thead><tr><th>Host Family</th><th>OS / Workstation</th><th>Runtime Model</th><th>Tier 2 (microVM / KVM)</th></tr></thead>
+        <tbody>
+          <tr><td><strong>mac-colima-vz</strong></td><td>macOS (Apple Silicon / Intel) — primary dev host</td><td><strong>One large shared Colima VM</strong> (<code>vz</code> + <code>virtiofs</code>); Docker/Podman containers spawned on demand inside that VM</td><td><strong>Disabled</strong> — VZ has no <code>/dev/kvm</code>, nested virt unsupported; <code>tier:factory</code> tasks quarantine (or go remote)</td></tr>
+          <tr><td><strong>linux-native</strong></td><td>Linux x86_64/ARM64 workstation, server, or cloud VM</td><td>Podman (rootless) / Docker directly on host (cgroups v2); no Colima, no one-VM-per-lane</td><td><strong>Supported if</strong> <code>/dev/kvm</code> present; otherwise quarantine</td></tr>
+        </tbody>
+      </table>
+      <p><strong>Mac / Colima best practices (mac-colima-vz family):</strong> run a <em>single</em> Colima VM sized for the workstation, keep it warm, and spawn ephemeral lane containers inside it on demand — never one VM per lane. Use <code>--vm-type vz --mount-type virtiofs</code> (not QEMU/KVM flags), mount worktrees via virtiofs into the VM, and let the in-VM supervisor + admission controller bound container count/RAM. Substrate services and lanes are all containers in the same VM; cross-boundary traffic uses supervisor socket relays, not host loopback.</p>
 
       <table>
         <thead>
@@ -316,25 +324,26 @@
           </tr>
           <tr>
             <td><strong>workstation-48g</strong></td>
-            <td>Apple Silicon M3 Max (Colima vz+virtiofs), Threadripper</td>
+            <td><em>Family-dependent:</em> mac-colima-vz on Apple Silicon M3 Max <strong>or</strong> linux-native on Threadripper</td>
             <td>12 vCPU · 48 GB RAM · 220 GB Disk</td>
             <td>2 vCPU · 8.0 GB RAM · 30 GB Disk</td>
             <td>16.0 GB budget (8–10 lanes @ 1.5–2GB)</td>
             <td>24.0 GB budget (4–6 pipelines @ 4–6GB)</td>
-            <td>Yes (nested vz/kvm)</td>
+            <td>linux-native: Yes (<code>/dev/kvm</code>) · mac-colima-vz: <strong>No</strong> (VZ, quarantine)</td>
           </tr>
         </tbody>
       </table>
 
       <h3>Runtime Profile Auto-Detection</h3>
       <p>
-        <code>aep profile detect</code> probes available CPU cores, total memory, container engine (Podman rootless, Docker, or Colima), and hardware virtualization flags (<code>/dev/kvm</code> on Linux, nested virtualization under Apple vz). If hardware virtualization is absent (e.g. standard cloud VMs or low-power hosts), Tier 2 is disabled automatically, and any incoming task tagged <code>tier:factory</code> is safely quarantined rather than unsafely downgraded.
+        <code>aep profile detect</code> returns <code>{host_os, host_family, size_tier, container_runtime, kvm_available, recommended_profile}</code>. On macOS it selects <code>mac-colima-vz</code> (Tier 2 off); on Linux with <code>/dev/kvm</code> it selects <code>linux-native</code> (Tier 2 on). If virtualization is absent, Tier 2 is disabled and <code>tier:factory</code> tasks quarantine — never downgrade.
       </p>
-      <pre><code># Workstation startup (macOS Apple Silicon):
+      <pre><code># macOS / mac-colima-vz — ONE shared large VM, containers spawned on demand inside it:
 colima start --profile aep --cpu 12 --memory 48 --disk 220 --vm-type vz --mount-type virtiofs
+# (smaller Macs scale down, e.g. --cpu 8 --memory 32 --disk 150; same single-VM model)
 
-# Low-power / Cloud Linux startup (e.g. Intel N100 / Hetzner / AWS):
-aep boot --profile nano-8g --runtime podman</code></pre>
+# Linux / linux-native — no Colima; Podman/Docker on host, KVM probed for Tier 2:
+aep boot --profile linux-native-8g --runtime podman   # or -16g / -32g / -48g by size tier</code></pre>
     </section>
 
     <section id="interoperability-flow">

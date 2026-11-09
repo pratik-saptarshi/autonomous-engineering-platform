@@ -78,7 +78,8 @@ docs/plan/                            this doc  HLD + LLD (html + pdf)</code></p
 
 <h3>4.1 <code>internal/profile</code></h3>
 <pre><code>type Profile struct {
-    Name            string // "nano-8g", "small-16g", "medium-32g", "workstation-48g"
+    HostFamily      string // "mac-colima-vz" | "linux-native" — decides runtime + Tier 2 eligibility
+    Name            string // e.g. "mac-colima-vz-48g", "linux-native-16g" (family + size tier)
     VMCPUs          int    // 2 (nano) up to 12 (workstation)
     VMMemoryMiB     uint64 // 8192 up to 49152
     VMDiskGiB       int    // 30 up to 220
@@ -96,7 +97,7 @@ docs/plan/                            this doc  HLD + LLD (html + pdf)</code></p
 func Detect() (Profile, error)            // probes CPU, RAM, disk, /dev/kvm, and container runtime
 func Load(path string) (Profile, error)   // KEY=VALUE file, same keys as hardware-profile.conf
 func (p Profile) Validate() error         // sum(substrate+t1+t2) &lt;= VMMemoryMiB; ceilings*laneMiB &lt;= budgets is NOT required</code></pre>
-<p>Presets include <code>nano-8g</code> (Intel N100 / Cloud 2vCPU / RPi 5; Tier 2 disabled), <code>small-16g</code> (i5/Ryzen 5; 1 pipeline), <code>medium-32g</code> (i7/Ryzen 7; 2–3 pipelines), and <code>workstation-48g</code> (M3 Max Colima / Threadripper; 4–6 pipelines).</p>
+<p><strong>Host-family rule:</strong> <code>mac-colima-vz</code> = macOS, one large shared Colima VM (<code>vz</code>+<code>virtiofs</code>), containers spawned on demand inside it, <code>Tier2Supported=false</code> always (VZ has no <code>/dev/kvm</code>). <code>linux-native</code> = Linux host, Podman/Docker directly on host, <code>Tier2Supported</code> iff <code>/dev/kvm</code> probed present. Size tiers scale budgets within each family, e.g. <code>mac-colima-vz-48g</code> (M3 Max, shared VM), <code>linux-native-8g</code> (N100/Cloud, Tier 2 off), <code>linux-native-32g</code> (i7/Ryzen 7, Tier 2 on with KVM). <code>Detect()</code> returns the family from <code>GOOS</code> + runtime probe, then the size tier from CPU/RAM.</p>
 
 <h3>4.2 <code>internal/policy</code></h3>
 <pre><code>type Policy struct { EnvScrubFragments []string; SensitivePaths []string; Raw []byte; SHA256 string }
@@ -268,7 +269,9 @@ func Decide(ctx context.Context, d Deps, issue Issue) Decision</code></pre>
 </ul>
 
 <h2>9. Runtime topology</h2>
-<h3>9.1 Container and VM runtimes</h3>
+<h3>9.1 Container and VM runtimes — by host family</h3>
+<p><strong>mac-colima-vz (macOS):</strong> one large shared Colima VM; Docker/Podman containers are spawned on demand <em>inside</em> that VM and bounded by admission control — never one VM per lane. Use <code>--vm-type vz --mount-type virtiofs</code>; worktrees are virtiofs-mounted into the VM. Tier 2 microVMs are <strong>not supported</strong> here (no KVM under VZ): <code>tier:factory</code> tasks quarantine or execute remotely.</p>
+<p><strong>linux-native (Linux):</strong> no Colima; Podman (rootless) / Docker runs directly on the host under cgroups v2, same need-based container spawning. Tier 2 is enabled iff <code>/dev/kvm</code> is present.</p>
 <pre><code># macOS (M3 Max / Apple Silicon Workstation):
 colima start --profile aep \
   --cpu 12 --memory 48 --disk 220 \
