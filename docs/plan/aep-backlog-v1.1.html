@@ -1,0 +1,666 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AEP Agentic-Container OS — System Backlog (v1.1)</title>
+<style>
+  @page { size: A4; margin: 14mm 12mm; }
+  :root {
+    --ink: #0f172a;
+    --muted: #475569;
+    --line: #cbd5e1;
+    --soft: #f8fafc;
+    --pri: #0369a1;
+    --sec: #4f46e5;
+    --ok: #047857;
+    --warn: #b45309;
+    --bad: #b91c1c;
+    --badge-bg: #e0f2fe;
+    --badge-ink: #0369a1;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: var(--ink);
+    line-height: 1.45;
+    font-size: 10pt;
+    max-width: 1040px;
+    margin: 0 auto;
+    padding: 24px;
+    background: #fff;
+  }
+  h1 { font-size: 21pt; margin: 0 0 4px; color: var(--pri); font-weight: 700; }
+  h2 { font-size: 13.5pt; margin: 24px 0 8px; padding-bottom: 4px; border-bottom: 2px solid var(--line); color: var(--sec); page-break-after: avoid; }
+  h3 { font-size: 11pt; margin: 16px 0 6px; color: var(--pri); page-break-after: avoid; }
+  h4 { font-size: 10pt; margin: 10px 0 4px; color: var(--ink); text-transform: uppercase; letter-spacing: 0.03em; }
+  p, li { margin: 0 0 6px; }
+  ul, ol { padding-left: 20px; margin: 0 0 8px; }
+  code {
+    font-family: ui-monospace, Menlo, Consolas, Monaco, monospace;
+    font-size: 8.5pt;
+    background: #f1f5f9;
+    padding: 1px 4px;
+    border-radius: 3px;
+    color: #0f172a;
+  }
+  pre {
+    background: #f8fafc;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 8px 12px;
+    overflow-x: auto;
+    font-size: 8.5pt;
+    page-break-inside: avoid;
+    line-height: 1.4;
+  }
+  pre code { background: none; padding: 0; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 8px 0 14px;
+    font-size: 9pt;
+    page-break-inside: avoid;
+  }
+  th, td {
+    border: 1px solid var(--line);
+    padding: 6px 8px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { background: #f1f5f9; font-weight: 600; color: var(--ink); }
+  .meta { color: var(--muted); font-size: 9pt; margin-bottom: 14px; }
+  .tag {
+    display: inline-block;
+    font-size: 7.5pt;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 4px;
+    border: 1px solid;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-right: 4px;
+  }
+  .tag.req { color: #0284c7; border-color: #bae6fd; background: #f0f9ff; }
+  .tag.cap { color: #7c3aed; border-color: #ddd6fe; background: #f5f3ff; }
+  .tag.feat { color: #0d9488; border-color: #99f6e4; background: #f0fdfa; }
+  .tag.task { color: #ea580c; border-color: #fed7aa; background: #fff7ed; }
+  .tag.func { color: #4338ca; border-color: #c7d2fe; background: #eef2ff; }
+  .tag.ac { color: #15803d; border-color: #bbf7d0; background: #f0fdf4; }
+  .note {
+    border-left: 4px solid var(--warn);
+    background: #fffbeb;
+    padding: 8px 12px;
+    margin: 10px 0;
+    page-break-inside: avoid;
+    font-size: 9pt;
+  }
+  .note.info { border-color: var(--pri); background: #f0f9ff; }
+  .item-card {
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: #fff;
+    padding: 12px;
+    margin-bottom: 14px;
+    page-break-inside: avoid;
+  }
+  .item-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    border-bottom: 1px solid #e2e8f0;
+    padding-bottom: 4px;
+    margin-bottom: 8px;
+  }
+  .item-title { font-weight: 700; font-size: 10.5pt; color: var(--ink); }
+  .item-ref { font-family: monospace; font-size: 8.5pt; color: var(--muted); }
+  .ac-box {
+    background: #f0fdf4;
+    border: 1px solid #bbf7d0;
+    border-radius: 4px;
+    padding: 6px 10px;
+    margin-top: 6px;
+    font-size: 8.5pt;
+  }
+  .func-box {
+    background: #f8fafc;
+    border-left: 3px solid var(--sec);
+    padding: 6px 10px;
+    margin: 6px 0;
+    font-family: monospace;
+    font-size: 8.5pt;
+  }
+  footer {
+    margin-top: 28px;
+    padding-top: 8px;
+    border-top: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 8.5pt;
+  }
+</style>
+</head>
+<body>
+
+<h1>AEP System Engineering Backlog</h1>
+<div class="meta">
+  <strong>Traceability Hierarchy:</strong> Requirements (REQ) &rarr; Capabilities (CAP) &rarr; Features (FEAT) &rarr; Tasks (TASK) &rarr; Functions (FUNC) &rarr; Acceptance Criteria (AC)<br>
+  <strong>Version:</strong> v1.1 &middot; <strong>Date:</strong> 2026-11-09 &middot; <strong>Architecture Baseline:</strong> <code>aep-hld-v1.1.html</code> &amp; <code>aep-lld-v1.1.html</code> &middot; <strong>PR:</strong> #133
+</div>
+
+<div class="note info">
+  <strong>Architecture &amp; Traceability Standard:</strong>
+  This backlog formalizes the architectural decisions and low-level design specifications of the Autonomous Engineering Platform (AEP). Every work item is broken down into concrete Go packages, data schemas, CLI surface, IPC sockets, and strictly verifiable acceptance criteria (Gherkin/testable conditions).
+</div>
+
+<h2>Table of Requirement Domains</h2>
+<table>
+  <thead>
+    <tr>
+      <th>ID</th>
+      <th>Requirement Domain</th>
+      <th>Core Capabilities</th>
+      <th>LLD Tasks Mapped</th>
+      <th>Status</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>REQ-01</strong></td>
+      <td>Dual-Lane Sandboxed Execution Runtime</td>
+      <td>CAP-01 (Tier-1 Ralph Container Isolation) &amp; CAP-02 (Tier-2 Local-First Sandbox Factory)</td>
+      <td>T0, T6, T9, T10, T11</td>
+      <td><span class="tag task">In Plan</span></td>
+    </tr>
+    <tr>
+      <td><strong>REQ-02</strong></td>
+      <td>Substrate Core Services &amp; Secure Relays</td>
+      <td>CAP-03 (NeuroStrata Memory IPC Relay) &amp; CAP-04 (GHG Gateway Credential Guard)</td>
+      <td>T1b, T3, T9</td>
+      <td><span class="tag task">In Plan</span></td>
+    </tr>
+    <tr>
+      <td><strong>REQ-03</strong></td>
+      <td>Unified Ledger &amp; Task Governance</td>
+      <td>CAP-05 (Beads Single Source of Truth) &amp; CAP-06 (Deterministic Dispatch Engine)</td>
+      <td>T5, T7, T8</td>
+      <td><span class="tag task">In Plan</span></td>
+    </tr>
+    <tr>
+      <td><strong>REQ-04</strong></td>
+      <td>Multi-Hardware Scalable Resource Profiles</td>
+      <td>CAP-07 (Hardware Profile Presets) &amp; CAP-08 (Dual-Constraint Admission Control)</td>
+      <td>T1, T4</td>
+      <td><span class="tag task">In Plan</span></td>
+    </tr>
+    <tr>
+      <td><strong>REQ-05</strong></td>
+      <td>Policy Enforcement &amp; Platform Boot Gating</td>
+      <td>CAP-09 (Cryptographic HEAD Tamper Verification) &amp; CAP-10 (Full Parity Boot Gate)</td>
+      <td>T2, T3</td>
+      <td><span class="tag task">In Plan</span></td>
+    </tr>
+    <tr>
+      <td><strong>REQ-06</strong></td>
+      <td>Verification, Quarantine &amp; Audit Trail</td>
+      <td>CAP-11 (Isolated Re-Verification Sandbox) &amp; CAP-12 (Cryptographic Receipts)</td>
+      <td>T7, T10, T11</td>
+      <td><span class="tag task">In Plan</span></td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- ========================================================================= -->
+<!-- DOMAIN 1: DUAL-LANE EXECUTION -->
+<!-- ========================================================================= -->
+<h2>Domain 1: REQ-01 Dual-Lane Sandboxed Execution Runtime</h2>
+<p>The platform must govern two distinct execution lanes: high-velocity inner-loop container lanes (Tier 1: Ralph) and strongly isolated, untrusted code pipelines (Tier 2: ESF Factory) with a local-first sandbox hierarchy.</p>
+
+<div class="item-card">
+  <div class="item-header">
+    <span class="item-title"><span class="tag cap">CAP-01</span> Tier-1 Ralph-Loop Lane Container Orchestration</span>
+    <span class="item-ref">REQ-01.1 &middot; Package: <code>internal/lane</code></span>
+  </div>
+  <p>Executes parallel inner-loop code refinement tasks in isolated OCI containers with per-lane git worktrees and zero direct external network egress.</p>
+
+  <h4><span class="tag feat">FEAT-01.1</span> Zero-Egress OCI Container &amp; Worktree Isolation</h4>
+  <p>Spawns ephemeral containers with <code>--network none</code>, read-only rootfs, tmpfs <code>/tmp</code>, virtiofs-mounted git worktree, and mounted IPC socket relays.</p>
+
+  <h4><span class="tag task">TASK-01.1.1</span> Implement Lane Manager &amp; Container Process Driver <span class="tag task">LLD T6</span></h4>
+  <p>Create <code>internal/lane</code> driver managing container spawning, worktree allocation, fence files, and graceful cleanup.</p>
+  
+  <div class="func-box">
+    <strong>Functions &amp; Interfaces:</strong><br>
+    <code>type Manager interface {<br>
+    &nbsp;&nbsp;Claim(ctx context.Context, issueID string, tier Tier) (*Manifest, error)<br>
+    &nbsp;&nbsp;Run(ctx context.Context, laneID string, spec RunSpec) (*Receipt, error)<br>
+    &nbsp;&nbsp;Release(ctx context.Context, laneID string) error<br>
+    &nbsp;&nbsp;Reap(ctx context.Context, dryRun bool) ([]ReapRecord, error)<br>
+    }</code>
+  </div>
+
+  <div class="ac-box">
+    <strong>Acceptance Criteria (AC-01.1.1):</strong>
+    <ul>
+      <li><strong>AC-01.1.1.1 (Network Fence):</strong> GIVEN a spawned lane container, WHEN a process inside executes <code>curl https://api.github.com</code> or any network socket call, THEN the OS returns <code>ENETUNREACH</code> or <code>EPERM</code> immediately.</li>
+      <li><strong>AC-01.1.1.2 (Filesystem Immutability):</strong> GIVEN a lane container, WHEN a process attempts to write outside <code>/workspace</code> or <code>/tmp</code>, THEN the kernel returns <code>EROFS</code> (Read-only file system).</li>
+      <li><strong>AC-01.1.1.3 (Worktree Boundary):</strong> GIVEN lane <code>t1-7f3a9c</code> operating on issue <code>aep-142</code>, WHEN git commands run inside, THEN git mutations occur strictly within <code>$AEP_WORKTREES_ROOT/aep-142</code> without modifying the parent repository <code>develop</code> worktree.</li>
+      <li><strong>AC-01.1.1.4 (Crash Fence &amp; Reaping):</strong> GIVEN a launcher process killed with <code>SIGKILL</code> while the container lives, WHEN <code>aep lane reap</code> runs, THEN it marks the lane active and refuses to reap until the container terminates.</li>
+    </ul>
+  </div>
+</div>
+
+<div class="item-card">
+  <div class="item-header">
+    <span class="item-title"><span class="tag cap">CAP-02</span> Tier-2 Local-First Sandbox Factory Orchestration</span>
+    <span class="item-ref">REQ-01.2 &middot; Package: <code>internal/factory</code></span>
+  </div>
+  <p>Executes untrusted dependencies, multi-repo changes, and CVE remediation pipelines in hardware microVMs or user-space kernels before admitting patches to host review.</p>
+
+  <h4><span class="tag feat">FEAT-02.1</span> Pluggable Local-First Sandbox Provider Interface</h4>
+  <p>Abstracts sandbox execution across <code>cube-kvm</code> (Linux KVM), <code>libkrun</code> (macOS Apple Silicon <code>vz</code>), and <code>gvisor</code> (<code>runsc systrap</code> for KVM-free hosts). Designates remote clusters strictly as an emergency fallback.</p>
+
+  <h4><span class="tag task">TASK-02.1.1</span> Build Factory Adapter &amp; Sandbox Backend Resolver <span class="tag task">LLD T10</span></h4>
+  <p>Implement <code>internal/factory</code> wrapping the ESF runtime with automated backend probing and egress guard validation.</p>
+
+  <div class="func-box">
+    <strong>Functions &amp; Interfaces:</strong><br>
+    <code>type SandboxBackend string<br>
+    const (<br>
+    &nbsp;&nbsp;BackendCubeKVM SandboxBackend = "cube-kvm"<br>
+    &nbsp;&nbsp;BackendLibkrun SandboxBackend = "libkrun"<br>
+    &nbsp;&nbsp;BackendGVisor  SandboxBackend = "gvisor"<br>
+    &nbsp;&nbsp;BackendRemote  SandboxBackend = "remote-api" // Emergency fallback of last resort<br>
+    )<br>
+    type Client interface {<br>
+    &nbsp;&nbsp;Doctor(ctx context.Context) (*DoctorReport, error)<br>
+    &nbsp;&nbsp;ResolveBackend(ctx context.Context) (SandboxBackend, error)<br>
+    &nbsp;&nbsp;Run(ctx context.Context, req RunRequest) (RunHandle, error)<br>
+    &nbsp;&nbsp;VerifyEgressProbe(ctx context.Context, runID string) (bool, error)<br>
+    }</code>
+  </div>
+
+  <div class="ac-box">
+    <strong>Acceptance Criteria (AC-02.1.1):</strong>
+    <ul>
+      <li><strong>AC-02.1.1.1 (Local Hierarchy):</strong> GIVEN boot on Linux with <code>/dev/kvm</code>, THEN <code>ResolveBackend</code> returns <code>cube-kvm</code>; GIVEN macOS with <code>vz</code>, THEN returns <code>libkrun</code>; GIVEN a host without KVM (Intel N100 or non-bare-metal cloud VM), THEN returns <code>gvisor</code>.</li>
+      <li><strong>AC-02.1.1.2 (Emergency Fallback Restraint):</strong> GIVEN <code>BackendRemote</code>, WHEN local backends are operational, THEN <code>BackendRemote</code> is NEVER selected. Remote is selected if and only if all local backends fail AND remote cluster credentials are explicitly configured in <code>factory.toml</code>.</li>
+      <li><strong>AC-02.1.1.3 (Egress Guard):</strong> GIVEN <code>factory.toml</code> configured with <code>hardening.acknowledge_open_egress = true</code>, WHEN <code>Doctor</code> or <code>Run</code> is called, THEN execution is rejected with error <code>ErrGovernanceViolation: open egress posture acknowledged</code>.</li>
+      <li><strong>AC-02.1.1.4 (Probe Cryptographic Verification):</strong> GIVEN a completed factory pipeline run, WHEN <code>VerifyEgressProbe</code> inspects the VM evidence bundle, THEN it verifies the SHA-256 digest emitted by the in-VM probe. If probe failed or unverified, PR generation is blocked.</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ========================================================================= -->
+<!-- DOMAIN 2: SUBSTRATE CORE SERVICES -->
+<!-- ========================================================================= -->
+<h2>Domain 2: REQ-02 Substrate Core Services &amp; Secure Relays</h2>
+<p>Core platform services (NeuroStrata cognitive memory and GHG rate-limited GitHub gateway) run on the substrate host and are exposed to zero-egress containers strictly through supervisor-mediated IPC socket relays.</p>
+
+<div class="item-card">
+  <div class="item-header">
+    <span class="item-title"><span class="tag cap">CAP-03</span> NeuroStrata Cognitive Long-Term Memory IPC Relay</span>
+    <span class="item-ref">REQ-02.1 &middot; Package: <code>internal/memoryd</code></span>
+  </div>
+  <p>Relays cognitive learnings, architecture decisions, and operational context between zero-egress containers and host NeuroStrata daemon.</p>
+
+  <h4><span class="tag feat">FEAT-03.1</span> Host IPC Socket Forwarding &amp; Cognitive Inscription</h4>
+  <p>Runs <code>aep memoryd</code> listening on a UNIX domain socket (<code>/run/aep/lanes/&lt;laneId&gt;/memory.sock</code>), forwarding JSON-RPC requests to host <code>127.0.0.1:34343</code>.</p>
+
+  <h4><span class="tag task">TASK-03.1.1</span> Build `memoryd` Host Socket Relay Daemon <span class="tag task">LLD T3</span></h4>
+  <p>Implement the memory relay daemon with request rate limiting, schema validation, and health probing.</p>
+
+  <div class="func-box">
+    <strong>Functions &amp; Interfaces:</strong><br>
+    <code>type RelayServer struct {<br>
+    &nbsp;&nbsp;SocketPath string<br>
+    &nbsp;&nbsp;UpstreamTCP string // default: 127.0.0.1:34343<br>
+    }<br>
+    func (s *RelayServer) Start(ctx context.Context) error<br>
+    func (s *RelayServer) ProbeStatus(ctx context.Context) (*MemorydStatus, error)<br>
+    func InscribeReceipt(ctx context.Context, client MemoryClient, r Receipt) error</code>
+  </div>
+
+  <div class="ac-box">
+    <strong>Acceptance Criteria (AC-03.1.1):</strong>
+    <ul>
+      <li><strong>AC-03.1.1.1 (Loopback Isolation):</strong> GIVEN lane containers running in isolated network namespaces (<code>--network none</code>), WHEN communicating over <code>memory.sock</code>, THEN memory operations succeed without container access to host network loopback.</li>
+      <li><strong>AC-03.1.1.2 (Substrate Down Resilience):</strong> GIVEN host NeuroStrata daemon is offline, WHEN <code>memoryd.ProbeStatus</code> runs during <code>aep boot</code>, THEN boot fails closed with exit code 1 (preventing unmonitored lane starts).</li>
+      <li><strong>AC-03.1.1.3 (Inscription on Close):</strong> GIVEN a completed task, WHEN <code>InscribeReceipt</code> executes, THEN task summary, failure modes, and code diff hash are recorded into the persistent vector memory table.</li>
+    </ul>
+  </div>
+</div>
+
+<div class="item-card">
+  <div class="item-header">
+    <span class="item-title"><span class="tag cap">CAP-04</span> Rate-Limited GitHub Gateway Relay (`ghg`)</span>
+    <span class="item-ref">REQ-02.2 &middot; Package: <code>internal/gateway</code></span>
+  </div>
+  <p>Acts as an authenticated proxy for GitHub operations, isolating personal access tokens (PAT) on the host and coalescing API requests.</p>
+
+  <h4><span class="tag feat">FEAT-04.1</span> Credential Guard &amp; Request Poller Coalescing</h4>
+  <p>Exposes <code>/run/aep/lanes/&lt;laneId&gt;/ghg.sock</code> to lanes, proxying requests to <code>tools/ghg/bin/ghg</code> while keeping secrets out of container memory.</p>
+
+  <h4><span class="tag task">TASK-04.1.1</span> Implement `aep gwd` Daemon &amp; Lane Client <span class="tag task">LLD T1b</span></h4>
+  <p>Construct UNIX socket listener parsing JSON commands (<code>pr-status</code>, <code>pr-create</code>, <code>check-runs</code>), executing host <code>ghg.py</code>, and returning sanitized results.</p>
+
+  <div class="func-box">
+    <strong>Functions &amp; Interfaces:</strong><br>
+    <code>type Request struct {<br>
+    &nbsp;&nbsp;Op     string   `json:"op"` // e.g. "pr-view", "checks-status"<br>
+    &nbsp;&nbsp;Args   []string `json:"args"`<br>
+    &nbsp;&nbsp;LaneID string   `json:"lane_id"`<br>
+    }<br>
+    func ServeConn(conn net.Conn, runner GHGRunner, cache PollerCache) error<br>
+    func CoalescePRStatus(ctx context.Context, pr int) (*PRStatus, error)</code>
+  </div>
+
+  <div class="ac-box">
+    <strong>Acceptance Criteria (AC-04.1.1):</strong>
+    <ul>
+      <li><strong>AC-04.1.1.1 (Token Zero-Leakage):</strong> GIVEN lane containers, WHEN inspected via <code>docker inspect</code>, <code>env</code>, or memory core dump, THEN <code>GITHUB_TOKEN</code> or <code>GH_TOKEN</code> is completely absent.</li>
+      <li><strong>AC-04.1.1.2 (Request Coalescing):</strong> GIVEN 8 parallel lanes polling CI status for PR #133 within 30 seconds, THEN <code>gateway</code> executes upstream GitHub API calls exactly once and serves cached results to all 8 lanes.</li>
+      <li><strong>AC-04.1.1.3 (Write Scoping):</strong> GIVEN a lane requesting PR creation, THEN the gateway verifies that the target branch matches the lane's registered <code>issueId</code> manifest before signing and executing the call.</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ========================================================================= -->
+<!-- DOMAIN 3: UNIFIED LEDGER & TASK GOVERNANCE -->
+<!-- ========================================================================= -->
+<h2>Domain 3: REQ-03 Unified Ledger &amp; Task Governance</h2>
+<p>The platform must maintain a unified, durable issue ledger (using Beads <code>bd</code>) as the single source of truth, governed by deterministic tier dispatching and audit recording.</p>
+
+<div class="item-card">
+  <div class="item-header">
+    <span class="item-title"><span class="tag cap">CAP-05</span> Beads Issue Ledger &amp; Dependency Resolution</span>
+    <span class="item-ref">REQ-03.1 &middot; Package: <code>internal/ledger</code></span>
+  </div>
+  <p>Queries local Beads database (<code>bd list --json --all --limit 0</code>), models issue states, and validates dependency DAGs.</p>
+
+  <h4><span class="tag feat">FEAT-05.1</span> Deterministic Candidate Selection &amp; Tier Classification</h4>
+  <p>Fetches unwindowed issue candidates, checks for terminal blocker states, and resolves tier tags (<code>tier:local</code> vs <code>tier:factory</code>).</p>
+
+  <h4><span class="tag task">TASK-05.1.1</span> Build Beads Adapter &amp; Issue Graph Parser <span class="tag task">LLD T5</span></h4>
+  <p>Create Go client executing <code>bd</code> CLI through injectable runner seam with typed error handling.</p>
+
+  <div class="func-box">
+    <strong>Functions &amp; Interfaces:</strong><br>
+    <code>type Issue struct {<br>
+    &nbsp;&nbsp;ID           string   `json:"id"`<br>
+    &nbsp;&nbsp;State        string   `json:"state"`<br>
+    &nbsp;&nbsp;TierTag      Tier     `json:"tier_tag"`<br>
+    &nbsp;&nbsp;Dependencies []string `json:"dependencies"`<br>
+    }<br>
+    func ListEligible(ctx context.Context, runner Runner) ([]Issue, error)<br>
+    func ResolveBlockers(target Issue, all []Issue) (isBlocked bool, blockers []string)</code>
+  </div>
+
+  <div class="ac-box">
+    <strong>Acceptance Criteria (AC-05.1.1):</strong>
+    <ul>
+      <li><strong>AC-05.1.1.1 (Unpinned Limit Guard):</strong> GIVEN candidate fetch, WHEN executing <code>bd list</code>, THEN <code>--limit 0</code> is explicitly passed; truncation raises <code>ErrFetchCeilingExceeded</code>.</li>
+      <li><strong>AC-05.1.1.2 (Missing Tier Tag):</strong> GIVEN an issue with no <code>tier:*</code> tag and no <code>risk:low</code> tag, WHEN candidate selection runs, THEN the issue is rejected from dispatch (cannot place unclassified work).</li>
+      <li><strong>AC-05.1.1.3 (DAG Blockers):</strong> GIVEN issue B depending on issue A, WHEN issue A is in state <code>open</code> or <code>in_progress</code>, THEN issue B is marked blocked and skipped.</li>
+    </ul>
+  </div>
+</div>
+
+<div class="item-card">
+  <div class="item-header">
+    <span class="item-title"><span class="tag cap">CAP-06</span> Deterministic Dual-Lane Dispatcher &amp; Quarantine Governance</span>
+    <span class="item-ref">REQ-03.2 &middot; Package: <code>internal/dispatch</code></span>
+  </div>
+  <p>Evaluates candidate tasks against substrate health, runtime sandbox availability, and admission capacity; strictly enforces quarantine over silent downgrade.</p>
+
+  <h4><span class="tag feat">FEAT-06.1</span> Pure Decision Engine &amp; Audit Trail Writer</h4>
+  <p>Implements the dispatch decision matrix (§7 of LLD), producing auditable JSON decision records for every admission, wait, or quarantine.</p>
+
+  <h4><span class="tag task">TASK-06.1.1</span> Implement Dispatcher Decision Engine <span class="tag task">LLD T7</span></h4>
+  <p>Develop pure <code>dispatch.Decide</code> function and CLI subcommand <code>aep dispatch --dry-run</code>.</p>
+
+  <div class="func-box">
+    <strong>Functions &amp; Interfaces:</strong><br>
+    <code>type DecisionAction string<br>
+    const (<br>
+    &nbsp;&nbsp;ActionRunLocal     DecisionAction = "run-local"<br>
+    &nbsp;&nbsp;ActionRunFactory   DecisionAction = "run-factory"<br>
+    &nbsp;&nbsp;ActionWaitCapacity DecisionAction = "wait"<br>
+    &nbsp;&nbsp;ActionQuarantine   DecisionAction = "quarantine"<br>
+    )<br>
+    func Decide(ctx context.Context, d Deps, issue Issue) DecisionRecord<br>
+    func WriteDecision(record DecisionRecord) error</code>
+  </div>
+
+  <div class="ac-box">
+    <strong>Acceptance Criteria (AC-06.1.1):</strong>
+    <ul>
+      <li><strong>AC-06.1.1.1 (Quarantine on Sandbox Failure):</strong> GIVEN an issue tagged <code>tier:factory</code>, WHEN all local sandboxes (Cube/KVM, libkrun, gVisor) are unavailable and no remote cluster is configured, THEN decision is <code>quarantine</code> with reason <code>blocked:unsupported-tier2-no-sandbox</code> (exit 4).</li>
+      <li><strong>AC-06.1.1.2 (Prohibition of Silent Downgrade):</strong> GIVEN a <code>factory</code> task on an unsupported host, WHEN operator has NOT provided <code>--override-tier1-risk-reassessment</code>, THEN the task is NEVER routed to Tier 1.</li>
+      <li><strong>AC-06.1.1.3 (Audit Persistence):</strong> GIVEN any dispatch evaluation, THEN a decision file is written to <code>$AEP_STATE_DIR/decisions/&lt;ts&gt;-&lt;issue&gt;.json</code> recording probed state, timestamp, and rationale.</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ========================================================================= -->
+<!-- DOMAIN 4: HARDWARE PROFILES & ADMISSION -->
+<!-- ========================================================================= -->
+<h2>Domain 4: REQ-04 Scalable Multi-Hardware Profiles &amp; Dynamic Admission Control</h2>
+<p>The platform must scale reliably across hardware profiles—from low-power 2 vCPU / 8 GB edge machines (Intel N100) up to 12 vCPU / 48 GB developer workstations (Apple M3 Max)—governed by dynamic admission control.</p>
+
+<div class="item-card">
+  <div class="item-header">
+    <span class="item-title"><span class="tag cap">CAP-07</span> Multi-Hardware Profile Registry &amp; Probing Engine</span>
+    <span class="item-ref">REQ-04.1 &middot; Package: <code>internal/profile</code></span>
+  </div>
+  <p>Detects host family (<code>mac-colima-vz</code> vs <code>linux-native</code>), CPU cores, RAM, and hardware virtualization capabilities, mapping to size presets.</p>
+
+  <h4><span class="tag feat">FEAT-07.1</span> Profile Detection CLI &amp; Preset Validator</h4>
+  <p>Provides <code>aep profile detect</code> and <code>aep profile show</code>, ensuring system reservations and container budgets do not overcommit host memory.</p>
+
+  <h4><span class="tag task">TASK-07.1.1</span> Build Profile Detection &amp; Config Package <span class="tag task">LLD T1</span></h4>
+  <p>Implement hardware discovery probing <code>/proc/cpuinfo</code>, <code>/proc/meminfo</code> (or macOS <code>sysctl</code>), and <code>/dev/kvm</code>.</p>
+
+  <div class="func-box">
+    <strong>Functions &amp; Interfaces:</strong><br>
+    <code>type Profile struct {<br>
+    &nbsp;&nbsp;Name           string<br>
+    &nbsp;&nbsp;SubstrateMemMB int<br>
+    &nbsp;&nbsp;Tier1BudgetMB  int<br>
+    &nbsp;&nbsp;Tier1LaneMax   int<br>
+    &nbsp;&nbsp;Tier2BudgetMB  int<br>
+    &nbsp;&nbsp;SandboxBackends []SandboxBackend<br>
+    }<br>
+    func DetectHost(ctx context.Context) (*Profile, error)<br>
+    func LoadPreset(name string) (*Profile, error)</code>
+  </div>
+
+  <div class="ac-box">
+    <strong>Acceptance Criteria (AC-07.1.1):</strong>
+    <ul>
+      <li><strong>AC-07.1.1.1 (Nano-8G Support):</strong> GIVEN host with 8 GB RAM (e.g. Intel N100), WHEN <code>aep profile detect</code> runs, THEN it selects <code>nano-8g</code>: Substrate 2.5 GB, Tier-1 4.0 GB (1–2 lanes), Tier-2 1.5 GB via <code>gvisor</code>.</li>
+      <li><strong>AC-07.1.1.2 (Workstation-48G Support):</strong> GIVEN Apple M3 Max with Colima <code>vz</code> and <code>--nested-virtualization</code>, THEN it selects <code>workstation-48g</code>: Substrate 8.0 GB, Tier-1 16.0 GB (8–10 lanes), Tier-2 24.0 GB (4–6 pipelines).</li>
+      <li><strong>AC-07.1.1.3 (Floor Verification):</strong> GIVEN a host with &lt; 8 GB available RAM, THEN <code>profile.Validate</code> returns an error and refuses to start substrate.</li>
+    </ul>
+  </div>
+</div>
+
+<div class="item-card">
+  <div class="item-header">
+    <span class="item-title"><span class="tag cap">CAP-08</span> Dual-Constraint Dynamic Admission Controller</span>
+    <span class="item-ref">REQ-04.2 &middot; Package: <code>internal/admission</code></span>
+  </div>
+  <p>Coordinates lane admissions using atomic file locking (<code>admission.lock</code>), enforcing concurrent count ceilings and cumulative RAM budgets simultaneously.</p>
+
+  <h4><span class="tag feat">FEAT-08.1</span> Atomic Memory Budget &amp; Slot Allocation</h4>
+  <p>Manages <code>$AEP_STATE_DIR/admission.json</code> to reserve and release memory slots across both execution tiers.</p>
+
+  <h4><span class="tag task">TASK-08.1.1</span> Build Atomic Admission Controller <span class="tag task">LLD T4</span></h4>
+  <p>Implement file-locked reservation logic with automatic timeout expiration and garbage collection.</p>
+
+  <div class="func-box">
+    <strong>Functions &amp; Interfaces:</strong><br>
+    <code>type Controller struct {<br>
+    &nbsp;&nbsp;StateFile string<br>
+    &nbsp;&nbsp;LockFile  string<br>
+    }<br>
+    func (c *Controller) Admit(ctx context.Context, req ReservationReq) (*Reservation, error)<br>
+    func (c *Controller) Release(ctx context.Context, laneID string) error<br>
+    func (c *Controller) CurrentState(ctx context.Context) (*AdmissionState, error)</code>
+  </div>
+
+  <div class="ac-box">
+    <strong>Acceptance Criteria (AC-08.1.1):</strong>
+    <ul>
+      <li><strong>AC-08.1.1.1 (Concurrency Safety):</strong> GIVEN 10 parallel goroutines attempting to admit lanes when only 1 slot remains, THEN exactly one goroutine succeeds and 9 receive <code>ErrNoCapacity</code>; no race conditions occur.</li>
+      <li><strong>AC-08.1.1.2 (Budget Exhaustion):</strong> GIVEN a Tier-1 memory budget of 4.0 GB, WHEN two 2.0 GB lanes are active, THEN a 3rd lane request is rejected with <code>ErrNoCapacity</code> even if count ceiling is not reached.</li>
+      <li><strong>AC-08.1.1.3 (Cgroup Enforcement):</strong> GIVEN an admitted 2.0 GB lane, WHEN container runs with <code>--memory=2048m --memory-swap=2048m</code> and exceeds memory limit, THEN the container is OOM-killed (exit 137) without starving the substrate.</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ========================================================================= -->
+<!-- DOMAIN 5: POLICY & BOOT GATING -->
+<!-- ========================================================================= -->
+<h2>Domain 5: REQ-05 Policy Enforcement &amp; Platform Boot Gating</h2>
+<p>The platform must verify policy integrity against Git HEAD commits and enforce complete parity with legacy shell boot gates before initiating any container workloads.</p>
+
+<div class="item-card">
+  <div class="item-header">
+    <span class="item-title"><span class="tag cap">CAP-09</span> Cryptographic Policy Verifier &amp; Environment Sanitizer</span>
+    <span class="item-ref">REQ-05.1 &middot; Package: <code>internal/policy</code></span>
+  </div>
+  <p>Guards <code>policy.data</code> against unauthorized uncommitted modifications and sanitizes execution environments.</p>
+
+  <h4><span class="tag feat">FEAT-09.1</span> Git HEAD-Blob Tamper Verification</h4>
+  <p>Reads <code>policy.data</code> from the working tree and compares its SHA-1/SHA-256 blob hash directly against <code>git rev-parse HEAD:policy.data</code>.</p>
+
+  <h4><span class="tag task">TASK-09.1.1</span> Build Policy Guard Package <span class="tag task">LLD T2</span></h4>
+  <p>Implement tamper detection and environment variable scrubbers removing tokens from subprocesses.</p>
+
+  <div class="func-box">
+    <strong>Functions &amp; Interfaces:</strong><br>
+    <code>func VerifyAgainstHEAD(ctx context.Context, repoRoot string) (bool, error)<br>
+    func ScrubEnv(env []string) []string<br>
+    func ComputePolicyHash(data []byte) string</code>
+  </div>
+
+  <div class="ac-box">
+    <strong>Acceptance Criteria (AC-09.1.1):</strong>
+    <ul>
+      <li><strong>AC-09.1.1.1 (Tamper Lockout):</strong> GIVEN <code>policy.data</code> modified on disk without committing to git, WHEN <code>VerifyAgainstHEAD</code> executes, THEN it returns <code>false</code> and causes <code>aep boot</code> to fail with exit 1.</li>
+      <li><strong>AC-09.1.1.2 (Missing Policy Handling):</strong> GIVEN <code>policy.data</code> does not exist, THEN the system emits <code>POLICY-INACTIVE</code> token, matching legacy <code>boot-gate.sh</code> behavior.</li>
+      <li><strong>AC-09.1.1.3 (Token Scrubbing):</strong> GIVEN an environment containing <code>GITHUB_TOKEN</code>, <code>PAT</code>, or <code>API_SECRET</code>, WHEN <code>ScrubEnv</code> runs, THEN all sensitive keys are purged from the resulting slice.</li>
+    </ul>
+  </div>
+</div>
+
+<div class="item-card">
+  <div class="item-header">
+    <span class="item-title"><span class="tag cap">CAP-10</span> Full-Parity Boot Gate (`aep boot`)</span>
+    <span class="item-ref">REQ-05.2 &middot; Package: <code>cmd/aep</code> &amp; <code>internal/boot</code></span>
+  </div>
+  <p>Replaces <code>scripts/boot-gate.sh</code> with a Go-native implementation providing byte-identical validation tokens and substrate dependency checks.</p>
+
+  <h4><span class="tag feat">FEAT-10.1</span> Substrate Readiness &amp; Health Probe Orchestration</h4>
+  <p>Verifies Git cleanliness, NeuroStrata connectivity, container daemon status, and hardware profile before allowing supervisor dispatch.</p>
+
+  <h4><span class="tag task">TASK-10.1.1</span> Implement Native Go Boot Gate <span class="tag task">LLD T3</span></h4>
+  <p>Port shell logic to Go CLI with parity test harness validating identical output tokens.</p>
+
+  <div class="func-box">
+    <strong>Functions &amp; Interfaces:</strong><br>
+    <code>type GateRunner struct {<br>
+    &nbsp;&nbsp;RepoPath string<br>
+    &nbsp;&nbsp;Profile  *profile.Profile<br>
+    }<br>
+    func (g *GateRunner) RunAllChecks(ctx context.Context) (*BootReport, error)<br>
+    func DiffWithShellGate(ctx context.Context, stubEnv map[string]string) error</code>
+  </div>
+
+  <div class="ac-box">
+    <strong>Acceptance Criteria (AC-10.1.1):</strong>
+    <ul>
+      <li><strong>AC-10.1.1.1 (Token Parity):</strong> GIVEN identical stub test environments, WHEN <code>aep boot</code> runs vs <code>boot-gate.sh</code>, THEN the emitted <code>BOOT-GATE:</code> lines match exactly in order and tokens.</li>
+      <li><strong>AC-10.1.1.2 (Substrate Gate):</strong> GIVEN container daemon or NeuroStrata unavailable, WHEN <code>aep boot</code> runs, THEN it exits 1 with a descriptive remediation string.</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ========================================================================= -->
+<!-- DOMAIN 6: VERIFICATION & AUDITABILITY -->
+<!-- ========================================================================= -->
+<h2>Domain 6: REQ-06 Verification, Quarantine &amp; Cryptographic Auditability</h2>
+<p>The platform must ensure that untrusted patches are never verified on the host kernel and that all task completions emit verifiable cryptographic receipts before ledger settlement.</p>
+
+<div class="item-card">
+  <div class="item-header">
+    <span class="item-title"><span class="tag cap">CAP-11</span> Disposable Sandbox Patch Re-Verification</span>
+    <span class="item-ref">REQ-06.1 &middot; Package: <code>internal/verifier</code></span>
+  </div>
+  <p>Runs untrusted repository test scripts (<code>npm test</code>, <code>pytest</code>, <code>cargo test</code>) inside fresh, disposable hardware microVMs or gVisor sandboxes.</p>
+
+  <h4><span class="tag feat">FEAT-11.1</span> Host Kernel Protection from Untrusted Payloads</h4>
+  <p>Restricts Tier-1 verification to static analysis only; enforces dynamic execution inside disposable Tier-2 sandboxes.</p>
+
+  <h4><span class="tag task">TASK-11.1.1</span> Build Disposable Sandbox Verifier Runner <span class="tag task">LLD T11</span></h4>
+  <p>Construct test executor launching disposable microVMs with closed egress, applying patch, running build/test, and capturing cryptographic test logs.</p>
+
+  <div class="func-box">
+    <strong>Functions &amp; Interfaces:</strong><br>
+    <code>type Verifier interface {<br>
+    &nbsp;&nbsp;StaticCheck(ctx context.Context, patchPath string) (*StaticReport, error)<br>
+    &nbsp;&nbsp;DynamicVerifyInSandbox(ctx context.Context, patchPath string) (*VerifyResult, error)<br>
+    }</code>
+  </div>
+
+  <div class="ac-box">
+    <strong>Acceptance Criteria (AC-11.1.1):</strong>
+    <ul>
+      <li><strong>AC-11.1.1.1 (No Untrusted Execution on Host):</strong> GIVEN a patch generated by Tier 2 (ESF), WHEN dynamic tests run via <code>aep verify</code>, THEN tests execute inside a fresh disposable sandbox and NEVER directly on the host or Tier-1 container.</li>
+      <li><strong>AC-11.1.1.2 (Disposable Lifecycle):</strong> GIVEN test execution finishes (pass or fail), THEN the disposable microVM sandbox is destroyed immediately without leaving residual processes or disk state.</li>
+    </ul>
+  </div>
+</div>
+
+<div class="item-card">
+  <div class="item-header">
+    <span class="item-title"><span class="tag cap">CAP-12</span> Cryptographic Run Receipts &amp; Ledger Settlement</span>
+    <span class="item-ref">REQ-06.2 &middot; Package: <code>internal/receipt</code> &amp; <code>internal/ledger</code></span>
+  </div>
+  <p>Generates SHA-256 tail digests of all run outputs, binding git commit SHA, test logs, and memory inscriptions into a durable receipt.</p>
+
+  <h4><span class="tag feat">FEAT-12.1</span> Audit Receipt Generation &amp; Beads Issue Closing Gate</h4>
+  <p>Enforces that an issue in Beads (<code>bd close</code>) can only transition to <code>closed</code> if accompanied by a cryptographically verified receipt.</p>
+
+  <h4><span class="tag task">TASK-12.1.1</span> Implement Receipt Package &amp; Closing Guard</h4>
+  <p>Create receipt generator computing Merkle/tail digests over run logs, git diffs, and test outputs.</p>
+
+  <div class="func-box">
+    <strong>Functions &amp; Interfaces:</strong><br>
+    <code>type Receipt struct {<br>
+    &nbsp;&nbsp;IssueID      string `json:"issue_id"`<br>
+    &nbsp;&nbsp;CommitSHA    string `json:"commit_sha"`<br>
+    &nbsp;&nbsp;PatchDigest  string `json:"patch_digest"`<br>
+    &nbsp;&nbsp;EgressProof  string `json:"egress_proof"`<br>
+    &nbsp;&nbsp;TailDigest   string `json:"tail_digest"`<br>
+    }<br>
+    func Generate(run Record) (*Receipt, error)<br>
+    func VerifyReceipt(r *Receipt) bool<br>
+    func CloseWithReceipt(ctx context.Context, issueID string, r *Receipt) error</code>
+  </div>
+
+  <div class="ac-box">
+    <strong>Acceptance Criteria (AC-12.1.1):</strong>
+    <ul>
+      <li><strong>AC-12.1.1.1 (Tail Digest Verification):</strong> GIVEN a completed task, WHEN <code>Generate</code> runs, THEN it computes SHA-256 over <code>commit_sha + patch_digest + egress_proof</code>.</li>
+      <li><strong>AC-12.1.1.2 (Settlement Guard):</strong> GIVEN an issue closure attempt, WHEN <code>CloseWithReceipt</code> executes, THEN it checks that the receipt signature is valid before executing <code>bd close &lt;id&gt;</code>.</li>
+    </ul>
+  </div>
+</div>
+
+<footer>
+  AEP System Engineering Backlog v1.1 &middot; Generated 2026-11-09 &middot; Traceable to HLD v1.1 and LLD v1.1 &middot; Autonomous Engineering Platform
+</footer>
+
+</body>
+</html>
