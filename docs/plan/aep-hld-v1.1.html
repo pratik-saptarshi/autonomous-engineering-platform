@@ -194,7 +194,7 @@ AEP prioritizes on-node isolation: (1) native hardware microVMs via CubeSandbox/
 <h3><span class="tag built">Built</span> in <code>develop</code></h3>
 <ul>
   <li><code>cmd/aep</code> with <code>version</code>, <code>info</code>, <code>boot</code>, <code>verify</code>, <code>supervisor</code>, <code>lock-test</code>.</li>
-  <li><code>internal/platform/{memory,lock,process}</code> for Linux, macOS and Windows; <code>internal/verifier/runner</code> (allowlist discovery, full-stream SHA-256 with display tails, memory preflight, budgets).</li>
+  <li><code>internal/platform/{memory,lock,process}</code> for Linux, macOS and Windows; <code>internal/verifier/runner</code> (allowlist discovery, 64 KiB tail-capped SHA-256 receipts, memory preflight, budgets). Full-stream receipt hashing and signing are <strong>planned in PR-11b</strong>, not yet built.</li>
   <li><code>Makefile</code> targets <code>binaries</code>, <code>vm</code>, <code>oci</code>; <code>scripts/package-vm.sh</code>, <code>scripts/package-oci.sh</code>; <code>Containerfile</code>, <code>docker-compose.yml</code>.</li>
   <li>Root CI runs <code>gofmt</code>, <code>go vet</code>, <code>go test</code>.</li>
 </ul>
