@@ -78,7 +78,7 @@ docs/plan/                            this doc  HLD + LLD (html + pdf)</code></p
 
 <h3>4.1 <code>internal/profile</code></h3>
 <pre><code>type Profile struct {
-    HostFamily      string // "mac-colima-vz" | "linux-native" — decides runtime + Tier 2 eligibility
+    HostFamily      string // "mac-colima-vz" | "linux-native" — decides runtime; Tier 2 eligibility comes from the KVM probe, not the family alone
     Name            string // e.g. "mac-colima-vz-48g", "linux-native-16g" (family + size tier)
     VMCPUs          int    // 2 (nano) up to 12 (workstation)
     VMMemoryMiB     uint64 // 8192 up to 49152
@@ -90,14 +90,14 @@ docs/plan/                            this doc  HLD + LLD (html + pdf)</code></p
     Tier2LaneMiB    uint64 // default per-pipeline reservation, 4096 - 6144
     MaxTier1Lanes   int    // hard ceiling: 2 (nano) up to 10 (workstation)
     MaxTier2Lanes   int    // hard ceiling: 0 (nano) up to 6 (workstation)
-    Tier2Supported  bool   // true only if /dev/kvm or nested virt is detected
+    Tier2Supported  bool   // true iff /dev/kvm probed present (mac-colima-vz requires colima --nested-virtualization; confirmed 2026-11-09)
     MemFloorMiB     uint64 // 384 (nano) / 512
     ONNXThreads     int
 }
 func Detect() (Profile, error)            // probes CPU, RAM, disk, /dev/kvm, and container runtime
 func Load(path string) (Profile, error)   // KEY=VALUE file, same keys as hardware-profile.conf
 func (p Profile) Validate() error         // sum(substrate+t1+t2) &lt;= VMMemoryMiB; ceilings*laneMiB &lt;= budgets is NOT required</code></pre>
-<p><strong>Host-family rule:</strong> <code>mac-colima-vz</code> = macOS, one large shared Colima VM (<code>vz</code>+<code>virtiofs</code>), containers spawned on demand inside it, <code>Tier2Supported=false</code> always (VZ has no <code>/dev/kvm</code>). <code>linux-native</code> = Linux host, Podman/Docker directly on host, <code>Tier2Supported</code> iff <code>/dev/kvm</code> probed present. Size tiers scale budgets within each family, e.g. <code>mac-colima-vz-48g</code> (M3 Max, shared VM), <code>linux-native-8g</code> (N100/Cloud, Tier 2 off), <code>linux-native-32g</code> (i7/Ryzen 7, Tier 2 on with KVM). <code>Detect()</code> returns the family from <code>GOOS</code> + runtime probe, then the size tier from CPU/RAM.</p>
+<p><strong>Host-family rule:</strong> <code>mac-colima-vz</code> = macOS, one large shared Colima VM (<code>vz</code>+<code>virtiofs</code>), containers spawned on demand inside it, <code>Tier2Supported</code> iff the VM was started with <code>--nested-virtualization</code> and <code>/dev/kvm</code> probes present — <em>confirmed</em> 2026-11-09 on M3 Max / Colima 0.10.3; without the flag it is false. <code>linux-native</code> = Linux host, Podman/Docker directly on host, <code>Tier2Supported</code> iff <code>/dev/kvm</code> probed present. Size tiers scale budgets within each family, e.g. <code>mac-colima-vz-48g</code> (M3 Max, shared VM), <code>linux-native-8g</code> (N100/Cloud, Tier 2 off), <code>linux-native-32g</code> (i7/Ryzen 7, Tier 2 on with KVM). <code>Detect()</code> returns the family from <code>GOOS</code> + runtime probe, then the size tier from CPU/RAM.</p>
 
 <h3>4.2 <code>internal/policy</code></h3>
 <pre><code>type Policy struct { EnvScrubFragments []string; SensitivePaths []string; Raw []byte; SHA256 string }
@@ -270,12 +270,13 @@ func Decide(ctx context.Context, d Deps, issue Issue) Decision</code></pre>
 
 <h2>9. Runtime topology</h2>
 <h3>9.1 Container and VM runtimes — by host family</h3>
-<p><strong>mac-colima-vz (macOS):</strong> one large shared Colima VM; Docker/Podman containers are spawned on demand <em>inside</em> that VM and bounded by admission control — never one VM per lane. Use <code>--vm-type vz --mount-type virtiofs</code>; worktrees are virtiofs-mounted into the VM. Tier 2 microVMs are <strong>not supported</strong> here (no KVM under VZ): <code>tier:factory</code> tasks quarantine or execute remotely.</p>
+<p><strong>mac-colima-vz (macOS):</strong> one large shared Colima VM; Docker/Podman containers are spawned on demand <em>inside</em> that VM and bounded by admission control — never one VM per lane. Use <code>--vm-type vz --mount-type virtiofs</code>; worktrees are virtiofs-mounted into the VM. Tier 2 microVMs are <strong>supported iff</strong> the VM was started with <code>--nested-virtualization</code> (<code>-z</code>) and <code>/dev/kvm</code> probes present — confirmed 2026-11-09 (see §9.1 evidence). Without the flag, <code>tier:factory</code> tasks quarantine.</p>
 <p><strong>linux-native (Linux):</strong> no Colima; Podman (rootless) / Docker runs directly on the host under cgroups v2, same need-based container spawning. Tier 2 is enabled iff <code>/dev/kvm</code> is present.</p>
+<p><strong>Confirmed 2026-11-09</strong> on Apple M3 Max (macOS 27.2, Colima 0.10.3, <code>vz</code> + <code>virtiofs</code>): <code>colima start --nested-virtualization</code> exposes <code>/dev/kvm</code> inside the VM (and in <code>--privileged</code> containers); QEMU <code>accel=kvm</code> is accepted for a nested L2 guest; Docker 29.5.2 containers run in-VM; Temporal (sqlite dev server) serves UI on <code>:8233</code>. Without <code>--nested-virtualization</code>, <code>/dev/kvm</code> is absent — the flag is required. CubeSandbox itself was not installed/tested.</p>
 <pre><code># macOS (M3 Max / Apple Silicon Workstation):
 colima start --profile aep \
   --cpu 12 --memory 48 --disk 220 \
-  --vm-type vz --mount-type virtiofs
+  --vm-type vz --mount-type virtiofs --nested-virtualization
 
 # Linux hosts (Intel N100 / AMD Ryzen / Cloud VMs):
 # Runs natively on host cgroups v2 using Podman (rootless) or Docker:
@@ -337,7 +338,7 @@ Lanes run with <code>--network none</code> (or an internal isolated bridge) and 
 <p>Each task is a separate branch (<code>type/scope-short-description</code>), Conventional-Commit titles, one reviewable deliverable. Tasks T1–T5 need no container runtime and can land on any host.</p>
 <table>
   <tr><th>ID</th><th>Task</th><th>Files</th><th>Acceptance</th></tr>
-  <tr><td><strong>T0</strong></td><td>Feasibility spike: test KVM / nested virt and measure lane RSS on macOS (Colima) and Linux (Podman)</td><td>notes in <code>docs/plan/</code></td><td>Written result: does <code>/dev/kvm</code> exist; peak RSS of ralph lanes. <strong>Gates T9–T10.</strong></td></tr>
+  <tr><td><strong>T0 ✅ DONE 2026-11-09</strong></td><td>Feasibility spike: KVM / nested virt on macOS (Colima) — <strong>confirmed</strong></td><td>this doc §9.1 evidence note</td><td><code>/dev/kvm</code> exists in-VM with <code>--nested-virtualization</code> (M3 Max, Colima 0.10.3); QEMU <code>accel=kvm</code> accepted; Docker + Temporal run in-VM. Remaining: CubeSandbox-in-Colima + lane RSS measurement. <strong>T9 unblocked; T10 still needs CubeSandbox validation.</strong></td></tr>
   <tr><td>T1</td><td><code>profile</code> package + <code>aep profile detect|show</code></td><td><code>internal/profile/*</code>, <code>cmd/aep</code></td><td>Validate rejects over-committed budgets; nano, small, medium, workstation presets load; KVM detected.</td></tr>
   <tr><td>T1b</td><td><code>gateway</code> package (<code>aep gwd</code> / ghg IPC relay)</td><td><code>internal/gateway/*</code>, <code>cmd/aep</code></td><td>Socket relay executes <code>ghg.py</code>; rate caps and poller coalescing verified without leaking PAT.</td></tr>
   <tr><td>T2</td><td><code>policy</code> package; HEAD-blob verification</td><td><code>internal/policy/*</code></td><td>Matches <code>boot-gate.sh</code> behaviour incl. <code>POLICY-INACTIVE</code>; tamper test fails gate.</td></tr>

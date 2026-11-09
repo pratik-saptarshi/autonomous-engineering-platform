@@ -276,11 +276,12 @@
       <table>
         <thead><tr><th>Host Family</th><th>OS / Workstation</th><th>Runtime Model</th><th>Tier 2 (microVM / KVM)</th></tr></thead>
         <tbody>
-          <tr><td><strong>mac-colima-vz</strong></td><td>macOS (Apple Silicon / Intel) — primary dev host</td><td><strong>One large shared Colima VM</strong> (<code>vz</code> + <code>virtiofs</code>); Docker/Podman containers spawned on demand inside that VM</td><td><strong>Disabled</strong> — VZ has no <code>/dev/kvm</code>, nested virt unsupported; <code>tier:factory</code> tasks quarantine (or go remote)</td></tr>
+          <tr><td><strong>mac-colima-vz</strong></td><td>macOS (Apple Silicon / Intel) — primary dev host</td><td><strong>One large shared Colima VM</strong> (<code>vz</code> + <code>virtiofs</code>); Docker/Podman containers spawned on demand inside that VM</td><td><strong>Supported iff</strong> VM started with <code>--nested-virtualization</code> (<code>-z</code>) and <code>/dev/kvm</code> probes present — <em>confirmed</em> on M3 Max / Colima 0.10.3 (see evidence note below); otherwise quarantine</td></tr>
           <tr><td><strong>linux-native</strong></td><td>Linux x86_64/ARM64 workstation, server, or cloud VM</td><td>Podman (rootless) / Docker directly on host (cgroups v2); no Colima, no one-VM-per-lane</td><td><strong>Supported if</strong> <code>/dev/kvm</code> present; otherwise quarantine</td></tr>
         </tbody>
       </table>
-      <p><strong>Mac / Colima best practices (mac-colima-vz family):</strong> run a <em>single</em> Colima VM sized for the workstation, keep it warm, and spawn ephemeral lane containers inside it on demand — never one VM per lane. Use <code>--vm-type vz --mount-type virtiofs</code> (not QEMU/KVM flags), mount worktrees via virtiofs into the VM, and let the in-VM supervisor + admission controller bound container count/RAM. Substrate services and lanes are all containers in the same VM; cross-boundary traffic uses supervisor socket relays, not host loopback.</p>
+      <p><strong>Mac / Colima best practices (mac-colima-vz family):</strong> run a <em>single</em> Colima VM sized for the workstation, keep it warm, and spawn ephemeral lane containers inside it on demand — never one VM per lane. Use <code>--vm-type vz --mount-type virtiofs --nested-virtualization</code> (not QEMU/KVM flags for the outer VM; nested-virt is the <em>inner</em> KVM opt-in), mount worktrees via virtiofs into the VM, and let the in-VM supervisor + admission controller bound container count/RAM. Substrate services and lanes are all containers in the same VM; cross-boundary traffic uses supervisor socket relays, not host loopback.</p>
+      <p><strong>Confirmed 2026-11-09</strong> on Apple M3 Max (macOS 27.2, Colima 0.10.3, <code>vz</code> + <code>virtiofs</code>): <code>colima start --nested-virtualization</code> exposes <code>/dev/kvm</code> inside the VM (and in <code>--privileged</code> containers); QEMU <code>accel=kvm</code> is accepted for a nested L2 guest; Docker 29.5.2 containers run in-VM; Temporal (sqlite dev server) serves UI on <code>:8233</code>. Without <code>--nested-virtualization</code>, <code>/dev/kvm</code> is absent — the flag is required.</p>
 
       <table>
         <thead>
@@ -329,17 +330,17 @@
             <td>2 vCPU · 8.0 GB RAM · 30 GB Disk</td>
             <td>16.0 GB budget (8–10 lanes @ 1.5–2GB)</td>
             <td>24.0 GB budget (4–6 pipelines @ 4–6GB)</td>
-            <td>linux-native: Yes (<code>/dev/kvm</code>) · mac-colima-vz: <strong>No</strong> (VZ, quarantine)</td>
+            <td>Both families: Yes iff <code>/dev/kvm</code> probed (<code>linux-native</code> host KVM; <code>mac-colima-vz</code> requires <code>--nested-virtualization</code>)</td>
           </tr>
         </tbody>
       </table>
 
       <h3>Runtime Profile Auto-Detection</h3>
       <p>
-        <code>aep profile detect</code> returns <code>{host_os, host_family, size_tier, container_runtime, kvm_available, recommended_profile}</code>. On macOS it selects <code>mac-colima-vz</code> (Tier 2 off); on Linux with <code>/dev/kvm</code> it selects <code>linux-native</code> (Tier 2 on). If virtualization is absent, Tier 2 is disabled and <code>tier:factory</code> tasks quarantine — never downgrade.
+        <code>aep profile detect</code> returns <code>{host_os, host_family, size_tier, container_runtime, kvm_available, recommended_profile}</code>. On macOS it selects <code>mac-colima-vz</code>; Tier 2 is on iff the VM was started with <code>--nested-virtualization</code> and <code>/dev/kvm</code> probes present (confirmed on M3 Max). On Linux it selects <code>linux-native</code>; Tier 2 is on iff host <code>/dev/kvm</code> is present. If virtualization is absent, Tier 2 is disabled and <code>tier:factory</code> tasks quarantine — never downgrade.
       </p>
       <pre><code># macOS / mac-colima-vz — ONE shared large VM, containers spawned on demand inside it:
-colima start --profile aep --cpu 12 --memory 48 --disk 220 --vm-type vz --mount-type virtiofs
+colima start --profile aep --cpu 12 --memory 48 --disk 220 --vm-type vz --mount-type virtiofs --nested-virtualization
 # (smaller Macs scale down, e.g. --cpu 8 --memory 32 --disk 150; same single-VM model)
 
 # Linux / linux-native — no Colima; Podman/Docker on host, KVM probed for Tier 2:

@@ -55,6 +55,7 @@
   <tr><td>D6</td><td><code>beads</code> is the single macro task ledger. The Superpowers SDD ledger (<code>.superpowers/sdd/&lt;plan&gt;/progress.md</code>) stays a per-plan micro ledger and does not replace it.</td><td>Different lifetimes and purposes: durable cross-session backlog vs. ephemeral compaction-recovery record.</td><td><span class="tag planned">Planned</span></td></tr>
   <tr><td>D7</td><td>ESF workflow IDs are keyed to beads issue IDs (<code>esf-beads-&lt;ID&gt;</code>).</td><td>Prevents orphan factory runs and dual-backlog drift.</td><td><span class="tag planned">Planned</span></td></tr>
   <tr><td>D8</td><td>Factory-tagged tasks degrade explicitly when Temporal/CubeSandbox are unreachable (quarantine, or fenced local lane with escalated review) — never hang.</td><td>Removes the load-bearing failure found in review: the loop stalling on infrastructure that does not exist on most hosts.</td><td><span class="tag planned">Planned</span></td></tr>
+  <tr><td>D9</td><td>Local-first pluggable Tier-2 sandbox fabric: CubeSandbox (Linux hosts with <code>/dev/kvm</code>), <code>libkrun</code> (macOS native Hypervisor/Virtualization.framework), and <code>gVisor</code> (<code>runsc</code> in <code>systrap</code> mode for KVM-free Linux/cloud). Remote sandbox clusters are strictly an emergency fallback of last resort if all local sandbox runtimes fail.</td><td>Breaks the hard dependency on Linux nested KVM: macOS runs native microVMs via <code>libkrun</code>, while KVM-free edge/cloud nodes isolate untrusted tasks via <code>gVisor</code> user-space kernel. <strong>Update 2026-11-09:</strong> nested KVM inside Colima is also <em>confirmed</em> (<code>--nested-virtualization</code> exposes <code>/dev/kvm</code> on M3 Max / Colima 0.10.3), so CubeSandbox-in-Colima is a valid macOS Tier-2 route alongside native <code>libkrun</code>.</td><td><span class="tag planned">Planned</span></td></tr>
 </table>
 
 <h2>3. Goals and non-goals</h2>
@@ -63,6 +64,7 @@
   <li>One-command install and run on Linux (x86_64 and ARM64), the Muse 8&nbsp;GB VM, and macOS (Intel and Apple Silicon).</li>
   <li>Many parallel lanes under one governance plane with bounded, predictable resource use.</li>
   <li>Deterministic verification decides success; an agent saying "done" never does.</li>
+  <li>Pluggable sandbox isolation for Tier 2: hardware microVMs via CubeSandbox/libkrun, or user-space kernel sandboxing via gVisor on KVM-free hosts.</li>
   <li>Fail closed: no autonomous run starts if the environment is unfit.</li>
 </ul>
 <h3>Non-goals (v1.1)</h3>
@@ -107,13 +109,13 @@
 
   <rect x="460" y="272" width="406" height="220" rx="8" fill="#eef2ff" stroke="#4f46e5" stroke-width="1.5"/>
   <text x="474" y="294" font-size="12" font-weight="700" fill="#4f46e5">TIER 2 — ESF factory pipelines</text>
-  <text x="474" y="314" font-size="10.5">Disabled (Nano) up to 4–6 concurrent (Workstation) · ~4–6 GB each</text>
-  <text x="474" y="332" font-size="10.5">Fabric: Temporal worker + CubeSandbox microVM (KVM required)</text>
+  <text x="474" y="314" font-size="10.5">1 pipeline (Nano) up to 4–6 concurrent (Workstation) · ~4–6 GB each</text>
+  <text x="474" y="332" font-size="10.5">Fabric: Temporal + Local Sandbox (Cube/KVM, libkrun/vz, or gVisor)</text>
   <text x="474" y="350" font-size="10.5">Engine: opencode2 / Claude Code / Codex / Pi harness</text>
   <text x="474" y="368" font-size="10.5">Gate: in-VM build.sh / test.sh + verified in-VM EgressProbe</text>
   <text x="474" y="386" font-size="10.5">Output: patch + evidence → re-verified inside fresh microVM</text>
   <rect x="474" y="402" width="30" height="22" rx="3" fill="#c7d2fe" stroke="#4f46e5"/><rect x="510" y="402" width="30" height="22" rx="3" fill="#c7d2fe" stroke="#4f46e5"/><rect x="546" y="402" width="30" height="22" rx="3" fill="#c7d2fe" stroke="#4f46e5"/><text x="590" y="418" font-size="11" fill="#4f46e5">… pipelines</text>
-  <text x="474" y="448" font-size="9.5" fill="#b91c1c">Requires nested virtualization + Temporal + CubeSandbox — unvalidated here.</text>
+  <text x="474" y="448" font-size="9.5" fill="#047857">Local-first: microVM (KVM/vz) or user-space kernel (gVisor). Remote is last resort.</text>
 </svg>
 
 <h2>5. Components</h2>
@@ -131,24 +133,24 @@
 <table>
   <tr><th></th><th>Tier 1 · ralph-loop</th><th>Tier 2 · ESF</th></tr>
   <tr><td>Intended work</td><td>Features, fixes, refactors, tests, docs</td><td>Untrusted dependencies, CVE remediation, multi-repo or high-blast-radius change</td></tr>
-  <tr><td>Isolation</td><td>Container + git worktree + process group / Job Object</td><td>Hardware-isolated microVM per run, destroyed on every exit path</td></tr>
+  <tr><td>Isolation</td><td>Container + git worktree + process group / Job Object</td><td>Pluggable local-first sandbox: Hardware microVM (CubeSandbox on Linux KVM, libkrun on macOS vz) OR User-space kernel (gVisor runsc systrap on KVM-free hosts) per run, destroyed on exit. Remote cluster is strictly an emergency last resort.</td></tr>
   <tr><td>Orchestration</td><td>Scheduler tick (default 2 h), ≤6 iterations, 3-strike stop</td><td>Temporal durable workflow with replay-safe activities</td></tr>
   <tr><td>Verification</td><td><code>aep verify</code></td><td>Repo <code>build.sh</code>/<code>test.sh</code> in the microVM (target: bake <code>aep verify</code> into the template)</td></tr>
   <tr><td>Human gate</td><td>PR review; circuit breaker</td><td><code>factory review --approve/--reject</code></td></tr>
 </table>
 
 <h2>6. Scalable resource model (Nano 2vCPU / 8GB to Workstation 12vCPU / 48GB)</h2>
-<p>Profiles are two-axis — <strong>Host Family</strong> &times; <strong>Size Tier</strong>. <code>mac-colima-vz</code> (macOS, one shared Colima VM, Tier 2 disabled: VZ has no <code>/dev/kvm</code>) vs <code>linux-native</code> (Linux host, Tier 2 enabled iff <code>/dev/kvm</code> present); size tiers <code>nano-8g</code> / <code>small-16g</code> / <code>medium-32g</code> / <code>workstation-48g</code> set admission budgets. Tier-2 enablement comes from the family + KVM probe, not from size alone:</p>
+<p>Profiles are two-axis — <strong>Host Family</strong> &times; <strong>Size Tier</strong>. Host families select the local sandbox engine: <code>linux-kvm</code> (CubeSandbox microVM via <code>/dev/kvm</code>), <code>mac-native-vz</code> (hardware microVM via <code>libkrun</code> / Apple <code>Virtualization.framework</code>), or <code>linux-gvisor</code> (user-space kernel via <code>runsc systrap</code> without KVM). Size tiers set admission budgets:</p>
 <table>
-  <tr><th>Profile</th><th>Target hardware</th><th>Allocation</th><th>Substrate</th><th>Tier 1 (Ralph)</th><th>Tier 2 (ESF)</th><th>KVM required</th></tr>
-  <tr><td><code>nano-8g</code></td><td>Intel N100, RPi 5, Cloud 2vCPU/8GB (t4g.medium, e2-standard-2)</td><td>2 vCPU · 8 GB · 30 GB</td><td>1 vCPU · 2.5 GB · 10 GB</td><td>4.0 GB budget (1–2 lanes @ 2GB)</td><td><em>Disabled</em> (tasks quarantined)</td><td>No</td></tr>
-  <tr><td><code>small-16g</code></td><td>Intel Core i5, AMD Ryzen 5, Cloud 4vCPU/16GB</td><td>4 vCPU · 16 GB · 80 GB</td><td>1 vCPU · 3.5 GB · 15 GB</td><td>6.5 GB budget (2–3 lanes @ 2GB)</td><td>6.0 GB budget (1 pipeline @ 6GB)</td><td>Yes (<code>/dev/kvm</code>)</td></tr>
-  <tr><td><code>medium-32g</code></td><td>Intel Core i7/i9, AMD Ryzen 7/9, Cloud 8vCPU/32GB</td><td>8 vCPU · 32 GB · 150 GB</td><td>2 vCPU · 4.5 GB · 25 GB</td><td>12.0 GB budget (4–6 lanes @ 2GB)</td><td>15.0 GB budget (2–3 pipelines @ 5GB)</td><td>Yes (<code>/dev/kvm</code>)</td></tr>
-  <tr><td><code>workstation-48g</code></td><td><em>Family-dependent:</em> mac-colima-vz (M3 Max, shared Colima VM) <strong>or</strong> linux-native (Threadripper)</td><td>12 vCPU · 48 GB · 220 GB</td><td>2 vCPU · 8.0 GB · 30 GB</td><td>16.0 GB budget (8–10 lanes @ 1.5–2GB)</td><td>24.0 GB budget (4–6 pipelines @ 4–6GB)</td><td>linux-native: Yes (<code>/dev/kvm</code>) · mac-colima-vz: <strong>No</strong> (VZ)</td></tr>
+  <tr><th>Profile</th><th>Target hardware</th><th>Allocation</th><th>Substrate</th><th>Tier 1 (Ralph)</th><th>Tier 2 (ESF Local Backend)</th><th>Isolation Mechanism</th></tr>
+  <tr><td><code>nano-8g</code></td><td>Intel N100, RPi 5, Cloud 2vCPU/8GB</td><td>2 vCPU · 8 GB · 30 GB</td><td>1 vCPU · 2.5 GB · 10 GB</td><td>4.0 GB budget (1–2 lanes @ 2GB)</td><td>1.5 GB budget (1 lane via gVisor systrap)</td><td>User-space kernel (no KVM needed)</td></tr>
+  <tr><td><code>small-16g</code></td><td>Intel Core i5, AMD Ryzen 5, Cloud 4vCPU/16GB</td><td>4 vCPU · 16 GB · 80 GB</td><td>1 vCPU · 3.5 GB · 15 GB</td><td>6.5 GB budget (2–3 lanes @ 2GB)</td><td>6.0 GB budget (1 pipeline @ 6GB)</td><td>Cube/KVM (Linux) or gVisor (Cloud)</td></tr>
+  <tr><td><code>medium-32g</code></td><td>Intel Core i7/i9, AMD Ryzen 7/9, Cloud 8vCPU/32GB</td><td>8 vCPU · 32 GB · 150 GB</td><td>2 vCPU · 4.5 GB · 25 GB</td><td>12.0 GB budget (4–6 lanes @ 2GB)</td><td>15.0 GB budget (2–3 pipelines @ 5GB)</td><td>Cube/KVM (Linux) or libkrun (macOS)</td></tr>
+  <tr><td><code>workstation-48g</code></td><td>Apple Silicon M3 Max / Linux Threadripper</td><td>12 vCPU · 48 GB · 220 GB</td><td>2 vCPU · 8.0 GB · 30 GB</td><td>16.0 GB budget (8–10 lanes @ 1.5–2GB)</td><td>24.0 GB budget (4–6 pipelines @ 4–6GB)</td><td>libkrun/vz (macOS) or Cube/KVM (Linux)</td></tr>
 </table>
-<div class="note"><strong>Capacity is memory-bound and hardware-gated.</strong>
-Lane counts are derived from memory budgets. On systems lacking hardware virtualization (such as Intel N100 without VT-x or standard Cloud VMs without nested virtualization), Tier 2 is disabled automatically. Tasks requiring Tier-2 isolation are <strong>quarantined</strong> rather than silently downgraded to Tier 1, preserving safety invariants.
-Per-lane footprints are estimates from capacity reasoning; <strong>they have not been benchmarked on this machine</strong>, and no container runtime is currently installed on the host to measure with.</div>
+<div class="note"><strong>Nested-virtualization evidence (2026-11-09).</strong> <strong>Confirmed 2026-11-09</strong> on Apple M3 Max (macOS 27.2, Colima 0.10.3, <code>vz</code> + <code>virtiofs</code>): <code>colima start --nested-virtualization</code> exposes <code>/dev/kvm</code> inside the VM (and in <code>--privileged</code> containers); QEMU <code>accel=kvm</code> is accepted for a nested L2 guest; Docker 29.5.2 containers run in-VM; Temporal (sqlite dev server) serves UI on <code>:8233</code>. Without <code>--nested-virtualization</code>, <code>/dev/kvm</code> is absent — the flag is required. CubeSandbox itself was not installed/tested.</div>
+<div class="note"><strong>Local-first isolation hierarchy.</strong>
+AEP prioritizes on-node isolation: (1) native hardware microVMs via CubeSandbox/KVM on Linux or <code>libkrun</code>/<code>vz</code> on macOS; (2) user-space kernel isolation via <code>gVisor</code> (<code>runsc</code> in <code>systrap</code> mode) when hardware virtualization is absent (e.g. Intel N100 or non-metal Cloud VMs). Remote sandbox clusters are strictly an emergency fallback of last resort if all local sandbox runtimes fail.</div>
 
 <h2>7. Platform and artifact coverage</h2>
 <table>
@@ -202,7 +204,7 @@ Per-lane footprints are estimates from capacity reasoning; <strong>they have not
 <h2>11. Risks and open questions</h2>
 <table>
   <tr><th>Risk / question</th><th>Why it matters</th><th>Cheapest check</th></tr>
-  <tr><td><span class="tag risk">High</span> Tier 2 needs KVM — absent on macOS Colima/VZ by design</td><td>CubeSandbox microVMs require nested virtualization. On Cloud VMs and Apple Silicon, this depends on virtualization flags. If unavailable, Tier 2 cannot run locally and tasks must quarantine.</td><td>Check <code>ls /dev/kvm</code> in the VM or host.</td></tr>
+  <tr><td><span class="tag risk">Med</span> KVM inside Colima/VZ requires <code>--nested-virtualization</code> — <strong>confirmed 2026-11-09</strong>; CubeSandbox itself still unvalidated</td><td>CubeSandbox microVMs require Linux KVM. On macOS, KVM exists inside the Colima VM <em>only</em> with <code>--nested-virtualization</code> (confirmed: <code>/dev/kvm</code> present, QEMU <code>accel=kvm</code> accepted on M3 Max / Colima 0.10.3). Additional local-first backends remain: <code>libkrun</code> on macOS (native <code>vz</code>) and <code>gVisor</code> (<code>runsc systrap</code> on KVM-free Linux). Remote cluster is strictly an emergency last resort.</td><td><code>colima ssh -- ls -l /dev/kvm</code> in the VM; probe at <code>aep boot</code> and set <code>Tier2Supported</code> from the result, never from host family alone. Next: validate CubeSandbox-in-Colima.</td></tr>
   <tr><td><span class="tag risk">High</span> CubeSandbox and Temporal are external</td><td>ESF discovers an existing CubeSandbox; it never installs one. Neither exists on this host.</td><td><code>factory doctor</code> against the target environment.</td></tr>
   <tr><td><span class="tag risk">Med</span> Lane footprints are unmeasured</td><td>Admission thresholds depend on real RSS of ralph and ESF lanes across hardware profiles.</td><td>Install Colima/Podman, run representative lanes, record peak RSS.</td></tr>
   <tr><td><span class="tag risk">Med</span> Tier-1 isolation is container-only</td><td>Lane containers share one kernel; a hostile task in Tier 1 is not contained like Tier 2.</td><td>Keep untrusted work routed to Tier 2; enforce quarantine on fallback.</td></tr>
