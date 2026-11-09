@@ -231,6 +231,26 @@ designs are deliberately out of scope: the lightweight gateway is
 the proportionate response to the incident that actually
 happened.
 
+## Optional telemetry
+
+ghg can emit one OpenTelemetry span per `run`, `check`, and `watch`
+call to a JSONL file (one JSON object per span). A span carries only
+the operation, the actor, the exit code, the duration, and the
+budget-gate verdict — never argv, never resolved environment values,
+never tokens. Telemetry is off by default and entirely optional:
+set `GHG_OTEL_FILE` to an output file path to enable it.
+
+The spans require the optional Python packages `opentelemetry-api`
+and `opentelemetry-sdk`, exactly pinned in
+`tools/ghg/requirements-otel.txt`
+(`pip install -r tools/ghg/requirements-otel.txt`). Without them —
+or with `GHG_OTEL_FILE` unset — ghg runs exactly as before:
+`ghg.py` itself remains standard-library only, the instrumentation
+lives in the companion module `tools/ghg/telemetry.py` behind a
+guarded import, and the no-op path never changes an exit code or
+any output. The orchestration dry-run carries the same pattern
+(`ORCH_OTEL_FILE`, `scripts/orch/telemetry.py`): one span per tick.
+
 ## Tests
 
 ```sh
