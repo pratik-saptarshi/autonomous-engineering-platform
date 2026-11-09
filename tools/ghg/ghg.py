@@ -37,6 +37,11 @@ import time
 import uuid
 from pathlib import Path
 
+try:
+    import telemetry as _telemetry
+except Exception:  # optional dependency of the module layout; absence is a no-op
+    _telemetry = None
+
 DEFAULT_INTERVAL_FLOOR = 45
 DEFAULT_TIMEOUT = 1800
 
@@ -1485,6 +1490,16 @@ def cmd_prune(args):
 
 # ------------------------------------------------------------------ cli
 
+def _dispatch_traced(verb, args, handler):
+    if _telemetry is None:
+        return handler(args)
+    explicit = getattr(args, "actor", None)
+    with _telemetry.operation(verb, lambda: resolve_actor(explicit)) as op:
+        code = handler(args)
+        op.finish(code)
+        return code
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="ghg", description="ghg — GitHub gateway")
@@ -1507,11 +1522,11 @@ def main(argv=None):
     sub.add_parser("prune", help="delete calls rows older than 30 days")
     args = parser.parse_args(argv)
     if args.verb == "watch":
-        return cmd_watch(args)
+        return _dispatch_traced("watch", args, cmd_watch)
     if args.verb == "run":
-        return cmd_run(args)
+        return _dispatch_traced("run", args, cmd_run)
     if args.verb == "check":
-        return cmd_check(args)
+        return _dispatch_traced("check", args, cmd_check)
     if args.verb == "status":
         return cmd_status(args)
     if args.verb == "prune":
