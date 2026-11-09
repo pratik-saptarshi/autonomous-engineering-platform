@@ -10,9 +10,9 @@
 
 | PR | State | Findings | Checks |
 |---|---|---|---|
-| AEP #133 | OPEN CLEAN | 23/23 threads **resolved**, fixes at `a10afd9` | all pass |
-| esf #4 | OPEN CLEAN | 9 findings: 7 fixed, **2 unfixed** (P1+P2, today) | **zero CI runs ever** (workflow exists, never fired) |
-| docs-mcp #2 | OPEN BLOCKED | Dependabot duplicate, Lint FAIL (lockfile drift + unported `makeRe`) | fail |
+| AEP #133 | OPEN CLEAN | 24/24 threads **resolved**, fixes through `4c3b917` (LLD §9.2 runtime socket guarded) | all 11 pass |
+| esf #4 | OPEN BEHIND | 10 findings: 9 fixed, **1 unfixed** (`sandbox.go:228` host-written file ownership) | 2 pass, 2 fail (Linux checks, check) |
+| docs-mcp #2 | OPEN BLOCKED | Dependabot duplicate, Lint FAIL (superseded by #6) | fail |
 | docs-mcp #6 | OPEN CLEAN | 0 | all 8 pass |
 | NeuroStrata #38 | MERGED | 0 | hard green; report-only = baseline noise (no develop CI by design) |
 | Cognilogical #72 | CLOSED | killed (1,566-file fork divergence) | — |
@@ -44,8 +44,8 @@
 - **Acceptance:** PR#2 state CLOSED; issue #5 updated noting #2's lockfile-drift root cause.
 
 ### T6 — AEP #133: verify-and-merge
-- **Spec:** re-run `scripts/check_design_invariants.py --self-test` + `--check` (both exit 0); confirm 23/23 threads resolved; commit the AGENTS.md signature rule; mark/delete the stale remediation plan (`SUPERSEDED` banner or remove).
-- **Acceptance:** PR #133 `mergeStateStatus: CLEAN`, all checks pass, zero unresolved threads → merge per AGENTS.md (conversation resolution satisfied).
+- **Spec:** re-run `scripts/check_design_invariants.py --self-test` + `--check` (both exit 0, guarding LLD §9.2 runtime socket and C1-C12 invariants); confirm 24/24 threads resolved; commit the AGENTS.md signature rule; mark/delete the stale remediation plan (`SUPERSEDED` banner or remove).
+- **Acceptance:** PR #133 `mergeStateStatus: CLEAN`, all 11 checks pass, zero unresolved threads → merge per AGENTS.md (conversation resolution satisfied).
 
 ### T7 — docs-mcp #6: glob/nested-minimatch completion
 - **Spec:** amend branch: `npm update @fastify/static` (10.1.7→10.1.10 in-range, lifts glob→14.0.4, clears nested minimatch under `glob/` + `readdir-glob/`).

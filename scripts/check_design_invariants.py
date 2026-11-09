@@ -172,6 +172,8 @@ def check_c10(docs, errors):
     need(errors, "C10", "compose worktree mount", lld92, r"AEP_WORKTREES_ROOT")
     need(errors, "C10", "host-bind socket directory", lld92, r"AEP_SOCKETS_DIR")
     need(errors, "C10", "lane socket bind", pre, r"AEP_SOCKETS_DIR")
+    need(errors, "C10", "compose runtime socket mount", lld92, r"DOCKER_SOCKET|docker\.sock")
+    need(errors, "C10", "compose runtime host env", lld92, r"DOCKER_HOST|CONTAINER_HOST")
     cap1 = card(docs["backlog"], "CAP-01")
     if not cap1:
         add(errors, "C10", "missing backlog CAP-01")
