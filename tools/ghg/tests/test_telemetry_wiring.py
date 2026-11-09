@@ -34,6 +34,17 @@ if str(GHG_DIR) not in sys.path:
 
 import telemetry  # noqa: E402
 
+
+def _sdk_importable():
+    try:
+        import opentelemetry.sdk  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+SDK_AVAILABLE = _sdk_importable()
+
 STUB_GH = r"""#!/usr/bin/env python3
 import json
 import os
@@ -190,6 +201,7 @@ class WiringTestCase(unittest.TestCase):
 
 
 class TestCheckSpan(WiringTestCase):
+    @unittest.skipUnless(SDK_AVAILABLE, "opentelemetry-sdk not installed")
     def test_check_ok_emits_one_ghg_check_span(self):
         otel = self.root / "spans-check.jsonl"
         code, _out, _err = self.check_ok(self.fresh_env(otel_file=otel))
@@ -215,6 +227,7 @@ class TestByteIdentical(WiringTestCase):
         self.assertEqual(off[0], 0)
         self.assertEqual(off, on)  # code + stdout + stderr, byte-equal
 
+    @unittest.skipUnless(SDK_AVAILABLE, "opentelemetry-sdk not installed")
     def test_run_denial_byte_identical_off_vs_on_and_span_denied(self):
         limits = {"GHG_LIMITS_JSON": json.dumps({"search": [[60, 1]]})}
         otel = self.root / "spans-bi-run.jsonl"
@@ -240,6 +253,7 @@ class TestByteIdentical(WiringTestCase):
 
 
 class TestWatchWiring(WiringTestCase):
+    @unittest.skipUnless(SDK_AVAILABLE, "opentelemetry-sdk not installed")
     def test_watch_dispatch_is_traced(self):
         original = ghg.cmd_watch
         ghg.cmd_watch = lambda args: 0  # noqa: E731 - dispatch stub
@@ -276,6 +290,7 @@ class TestUntracedVerbs(WiringTestCase):
 
 
 class TestCanary(WiringTestCase):
+    @unittest.skipUnless(SDK_AVAILABLE, "opentelemetry-sdk not installed")
     def test_canary_env_value_never_reaches_telemetry_file(self):
         # Token-shaped canary assembled from fragments at runtime;
         # never a literal token-shaped string in source.
