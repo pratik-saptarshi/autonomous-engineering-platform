@@ -241,7 +241,7 @@
         <div class="card card-os">
           <h3>Core Runtime Services (AEP Substrate)</h3>
           <ul>
-            <li><strong>NeuroStrata:</strong> Long-term memory engine running on host loopback (`127.0.0.1:34343`), accessed from lanes via host-mediated UNIX domain socket relay (`aep memoryd`) or vsock.</li>
+            <li><strong>NeuroStrata:</strong> Long-term memory engine. Host mode uses loopback (<code>127.0.0.1:34343</code>); compose mode uses <code>neurostrata:34343</code> on the private <code>aep-net</code> network with no host port. Lanes access it only via host-mediated UNIX domain socket relay (<code>aep memoryd</code>) or vsock.</li>
             <li><strong>Unified Ledger:</strong> <code>beads</code> issue tracker keyed as the single source of truth; avoids orphan factory runs.</li>
             <li><strong>Rate Limiter Relay (<code>ghg</code>):</strong> <code>aep gwd</code> IPC daemon proxies lane requests to host `tools/ghg/bin/ghg`, preserving rate caps and coalesced pollers without exposing credentials.</li>
             <li><strong>Policy & Boot:</strong> Git-verified <code>policy.data</code> prevents uninspected runtime mutation; <code>aep boot</code> gates starts.</li>

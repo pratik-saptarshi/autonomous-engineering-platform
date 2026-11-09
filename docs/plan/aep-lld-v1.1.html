@@ -184,16 +184,15 @@ func NewBD(binary string) Ledger   // shells out to `bd ... --json`; no direct D
     Inscribe(ctx context.Context, ns string, rec Record) error
     Guards(ctx context.Context) (n int, hasDestructiveRule bool, err error)
 }
-type RelayServer interface {
-    ServeLaneSocket(ctx context.Context, laneID string, sockPath string) error
-}
+// memoryd and gwd implement the shared relay.Handler contract.
+type Handler = relay.Handler
 func NewCLI(binary string) Client   // wraps the neurostrata-mcp CLI, as boot-gate.sh does today</code></pre>
-<p>Host supervisor exposes a per-lane UNIX domain socket (<code>/run/aep/lanes/&lt;laneID&gt;/memory.sock</code>) mounted into the lane container. The relay intercepts requests, strips credentials, attaches the lane provenance tag, and proxies to NeuroStrata on <code>127.0.0.1:34343</code>. MicroVMs use an outbox spool file ingested upon run completion, preserving zero-egress boundaries.</p>
+<p>Host supervisor exposes a per-lane UNIX domain socket (<code>/run/aep/lanes/&lt;laneID&gt;/memory.sock</code>) mounted into the lane container. The relay intercepts requests, strips credentials, attaches the lane provenance tag, and proxies to NeuroStrata. In host mode the endpoint is <code>127.0.0.1:34343</code>; in the compose topology it is <code>neurostrata:34343</code> on the private <code>aep-net</code> network, where <code>neurostrata</code> binds <code>0.0.0.0:34343</code> and publishes no host port. A supervisor container cannot use its own loopback as the upstream. MicroVMs use an outbox spool file ingested upon run completion, preserving zero-egress boundaries.</p>
+<p>All relays (<code>memoryd</code>, <code>gwd</code>, <code>execd</code>, <code>gitd</code>) implement <code>relay.Handler</code>; there is no separate <code>RelayServer</code> or <code>GHGRelay</code> protocol.</p>
 
 <h3>4.5 <code>internal/gateway</code> (ghg IPC relay)</h3>
-<pre><code>type GHGRelay interface {
-    ServeLaneSocket(ctx context.Context, laneID string, sockPath string) error
-}
+<pre><code>// gwd implements the shared relay.Handler contract; no separate protocol.
+type GHGRelay = relay.Handler
 type GHGClient interface {
     Watch(ctx context.Context, runID string) error
     API(ctx context.Context, method, endpoint string, body io.Reader) ([]byte, error)
@@ -377,12 +376,19 @@ aep boot --profile nano-8g --runtime podman</code></pre>
   neurostrata:   # image bakes neurostrata-mcp + pre-seeded model cache; HF_HUB_OFFLINE=1
     volumes: [ns-data:/data]
     mem_limit: 2g
+    expose: ["34343"]
+    networks: [aep-net]
+    # binds 0.0.0.0:34343 inside aep-net; no host port publish
   aep-supervisor:
     command: ["supervisor","--loop","--dispatch","--interval","2h"]
     depends_on: [neurostrata]
+    environment:
+      NEUROSTRATA_ENDPOINT: "neurostrata:34343"
     volumes: [aep-state:/state, aep-sockets:/run/aep, "${AEP_REPO}:/repo:ro"]
     mem_limit: 512m
-volumes: { ns-data: {}, aep-state: {}, aep-sockets: {} }</code></pre>
+    networks: [aep-net]
+volumes: { ns-data: {}, aep-state: {}, aep-sockets: {} }
+networks: { aep-net: { driver: bridge, internal: true } }</code></pre>
 <p>The substrate supervisor manages four IPC relays in <code>aep-sockets</code>: <code>memory.sock</code> (NeuroStrata), <code>ghg.sock</code> (GitHub), <code>exec.sock</code> (allowlisted command execution), and <code>git.sock</code> (host-side status/diff/commit). All four implement one <code>relay.Handler</code> contract with peer authentication, framing, size caps, and one audit record; they are not four ad-hoc protocols.</p>
 
 <h3>9.3 Lane container run spec</h3>
@@ -440,7 +446,7 @@ The trusted host harness runs the agent loop and all model inference. A lane is 
   <tr><td>T1</td><td><code>profile</code> package + <code>aep profile detect|show</code></td><td><code>internal/profile/*</code>, <code>cmd/aep</code></td><td>Validate rejects over-committed budgets; nano, small, medium, workstation presets load; KVM, libkrun, and gVisor backends detected.</td></tr>
   <tr><td>T1b</td><td><code>gateway</code> package (<code>aep gwd</code> / ghg IPC relay)</td><td><code>internal/gateway/*</code>, <code>cmd/aep</code></td><td>Socket relay executes <code>ghg.py</code>; rate caps and poller coalescing verified without leaking PAT.</td></tr>
   <tr><td>T2</td><td><code>policy</code> package; HEAD-blob verification</td><td><code>internal/policy/*</code></td><td>Matches <code>boot-gate.sh</code> behaviour incl. <code>POLICY-INACTIVE</code>; tamper test fails gate.</td></tr>
-  <tr><td>T3</td><td><code>memoryd</code> host relay client + <code>aep boot</code> full parity</td><td><code>internal/memoryd/*</code>, <code>cmd/aep</code></td><td>Parity test vs shell gate passes; socket relay forwards to <code>127.0.0.1:34343</code>.</td></tr>
+  <tr><td>T3</td><td><code>memoryd</code> host relay client + <code>aep boot</code> full parity</td><td><code>internal/memoryd/*</code>, <code>cmd/aep</code></td><td>Parity test vs shell gate passes; socket relay forwards to <code>127.0.0.1:34343</code> in host mode or <code>neurostrata:34343</code> on <code>aep-net</code> in compose mode.</td></tr>
   <tr><td>T4</td><td><code>admission</code> controller</td><td><code>internal/admission/*</code></td><td>Race test: one winner for last slot; budget, ceiling, and sandbox backend availability enforced.</td></tr>
   <tr><td>T5</td><td><code>ledger</code> beads adapter + tier-tag rules</td><td><code>internal/ledger/*</code></td><td>Missing-tag policy enforced; <code>bd</code> JSON fixtures parsed.</td></tr>
   <tr><td>T6</td><td><code>lane</code> manifest + fence + Go <code>claim/release/reap</code> (runtime driver behind interface, fake in tests)</td><td><code>internal/lane/*</code></td><td>Launcher-dead-but-container-alive is refused; socket mounts plumbed.</td></tr>

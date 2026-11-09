@@ -265,6 +265,8 @@ def check_c3(docs, errors):
     need(errors, "C3", "relay.Handler", combined, r"relay\.Handler")
     need(errors, "C3", "memory.sock", combined, r"memory\.sock")
     need(errors, "C3", "ghg.sock", combined, r"ghg\.sock")
+    need(errors, "C3", "compose NeuroStrata endpoint", combined, r"neurostrata:34343")
+    need(errors, "C3", "private compose network", combined, r"aep-net")
 
 
 CHECKS = [
