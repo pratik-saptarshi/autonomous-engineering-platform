@@ -387,10 +387,12 @@ aep boot --profile nano-8g --runtime podman</code></pre>
       - "${AEP_SOCKETS_DIR}:/run/aep"               # host bind, shared with lanes
       - "${AEP_REPO}:${AEP_REPO}:rw"                # same absolute path for linked-worktree gitdir pointers
       - "${AEP_WORKTREES_ROOT}:${AEP_WORKTREES_ROOT}:rw"
+      - "${DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock:rw" # container-runtime socket for sibling lane provisioning
     environment:
       AEP_REPO: "${AEP_REPO}"
       AEP_WORKTREES_ROOT: "${AEP_WORKTREES_ROOT}"
       AEP_SOCKETS_DIR: "${AEP_SOCKETS_DIR}"
+      DOCKER_HOST: "unix:///var/run/docker.sock"    # or CONTAINER_HOST for Podman rootless socket
       NEUROSTRATA_ENDPOINT: "neurostrata:34343"
       GIT_CONFIG_GLOBAL: /dev/null
       GIT_CONFIG_SYSTEM: /dev/null
@@ -401,7 +403,7 @@ volumes: { ns-data: {}, aep-state: {}, aep-sockets: {} }
 networks:
   aep-net: { driver: bridge, internal: true }   # NeuroStrata only; no external route
   aep-egress: { driver: bridge }                # ghg.py/GitHub egress for the supervisor only</code></pre>
-<p>The trusted supervisor joins <code>aep-egress</code> so <code>ghg.py</code> can reach GitHub; <code>aep-supervisor</code> keeps <code>aep-net</code> for NeuroStrata. <code>neurostrata</code> joins only <code>aep-net</code>, and lane containers join neither network (<code>--network none</code>). The two-network split keeps memory private while giving the GitHub relay an external route. The supervisor mounts the repository and worktrees at the <strong>same absolute host paths</strong>, so host-created linked-worktree <code>.git</code> pointers resolve inside the supervisor. <code>git.sock</code> writes objects/refs there with global/system config disabled and hooks host-controlled; lanes still see no usable <code>.git</code>. Relay sockets use a host bind directory (<code>${AEP_SOCKETS_DIR}</code>), not a named volume, so the supervisor and the lane bind mount share the same socket files.</p>
+<p>The trusted supervisor joins <code>aep-egress</code> so <code>ghg.py</code> can reach GitHub; <code>aep-supervisor</code> keeps <code>aep-net</code> for NeuroStrata. <code>neurostrata</code> joins only <code>aep-net</code>, and lane containers join neither network (<code>--network none</code>). The two-network split keeps memory private while giving the GitHub relay an external route. The supervisor mounts the repository and worktrees at the <strong>same absolute host paths</strong>, so host-created linked-worktree <code>.git</code> pointers resolve inside the supervisor. <code>git.sock</code> writes objects/refs there with global/system config disabled and hooks host-controlled; lanes still see no usable <code>.git</code>. Relay sockets use a host bind directory (<code>${AEP_SOCKETS_DIR}</code>), not a named volume, so the supervisor and the lane bind mount share the same socket files. To provision, inspect, and stop sibling lane containers under <code>--dispatch</code> (§4.7 <code>internal/lane.Runtime</code>), the containerized supervisor mounts the host container-runtime socket (<code>${DOCKER_SOCKET:-/var/run/docker.sock}</code> or Podman's user socket) with <code>DOCKER_HOST</code> / <code>CONTAINER_HOST</code> configured. Sibling lane containers are launched on the same daemon and join neither network (<code>--network none</code>). In host-native mode outside Compose, the supervisor binary runs directly against the local engine CLI or socket.</p>
 <p>The substrate supervisor manages four IPC relays in <code>aep-sockets</code>: <code>memory.sock</code> (NeuroStrata), <code>ghg.sock</code> (GitHub), <code>exec.sock</code> (allowlisted command execution), and <code>git.sock</code> (host-side status/diff/commit). All four implement one <code>relay.Handler</code> contract with peer authentication, framing, size caps, and one audit record; they are not four ad-hoc protocols.</p>
 
 <h3>9.3 Lane container run spec</h3>
