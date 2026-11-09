@@ -20,6 +20,10 @@ jobs:
         with:
           persist-credentials: false
       - run: npx --yes markdownlint-cli2@0.24.0 "**/*.md" "!reference/esf/**/*.md" "!reference/neurostrata/**/*.md" "!reference/neurostrata-ops/**/*.md" "!reference/harness2/**/*.md" "!reference/security-audit-skill/**/*.md" "!reference/ub-mode/**/*.md" "!reference/grim-prompter/**/*.md" "!reference/docs-mcp-server/**/*.md" "!reference/humanizer/**/*.md" "!reference/elephant-goldfish-model/**/*.md" "!skills/archify/**/*.md" "!skills/diagnosing-superpowers/**/*.md" "!skills/neurogenesis/**/*.md" "!skills/overseer/**/*.md" "!skills/retro/**/*.md" "!skills/egm-bootstrap/**/*.md" "!skills/egm-brainstorm/**/*.md" "!skills/egm-draft/**/*.md" "!skills/egm-drift-report/**/*.md" "!skills/egm-resolve/**/*.md" "!skills/egm-review/**/*.md" "!skills/egm-review-loop/**/*.md" "!docs/egm-adoption/**/*.md"
+      - name: Design invariants
+        run: |
+          python3 scripts/check_design_invariants.py --self-test
+          python3 scripts/check_design_invariants.py --check
 
   shell-lint:
     runs-on: ubuntu-latest
