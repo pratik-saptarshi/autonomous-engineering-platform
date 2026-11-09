@@ -142,9 +142,9 @@ type Profile struct {
     SubstrateMiB    uint64 // 2560 (nano, 2.5 GiB) up to 8192
     Tier1BudgetMiB  uint64 // 3584 (nano, 3.5 GiB) up to 16384
     Tier2BudgetMiB  uint64 // 1536 (nano, 1.5 GiB) up to 24576
-    Tier1LaneMiB    uint64 // 2048
+    Tier1LaneMiB    uint64 // 2048 (nano/small/medium) or 1536 (workstation 10-lane preset)
     Tier2LaneMiB    uint64 // 1536 (nano) up to 6144
-    MaxTier1Lanes   int    // 1 (nano) up to 10
+    MaxTier1Lanes   int    // 1 (nano) up to 10 (workstation; 10 * 1536 = 15360 <= 16384)
     MaxTier2Lanes   int    // 1 (nano) up to 6
     Backend         Backend
     KVMProbe        ProbeResult
@@ -156,7 +156,7 @@ func Load(path string) (Profile, error)   // KEY=VALUE file, same keys as hardwa
 func (p Profile) Validate(total memory.Bytes) error // sum(substrate+t1+t2) &lt;= total; ceilings*laneMiB &lt;= budgets
 func (p Profile) Tier2Supported() bool { return p.Backend.Usable() }
 func (p Profile) Tier2Admissible(laneMiB memory.MiB, active int) error</code></pre>
-<p><strong>Host-family rule:</strong> host family selects the runtime; the resolved <code>Backend</code> decides Tier 2. <code>Tier2Supported()</code> is true iff <code>Backend.Usable()</code>; <code>KVMProbe</code> only selects the <code>cube-kvm</code> candidate and is never the capability definition. <code>mac-colima-vz</code> may resolve <code>libkrun</code> without nested KVM; <code>linux-native</code> may resolve <code>gvisor</code> on KVM-free hosts; <code>remote-api</code> counts only when explicitly configured and attested. The nano preset is 2560 + 3584 + 1536 = 7680 MiB (7.5 GiB), with <code>MaxTier1Lanes=1</code> and <code>MaxTier2Lanes=1</code>. <code>Detect()</code> returns the family from <code>GOOS</code> + runtime probe, then the size tier from CPU/RAM.</p>
+<p><strong>Host-family rule:</strong> host family selects the runtime; the resolved <code>Backend</code> decides Tier 2. <code>Tier2Supported()</code> is true iff <code>Backend.Usable()</code>; <code>KVMProbe</code> only selects the <code>cube-kvm</code> candidate and is never the capability definition. <code>mac-colima-vz</code> may resolve <code>libkrun</code> without nested KVM; <code>linux-native</code> may resolve <code>gvisor</code> on KVM-free hosts; <code>remote-api</code> counts only when explicitly configured and attested. The nano preset is 2560 + 3584 + 1536 = 7680 MiB (7.5 GiB), with <code>MaxTier1Lanes=1</code> and <code>MaxTier2Lanes=1</code>. Preset validation must satisfy <code>MaxTier1Lanes * Tier1LaneMiB &lt;= Tier1BudgetMiB</code> and the same for Tier 2: nano 1×2048 &lt;= 3584; small 3×2048 &lt;= 6656; medium 6×2048 &lt;= 12288; workstation 10×1536 &lt;= 16384; Tier 2: nano 1×1536 &lt;= 1536, small 1×6144 &lt;= 6144, medium 3×5120 &lt;= 15360, workstation 6×4096 &lt;= 24576. <code>Detect()</code> returns the family from <code>GOOS</code> + runtime probe, then the size tier from CPU/RAM.</p>
 
 <h3>4.2 <code>internal/policy</code></h3>
 <pre><code>type Policy struct { EnvScrubFragments []string; SensitivePaths []string; Raw []byte; SHA256 string }
@@ -382,16 +382,25 @@ aep boot --profile nano-8g --runtime podman</code></pre>
   aep-supervisor:
     command: ["supervisor","--loop","--dispatch","--interval","2h"]
     depends_on: [neurostrata]
+    volumes:
+      - aep-state:/state
+      - aep-sockets:/run/aep
+      - "${AEP_REPO}:/repo:rw"                      # host-side git.sock commits
+      - "${AEP_WORKTREES_ROOT}:${AEP_WORKTREES_ROOT}:rw"
     environment:
+      AEP_REPO: /repo
+      AEP_WORKTREES_ROOT: "${AEP_WORKTREES_ROOT}"
       NEUROSTRATA_ENDPOINT: "neurostrata:34343"
-    volumes: [aep-state:/state, aep-sockets:/run/aep, "${AEP_REPO}:/repo:ro"]
+      GIT_CONFIG_GLOBAL: /dev/null
+      GIT_CONFIG_SYSTEM: /dev/null
+      GIT_OPTIONAL_LOCKS: "0"
     mem_limit: 512m
     networks: [aep-net, aep-egress]
 volumes: { ns-data: {}, aep-state: {}, aep-sockets: {} }
 networks:
   aep-net: { driver: bridge, internal: true }   # NeuroStrata only; no external route
   aep-egress: { driver: bridge }                # ghg.py/GitHub egress for the supervisor only</code></pre>
-<p>The trusted supervisor joins <code>aep-egress</code> so <code>ghg.py</code> can reach GitHub; <code>aep-supervisor</code> keeps <code>aep-net</code> for NeuroStrata. <code>neurostrata</code> joins only <code>aep-net</code>, and lane containers join neither network (<code>--network none</code>). The two-network split keeps memory private while giving the GitHub relay an external route.</p>
+<p>The trusted supervisor joins <code>aep-egress</code> so <code>ghg.py</code> can reach GitHub; <code>aep-supervisor</code> keeps <code>aep-net</code> for NeuroStrata. <code>neurostrata</code> joins only <code>aep-net</code>, and lane containers join neither network (<code>--network none</code>). The two-network split keeps memory private while giving the GitHub relay an external route. The supervisor's <code>${AEP_REPO}:/repo:rw</code> and worktree mounts are the only writable Git storage; <code>git.sock</code> writes objects/refs there with global/system config disabled and hooks host-controlled. Lanes still see no usable <code>.git</code>.</p>
 <p>The substrate supervisor manages four IPC relays in <code>aep-sockets</code>: <code>memory.sock</code> (NeuroStrata), <code>ghg.sock</code> (GitHub), <code>exec.sock</code> (allowlisted command execution), and <code>git.sock</code> (host-side status/diff/commit). All four implement one <code>relay.Handler</code> contract with peer authentication, framing, size caps, and one audit record; they are not four ad-hoc protocols.</p>
 
 <h3>9.3 Lane container run spec</h3>

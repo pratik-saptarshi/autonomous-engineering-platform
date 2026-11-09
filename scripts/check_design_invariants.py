@@ -167,6 +167,9 @@ def check_c10(docs, errors):
         need(errors, "C10", "AEP_GIT_SOCKET", pre, r"AEP_GIT_SOCKET")
         need(errors, "C10", "workspace .git mask", pre, r"/workspace/\.git")
         forbid(errors, "C10", "host .git mount", pre, r"-v\s+\"?\$?(?:AEP_)?REPO/\.git")
+    lld92 = section(docs["lld"], "9.2")
+    need(errors, "C10", "compose writable repo mount", lld92, r"AEP_REPO\}:/repo:rw")
+    need(errors, "C10", "compose worktree mount", lld92, r"AEP_WORKTREES_ROOT")
     cap1 = card(docs["backlog"], "CAP-01")
     if not cap1:
         add(errors, "C10", "missing backlog CAP-01")
@@ -254,6 +257,8 @@ def check_c5(docs, errors):
     need(errors, "C5", "nano max tier2 lanes", lld41, r"MaxTier2Lanes[^\n]*1\s*\(nano\)")
     forbid(errors, "C5", "Tier 2 off in profile", lld41, r"Tier\s*2\s+off")
     need(errors, "C5", "budget sum", lld41 + hld6, r"7680")
+    need(errors, "C5", "workstation lane size", lld41, r"1536 \(workstation|10 \* 1536")
+    need(errors, "C5", "ceiling invariant", lld41, r"MaxTier1Lanes \* Tier1LaneMiB")
     draft_nano = row(docs["draft"], "nano-8g")
     need(errors, "C5", "draft nano tier1", draft_nano, r"3584\s*MiB")
     need(errors, "C5", "draft nano tier2", draft_nano, r"1536\s*MiB")

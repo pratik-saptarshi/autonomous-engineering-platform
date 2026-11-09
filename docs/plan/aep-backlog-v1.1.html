@@ -518,6 +518,7 @@ WAVE 4: VERIFICATION, RECEIPTS &amp; SETTLEMENT (Completion &amp; Audit)
       <li><strong>AC-07.3 (Busy Host):</strong> GIVEN an 8 GB physical host with only 1 GB currently available, WHEN <code>aep profile detect</code> runs, THEN it selects <code>nano-8g</code> (total &gt;= 7.5 GiB); WHEN a 2 GB lane is admitted, THEN it receives <code>ErrNoCapacity</code> from admission, not a profile error.</li>
       <li><strong>AC-07.4 (Checked Arithmetic):</strong> GIVEN <code>AvailableBytes</code> below the requested bytes, WHEN <code>Admit</code> runs, THEN it rejects with <code>ErrNoCapacity</code>; a zero request or an overflowing <code>MemMiB</code> is <code>ErrInvalidRequest</code>. The predicate never subtracts before comparing.</li>
       <li><strong>AC-07.5 (Nano Capacity):</strong> GIVEN <code>nano-8g</code> with 1536 MiB Tier-2 budget, WHEN a 1536 MiB gVisor lane is admitted, THEN it succeeds; a 2048 MiB request is <code>ErrNoCapacity</code> with the capacity reason, not <code>ErrTier2Unsupported</code>.</li>
+      <li><strong>AC-07.6 (Preset Validation):</strong> GIVEN any preset, WHEN <code>Profile.Validate</code> runs, THEN <code>MaxTier1Lanes * Tier1LaneMiB &lt;= Tier1BudgetMiB</code> and <code>MaxTier2Lanes * Tier2LaneMiB &lt;= Tier2BudgetMiB</code> for nano/small/medium/workstation; the workstation 10-lane preset uses 1536 MiB lanes so 10×1536 &lt;= 16384.</li>
     </ul>
   </div>
 </div>
