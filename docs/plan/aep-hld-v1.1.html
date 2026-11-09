@@ -83,35 +83,35 @@
   <text x="34" y="82" font-size="12.5" font-weight="700" fill="#4f46e5">Colima VM — 12 vCPU · 48 GB RAM · 220 GB disk (vz + virtiofs)</text>
 
   <rect x="34" y="94" width="832" height="150" rx="8" fill="#ecfdf5" stroke="#047857" stroke-width="1.5"/>
-  <text x="48" y="116" font-size="12" font-weight="700" fill="#047857">AEP SUBSTRATE — core runtime services (≈2 vCPU · 8 GB · 30 GB)</text>
-  <rect x="48"  y="128" width="152" height="52" rx="6" fill="#fff" stroke="#047857"/><text x="124" y="150" text-anchor="middle" font-size="11" font-weight="700">NeuroStrata</text><text x="124" y="166" text-anchor="middle" font-size="9.5" fill="#475569">memory daemon :34343</text>
+  <text x="48" y="116" font-size="12" font-weight="700" fill="#047857">AEP SUBSTRATE — core runtime services (Nano 2.5 GB to Workstation 8 GB)</text>
+  <rect x="48"  y="128" width="152" height="52" rx="6" fill="#fff" stroke="#047857"/><text x="124" y="150" text-anchor="middle" font-size="11" font-weight="700">NeuroStrata</text><text x="124" y="166" text-anchor="middle" font-size="9.5" fill="#475569">memory relay (socket/vsock)</text>
   <rect x="210" y="128" width="152" height="52" rx="6" fill="#fff" stroke="#047857"/><text x="286" y="150" text-anchor="middle" font-size="11" font-weight="700">beads / backlog</text><text x="286" y="166" text-anchor="middle" font-size="9.5" fill="#475569">single task ledger</text>
-  <rect x="372" y="128" width="152" height="52" rx="6" fill="#fff" stroke="#047857"/><text x="448" y="150" text-anchor="middle" font-size="11" font-weight="700">ghg gateway</text><text x="448" y="166" text-anchor="middle" font-size="9.5" fill="#475569">capped GitHub API</text>
+  <rect x="372" y="128" width="152" height="52" rx="6" fill="#fff" stroke="#047857"/><text x="448" y="150" text-anchor="middle" font-size="11" font-weight="700">ghg relay (aep gwd)</text><text x="448" y="166" text-anchor="middle" font-size="9.5" fill="#475569">capped GitHub proxy</text>
   <rect x="534" y="128" width="152" height="52" rx="6" fill="#fff" stroke="#047857"/><text x="610" y="150" text-anchor="middle" font-size="11" font-weight="700">policy.data</text><text x="610" y="166" text-anchor="middle" font-size="9.5" fill="#475569">git-bound enforcement</text>
-  <rect x="696" y="128" width="158" height="52" rx="6" fill="#fff" stroke="#047857"/><text x="775" y="150" text-anchor="middle" font-size="11" font-weight="700">aep boot + supervisor</text><text x="775" y="166" text-anchor="middle" font-size="9.5" fill="#475569">preflight · dispatch · admission</text>
-  <text x="48" y="206" font-size="10" fill="#475569">All lanes reach these services over the VM-internal network; none holds its own copy of memory, ledger, rate budget or policy.</text>
-  <text x="48" y="226" font-size="10" fill="#475569">Dispatch decides tier from the beads issue's tier tag, then admission control reserves RAM/CPU before a lane starts.</text>
+  <rect x="696" y="128" width="158" height="52" rx="6" fill="#fff" stroke="#047857"/><text x="775" y="150" text-anchor="middle" font-size="11" font-weight="700">aep boot + supervisor</text><text x="775" y="166" text-anchor="middle" font-size="9.5" fill="#475569">preflight · profile · admission</text>
+  <text x="48" y="206" font-size="10" fill="#475569">Lanes reach substrate services via host supervisor relays (UNIX socket or vsock); no direct loopback or credential exposure.</text>
+  <text x="48" y="226" font-size="10" fill="#475569">Dispatch routes by beads tier tag; hardware profiles (Nano to Workstation) size admission budgets and KVM availability.</text>
 
   <line x1="450" y1="244" x2="450" y2="268" stroke="#0f172a" stroke-width="1.5" marker-end="url(#a)"/>
   <defs><marker id="a" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#0f172a"/></marker></defs>
 
   <rect x="34" y="272" width="406" height="220" rx="8" fill="#f0f9ff" stroke="#0369a1" stroke-width="1.5"/>
   <text x="48" y="294" font-size="12" font-weight="700" fill="#0369a1">TIER 1 — ralph-loop lanes</text>
-  <text x="48" y="314" font-size="10.5">Target 8–10 concurrent · ~1.5–2 GB each · ≈16 GB total</text>
+  <text x="48" y="314" font-size="10.5">1–2 lanes (Nano) up to 8–10 concurrent (Workstation) · ~1.5–2 GB each</text>
   <text x="48" y="332" font-size="10.5">Fabric: OCI container + isolated git worktree</text>
   <text x="48" y="350" font-size="10.5">Engine: plan → TDD → review → verify (SDD ledger inside)</text>
   <text x="48" y="368" font-size="10.5">Gate: <tspan font-family="monospace">aep verify</tspan> (hash-chained receipts)</text>
-  <text x="48" y="386" font-size="10.5">Output: branch + verified PR; learnings → NeuroStrata</text>
+  <text x="48" y="386" font-size="10.5">Output: branch + verified PR; learnings → NeuroStrata relay</text>
   <rect x="48" y="402" width="30" height="22" rx="3" fill="#bae6fd" stroke="#0369a1"/><rect x="84" y="402" width="30" height="22" rx="3" fill="#bae6fd" stroke="#0369a1"/><rect x="120" y="402" width="30" height="22" rx="3" fill="#bae6fd" stroke="#0369a1"/><rect x="156" y="402" width="30" height="22" rx="3" fill="#bae6fd" stroke="#0369a1"/><text x="200" y="418" font-size="11" fill="#0369a1">… lane containers</text>
-  <text x="48" y="448" font-size="9.5" fill="#475569">Risk: shares the VM kernel; isolation is cgroup + worktree, not a hypervisor.</text>
+  <text x="48" y="448" font-size="9.5" fill="#475569">Risk: shares the host kernel; isolation is cgroup + worktree, not a hypervisor.</text>
 
   <rect x="460" y="272" width="406" height="220" rx="8" fill="#eef2ff" stroke="#4f46e5" stroke-width="1.5"/>
   <text x="474" y="294" font-size="12" font-weight="700" fill="#4f46e5">TIER 2 — ESF factory pipelines</text>
-  <text x="474" y="314" font-size="10.5">Target 4–6 concurrent · ~4–6 GB each · ≈24 GB total</text>
-  <text x="474" y="332" font-size="10.5">Fabric: Temporal worker + CubeSandbox microVM</text>
+  <text x="474" y="314" font-size="10.5">Disabled (Nano) up to 4–6 concurrent (Workstation) · ~4–6 GB each</text>
+  <text x="474" y="332" font-size="10.5">Fabric: Temporal worker + CubeSandbox microVM (KVM required)</text>
   <text x="474" y="350" font-size="10.5">Engine: opencode2 / Claude Code / Codex / Pi harness</text>
-  <text x="474" y="368" font-size="10.5">Gate: in-VM build.sh / test.sh (exit code only)</text>
-  <text x="474" y="386" font-size="10.5">Output: patch + evidence → re-verified in a Tier-1 lane</text>
+  <text x="474" y="368" font-size="10.5">Gate: in-VM build.sh / test.sh + verified in-VM EgressProbe</text>
+  <text x="474" y="386" font-size="10.5">Output: patch + evidence → re-verified inside fresh microVM</text>
   <rect x="474" y="402" width="30" height="22" rx="3" fill="#c7d2fe" stroke="#4f46e5"/><rect x="510" y="402" width="30" height="22" rx="3" fill="#c7d2fe" stroke="#4f46e5"/><rect x="546" y="402" width="30" height="22" rx="3" fill="#c7d2fe" stroke="#4f46e5"/><text x="590" y="418" font-size="11" fill="#4f46e5">… pipelines</text>
   <text x="474" y="448" font-size="9.5" fill="#b91c1c">Requires nested virtualization + Temporal + CubeSandbox — unvalidated here.</text>
 </svg>
@@ -120,11 +120,11 @@
 <h3>5.1 Core runtime services (substrate)</h3>
 <table>
   <tr><th>Service</th><th>Responsibility</th><th>Key constraint</th></tr>
-  <tr><td>NeuroStrata</td><td>Hybrid vector + full-text memory (<code>ladybug.db</code>, nomic-embed-text-v1.5). Retrieval before planning, inscription after verification.</td><td>Embedding model cache pre-seeded; <code>HF_HUB_OFFLINE=1</code>; DB backed up by change-detected watchdog.</td></tr>
+  <tr><td>NeuroStrata</td><td>Hybrid vector + full-text memory (<code>ladybug.db</code>, nomic-embed-text-v1.5). Inscription and search via host-mediated socket relay (<code>aep memoryd</code>) or vsock outbox.</td><td>Loopback <code>127.0.0.1:34343</code> private to host; lanes connect via UNIX domain socket; embedding cache pre-seeded; <code>HF_HUB_OFFLINE=1</code>; DB backed up by change-detected watchdog.</td></tr>
   <tr><td>beads / backlog</td><td>Single canonical task ledger; carries the tier tag and the foreign key used by ESF workflow IDs.</td><td>Telemetry off (<code>bd metrics off</code>); Dolt remote host allowlisted if egress is blocked.</td></tr>
-  <tr><td>ghg</td><td>Counted, coalescing GitHub gateway: 3,500/5,000 core req/h self-cap, one poller per watched run.</td><td>Governs only callers that use it; direct <code>gh</code> remains an ungated vector.</td></tr>
+  <tr><td>ghg</td><td>Counted, coalescing GitHub gateway: served to lanes via <code>aep gwd</code> IPC relay; 3,500/5,000 core req/h self-cap, one poller per watched run.</td><td>Lanes communicate via client shim to relay socket; GitHub PAT credentials remain strictly on host.</td></tr>
   <tr><td>policy.data</td><td>Env-variable scrub fragments, sensitive-path patterns, hardware profile; bound to the committed git blob.</td><td>Edits land via PR; boot refuses a policy that differs from <code>HEAD</code>.</td></tr>
-  <tr><td>aep boot / supervisor</td><td>Fail-closed preflight, dispatch, capacity admission, periodic ticks.</td><td>Exit non-zero rather than start in a degraded state.</td></tr>
+  <tr><td>aep boot / supervisor</td><td>Fail-closed preflight, dispatch, capacity admission, profile auto-detection.</td><td>Exit non-zero rather than start in a degraded state.</td></tr>
 </table>
 
 <h3>5.2 Execution lanes</h3>
@@ -137,17 +137,18 @@
   <tr><td>Human gate</td><td>PR review; circuit breaker</td><td><code>factory review --approve/--reject</code></td></tr>
 </table>
 
-<h2>6. Resource model (12 CPU / 48&nbsp;GB / 220&nbsp;GB)</h2>
+<h2>6. Scalable resource model (Nano 2vCPU / 8GB to Workstation 12vCPU / 48GB)</h2>
+<p>AEP dynamically scales across hardware tiers via named hardware profiles:</p>
 <table>
-  <tr><th>Resource</th><th>Total</th><th>Substrate</th><th>Tier 1</th><th>Tier 2</th></tr>
-  <tr><td>vCPU</td><td>12</td><td>2 reserved</td><td>4–6 shared</td><td>4–6 priority</td></tr>
-  <tr><td>RAM</td><td>48 GB</td><td>8 GB</td><td>16 GB</td><td>24 GB</td></tr>
-  <tr><td>Disk</td><td>220 GB</td><td>30 GB (models, DB)</td><td>70 GB (worktrees, caches)</td><td>120 GB (microVM images, artifacts)</td></tr>
+  <tr><th>Profile</th><th>Target hardware</th><th>Allocation</th><th>Substrate</th><th>Tier 1 (Ralph)</th><th>Tier 2 (ESF)</th><th>KVM required</th></tr>
+  <tr><td><code>nano-8g</code></td><td>Intel N100, RPi 5, Cloud 2vCPU/8GB (t4g.medium, e2-standard-2)</td><td>2 vCPU · 8 GB · 30 GB</td><td>1 vCPU · 2.5 GB · 10 GB</td><td>4.0 GB budget (1–2 lanes @ 2GB)</td><td><em>Disabled</em> (tasks quarantined)</td><td>No</td></tr>
+  <tr><td><code>small-16g</code></td><td>Intel Core i5, AMD Ryzen 5, Cloud 4vCPU/16GB</td><td>4 vCPU · 16 GB · 80 GB</td><td>1 vCPU · 3.5 GB · 15 GB</td><td>6.5 GB budget (2–3 lanes @ 2GB)</td><td>6.0 GB budget (1 pipeline @ 6GB)</td><td>Yes (<code>/dev/kvm</code>)</td></tr>
+  <tr><td><code>medium-32g</code></td><td>Intel Core i7/i9, AMD Ryzen 7/9, Cloud 8vCPU/32GB</td><td>8 vCPU · 32 GB · 150 GB</td><td>2 vCPU · 4.5 GB · 25 GB</td><td>12.0 GB budget (4–6 lanes @ 2GB)</td><td>15.0 GB budget (2–3 pipelines @ 5GB)</td><td>Yes (<code>/dev/kvm</code>)</td></tr>
+  <tr><td><code>workstation-48g</code></td><td>Apple Silicon M3 Max (Colima vz+virtiofs), Threadripper</td><td>12 vCPU · 48 GB · 220 GB</td><td>2 vCPU · 8.0 GB · 30 GB</td><td>16.0 GB budget (8–10 lanes @ 1.5–2GB)</td><td>24.0 GB budget (4–6 pipelines @ 4–6GB)</td><td>Yes (nested vz/kvm)</td></tr>
 </table>
-<div class="note"><strong>Capacity is memory-bound, not count-bound.</strong>
-Six Tier-2 pipelines at 4&nbsp;GB fit the 24&nbsp;GB budget; six at 6&nbsp;GB do not (36&nbsp;GB). The "4–6 pipelines" and "8–10 lanes" figures are therefore <em>ceilings under typical sizing</em>, not guarantees. The design enforces this with admission control that reserves memory per lane before start (LLD §6), rather than a fixed lane count.
+<div class="note"><strong>Capacity is memory-bound and hardware-gated.</strong>
+Lane counts are derived from memory budgets. On systems lacking hardware virtualization (such as Intel N100 without VT-x or standard Cloud VMs without nested virtualization), Tier 2 is disabled automatically. Tasks requiring Tier-2 isolation are <strong>quarantined</strong> rather than silently downgraded to Tier 1, preserving safety invariants.
 Per-lane footprints are estimates from capacity reasoning; <strong>they have not been benchmarked on this machine</strong>, and no container runtime is currently installed on the host to measure with.</div>
-<p>Reference sizing for other targets: the Muse 8&nbsp;GB VM runs the substrate plus at most 2 lanes (<code>AEP_MAX_LANES=2</code>, 384&nbsp;MiB floor, ONNX threads 2); Tier 2 is not expected on Muse.</p>
 
 <h2>7. Platform and artifact coverage</h2>
 <table>
@@ -163,19 +164,21 @@ Per-lane footprints are estimates from capacity reasoning; <strong>they have not
 <h2>8. Dispatch and lifecycle</h2>
 <ol>
   <li><strong>Intake.</strong> Work is a beads issue carrying a tier tag (<code>local</code> or <code>factory</code>) and acceptance criteria.</li>
-  <li><strong>Preflight.</strong> <code>aep boot</code> must pass: binaries, NeuroStrata answering, standing guards present, policy blob matches <code>HEAD</code>, memory floor met.</li>
-  <li><strong>Admission.</strong> Dispatcher reserves RAM/CPU for the lane against the profile budget; if it cannot, the task waits (bounded) rather than oversubscribing.</li>
-  <li><strong>Execute.</strong> Tier 1: claim worktree, start lane container, run plan/TDD/review/verify. Tier 2: submit <code>factory run</code> with workflow ID <code>esf-beads-&lt;ID&gt;</code>.</li>
-  <li><strong>Verify.</strong> Both lanes emit SHA-256 receipts. ESF patches are applied in a clean Tier-1 lane and re-verified before any PR.</li>
-  <li><strong>Close.</strong> PR merges, <code>bd close</code>, learnings inscribed to NeuroStrata, lane and reservation released.</li>
+  <li><strong>Preflight.</strong> <code>aep boot</code> must pass: binaries, NeuroStrata answering, standing guards present, policy blob matches <code>HEAD</code>, memory floor and hardware profile met.</li>
+  <li><strong>Admission.</strong> Dispatcher reserves RAM/CPU for the lane against the active profile budget; if it cannot, the task waits (bounded) rather than oversubscribing.</li>
+  <li><strong>Execute.</strong> Tier 1: claim worktree, start lane container with mounted supervisor socket relays (<code>aep memoryd</code>, <code>aep gwd</code>), run plan/TDD/review/verify. Tier 2: submit <code>factory run</code> with workflow ID <code>esf-beads-&lt;ID&gt;</code>.</li>
+  <li><strong>Verify.</strong> Both lanes emit SHA-256 receipts. For Tier-2 factory work containing untrusted code, independent patch re-verification runs inside a fresh, disposable Tier-2 microVM sandbox with closed egress—never directly on the shared Tier-1 host kernel.</li>
+  <li><strong>Close.</strong> PR merges, <code>bd close</code>, learnings inscribed to NeuroStrata via supervisor relay, lane and reservation released.</li>
 </ol>
 
 <h2>9. Governance invariants</h2>
 <ul>
   <li>No lane starts unless <code>aep boot</code> passes (fail closed).</li>
-  <li>All GitHub traffic from lanes goes through <code>ghg</code>.</li>
+  <li>All GitHub traffic from lanes goes through <code>ghg</code> via the <code>aep gwd</code> IPC relay. Lane containers hold no GitHub credentials and cannot connect directly to api.github.com.</li>
   <li><code>policy.data</code> must equal the committed blob; lanes run with credential-named env vars scrubbed.</li>
-  <li>ESF refuses to run with <code>hardening.acknowledge_open_egress = true</code> in a governed deployment (the upstream default for a fresh <code>factory init</code> is <code>true</code>, so AEP must assert the opposite).</li>
+  <li>ESF runs require <code>hardening.acknowledge_open_egress = false</code> (the upstream default), configured closed egress policies (<code>allow_internet = false</code>), and verified in-VM <code>EgressProbe</code> digest. Checking only the acknowledgement boolean is not network enforcement.</li>
+  <li>Tasks requiring Tier-2 isolation MUST NOT be downgraded silently to Tier 1 when Tier 2 / KVM is unavailable; they are strictly quarantined. Downgrade requires an explicit, authenticated operator risk reassessment override (<code>aep dispatch --override-tier1-risk-reassessment</code>).</li>
+  <li>Independent re-verification of Tier-2 patches must execute inside a fresh hardware-isolated microVM sandbox. Tier 1 performs static analysis only (syntax, diff, lint).</li>
   <li>Model tiering: ralph lanes at <code>standard</code>/<code>measured</code>; <code>frontier</code>/<code>thorough</code> reserved for factory runs.</li>
   <li>A task has exactly one ledger identity (the beads ID) across both lanes.</li>
 </ul>
@@ -199,17 +202,17 @@ Per-lane footprints are estimates from capacity reasoning; <strong>they have not
 <h2>11. Risks and open questions</h2>
 <table>
   <tr><th>Risk / question</th><th>Why it matters</th><th>Cheapest check</th></tr>
-  <tr><td><span class="tag risk">High</span> Tier 2 needs KVM inside the Colima VM</td><td>CubeSandbox microVMs require nested virtualization. On Apple Silicon this depends on chip generation, macOS version and Colima support. If unavailable, Tier 2 cannot run on the Mac at all.</td><td>Start Colima with nested virtualization enabled and run <code>ls /dev/kvm</code> in the VM.</td></tr>
+  <tr><td><span class="tag risk">High</span> Tier 2 needs KVM inside the Colima VM or host</td><td>CubeSandbox microVMs require nested virtualization. On Cloud VMs and Apple Silicon, this depends on virtualization flags. If unavailable, Tier 2 cannot run locally and tasks must quarantine.</td><td>Check <code>ls /dev/kvm</code> in the VM or host.</td></tr>
   <tr><td><span class="tag risk">High</span> CubeSandbox and Temporal are external</td><td>ESF discovers an existing CubeSandbox; it never installs one. Neither exists on this host.</td><td><code>factory doctor</code> against the target environment.</td></tr>
-  <tr><td><span class="tag risk">Med</span> Lane footprints are unmeasured</td><td>Admission thresholds depend on real RSS of ralph and ESF lanes.</td><td>Install Colima, run 3 representative lanes, record peak RSS.</td></tr>
-  <tr><td><span class="tag risk">Med</span> Tier-1 isolation is weaker than it sounds</td><td>Lane containers share one VM kernel; a hostile task in Tier 1 is not contained like Tier 2.</td><td>Keep untrusted work routed to Tier 2; make the tier tag mandatory.</td></tr>
+  <tr><td><span class="tag risk">Med</span> Lane footprints are unmeasured</td><td>Admission thresholds depend on real RSS of ralph and ESF lanes across hardware profiles.</td><td>Install Colima/Podman, run representative lanes, record peak RSS.</td></tr>
+  <tr><td><span class="tag risk">Med</span> Tier-1 isolation is container-only</td><td>Lane containers share one kernel; a hostile task in Tier 1 is not contained like Tier 2.</td><td>Keep untrusted work routed to Tier 2; enforce quarantine on fallback.</td></tr>
   <tr><td><span class="tag risk">Med</span> Boot parity gap</td><td>Moving to <code>aep boot</code> without the daemon/guard/policy checks would silently weaken governance versus <code>boot-gate.sh</code>.</td><td>Port checks with tests before retiring the shell gate.</td></tr>
   <tr><td><span class="tag risk">Low</span> Singular/plural docs path</td><td>This document lives in <code>docs/plan/</code>; the repo already has <code>docs/plans/</code> and <code>docs/superpowers/plans/</code>.</td><td>Decide on one location.</td></tr>
 </table>
 
-<h2>12. Review status</h2>
-<p>The v1 → v1.1 review applied the paperthin lenses (<code>hate</code>, <code>ssotize</code>, <code>modelchk</code>, <code>factchk</code>, <code>debloat</code>) as a single-author pass. It surfaced the dispatch-stall root objection, the dual-ledger drift risk and the egress-default fact. It was <strong>not an independent multi-reviewer panel</strong>, and its "full approval" wording should be read as "no remaining objections from that pass". An independent adversarial run should precede production activation, and it should specifically attack the nested-virtualization assumption above.</p>
+<h2>12. Review status & PR #133 review remediations</h2>
+<p>The v1.1 design incorporates remediations from PR #133 review comments (C1–C5) evaluated under the <code>receiving-code-review</code>, <code>paperthin</code>, <code>overseer</code>, and <code>factchk</code> skills: (1) corrected ESF egress acknowledgement vs probe-verified network boundary; (2) strictly prohibited automatic downgrade to Tier 1, enforcing quarantine for isolation-required tasks; (3) specified supervisor socket relays (<code>aep memoryd</code> and <code>aep gwd</code>) overcoming container loopback and ghg CLI limitations; (4) restricted patch re-verification of untrusted code to disposable microVMs; and (5) formulated a scalable 4-tier profile matrix spanning 2 vCPU / 8 GB (Nano) to 12 vCPU / 48 GB (Workstation).</p>
 
-<footer>AEP HLD v1.1 · generated from the design discussion on 2026-11-08 · see the LLD for interfaces, data formats, sequencing and the task breakdown.</footer>
+<footer>AEP HLD v1.1 · updated with PR #133 review remediations and multi-hardware profiles on 2026-11-08 · see the LLD for interfaces, data formats, sequencing and task breakdown.</footer>
 </body>
 </html>

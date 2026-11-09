@@ -206,26 +206,26 @@
       <div class="diagram">
 +===================================================================================================+
 |                                    AEP AGENTIC-CONTAINER OS                                        |
-|                     Hardware Allocation: 12 CPUs · 48 GB Unified RAM · 220 GB Disk                |
+|         Scalable Hardware Spectrum: 2 vCPU / 8 GB (Nano) up to 12 vCPU / 48 GB (Max / M3 Max)     |
 +===================================================================================================+
 |  CORE RUNTIME SERVICES (Host / Substrate Tier):                                                   |
-|    1. <span class="hl-suc">NeuroStrata Daemon (127.0.0.1:34343)</span>: Hybrid vector + full-text cognitive memory store     |
+|    1. <span class="hl-suc">NeuroStrata Daemon (127.0.0.1:34343)</span>: Cognitive memory via Host Supervisor Relay |
 |    2. <span class="hl-suc">beads / backlog.md</span>: Single Source of Truth task ledger & unified issue tracker          |
-|    3. <span class="hl-suc">ghg Gateway</span>: Central rate-capped (3,500 req/h), coalescing GitHub API proxy             |
+|    3. <span class="hl-suc">ghg Gateway Relay (aep gwd)</span>: IPC socket proxy to host ghg; capped 3,500 req/h; no token in lane|
 |    4. <span class="hl-suc">Policy Enforcement (scripts/policy.data)</span>: Git-bound hash verification, env & path scrubbing|
 |    5. <span class="hl-suc">AEP Supervisor & Boot Gate</span>: Fail-closed preflight, capacity locks, and health watchdog    |
 +================================================+==================================================+
                                                  |
-                       [ Dynamic Capacity Router & Worktree Allocator ]
+                   [ Dynamic Capacity Router, Profile Detector & Worktree Allocator ]
                                                  |
               +----------------------------------+----------------------------------+
               |                                                                     |
               v (Tier 1: Fast Inner Loop)                                           v (Tier 2: Outer Factory)
 +---------------------------------------------+       +---------------------------------------------+
 |    <span class="hl-pri">PARALLEL RALPH-LOOP CONTAINER LANES</span>      |       |      <span class="hl-sec">PARALLEL ESF FACTORY PIPELINES</span>         |
-|  * Concurrency: <span class="hl-pri">8 to 10 Parallel Lanes</span>      |       |  * Concurrency: <span class="hl-sec">4 to 6 Parallel Pipelines</span>    |
+|  * Concurrency: <span class="hl-pri">1–2 (Nano) to 8–10 (Max)</span>    |       |  * Concurrency: <span class="hl-sec">Disabled (Nano) to 4–6 (Max)</span>|
 |  * Fabric: OCI Container + Git Worktree     |       |  * Fabric: Temporal Worker + Cube microVM   |
-|  * Memory per Lane: ~1.5 - 2 GB             |       |  * Memory per Pipeline: ~4 - 6 GB           |
+|  * Memory per Lane: ~1.5 - 2 GB             |       |  * Memory per Pipeline: ~4 - 6 GB (KVM req) |
 |  * Engine: Subagent-driven TDD & review     |       |  * Engine: OpenCode / Claude Code / Pi v1   |
 |  * Verification: Go-native `aep verify`     |       |  * Verification: Deterministic build.sh/test|
 |  * Output: Git branches & verified PRs      |       |  * Output: Cryptographic patch & evidence   |
@@ -234,16 +234,16 @@
                       +--------------------------+--------------------------+
                                                  |
                                                  v
-                      [ Continuous Cognitive Inscription into NeuroStrata ]
+                      [ Continuous Cognitive Inscription into NeuroStrata via Relay ]
       </div>
 
       <div class="grid">
         <div class="card card-os">
           <h3>Core Runtime Services (AEP Substrate)</h3>
           <ul>
-            <li><strong>NeuroStrata:</strong> Long-term memory engine running on loopback, pre-seeded embedding cache (523MB), and <code>ladybug.db</code> store.</li>
+            <li><strong>NeuroStrata:</strong> Long-term memory engine running on host loopback (`127.0.0.1:34343`), accessed from lanes via host-mediated UNIX domain socket relay (`aep memoryd`) or vsock.</li>
             <li><strong>Unified Ledger:</strong> <code>beads</code> issue tracker keyed as the single source of truth; avoids orphan factory runs.</li>
-            <li><strong>Rate Limiter (<code>ghg</code>):</strong> Coalesces multi-agent run watching and enforces rate caps across all containers.</li>
+            <li><strong>Rate Limiter Relay (<code>ghg</code>):</strong> <code>aep gwd</code> IPC daemon proxies lane requests to host `tools/ghg/bin/ghg`, preserving rate caps and coalesced pollers without exposing credentials.</li>
             <li><strong>Policy & Boot:</strong> Git-verified <code>policy.data</code> prevents uninspected runtime mutation; <code>aep boot</code> gates starts.</li>
           </ul>
         </div>
@@ -269,105 +269,126 @@
     </section>
 
     <section id="resource-specification">
-      <h2>3. Resource Sizing & Hardware Profile (v1.1)</h2>
+      <h2>3. Scalable Hardware Profiles: From Nano (2 vCPU / 8 GB) to Max (12 vCPU / 48 GB)</h2>
       <p>
-        The dedicated deployment allocation operates under the following hardware envelope (configured via Colima on macOS Apple Silicon or native cgroups on Linux):
+        AEP adapts across hardware tiers: from edge/budget devices (Intel N100, AMD Ryzen 5, Cloud 2vCPU VMs) up to top-spec developer workstations (Apple Silicon M3 Max). Hardware profiles govern admission limits, memory budgets, and whether Tier 2 (microVM sandboxing requiring hardware virtualization / KVM) is enabled.
       </p>
 
       <table>
         <thead>
           <tr>
-            <th>Resource</th>
+            <th>Profile</th>
+            <th>Target Hardware</th>
             <th>Total Allocation</th>
-            <th>Substrate Allocation</th>
+            <th>Substrate</th>
             <th>Tier 1 (Ralph Lanes)</th>
             <th>Tier 2 (ESF Pipelines)</th>
+            <th>KVM Required</th>
           </tr>
         </thead>
         <tbody>
           <tr>
-            <td><strong>vCPUs</strong></td>
-            <td><strong>12 Cores</strong></td>
-            <td>2 Cores reserved</td>
-            <td>4–6 Cores (dynamic share)</td>
-            <td>4–6 Cores (pinned/priority)</td>
+            <td><strong>nano-8g</strong></td>
+            <td>Intel N100, RPi 5, Cloud 2vCPU/8GB (t4g.medium, e2-standard-2)</td>
+            <td>2 vCPU · 8 GB RAM · 30 GB Disk</td>
+            <td>1 vCPU · 2.5 GB RAM · 10 GB Disk</td>
+            <td>4.0 GB budget (1–2 lanes @ 2GB)</td>
+            <td><em>Disabled</em> (tasks quarantined or remote)</td>
+            <td>No</td>
           </tr>
           <tr>
-            <td><strong>RAM</strong></td>
-            <td><strong>48 GB</strong></td>
-            <td>8 GB (NeuroStrata, DB, ghg)</td>
-            <td>16 GB (8–10 lanes @ ~1.5GB)</td>
-            <td>24 GB (4–6 pipelines @ ~4–6GB)</td>
+            <td><strong>small-16g</strong></td>
+            <td>Intel Core i5, AMD Ryzen 5, Cloud 4vCPU/16GB</td>
+            <td>4 vCPU · 16 GB RAM · 80 GB Disk</td>
+            <td>1 vCPU · 3.5 GB RAM · 15 GB Disk</td>
+            <td>6.5 GB budget (2–3 lanes @ 2GB)</td>
+            <td>6.0 GB budget (1 pipeline @ 6GB)</td>
+            <td>Yes (/dev/kvm)</td>
           </tr>
           <tr>
-            <td><strong>Disk</strong></td>
-            <td><strong>220 GB NVMe</strong></td>
-            <td>30 GB (models & DB)</td>
-            <td>70 GB (worktrees & caches)</td>
-            <td>120 GB (microVM images & artifacts)</td>
+            <td><strong>medium-32g</strong></td>
+            <td>Intel Core i7/i9, AMD Ryzen 7/9, Cloud 8vCPU/32GB</td>
+            <td>8 vCPU · 32 GB RAM · 150 GB Disk</td>
+            <td>2 vCPU · 4.5 GB RAM · 25 GB Disk</td>
+            <td>12.0 GB budget (4–6 lanes @ 2GB)</td>
+            <td>15.0 GB budget (2–3 pipelines @ 5GB)</td>
+            <td>Yes (/dev/kvm)</td>
+          </tr>
+          <tr>
+            <td><strong>workstation-48g</strong></td>
+            <td>Apple Silicon M3 Max (Colima vz+virtiofs), Threadripper</td>
+            <td>12 vCPU · 48 GB RAM · 220 GB Disk</td>
+            <td>2 vCPU · 8.0 GB RAM · 30 GB Disk</td>
+            <td>16.0 GB budget (8–10 lanes @ 1.5–2GB)</td>
+            <td>24.0 GB budget (4–6 pipelines @ 4–6GB)</td>
+            <td>Yes (nested vz/kvm)</td>
           </tr>
         </tbody>
       </table>
 
-      <h3>Startup Configuration</h3>
-      <pre><code># Colima startup command for Apple Silicon / M-Series Mac:
-colima start \
-  --cpu 12 \
-  --memory 48 \
-  --disk 220 \
-  --vm-type vz \
-  --mount-type virtiofs</code></pre>
+      <h3>Runtime Profile Auto-Detection</h3>
+      <p>
+        <code>aep profile detect</code> probes available CPU cores, total memory, container engine (Podman rootless, Docker, or Colima), and hardware virtualization flags (<code>/dev/kvm</code> on Linux, nested virtualization under Apple vz). If hardware virtualization is absent (e.g. standard cloud VMs or low-power hosts), Tier 2 is disabled automatically, and any incoming task tagged <code>tier:factory</code> is safely quarantined rather than unsafely downgraded.
+      </p>
+      <pre><code># Workstation startup (macOS Apple Silicon):
+colima start --profile aep --cpu 12 --memory 48 --disk 220 --vm-type vz --mount-type virtiofs
+
+# Low-power / Cloud Linux startup (e.g. Intel N100 / Hetzner / AWS):
+aep boot --profile nano-8g --runtime podman</code></pre>
     </section>
 
     <section id="interoperability-flow">
       <h2>4. Dual-Lane Dispatch & Execution Lifecycle</h2>
       <ol>
         <li><strong>Task Ingestion:</strong> Tasks enter <code>beads</code> backlog tagged with risk metadata: <code>tier: local</code> (Ralph) or <code>tier: factory</code> (ESF).</li>
-        <li><strong>Fail-Closed Preflight:</strong> The AEP supervisor runs <code>aep boot</code>, confirming NeuroStrata, policy checksums, and available memory headroom.</li>
-        <li><strong>Lane Allocation:</strong>
+        <li><strong>Fail-Closed Preflight:</strong> The AEP supervisor runs <code>aep boot</code>, confirming NeuroStrata, policy checksums, hardware profile detection, and available memory headroom.</li>
+        <li><strong>Lane Allocation & Mediation:</strong>
           <ul>
-            <li><em>Tier 1:</em> <code>aep lane claim</code> allocates an isolated worktree and spawns a Ralph OCI container running TDD iterations.</li>
-            <li><em>Tier 2:</em> AEP invokes <code>factory run</code> via Temporal; ESF spins up a fresh Cube microVM, injects the prompt over stdin, and runs deterministic in-VM gates.</li>
+            <li><em>Tier 1:</em> <code>aep lane claim</code> allocates an isolated worktree and spawns a Ralph OCI container running TDD iterations with mounted supervisor socket relays for NeuroStrata (<code>aep memoryd</code>) and GitHub (<code>aep gwd</code>).</li>
+            <li><em>Tier 2:</em> AEP invokes <code>factory run</code> via Temporal; ESF spins up a fresh Cube microVM, injects the prompt over stdin, validates closed egress via in-VM <code>EgressProbe</code>, and runs deterministic in-VM gates.</li>
           </ul>
         </li>
-        <li><strong>Receipt & Patch Consolidation:</strong> Both lanes emit cryptographic receipts (SHA-256 tail digests). ESF patches are verified by Ralph in a clean lane before PR generation.</li>
-        <li><strong>Cognitive Inscription:</strong> Root causes, fixes, and edge cases are inscribed into the host NeuroStrata instance via loopback, immediately benefiting subsequent tasks across both tiers.</li>
+        <li><strong>Receipt & Isolated Patch Re-Verification:</strong> Both lanes emit cryptographic receipts (SHA-256 tail digests). For Tier-2 factory work containing untrusted code, independent patch re-verification (running repo tests via <code>aep verify</code>) executes inside a fresh, disposable Tier-2 microVM sandbox with closed egress—never directly on the shared Tier-1 host kernel.</li>
+        <li><strong>Supervisor-Mediated Cognitive Inscription:</strong> Root causes, fixes, and edge cases are inscribed into host NeuroStrata via supervisor relay sockets (Tier 1) or vsock outbox spool (Tier 2), ensuring guest loopback isolation does not block cross-tier memory updates.</li>
       </ol>
     </section>
 
     <section id="adversarial-panel">
-      <h2>5. Adversarial Assessment Panel (Paperthin Audit v1.1)</h2>
+      <h2>5. Adversarial Assessment Panel (Agentic Skills Audit & PR #133 Review Remediations)</h2>
       <div class="card card-adversarial">
         <div class="callout callout-hate">
-          <h4>[hate] Root Objection & Resolution (v1.1)</h4>
+          <h4>[hate & receiving-code-review] Isolation Preservation & Quarantine Policy</h4>
           <p>
-            <strong>Previous Objection:</strong> Unmanaged dependency on non-existent Temporal/Cube clusters would freeze autonomous execution.
+            <strong>PR Review Finding (C2):</strong> Automatic downgrade of Tier-2 tasks to Tier 1 when ESF/Cube is unavailable removes the hardware microVM sandbox boundary that justified Tier-2 routing. Elevated review gates cannot prevent malware or exploit payloads that execute during test runs.
           </p>
           <p>
-            <strong>v1.1 Resolution:</strong> AEP substrate enforces an <em>Automated Graceful Degradation Gateway</em> in <code>aep dispatch</code>: if the Temporal cluster or Cube daemon is offline, factory-tagged tasks are quarantined with an explicit diagnostic alert or downgraded to a fenced Ralph worktree with elevated review gates, preventing autonomous deadlocks.
+            <strong>Remediation:</strong> When Temporal, Cube, or KVM is unavailable, tasks tagged <code>tier:factory</code> are <strong>strictly QUARANTINED</strong> (status <code>quarantined_esf_unavailable</code> or <code>quarantined_unsupported_tier2</code>). Automatic downgrade to Tier 1 is strictly forbidden. Downgrade to Tier 1 requires an explicit, authenticated operator risk reassessment override (<code>aep dispatch --override-tier1-risk-reassessment --reason="..."</code>).
           </p>
         </div>
       </div>
 
       <div class="grid" style="margin-top: 1.5rem;">
         <div class="card">
-          <h3>[ssotize] Single Task Ledger</h3>
-          <p><strong>Enforcement:</strong> <code>beads</code> issue IDs are the single canonical foreign key. Temporal workflow IDs must match <code>esf-beads-&lt;ID&gt;</code> to prevent state divergence.</p>
+          <h3>[factchk] Egress Acknowledgement vs Network Enforcement</h3>
+          <p><strong>PR Finding (C1):</strong> In <code>reference/esf</code>, <code>AcknowledgeOpenEgress</code> defaults to <code>false</code>. Setting it to <code>true</code> acknowledges open risk; it does not enforce security. Checking only that flag does not establish measured egress.</p>
+          <p><strong>Enforcement:</strong> AEP requires <code>AcknowledgeOpenEgress = false</code>, an explicit closed policy (<code>allow_internet = false</code>), and verifies the SHA-256 digest of the in-VM <code>EgressProbe</code> before accepting run evidence.</p>
         </div>
 
         <div class="card">
-          <h3>[modelchk] Cognitive Tiering</h3>
-          <p><strong>Enforcement:</strong> Ralph containers are pinned to <code>standard</code> model tier with <code>measured</code> effort. High-cost <code>frontier</code> models with <code>thorough</code> reasoning are reserved for sandboxed factory runs.</p>
+          <h3>[ssotize] Host Relays for Container Isolation</h3>
+          <p><strong>PR Finding (C3 & C5):</strong> Guest loopback <code>127.0.0.1:34343</code> does not reach host NeuroStrata, and <code>tools/ghg</code> is a CLI without a network daemon.</p>
+          <p><strong>Enforcement:</strong> AEP provides host-side supervisor relays: <code>aep memoryd</code> (proxying IPC sockets to host NeuroStrata) and <code>aep gwd</code> (proxying lane GitHub CLI calls to <code>ghg.py</code>, keeping PAT tokens out of containers).</p>
         </div>
 
         <div class="card">
-          <h3>[detool & debloat] Unified Verifier</h3>
-          <p><strong>Enforcement:</strong> Compiled Go binary <code>aep verify</code> is baked into both the Ralph OCI container and the CubeSandbox template, eliminating duplicated test-running logic.</p>
+          <h3>[hate] Sandboxed Re-Verification</h3>
+          <p><strong>PR Finding (C4):</strong> Running repository test commands (<code>npm test</code>, <code>cargo test</code>) on untrusted Tier-2 patches inside Tier 1 executes hostile code on the shared host.</p>
+          <p><strong>Enforcement:</strong> Dynamic re-verification of Tier-2 patches must execute inside a fresh, disposable Tier-2 microVM. Tier 1 performs static checks only (AST syntax, diff inspection).</p>
         </div>
 
         <div class="card">
-          <h3>[factchk] Real Disk Headroom</h3>
-          <p><strong>Enforcement:</strong> 220 GB disk allocation safely accommodates 50GB model/cache footprints, 10 concurrent git worktrees (3–5GB each), and 6 ephemeral microVM disk overlays simultaneously.</p>
+          <h3>[modelchk] Scalable Profiles</h3>
+          <p><strong>Capacity Matrix:</strong> Hardware-profiled admission controller scales memory budgets from Nano (2 vCPU / 8 GB, 1–2 Ralph lanes, Tier 2 disabled) up to Workstation (12 vCPU / 48 GB, 8–10 lanes, 4–6 microVMs).</p>
         </div>
       </div>
     </section>
@@ -375,9 +396,9 @@ colima start \
     <section id="verdict">
       <h2>6. Final Panel Verdict</h2>
       <div class="callout" style="border-left-color: var(--success); background: rgba(52, 211, 153, 0.08);">
-        <h4 style="color: var(--success); margin-bottom: 0.5rem;">Verdict: FULL APPROVAL (v1.1)</h4>
+        <h4 style="color: var(--success); margin-bottom: 0.5rem;">Verdict: REMEDIATED & VALIDATED (v1.1)</h4>
         <p>
-          Version 1.1 resolves the load-bearing root objections identified in the initial adversarial audit. The 12-CPU / 48GB-RAM / 220GB-Disk allocation provides generous, balanced headroom for running the AEP Substrate alongside 8–10 Ralph lanes and 4–6 ESF pipelines concurrently.
+          Version 1.1 fully incorporates the PR #133 review findings and agentic skills audit. Host-mediated socket relays bridge isolated containers to substrate services without exposing loopback or credentials; untrusted work is quarantined rather than downgraded when hardware virtualization is absent; and admission control scales dynamically from 2 vCPU / 8 GB edge nodes up to 12 vCPU / 48 GB workstations.
         </p>
       </div>
     </section>
