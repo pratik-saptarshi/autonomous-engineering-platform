@@ -69,7 +69,7 @@ docs/plan/                            this doc  HLD + LLD (html + pdf)</code></p
   <tr><td><code>memory.GetMemoryInfo()</code></td><td>Returns <code>MemoryInfo{TotalBytes, AvailableBytes}</code>. Darwin availability is free + speculative pages only, so it under-reports reclaimable memory; admission must not treat it as exact.</td></tr>
   <tr><td><code>lock.New(path)</code></td><td>Advisory exclusive lock. <code>TryLock()</code> returns <code>ErrLocked</code> if held. The kernel releases it on process death — the property the lane fence relies on.</td></tr>
   <tr><td><code>process.NewCommand(ctx,name,args,cfg)</code></td><td>Returns a <code>ProcessGroup</code>; <code>Kill()</code> terminates the whole tree (group SIGTERM→grace→SIGKILL on POSIX, Job Object on Windows).</td></tr>
-  <tr><td><code>runner.RunVerification(ctx,root,minMem,perCmd,budget)</code></td><td>Discovers go/cargo/npm/pytest/make checks, runs them sequentially bounded by timeout and budget, stops at first failure, returns <code>VerificationResult{Pass, Receipts[]}</code> with 64 KiB tail hashes.</td></tr>
+  <tr><td><code>runner.RunVerification(ctx,root,minMem,perCmd,budget)</code></td><td>Discovers go/cargo/npm/pytest/make checks, runs them sequentially bounded by timeout and budget, stops at first failure, returns <code>VerificationResult{Pass, Receipts[]}</code>. Each <code>CommandReceipt</code> carries full-stream <code>StdoutSha</code>/<code>StderrSha</code> plus 64 KiB display tails; the signed <code>RunReceipt</code> is finalized by the ledger slice.</td></tr>
   <tr><td><code>aep boot</code></td><td>Memory probe, 384 MiB floor, platform line, then <code>BOOT-GATE-RESULT: SYSTEM-OK</code>. <strong>Does not</strong> yet check NeuroStrata, guards, gh auth, binaries or policy.</td></tr>
   <tr><td><code>aep supervisor [--loop --interval D --once]</code></td><td>Tick = boot gate then one <code>RunVerification</code>. Boot-gate failure is fatal in every mode; verification failure is fatal only outside loop mode. Ticks never overlap.</td></tr>
 </table>
@@ -77,27 +77,86 @@ docs/plan/                            this doc  HLD + LLD (html + pdf)</code></p
 <h2>4. New packages — interfaces</h2>
 
 <h3>4.1 <code>internal/profile</code></h3>
-<pre><code>type Profile struct {
-    HostFamily      string // "mac-colima-vz" | "linux-native" — decides runtime; Tier 2 eligibility comes from the KVM probe, not the family alone
-    Name            string // e.g. "mac-colima-vz-48g", "linux-native-16g" (family + size tier)
+<pre><code>type BackendKind string
+
+type IsolationKind uint8
+const (
+    IsolationNone IsolationKind = iota
+    IsolationUserSpaceKernel
+    IsolationHardwareMicroVM
+)
+
+type Provenance uint8
+const (
+    ProvenanceLocal Provenance = iota
+    ProvenanceRemote
+)
+
+type Isolation struct {
+    kind     IsolationKind
+    evidence [32]byte // probe or attestation digest; zero means unusable
+}
+func (i Isolation) Valid() bool
+func (i Isolation) AtLeast(min IsolationKind) bool // rank only; Valid() checks evidence
+
+type Requirement struct {
+    kind IsolationKind
+    set  bool
+}
+func NoFloor() Requirement
+func AtLeast(kind IsolationKind) Requirement
+func RequirementForRiskClass(class string) (Requirement, error)
+func (r Requirement) MetBy(i Isolation) bool // unset requirement fails closed
+
+type Backend struct {
+    kind       BackendKind
+    isolation  Isolation
+    provenance Provenance
+}
+func NewBackend(kind BackendKind, isolation Isolation, provenance Provenance) (Backend, error)
+    // rejects gVisor+hardware, cube-kvm+user-space, remote without attestation,
+    // and zero evidence; the zero Backend is not usable.
+func (b Backend) Usable() bool
+func (b Backend) Isolation() Isolation
+
+type ProbeResult struct {
+    Present bool
+    Digest  [32]byte
+}
+
+type MiB uint64
+type Bytes uint64
+func (m MiB) Bytes() (Bytes, error) // rejects overflow
+type MemoryView struct {
+    Total     Bytes // profile minimum
+    Available Bytes // admission
+    Limit     Bytes // cgroup or VM limit; zero means none
+}
+
+type Profile struct {
+    HostFamily      string // "mac-colima-vz" | "linux-native" | "linux-gvisor"; runtime only
+    Name            string // e.g. "mac-colima-vz-48g", "linux-native-16g"
     VMCPUs          int    // 2 (nano) up to 12 (workstation)
     VMMemoryMiB     uint64 // 8192 up to 49152
     VMDiskGiB       int    // 30 up to 220
-    SubstrateMiB    uint64 // 2560 up to 8192
-    Tier1BudgetMiB  uint64 // 4096 up to 16384
-    Tier2BudgetMiB  uint64 // 0 (nano) up to 24576 (workstation)
-    Tier1LaneMiB    uint64 // default per-lane reservation, 2048
-    Tier2LaneMiB    uint64 // default per-pipeline reservation, 4096 - 6144
-    MaxTier1Lanes   int    // hard ceiling: 2 (nano) up to 10 (workstation)
-    MaxTier2Lanes   int    // hard ceiling: 0 (nano) up to 6 (workstation)
-    Tier2Supported  bool   // true iff /dev/kvm probed present (mac-colima-vz requires colima --nested-virtualization; confirmed 2026-11-09)
+    SubstrateMiB    uint64 // 2560 (nano, 2.5 GiB) up to 8192
+    Tier1BudgetMiB  uint64 // 3584 (nano, 3.5 GiB) up to 16384
+    Tier2BudgetMiB  uint64 // 1536 (nano, 1.5 GiB) up to 24576
+    Tier1LaneMiB    uint64 // 2048
+    Tier2LaneMiB    uint64 // 1536 (nano) up to 6144
+    MaxTier1Lanes   int    // 1 (nano) up to 10
+    MaxTier2Lanes   int    // 1 (nano) up to 6
+    Backend         Backend
+    KVMProbe        ProbeResult
     MemFloorMiB     uint64 // 384 (nano) / 512
     ONNXThreads     int
 }
 func Detect() (Profile, error)            // probes CPU, RAM, disk, /dev/kvm, and container runtime
 func Load(path string) (Profile, error)   // KEY=VALUE file, same keys as hardware-profile.conf
-func (p Profile) Validate() error         // sum(substrate+t1+t2) &lt;= VMMemoryMiB; ceilings*laneMiB &lt;= budgets is NOT required</code></pre>
-<p><strong>Host-family rule:</strong> <code>mac-colima-vz</code> = macOS, one large shared Colima VM (<code>vz</code>+<code>virtiofs</code>), containers spawned on demand inside it, <code>Tier2Supported</code> iff the VM was started with <code>--nested-virtualization</code> and <code>/dev/kvm</code> probes present — <em>confirmed</em> 2026-11-09 on M3 Max / Colima 0.10.3; without the flag it is false. <code>linux-native</code> = Linux host, Podman/Docker directly on host, <code>Tier2Supported</code> iff <code>/dev/kvm</code> probed present. Size tiers scale budgets within each family, e.g. <code>mac-colima-vz-48g</code> (M3 Max, shared VM), <code>linux-native-8g</code> (N100/Cloud, Tier 2 off), <code>linux-native-32g</code> (i7/Ryzen 7, Tier 2 on with KVM). <code>Detect()</code> returns the family from <code>GOOS</code> + runtime probe, then the size tier from CPU/RAM.</p>
+func (p Profile) Validate(total memory.Bytes) error // sum(substrate+t1+t2) &lt;= total; ceilings*laneMiB &lt;= budgets
+func (p Profile) Tier2Supported() bool { return p.Backend.Usable() }
+func (p Profile) Tier2Admissible(laneMiB memory.MiB, active int) error</code></pre>
+<p><strong>Host-family rule:</strong> host family selects the runtime; the resolved <code>Backend</code> decides Tier 2. <code>Tier2Supported()</code> is true iff <code>Backend.Usable()</code>; <code>KVMProbe</code> only selects the <code>cube-kvm</code> candidate and is never the capability definition. <code>mac-colima-vz</code> may resolve <code>libkrun</code> without nested KVM; <code>linux-native</code> may resolve <code>gvisor</code> on KVM-free hosts; <code>remote-api</code> counts only when explicitly configured and attested. The nano preset is 2560 + 3584 + 1536 = 7680 MiB (7.5 GiB), with <code>MaxTier1Lanes=1</code> and <code>MaxTier2Lanes=1</code>. <code>Detect()</code> returns the family from <code>GOOS</code> + runtime probe, then the size tier from CPU/RAM.</p>
 
 <h3>4.2 <code>internal/policy</code></h3>
 <pre><code>type Policy struct { EnvScrubFragments []string; SensitivePaths []string; Raw []byte; SHA256 string }
@@ -183,23 +242,30 @@ func Decide(ctx context.Context, d Deps, issue Issue) Decision</code></pre>
 <p>Decision table in §7. <code>Decide</code> is pure given its probes, so it is unit-testable with fakes.</p>
 
 <h3>4.9 <code>internal/factory</code></h3>
-<pre><code>type SandboxBackend string
+<pre><code>// BackendKind, Isolation, and Requirement are defined in §4.1.
 const (
-    BackendCubeKVM   SandboxBackend = "cube-kvm"   // Linux with /dev/kvm
-    BackendLibkrun   SandboxBackend = "libkrun"    // macOS Virtualization.framework / vz
-    BackendGVisor    SandboxBackend = "gvisor"     // runsc in systrap mode (no KVM required)
-    BackendRemote    SandboxBackend = "remote-api" // Emergency fallback of last resort
+    BackendNone      BackendKind = ""            // no usable backend
+    BackendCubeKVM   BackendKind = "cube-kvm"    // Linux with /dev/kvm
+    BackendLibkrun   BackendKind = "libkrun"     // macOS Virtualization.framework / vz
+    BackendGVisor    BackendKind = "gvisor"      // runsc systrap (no KVM required)
+    BackendRemote    BackendKind = "remote-api"  // emergency fallback, attested only
 )
+
+func NewBackend(kind BackendKind, isolation Isolation, provenance Provenance) (Backend, error)
+    // rejects gVisor+hardware, cube-kvm+user-space, remote without attestation,
+    // and zero evidence; the zero Backend is not usable.
+func (b Backend) Usable() bool
+func (b Backend) Isolation() Isolation
 
 type Client interface {
     Doctor(ctx context.Context) error
-    Backend() SandboxBackend
+    Backend() (Backend, error)
     Run(ctx context.Context, req RunRequest) (RunHandle, error)   // WorkflowID = "esf-beads-" + IssueID
     Status(ctx context.Context, id string) (RunStatus, error)
     PatchPath(ctx context.Context, id string) (string, error)
     VerifyEgressProbe(ctx context.Context, id string) (bool, error)
 }</code></pre>
-<p>Wraps ESF's sandbox provider interface. Selects a <strong>local-first backend</strong>: native hardware microVMs via <code>cube-kvm</code> (Linux) or <code>libkrun</code> (macOS <code>vz</code>), falling back to <code>gvisor</code> (<code>runsc systrap</code> user-space kernel) when hardware virtualization is absent. Remote sandbox clusters are strictly an emergency fallback of last resort if all local options fail. A guard reads <code>factory.toml</code> and rejects <code>hardening.acknowledge_open_egress = true</code> (upstream default is <code>false</code>) and ensures closed egress policies.</p>
+<p>Wraps ESF's sandbox provider interface. Selects a <strong>local-first backend</strong>: native hardware microVMs via <code>cube-kvm</code> (Linux) or <code>libkrun</code> (macOS <code>vz</code>), falling back to <code>gvisor</code> (<code>runsc systrap</code> user-space kernel) when hardware virtualization is absent. Remote sandbox clusters are strictly an emergency fallback of last resort if all local options fail. A guard reads <code>factory.toml</code> and rejects <code>hardening.acknowledge_open_egress = true</code> (upstream default is <code>false</code>) and ensures closed egress policies. <code>VerifyEgressProbe</code> checks the SHA-256 digest of the in-VM probe evidence; a missing or mismatched digest rejects the run.</p>
 
 <h2>5. CLI surface (new)</h2>
 <table>
@@ -216,19 +282,24 @@ type Client interface {
   lock(admission.lock)                         # FileLock.Lock, bounded wait 30s
   s := load(admission.json)
   if req.Tier == Tier2:
-    backend := profile.ResolveSandboxBackend() # cube-kvm -> libkrun -> gvisor -> remote-api
-    if backend == "":
-      return ErrTier2Unsupported("no local sandbox runtime (KVM, libkrun, or gVisor) available")
+    if !profile.Tier2Supported():
+      return ErrTier2Unsupported("no local sandbox backend (Cube/KVM, libkrun, or gVisor) available")
+    if err := profile.Tier2Admissible(memory.MiB(req.MemMiB), count(tier)); err != nil:
+      return err                                  # capacity, not capability
 
   budget  := profile.TierBudgetMiB(req.Tier)
   used    := sum(s.Reservations[tier == req.Tier].MemMiB)
   ceiling := profile.MaxLanes(req.Tier)
   host    := memory.GetMemoryInfo().AvailableBytes (inside the VM)
 
+  reqBytes, err := memory.MiB(req.MemMiB).Bytes()
+  if err != nil || req.MemMiB == 0                   -> ErrInvalidRequest("invalid memory request")
   if count(tier) >= ceiling                          -> ErrNoCapacity("lane ceiling")
-  if used + req.MemMiB > budget                      -> ErrNoCapacity("tier memory budget")
-  if host - req.MemMiB*MiB < profile.MemFloorMiB*MiB -> ErrNoCapacity("host floor")
+  if used > budget || req.MemMiB > budget - used     -> ErrNoCapacity("tier memory budget")
+  if host &lt; reqBytes                                -> ErrNoCapacity("host floor")
+  if host - reqBytes &lt; profile.MemFloorMiB*MiB      -> ErrNoCapacity("host floor")
   append reservation; write atomically; unlock; return</code></pre>
+<p>The nano preset is 2560 + 3584 + 1536 = 7680 MiB (7.5 GiB); <code>MaxTier1Lanes=1</code> and <code>MaxTier2Lanes=1</code>. The subtraction is safe only after the <code>host &lt; reqBytes</code> guard; do not reintroduce the unsigned underflow.</p>
 <ul>
   <li>Reservations are keyed by lane ID and removed in <code>Release</code> and by <code>Reap</code>; a reservation whose lane manifest is <code>reaped</code> is garbage-collected on the next <code>Admit</code>.</li>
   <li>The count ceiling and the memory budget are <em>both</em> enforced, parameterizing dynamically by the active hardware profile (<code>nano-8g</code> to <code>workstation-48g</code>).</li>
@@ -266,13 +337,17 @@ type Client interface {
   "started_at": "2026-11-08T23:59:00Z",
   "state": "running",
   "policy_sha256": "…",
+  "exec_relay": "/run/aep/exec.sock",
+  "git_relay": "/run/aep/git.sock",
   "receipts": "/…/aep-142.receipts.jsonl"
 }</code></pre>
 <h3>8.2 Dispatch decision record — <code>$AEP_STATE_DIR/decisions/&lt;ts&gt;-&lt;issue&gt;.json</code></h3>
 <pre><code>{ "schema": 1, "issue_id": "aep-142", "tier_tag": "factory",
   "action": "quarantine", "reason": "temporal unreachable",
   "probes": { "boot": "ok", "factory_doctor": "fail: connection refused", "egress": "ok", "admission": "ok" },
+  "override": { "used": false, "operator": null, "reason": null },
   "at": "2026-11-08T23:59:00Z" }</code></pre>
+<p>The decision record is the audit home for the explicit operator override: <code>override.used</code>, <code>override.operator</code>, and <code>override.reason</code> are required when a factory task is downgraded. A lane cannot set its own <code>MinIsolation</code> or override; only the authenticated operator path can.</p>
 <h3>8.3 Identity conventions</h3>
 <ul>
   <li>Lane ID: <code>t&lt;tier&gt;-&lt;6 hex&gt;</code>. Container name: <code>aep-lane-&lt;laneId&gt;</code>. Worktree: <code>$AEP_WORKTREES_ROOT/&lt;issueId&gt;</code>.</li>
@@ -282,7 +357,7 @@ type Client interface {
 
 <h2>9. Runtime topology</h2>
 <h3>9.1 Container and VM runtimes — by host family</h3>
-<p><strong>mac-colima-vz (macOS):</strong> one large shared Colima VM; Docker/Podman containers are spawned on demand <em>inside</em> that VM and bounded by admission control — never one VM per lane. Use <code>--vm-type vz --mount-type virtiofs</code>; worktrees are virtiofs-mounted into the VM. Tier 2 hardware microVMs are supported via Colima nested KVM (requires <code>--nested-virtualization</code>, confirmed 2026-11-09) OR natively via <code>libkrun</code> using Apple's <code>Virtualization.framework</code> (<code>vz</code>) without requiring nested KVM. Without hardware virtualization or a local runtime, tasks fall back to local <code>gvisor</code>.</p>
+<p><strong>mac-colima-vz (macOS):</strong> one large shared Colima VM; Docker/Podman containers are spawned on demand <em>inside</em> that VM and bounded by admission control — never one VM per lane. Use <code>--vm-type vz --mount-type virtiofs</code>; worktrees are virtiofs-mounted into the VM. Tier 2 hardware microVMs are supported via Colima nested KVM (requires <code>--nested-virtualization</code>, confirmed 2026-11-09) OR natively via <code>libkrun</code> using Apple's <code>Virtualization.framework</code> (<code>vz</code>) without requiring nested KVM. gVisor is Linux-only; if neither nested KVM nor libkrun is available on macOS, Tier-2 tasks quarantine rather than claiming a local gVisor fallback.</p>
 <p><strong>linux-native (Linux):</strong> no Colima; Podman (rootless) / Docker runs directly on the host under cgroups v2. Tier-2 hardware microVMs run via <code>cube-kvm</code> if <code>/dev/kvm</code> is present.</p>
 <p><strong>linux-gvisor (KVM-Free Linux & Cloud VMs):</strong> on hosts lacking <code>/dev/kvm</code> (Intel N100, Raspberry Pi 5, or standard non-bare-metal cloud instances), Tier-2 isolation runs locally via <strong>gVisor</strong> (<code>runsc</code> in <code>systrap</code> mode). <code>systrap</code> intercepts all guest syscalls in user space with zero hardware virtualization requirement, providing a measured kernel boundary on low-power devices.</p>
 <p><strong>Remote Sandbox Cluster (Emergency Last Resort):</strong> connecting to an external/remote sandbox cluster (e.g. remote Cube/E2B endpoint) is strictly an emergency fallback of last resort if and only if all local isolation backends (Cube/KVM, libkrun, and gVisor) have failed or are impossible.</p>
@@ -308,26 +383,32 @@ aep boot --profile nano-8g --runtime podman</code></pre>
     volumes: [aep-state:/state, aep-sockets:/run/aep, "${AEP_REPO}:/repo:ro"]
     mem_limit: 512m
 volumes: { ns-data: {}, aep-state: {}, aep-sockets: {} }</code></pre>
-<p>The substrate supervisor manages two IPC relays in <code>aep-sockets</code>: <code>memory.sock</code> (proxying requests to NeuroStrata) and <code>ghg.sock</code> (proxying GitHub API calls to <code>ghg.py</code>).</p>
+<p>The substrate supervisor manages four IPC relays in <code>aep-sockets</code>: <code>memory.sock</code> (NeuroStrata), <code>ghg.sock</code> (GitHub), <code>exec.sock</code> (allowlisted command execution), and <code>git.sock</code> (host-side status/diff/commit). All four implement one <code>relay.Handler</code> contract with peer authentication, framing, size caps, and one audit record; they are not four ad-hoc protocols.</p>
 
 <h3>9.3 Lane container run spec</h3>
 <pre><code>docker run -d --name aep-lane-t1-7f3a9c \
   --memory=2048m --memory-swap=2048m --cpus=1 \
   --read-only --tmpfs /tmp:rw,size=256m \
-  --network none \                            # zero direct network egress
-  -v "/run/aep/lanes/t1-7f3a9c:/run/aep:rw" \ # mounted IPC socket relays for memory and ghg
-  -v "&lt;worktree&gt;:/workspace" -w /workspace \
-  --env-file &lt;scrubbed.env&gt; \                 # produced by policy.ScrubEnv; no tokens
-  aep:1.1 lane-run --issue aep-142</code></pre>
+  --network none \                            # no direct network egress
+  -v "/run/aep/lanes/t1-7f3a9c:/run/aep:rw" \ # per-lane IPC relays: memory, ghg, exec, git
+  -v "&lt;worktree&gt;:/workspace:rw" \
+  -v "$AEP_STATE_DIR/empty-git-file:/workspace/.git:ro" \ # mask the linked-worktree gitdir pointer
+  --env AEP_EXEC_SOCKET=/run/aep/exec.sock \
+  --env AEP_GIT_SOCKET=/run/aep/git.sock \
+  --env-file &lt;scrubbed.env&gt; \                 # policy.ScrubEnv; no provider or GitHub tokens
+  aep:1.1 lane-exec --issue aep-142</code></pre>
 <div class="note"><strong>Zero-egress lane architecture.</strong>
-Lanes run with <code>--network none</code> (or an internal isolated bridge) and mount per-lane IPC sockets for memory and GitHub operations. GitHub PAT tokens and loopback ports never enter the container namespace. Dependency caches and package modules are pre-baked into the lane image or mounted via read-only volume cache.</div>
+The trusted host harness runs the agent loop and all model inference. A lane is a tool executor: it runs argv-level allowlisted commands over <code>exec.sock</code>, commits over <code>git.sock</code>, and mounts no host <code>.git</code> directory (the linked-worktree <code>.git</code> file is masked). GitHub PATs, provider keys, and loopback ports never enter the container namespace. Dependency caches and package modules are pre-baked into the lane image or mounted via read-only volume cache. Lane output is untrusted tool data; the host harness never interpolates it into a system prompt.</div>
 
 <h2>10. Error handling and failure matrix</h2>
 <table>
   <tr><th>Failure</th><th>Detection</th><th>Behaviour</th></tr>
   <tr><td>NeuroStrata down at dispatch</td><td><code>memoryd.Status</code></td><td>Boot fails closed (exit 1). Supervisor in loop mode treats it as fatal and lets the service manager own retry cadence.</td></tr>
-  <tr><td>Tier-2 task when all local sandboxes (KVM, libkrun, gVisor) unavailable</td><td><code>!profile.Tier2Supported</code></td><td><code>quarantine</code>: labeled <code>blocked:unsupported-tier2-no-sandbox</code>. Never auto-downgraded to Tier 1.</td></tr>
+  <tr><td>Tier-2 task when no usable backend</td><td><code>!profile.Tier2Supported()</code></td><td><code>quarantine</code>: labeled <code>blocked:unsupported-tier2-no-sandbox</code>. Never auto-downgraded to Tier 1.</td></tr>
+  <tr><td>Tier-2 task when backend exists but capacity is exhausted</td><td><code>profile.Tier2Admissible</code></td><td><code>quarantine</code>: labeled <code>blocked:tier2-capacity-exhausted</code>; do not wait forever.</td></tr>
+  <tr><td>Re-verification target cannot meet <code>MinIsolation</code></td><td><code>Requirement.MetBy</code></td><td><code>quarantine</code> before the original run; never execute then discover the mismatch.</td></tr>
   <tr><td>Egress probe fails or unverified</td><td><code>VerifyEgressProbe</code></td><td><code>quarantine</code>: run evidence rejected; PR creation blocked; never merged.</td></tr>
+  <tr><td>Exec or git relay unavailable</td><td><code>ECONNREFUSED / EPIPE</code></td><td>Pause with bounded retry, then <code>blocked:exec-relay-unavailable</code> or <code>blocked:git-relay-unavailable</code>; never fall back to direct network or a host <code>.git</code> mount.</td></tr>
   <tr><td>Relay socket communication error</td><td><code>ECONNREFUSED / EPIPE</code></td><td>Lane execution pauses; alerts supervisor; never falls back to direct network calls.</td></tr>
   <tr><td>Launcher crashes mid-lane</td><td>fence free</td><td>Lane marked reapable only if the container is also gone; otherwise left running and reported.</td></tr>
   <tr><td>Lane exceeds memory reservation</td><td>runtime OOM kill (exit 137)</td><td>Receipt records failure; issue stays open; reservation released; counts toward 3-strike stop.</td></tr>
@@ -344,6 +425,9 @@ Lanes run with <code>--network none</code> (or an internal isolated bridge) and 
   <tr><td>Fault injection</td><td>Corrupt admission file; stale fence; launcher killed; broken relay socket</td><td>Temp state dir; spawned helper process; assert no double admit, no premature reap.</td></tr>
   <tr><td>Parity</td><td><code>aep boot</code> vs <code>boot-gate.sh</code> output tokens for the same stub environment</td><td>Reuse shell gate's stub-PATH technique; diff the <code>BOOT-GATE:</code> lines.</td></tr>
   <tr><td>Integration (needs runtime)</td><td>Lane container respects <code>--memory</code>; IPC sockets functional with zero direct network</td><td>Runs where a container runtime exists; skipped elsewhere with printed reason.</td></tr>
+  <tr><td>Requirement matrix</td><td><code>NoFloor</code> admits Tier 1; unset fails closed; user-space floor rejects hardware-unattested; hardware floor rejects gVisor; exact kind passes</td><td>Table-driven <code>Requirement.MetBy</code> test, including an unknown risk class.</td></tr>
+  <tr><td>Relay boundaries</td><td><code>exec.sock</code> rejects shell interpolation and unlisted argv; <code>git.sock</code> commits on the host and rejects <code>.git/</code> paths; lane sees no usable <code>.git</code></td><td>Scratch repo + <code>git -C /workspace rev-parse</code> must fail; host log must show the commit.</td></tr>
+  <tr><td>Receipt integrity</td><td><code>Commands[].StdoutSha</code>/<code>StderrSha</code> hash every byte; nonce/ledger sequence reject replay; signature verifies</td><td>128 KiB stream with byte 0 changed; replay after ledger restart; wrong key.</td></tr>
   <tr><td>Cross-platform</td><td>New packages compile for all four <code>dist/bin</code> targets</td><td>CI <code>GOOS/GOARCH</code> build matrix; runtime-dependent tests gated by build tag or env.</td></tr>
 </table>
 <p>Per repo practice (see <code>docs/field-learnings.md</code>), each new test must be shown to fail against a deliberate break of what it guards before it is accepted; a test that cannot fail is not evidence.</p>
@@ -364,7 +448,7 @@ Lanes run with <code>--network none</code> (or an internal isolated bridge) and 
   <tr><td>T8</td><td>Supervisor <code>--dispatch</code> opt-in</td><td><code>cmd/aep</code></td><td>Default behaviour byte-identical to today; new path behind the flag.</td></tr>
   <tr><td>T9</td><td>Compose topology + substrate relays + lane image</td><td><code>deploy/compose/*</code>, <code>Containerfile</code></td><td>Substrate comes up; lane container enforces memory cap and communicates over sockets. <em>Needs runtime (T0).</em></td></tr>
   <tr><td>T10</td><td><code>factory</code> client + sandbox adapters + egress probe verification + <code>boot --factory</code></td><td><code>internal/factory/*</code></td><td>Local backends (Cube/KVM, libkrun, gVisor) supported; open-egress config rejected; probe digest verified; quarantine path exercised; emergency remote fallback connector.</td></tr>
-  <tr><td>T11</td><td>Patch re-verification inside disposable sandbox; <code>bd close</code> + NeuroStrata inscription</td><td><code>internal/factory</code>, <code>internal/dispatch</code></td><td>Untrusted patch re-verified in isolated microVM/sandbox before PR creation.</td></tr>
+  <tr><td>T11</td><td>Patch re-verification inside a fresh disposable sandbox meeting <code>MinIsolation</code>; <code>bd close</code> + NeuroStrata inscription</td><td><code>internal/factory</code>, <code>internal/dispatch</code></td><td>Untrusted patch re-verified in a fresh sandbox whose isolation meets the task <code>Requirement</code>; a gVisor-only host quarantines hardware-floor work before execution.</td></tr>
 </table>
 
 <h2>13. Open items carried from the HLD</h2>

@@ -172,7 +172,7 @@
     <tr>
       <td><strong>2. VirtioFS / Worktree Deadlock</strong><br>(Paperthin Devil's Advocate)</td>
       <td>Running 8–10 parallel container lanes mounted to host Git worktrees via VirtioFS on macOS Colima causes severe inode lock contention and <code>.git/index.lock</code> race collisions.</td>
-      <td><strong>Strict Worktree Isolation:</strong> Each lane operates in an independent branch worktree with isolated index paths (<code>GIT_INDEX_FILE=/tmp/index</code>) and dedicated build cache volumes (tmpfs), preventing lock contention.</td>
+      <td><strong>Strict Worktree Isolation:</strong> Each lane operates in an independent branch worktree with dedicated build cache volumes (tmpfs). Commits are serialized through the host-side <code>git.sock</code> relay; the lane mounts no host <code>.git</code> directory (the linked-worktree <code>.git</code> file is masked).</td>
     </tr>
     <tr>
       <td><strong>3. Interface Coupling &amp; SRP Violations</strong><br>(Uncle Bob Clean Architecture)</td>
@@ -407,15 +407,15 @@ WAVE 4: VERIFICATION, RECEIPTS &amp; SETTLEMENT (Completion &amp; Audit)
     </tr>
     <tr>
       <td><strong>PR-11a</strong></td>
-      <td><code>internal/verifier</code>: Disposable microVM test runner executing repo build/test scripts</td>
+      <td><code>internal/verifier</code>: Disposable sandbox test runner executing repo build/test scripts, with isolation meeting the task <code>Requirement</code></td>
       <td>~360</td>
       <td>Isolation test: untrusted patch tests execute inside disposable sandbox only.</td>
     </tr>
     <tr>
       <td><strong>PR-11b</strong></td>
-      <td><code>internal/verifier</code>: SHA-256 Merkle tail digest computation and <code>bd close</code> settlement guard</td>
+      <td><code>internal/verifier</code> + <code>internal/ledger</code>: full-stream <code>StdoutSha</code>/<code>StderrSha</code>, <code>Nonce</code>, <code>IssuedAt</code>, <code>LedgerSeq</code>, <code>KeyID</code>, Ed25519 <code>Signature</code>, and <code>bd close</code> settlement guard</td>
       <td>~280</td>
-      <td>Verified receipt required before issue state transitions to closed.</td>
+      <td>Verified receipt required before issue state transitions to closed. Altered output, replay, wrong key, or missing signature fails verification.</td>
     </tr>
   </tbody>
 </table>
@@ -453,9 +453,11 @@ WAVE 4: VERIFICATION, RECEIPTS &amp; SETTLEMENT (Completion &amp; Audit)
   <div class="ac-box">
     <strong>Behavioral Acceptance Criteria (TDD):</strong>
     <ul>
-      <li><strong>AC-01.1 (Confinement):</strong> GIVEN a spawned container, WHEN executing any outbound socket call, THEN the kernel returns <code>ENETUNREACH</code> or <code>EPERM</code> immediately.</li>
-      <li><strong>AC-01.2 (Lock Free):</strong> GIVEN 4 concurrent lanes, WHEN git commits execute simultaneously, THEN isolated index files prevent <code>.git/index.lock</code> collisions.</li>
+      <li><strong>AC-01.1 (Confinement):</strong> GIVEN a spawned container, WHEN executing any outbound socket call, THEN the kernel returns <code>ENETUNREACH</code> or <code>EPERM</code> immediately. The lane cannot originate a model request; inference runs in the host harness.</li>
+      <li><strong>AC-01.2 (Serialized Commits):</strong> GIVEN 4 concurrent lanes, WHEN commits execute, THEN they are serialized through the host-side <code>git.sock</code> relay and no host <code>.git</code> directory is mounted.</li>
       <li><strong>AC-01.3 (Reap Safety):</strong> GIVEN a launcher process killed with <code>SIGKILL</code> while the container runs, WHEN <code>aep lane reap</code> runs, THEN it marks the lane active and refuses to delete state until the container stops.</li>
+      <li><strong>AC-01.4 (Exec Boundary):</strong> GIVEN a lane with <code>--network none</code>, WHEN it requests an allowlisted command, THEN <code>exec.sock</code> runs it under the lane cgroup; a shell interpolation or unlisted argv is rejected.</li>
+      <li><strong>AC-01.5 (Git Boundary):</strong> GIVEN a lane worktree, WHEN it commits through <code>git.sock</code>, THEN the commit appears on the host branch, <code>/workspace/.git</code> contains no <code>gitdir:</code> pointer, and <code>git -C /workspace rev-parse</code> fails.</li>
     </ul>
   </div>
 </div>
@@ -465,12 +467,12 @@ WAVE 4: VERIFICATION, RECEIPTS &amp; SETTLEMENT (Completion &amp; Audit)
     <span class="item-title"><span class="tag cap">CAP-02</span> Tier-2 Local-First Sandbox Factory</span>
     <span class="item-ref">REQ-01.2 &middot; Package: <code>internal/factory</code></span>
   </div>
-  <p>Executes untrusted dependencies, multi-repo changes, and CVE remediation in hardware microVMs with measured egress.</p>
+  <p>Executes untrusted dependencies, multi-repo changes, and CVE remediation in an approved local sandbox backend (hardware microVM or gVisor) with measured egress.</p>
 
   <div class="func-box">
     <strong>Segregated Clean Interfaces (ISP):</strong><br>
     <code>type BackendProbe interface {<br>
-    &nbsp;&nbsp;Probe(ctx context.Context) (SandboxBackend, error)<br>
+    &nbsp;&nbsp;Probe(ctx context.Context) (BackendKind, error)<br>
     }<br>
     type PipelineRunner interface {<br>
     &nbsp;&nbsp;Submit(ctx context.Context, req RunRequest) (handle RunHandle, err error)<br>
@@ -505,7 +507,7 @@ WAVE 4: VERIFICATION, RECEIPTS &amp; SETTLEMENT (Completion &amp; Audit)
     &nbsp;&nbsp;AllocatedRAM int<br>
     }<br>
     // Pure calculation without disk locking or syscalls:<br>
-    func CalculateAdmission(u Usage, p Profile, req ReservationReq) (*Reservation, error)</code>
+    func CalculateAdmission(u Usage, p Profile, req Request) (*Reservation, error)</code>
   </div>
 
   <div class="ac-box">
@@ -513,6 +515,9 @@ WAVE 4: VERIFICATION, RECEIPTS &amp; SETTLEMENT (Completion &amp; Audit)
     <ul>
       <li><strong>AC-07.1 (Physical Memory Floor):</strong> GIVEN a host with <code>TotalRAM &gt;= 7.5 GiB</code> (physical 8 GB), WHEN <code>aep profile detect</code> runs, THEN it successfully assigns preset <code>nano-8g</code> regardless of ephemeral available RAM.</li>
       <li><strong>AC-07.2 (Dual-Constraint Concurrency):</strong> GIVEN an active memory budget of 4.0 GB, WHEN two 2.0 GB lanes are active, THEN a 3rd lane request receives <code>ErrNoCapacity</code> even if the lane count ceiling is not reached.</li>
+      <li><strong>AC-07.3 (Busy Host):</strong> GIVEN an 8 GB physical host with only 1 GB currently available, WHEN <code>aep profile detect</code> runs, THEN it selects <code>nano-8g</code> (total &gt;= 7.5 GiB); WHEN a 2 GB lane is admitted, THEN it receives <code>ErrNoCapacity</code> from admission, not a profile error.</li>
+      <li><strong>AC-07.4 (Checked Arithmetic):</strong> GIVEN <code>AvailableBytes</code> below the requested bytes, WHEN <code>Admit</code> runs, THEN it rejects with <code>ErrNoCapacity</code>; a zero request or an overflowing <code>MemMiB</code> is <code>ErrInvalidRequest</code>. The predicate never subtracts before comparing.</li>
+      <li><strong>AC-07.5 (Nano Capacity):</strong> GIVEN <code>nano-8g</code> with 1536 MiB Tier-2 budget, WHEN a 1536 MiB gVisor lane is admitted, THEN it succeeds; a 2048 MiB request is <code>ErrNoCapacity</code> with the capacity reason, not <code>ErrTier2Unsupported</code>.</li>
     </ul>
   </div>
 </div>

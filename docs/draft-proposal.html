@@ -261,7 +261,7 @@
           <h3>Tier 2: Parallel ESF Pipelines</h3>
           <ul>
             <li><strong>4–6 Parallel Factory Runs:</strong> Dispatched via Temporal durable workflows when tasks require hardware sandboxing.</li>
-            <li><strong>MicroVM Isolation:</strong> Dispatches agents inside disposable CubeSandbox microVMs with strict measured egress (ADR 0007).</li>
+            <li><strong>MicroVM Isolation:</strong> The trusted host harness runs the agent/model loop; disposable CubeSandbox microVMs execute allowlisted tools with strict measured egress (ADR 0007). A sandbox holds no provider credential.</li>
             <li><strong>Patch Ledger:</strong> Generates tamper-proof diff patches, token expenditure records, and verified test proofs.</li>
           </ul>
         </div>
@@ -306,9 +306,9 @@
             <td><strong>nano-8g</strong></td>
             <td>Intel N100, RPi 5, Cloud 2vCPU/8GB (t4g.medium, e2-standard-2)</td>
             <td>2 vCPU · 8 GB RAM · 30 GB Disk</td>
-            <td>1 vCPU · 2.5 GB RAM · 10 GB Disk</td>
-            <td>4.0 GB budget (1–2 lanes @ 2GB)</td>
-            <td>1.5 GB budget (1 lane via gVisor)</td>
+            <td>2560 MiB (2.5 GiB) · 10 GB Disk</td>
+            <td>3584 MiB (3.5 GiB); 1 lane @ 2 GiB + 1.5 GiB headroom</td>
+            <td>1536 MiB (1.5 GiB); 1 lane via gVisor</td>
             <td>gVisor systrap (no KVM req)</td>
           </tr>
           <tr>
@@ -360,11 +360,11 @@ aep boot --profile linux-native-8g --runtime podman   # or -16g / -32g / -48g by
         <li><strong>Fail-Closed Preflight:</strong> The AEP supervisor runs <code>aep boot</code>, confirming NeuroStrata, policy checksums, hardware profile detection, and available memory headroom.</li>
         <li><strong>Lane Allocation & Mediation:</strong>
           <ul>
-            <li><em>Tier 1:</em> <code>aep lane claim</code> allocates an isolated worktree and spawns a Ralph OCI container running TDD iterations with mounted supervisor socket relays for NeuroStrata (<code>aep memoryd</code>) and GitHub (<code>aep gwd</code>).</li>
-            <li><em>Tier 2:</em> AEP invokes <code>factory run</code> via Temporal; ESF spins up a fresh Cube microVM, injects the prompt over stdin, validates closed egress via in-VM <code>EgressProbe</code>, and runs deterministic in-VM gates.</li>
+            <li><em>Tier 1:</em> <code>aep lane claim</code> allocates an isolated worktree and spawns a Ralph OCI executor. The trusted host harness runs the TDD/model loop; the lane runs allowlisted commands over <code>exec.sock</code> and commits over <code>git.sock</code>, with <code>memory.sock</code> and <code>ghg.sock</code> for hosted services.</li>
+            <li><em>Tier 2:</em> AEP invokes <code>factory run</code> via Temporal; ESF spins up a fresh Cube microVM, the trusted host harness sends allowlisted tool commands (the model loop stays outside the sandbox), validates closed egress via in-VM <code>EgressProbe</code>, and runs deterministic in-VM gates.</li>
           </ul>
         </li>
-        <li><strong>Receipt & Isolated Patch Re-Verification:</strong> Both lanes emit cryptographic receipts (SHA-256 tail digests). For Tier-2 factory work containing untrusted code, independent patch re-verification (running repo tests via <code>aep verify</code>) executes inside a fresh, disposable Tier-2 microVM sandbox with closed egress—never directly on the shared Tier-1 host kernel.</li>
+        <li><strong>Receipt & Isolated Patch Re-Verification:</strong> Both lanes emit signed cryptographic receipts with SHA-256 full-stream digests (not tails), a nonce, a ledger sequence, and an Ed25519 signature. For Tier-2 factory work containing untrusted code, independent patch re-verification (running repo tests via <code>aep verify</code>) executes in a fresh, disposable sandbox whose isolation meets the task <code>MinIsolation</code> and with closed egress—never directly on the shared Tier-1 host kernel. A host that cannot meet the floor quarantines before the original run.</li>
         <li><strong>Supervisor-Mediated Cognitive Inscription:</strong> Root causes, fixes, and edge cases are inscribed into host NeuroStrata via supervisor relay sockets (Tier 1) or vsock outbox spool (Tier 2), ensuring guest loopback isolation does not block cross-tier memory updates.</li>
       </ol>
     </section>
@@ -378,7 +378,7 @@ aep boot --profile linux-native-8g --runtime podman   # or -16g / -32g / -48g by
             <strong>PR Review Finding (C2):</strong> Automatic downgrade of Tier-2 tasks to Tier 1 when ESF/Cube is unavailable removes the hardware microVM sandbox boundary that justified Tier-2 routing. Elevated review gates cannot prevent malware or exploit payloads that execute during test runs.
           </p>
           <p>
-            <strong>Remediation:</strong> When Temporal, Cube, or local sandbox runtimes (KVM, libkrun, gVisor) are unavailable, tasks tagged <code>tier:factory</code> are <strong>strictly QUARANTINED</strong> (status <code>quarantined_esf_unavailable</code> or <code>quarantined_unsupported_tier2</code>). Connecting to an external remote sandbox cluster is strictly an emergency fallback of last resort if all local options fail. Automatic downgrade to Tier 1 is strictly forbidden; downgrade requires an explicit, authenticated operator risk reassessment override (<code>aep dispatch --override-tier1-risk-reassessment --reason="..."</code>).
+            <strong>Remediation:</strong> When Temporal, Cube, or local sandbox runtimes (KVM, libkrun, gVisor) are unavailable, tasks tagged <code>tier:factory</code> are <strong>strictly QUARANTINED</strong> (status <code>quarantined_esf_unavailable</code> or <code>quarantined_unsupported_tier2</code>). Connecting to an external remote sandbox cluster is strictly an emergency fallback of last resort if all local options fail. Automatic downgrade to Tier 1 is strictly forbidden; downgrade requires an explicit, authenticated operator risk reassessment override (<code>aep dispatch --override-tier1-risk-reassessment --reason="..."</code>) recorded in the decision record with the operator identity and timestamp.
           </p>
         </div>
       </div>
@@ -399,12 +399,12 @@ aep boot --profile linux-native-8g --runtime podman   # or -16g / -32g / -48g by
         <div class="card">
           <h3>[hate] Sandboxed Re-Verification</h3>
           <p><strong>PR Finding (C4):</strong> Running repository test commands (<code>npm test</code>, <code>cargo test</code>) on untrusted Tier-2 patches inside Tier 1 executes hostile code on the shared host.</p>
-          <p><strong>Enforcement:</strong> Dynamic re-verification of Tier-2 patches must execute inside a fresh, disposable Tier-2 microVM. Tier 1 performs static checks only (AST syntax, diff inspection).</p>
+          <p><strong>Enforcement:</strong> Dynamic re-verification of Tier-2 patches must execute in a fresh, disposable sandbox whose isolation meets the task's risk-derived <code>Requirement</code> (<code>MinIsolation</code>). A gVisor-only host may re-verify gVisor-eligible work and must quarantine hardware-floor work before the original run. Tier 1 performs static checks only (AST syntax, diff inspection).</p>
         </div>
 
         <div class="card">
           <h3>[modelchk] Scalable Profiles</h3>
-          <p><strong>Capacity Matrix:</strong> Hardware-profiled admission controller scales memory budgets from Nano (2 vCPU / 8 GB, 1–2 Ralph lanes, Tier 2 disabled) up to Workstation (12 vCPU / 48 GB, 8–10 lanes, 4–6 microVMs).</p>
+          <p><strong>Capacity Matrix:</strong> Hardware-profiled admission controller scales memory budgets from Nano (2 vCPU / 8 GB, 1 Ralph lane + 1 gVisor Tier-2 lane, 7680 MiB total) up to Workstation (12 vCPU / 48 GB, 8–10 lanes, 4–6 microVMs).</p>
         </div>
       </div>
     </section>
