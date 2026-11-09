@@ -168,8 +168,10 @@ def check_c10(docs, errors):
         need(errors, "C10", "workspace .git mask", pre, r"/workspace/\.git")
         forbid(errors, "C10", "host .git mount", pre, r"-v\s+\"?\$?(?:AEP_)?REPO/\.git")
     lld92 = section(docs["lld"], "9.2")
-    need(errors, "C10", "compose writable repo mount", lld92, r"AEP_REPO\}:/repo:rw")
+    need(errors, "C10", "compose writable repo mount", lld92, r"AEP_REPO\}:\$\{AEP_REPO\}:rw")
     need(errors, "C10", "compose worktree mount", lld92, r"AEP_WORKTREES_ROOT")
+    need(errors, "C10", "host-bind socket directory", lld92, r"AEP_SOCKETS_DIR")
+    need(errors, "C10", "lane socket bind", pre, r"AEP_SOCKETS_DIR")
     cap1 = card(docs["backlog"], "CAP-01")
     if not cap1:
         add(errors, "C10", "missing backlog CAP-01")

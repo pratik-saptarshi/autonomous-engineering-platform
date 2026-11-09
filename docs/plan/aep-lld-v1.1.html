@@ -384,12 +384,13 @@ aep boot --profile nano-8g --runtime podman</code></pre>
     depends_on: [neurostrata]
     volumes:
       - aep-state:/state
-      - aep-sockets:/run/aep
-      - "${AEP_REPO}:/repo:rw"                      # host-side git.sock commits
+      - "${AEP_SOCKETS_DIR}:/run/aep"               # host bind, shared with lanes
+      - "${AEP_REPO}:${AEP_REPO}:rw"                # same absolute path for linked-worktree gitdir pointers
       - "${AEP_WORKTREES_ROOT}:${AEP_WORKTREES_ROOT}:rw"
     environment:
-      AEP_REPO: /repo
+      AEP_REPO: "${AEP_REPO}"
       AEP_WORKTREES_ROOT: "${AEP_WORKTREES_ROOT}"
+      AEP_SOCKETS_DIR: "${AEP_SOCKETS_DIR}"
       NEUROSTRATA_ENDPOINT: "neurostrata:34343"
       GIT_CONFIG_GLOBAL: /dev/null
       GIT_CONFIG_SYSTEM: /dev/null
@@ -400,7 +401,7 @@ volumes: { ns-data: {}, aep-state: {}, aep-sockets: {} }
 networks:
   aep-net: { driver: bridge, internal: true }   # NeuroStrata only; no external route
   aep-egress: { driver: bridge }                # ghg.py/GitHub egress for the supervisor only</code></pre>
-<p>The trusted supervisor joins <code>aep-egress</code> so <code>ghg.py</code> can reach GitHub; <code>aep-supervisor</code> keeps <code>aep-net</code> for NeuroStrata. <code>neurostrata</code> joins only <code>aep-net</code>, and lane containers join neither network (<code>--network none</code>). The two-network split keeps memory private while giving the GitHub relay an external route. The supervisor's <code>${AEP_REPO}:/repo:rw</code> and worktree mounts are the only writable Git storage; <code>git.sock</code> writes objects/refs there with global/system config disabled and hooks host-controlled. Lanes still see no usable <code>.git</code>.</p>
+<p>The trusted supervisor joins <code>aep-egress</code> so <code>ghg.py</code> can reach GitHub; <code>aep-supervisor</code> keeps <code>aep-net</code> for NeuroStrata. <code>neurostrata</code> joins only <code>aep-net</code>, and lane containers join neither network (<code>--network none</code>). The two-network split keeps memory private while giving the GitHub relay an external route. The supervisor mounts the repository and worktrees at the <strong>same absolute host paths</strong>, so host-created linked-worktree <code>.git</code> pointers resolve inside the supervisor. <code>git.sock</code> writes objects/refs there with global/system config disabled and hooks host-controlled; lanes still see no usable <code>.git</code>. Relay sockets use a host bind directory (<code>${AEP_SOCKETS_DIR}</code>), not a named volume, so the supervisor and the lane bind mount share the same socket files.</p>
 <p>The substrate supervisor manages four IPC relays in <code>aep-sockets</code>: <code>memory.sock</code> (NeuroStrata), <code>ghg.sock</code> (GitHub), <code>exec.sock</code> (allowlisted command execution), and <code>git.sock</code> (host-side status/diff/commit). All four implement one <code>relay.Handler</code> contract with peer authentication, framing, size caps, and one audit record; they are not four ad-hoc protocols.</p>
 
 <h3>9.3 Lane container run spec</h3>
@@ -408,7 +409,7 @@ networks:
   --memory=2048m --memory-swap=2048m --cpus=1 \
   --read-only --tmpfs /tmp:rw,size=256m \
   --network none \                            # no direct network egress
-  -v "/run/aep/lanes/t1-7f3a9c:/run/aep:rw" \ # per-lane IPC relays: memory, ghg, exec, git
+  -v "$AEP_SOCKETS_DIR/lanes/t1-7f3a9c:/run/aep:rw" \ # host bind shared with the supervisor, not a named volume
   -v "&lt;worktree&gt;:/workspace:rw" \
   -v "$AEP_STATE_DIR/empty-git-file:/workspace/.git:ro" \ # mask the linked-worktree gitdir pointer
   --env AEP_EXEC_SOCKET=/run/aep/exec.sock \
