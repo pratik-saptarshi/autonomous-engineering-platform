@@ -256,6 +256,25 @@ class TestWatchWiring(WiringTestCase):
         self.assertEqual(spans[0]["attributes"]["operation"], "watch")
 
 
+class TestUntracedVerbs(WiringTestCase):
+    def test_status_and_prune_emit_no_spans(self):
+        # Spec: spans cover run/check/watch ONLY — status and prune
+        # must stay untraced, even with GHG_OTEL_FILE set.
+        otel = self.root / "spans-untraced.jsonl"
+        code, _out, _err = self.call_main(
+            ["status"], self.fresh_env(otel_file=otel))
+        self.assertEqual(code, 0)
+        self.assertFalse(
+            otel.exists(),
+            "status must stay untraced: no telemetry file expected")
+        code, _out, _err = self.call_main(
+            ["prune"], self.fresh_env(otel_file=otel))
+        self.assertEqual(code, 0)
+        self.assertFalse(
+            otel.exists(),
+            "prune must stay untraced: no telemetry file expected")
+
+
 class TestCanary(WiringTestCase):
     def test_canary_env_value_never_reaches_telemetry_file(self):
         # Token-shaped canary assembled from fragments at runtime;
