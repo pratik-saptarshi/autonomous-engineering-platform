@@ -183,14 +183,23 @@ func Decide(ctx context.Context, d Deps, issue Issue) Decision</code></pre>
 <p>Decision table in §7. <code>Decide</code> is pure given its probes, so it is unit-testable with fakes.</p>
 
 <h3>4.9 <code>internal/factory</code></h3>
-<pre><code>type Client interface {
+<pre><code>type SandboxBackend string
+const (
+    BackendCubeKVM   SandboxBackend = "cube-kvm"   // Linux with /dev/kvm
+    BackendLibkrun   SandboxBackend = "libkrun"    // macOS Virtualization.framework / vz
+    BackendGVisor    SandboxBackend = "gvisor"     // runsc in systrap mode (no KVM required)
+    BackendRemote    SandboxBackend = "remote-api" // Emergency fallback of last resort
+)
+
+type Client interface {
     Doctor(ctx context.Context) error
+    Backend() SandboxBackend
     Run(ctx context.Context, req RunRequest) (RunHandle, error)   // WorkflowID = "esf-beads-" + IssueID
     Status(ctx context.Context, id string) (RunStatus, error)
     PatchPath(ctx context.Context, id string) (string, error)
     VerifyEgressProbe(ctx context.Context, id string) (bool, error)
 }</code></pre>
-<p>Wraps the <code>factory</code> CLI. A guard reads <code>factory.toml</code> and rejects <code>hardening.acknowledge_open_egress = true</code> (the upstream default is <code>false</code>) and ensures closed egress policies. <code>VerifyEgressProbe</code> checks the cryptographic evidence digest from the in-VM probe before accepting run evidence.</p>
+<p>Wraps ESF's sandbox provider interface. Selects a <strong>local-first backend</strong>: native hardware microVMs via <code>cube-kvm</code> (Linux) or <code>libkrun</code> (macOS <code>vz</code>), falling back to <code>gvisor</code> (<code>runsc systrap</code> user-space kernel) when hardware virtualization is absent. Remote sandbox clusters are strictly an emergency fallback of last resort if all local options fail. A guard reads <code>factory.toml</code> and rejects <code>hardening.acknowledge_open_egress = true</code> (upstream default is <code>false</code>) and ensures closed egress policies.</p>
 
 <h2>5. CLI surface (new)</h2>
 <table>
@@ -206,8 +215,10 @@ func Decide(ctx context.Context, d Deps, issue Issue) Decision</code></pre>
 <pre><code>Admit(req):
   lock(admission.lock)                         # FileLock.Lock, bounded wait 30s
   s := load(admission.json)
-  if req.Tier == Tier2 && !profile.Tier2Supported:
-    return ErrTier2Unsupported("hardware virtualization (/dev/kvm) unavailable on this profile/host")
+  if req.Tier == Tier2:
+    backend := profile.ResolveSandboxBackend() # cube-kvm -> libkrun -> gvisor -> remote-api
+    if backend == "":
+      return ErrTier2Unsupported("no local sandbox runtime (KVM, libkrun, or gVisor) available")
 
   budget  := profile.TierBudgetMiB(req.Tier)
   used    := sum(s.Reservations[tier == req.Tier].MemMiB)
@@ -222,7 +233,7 @@ func Decide(ctx context.Context, d Deps, issue Issue) Decision</code></pre>
   <li>Reservations are keyed by lane ID and removed in <code>Release</code> and by <code>Reap</code>; a reservation whose lane manifest is <code>reaped</code> is garbage-collected on the next <code>Admit</code>.</li>
   <li>The count ceiling and the memory budget are <em>both</em> enforced, parameterizing dynamically by the active hardware profile (<code>nano-8g</code> to <code>workstation-48g</code>).</li>
   <li>Container memory is enforced by the runtime: <code>--memory=&lt;ReservedMiB&gt;m --memory-swap=&lt;same&gt; --cpus=&lt;n&gt;</code>, so a lane exceeding its reservation is OOM-killed inside its own cgroup rather than starving the substrate.</li>
-  <li>CPU is a soft share (not a hard partition): reservations sum may exceed host cores by design; only memory and KVM availability are admission-blocking resources.</li>
+  <li>CPU is a soft share (not a hard partition): reservations sum may exceed host cores by design; only memory and sandbox backend availability are admission-blocking resources.</li>
 </ul>
 
 <h2>7. Dispatch decision table</h2>
@@ -230,14 +241,15 @@ func Decide(ctx context.Context, d Deps, issue Issue) Decision</code></pre>
   <tr><th>Tier tag</th><th>Probes</th><th>Decision</th><th>Exit</th></tr>
   <tr><td><code>local</code></td><td>boot ok, admission ok</td><td><code>run-local</code></td><td>0</td></tr>
   <tr><td><code>local</code></td><td>admission ErrNoCapacity</td><td><code>wait</code> (bounded retry, then leave issue open)</td><td>3</td></tr>
-  <tr><td><code>factory</code></td><td><code>factory doctor</code> ok, egress guard closed, probe ok, admission ok</td><td><code>run-factory</code></td><td>0</td></tr>
-  <tr><td><code>factory</code></td><td>Temporal or Cube unreachable</td><td><code>quarantine</code>: label issue <code>blocked:factory-unavailable</code>, write decision record, do not start anything</td><td>4</td></tr>
-  <tr><td><code>factory</code></td><td>KVM missing / <code>!Tier2Supported</code> (e.g. Nano or Cloud VM)</td><td><code>quarantine</code>: label issue <code>blocked:unsupported-tier2-no-kvm</code>, do not start anything</td><td>4</td></tr>
+  <tr><td><code>factory</code></td><td>local backend available (Cube/KVM, libkrun, or gVisor) + doctor ok + probe ok + admit ok</td><td><code>run-factory</code> (local sandbox)</td><td>0</td></tr>
+  <tr><td><code>factory</code></td><td>all local backends fail + remote cluster configured</td><td><code>run-remote-factory</code> (emergency fallback of last resort)</td><td>0</td></tr>
+  <tr><td><code>factory</code></td><td>no local backend available and no remote cluster</td><td><code>quarantine</code>: label issue <code>blocked:unsupported-tier2-no-sandbox</code></td><td>4</td></tr>
+  <tr><td><code>factory</code></td><td>Temporal or sandbox daemon unreachable</td><td><code>quarantine</code>: label issue <code>blocked:factory-unavailable</code>, write decision record, do not start anything</td><td>4</td></tr>
   <tr><td><code>factory</code></td><td><code>acknowledge_open_egress = true</code> OR probe failed</td><td><code>quarantine</code> (governance failure, never auto-fallback)</td><td>4</td></tr>
   <tr><td><code>factory</code></td><td>unreachable/unsupported <em>and</em> operator provides <code>--override-tier1-risk-reassessment</code> <em>and</em> <code>fallback:local-ok</code></td><td><code>fallback-local</code>: run in a fenced Tier-1 lane with <code>review:escalated</code> (mandatory human review)</td><td>4</td></tr>
   <tr><td>missing, no <code>risk:low</code></td><td>—</td><td>refuse (cannot place untrusted work)</td><td>4</td></tr>
 </table>
-<p><strong>Automatic downgrade is strictly prohibited.</strong> An issue tagged <code>factory</code> represents untrusted code, external dependencies, or high-blast-radius execution; executing it on the shared Tier-1 host kernel without hardware isolation would defeat the routing rationale. Fallback to Tier 1 requires an explicit, authenticated operator risk-reassessment flag (<code>--override-tier1-risk-reassessment --reason="..."</code>) at dispatch time.</p>
+<p><strong>Local-First and Quarantine Invariants:</strong> Tasks tagged <code>factory</code> execute locally using hardware microVMs (<code>cube-kvm</code>, <code>libkrun</code>) or user-space kernels (<code>gvisor</code>). Remote sandbox clusters are strictly an emergency fallback of last resort if all local options fail. Automatic downgrade to Tier 1 is strictly prohibited; downgrade requires an explicit operator risk reassessment override (<code>--override-tier1-risk-reassessment --reason="..."</code>).</p>
 
 <h2>8. Data formats</h2>
 <h3>8.1 Lane manifest — <code>$AEP_STATE_DIR/lanes/&lt;laneId&gt;.json</code></h3>
@@ -270,8 +282,10 @@ func Decide(ctx context.Context, d Deps, issue Issue) Decision</code></pre>
 
 <h2>9. Runtime topology</h2>
 <h3>9.1 Container and VM runtimes — by host family</h3>
-<p><strong>mac-colima-vz (macOS):</strong> one large shared Colima VM; Docker/Podman containers are spawned on demand <em>inside</em> that VM and bounded by admission control — never one VM per lane. Use <code>--vm-type vz --mount-type virtiofs</code>; worktrees are virtiofs-mounted into the VM. Tier 2 microVMs are <strong>supported iff</strong> the VM was started with <code>--nested-virtualization</code> (<code>-z</code>) and <code>/dev/kvm</code> probes present — confirmed 2026-11-09 (see §9.1 evidence). Without the flag, <code>tier:factory</code> tasks quarantine.</p>
-<p><strong>linux-native (Linux):</strong> no Colima; Podman (rootless) / Docker runs directly on the host under cgroups v2, same need-based container spawning. Tier 2 is enabled iff <code>/dev/kvm</code> is present.</p>
+<p><strong>mac-colima-vz (macOS):</strong> one large shared Colima VM; Docker/Podman containers are spawned on demand <em>inside</em> that VM and bounded by admission control — never one VM per lane. Use <code>--vm-type vz --mount-type virtiofs</code>; worktrees are virtiofs-mounted into the VM. Tier 2 hardware microVMs are supported via Colima nested KVM (requires <code>--nested-virtualization</code>, confirmed 2026-11-09) OR natively via <code>libkrun</code> using Apple's <code>Virtualization.framework</code> (<code>vz</code>) without requiring nested KVM. Without hardware virtualization or a local runtime, tasks fall back to local <code>gvisor</code>.</p>
+<p><strong>linux-native (Linux):</strong> no Colima; Podman (rootless) / Docker runs directly on the host under cgroups v2. Tier-2 hardware microVMs run via <code>cube-kvm</code> if <code>/dev/kvm</code> is present.</p>
+<p><strong>linux-gvisor (KVM-Free Linux & Cloud VMs):</strong> on hosts lacking <code>/dev/kvm</code> (Intel N100, Raspberry Pi 5, or standard non-bare-metal cloud instances), Tier-2 isolation runs locally via <strong>gVisor</strong> (<code>runsc</code> in <code>systrap</code> mode). <code>systrap</code> intercepts all guest syscalls in user space with zero hardware virtualization requirement, providing a measured kernel boundary on low-power devices.</p>
+<p><strong>Remote Sandbox Cluster (Emergency Last Resort):</strong> connecting to an external/remote sandbox cluster (e.g. remote Cube/E2B endpoint) is strictly an emergency fallback of last resort if and only if all local isolation backends (Cube/KVM, libkrun, and gVisor) have failed or are impossible.</p>
 <p><strong>Confirmed 2026-11-09</strong> on Apple M3 Max (macOS 27.2, Colima 0.10.3, <code>vz</code> + <code>virtiofs</code>): <code>colima start --nested-virtualization</code> exposes <code>/dev/kvm</code> inside the VM (and in <code>--privileged</code> containers); QEMU <code>accel=kvm</code> is accepted for a nested L2 guest; Docker 29.5.2 containers run in-VM; Temporal (sqlite dev server) serves UI on <code>:8233</code>. Without <code>--nested-virtualization</code>, <code>/dev/kvm</code> is absent — the flag is required. CubeSandbox itself was not installed/tested.</p>
 <pre><code># macOS (M3 Max / Apple Silicon Workstation):
 colima start --profile aep \
@@ -281,7 +295,7 @@ colima start --profile aep \
 # Linux hosts (Intel N100 / AMD Ryzen / Cloud VMs):
 # Runs natively on host cgroups v2 using Podman (rootless) or Docker:
 aep boot --profile nano-8g --runtime podman</code></pre>
-<p>Hardware virtualization (<code>/dev/kvm</code>) is probed at boot. If available, Tier-2 microVM sandboxing is enabled; if unavailable (typical of low-power edge nodes and standard cloud VMs), Tier 2 is disabled and all untrusted tasks are safely quarantined.</p>
+<p>Sandbox backends are probed at boot in order: local KVM -> local libkrun -> local gVisor -> remote fallback. If all options are unavailable, Tier 2 is disabled and untrusted tasks are safely quarantined.</p>
 
 <h3>9.2 Substrate compose file (<code>deploy/compose/substrate.compose.yml</code>)</h3>
 <pre><code>services:
