@@ -51,6 +51,11 @@ from orch.workflow import (
     load_workflow,
 )
 
+try:
+    from orch import telemetry as _telemetry
+except Exception:  # telemetry is optional; its absence is a no-op
+    _telemetry = None
+
 __all__ = ["main"]
 
 _LIMITS_LINE = (
@@ -295,6 +300,22 @@ def _cmd_dry_run(args, out, err, adapter_factory, now) -> int:
     return 0
 
 
+def _dispatch(args, out, err, adapter_factory, now) -> int:
+    try:
+        if args.command == "preflight":
+            return _cmd_preflight(args, out, err)
+        return _cmd_dry_run(
+            args,
+            out,
+            err,
+            adapter_factory,
+            now if now is not None else _now(),
+        )
+    except _KNOWN_ERRORS as exc:
+        print(f"error: {exc}", file=err)
+        return 1
+
+
 def main(argv=None, *, adapter_factory=None, out=None, err=None, now=None) -> int:
     """CLI entry point. Returns the process exit code."""
     out = out if out is not None else sys.stdout
@@ -315,19 +336,12 @@ def main(argv=None, *, adapter_factory=None, out=None, err=None, now=None) -> in
     dry_run_parser.add_argument("--summarize")
     args = parser.parse_args(argv)
 
-    try:
-        if args.command == "preflight":
-            return _cmd_preflight(args, out, err)
-        return _cmd_dry_run(
-            args,
-            out,
-            err,
-            adapter_factory,
-            now if now is not None else _now(),
-        )
-    except _KNOWN_ERRORS as exc:
-        print(f"error: {exc}", file=err)
-        return 1
+    if args.command == "dry-run" and _telemetry is not None:
+        with _telemetry.operation("dry_run") as op:
+            code = _dispatch(args, out, err, adapter_factory, now)
+            op.finish(code)
+            return code
+    return _dispatch(args, out, err, adapter_factory, now)
 
 
 if __name__ == "__main__":
