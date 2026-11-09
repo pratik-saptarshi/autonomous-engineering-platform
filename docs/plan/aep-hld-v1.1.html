@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AEP Agentic-Container OS — High-Level Design (v1.1)</title>
+<style>
+  @page { size: A4; margin: 16mm 14mm; }
+  :root { --ink:#0f172a; --muted:#475569; --line:#cbd5e1; --soft:#f1f5f9; --pri:#0369a1; --sec:#4f46e5; --ok:#047857; --warn:#b45309; --bad:#b91c1c; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: var(--ink); line-height: 1.5; font-size: 10.5pt; max-width: 980px; margin: 0 auto; padding: 24px; }
+  h1 { font-size: 22pt; margin: 0 0 4px; color: var(--pri); }
+  h2 { font-size: 14pt; margin: 26px 0 8px; padding-bottom: 4px; border-bottom: 2px solid var(--line); color: var(--sec); page-break-after: avoid; }
+  h3 { font-size: 11.5pt; margin: 16px 0 6px; page-break-after: avoid; }
+  p, li { margin: 0 0 6px; }
+  ul, ol { padding-left: 20px; margin: 0 0 8px; }
+  code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 9pt; background: var(--soft); padding: 1px 4px; border-radius: 3px; }
+  pre { background: var(--soft); border: 1px solid var(--line); border-radius: 4px; padding: 10px; overflow-x: auto; font-size: 8.5pt; page-break-inside: avoid; }
+  pre code { background: none; padding: 0; }
+  table { width: 100%; border-collapse: collapse; margin: 8px 0 12px; font-size: 9.5pt; page-break-inside: avoid; }
+  th, td { border: 1px solid var(--line); padding: 5px 8px; text-align: left; vertical-align: top; }
+  th { background: var(--soft); }
+  .meta { color: var(--muted); font-size: 9.5pt; margin-bottom: 14px; }
+  .tag { display: inline-block; font-size: 8pt; font-weight: 700; padding: 1px 7px; border-radius: 9px; border: 1px solid; text-transform: uppercase; letter-spacing: .04em; }
+  .built { color: var(--ok); border-color: var(--ok); }
+  .planned { color: var(--sec); border-color: var(--sec); }
+  .risk { color: var(--bad); border-color: var(--bad); }
+  .note { border-left: 4px solid var(--warn); background: #fffbeb; padding: 8px 12px; margin: 10px 0; page-break-inside: avoid; }
+  .note.info { border-color: var(--pri); background: #f0f9ff; }
+  .note strong:first-child { display: block; }
+  svg { max-width: 100%; height: auto; page-break-inside: avoid; }
+  footer { margin-top: 28px; padding-top: 8px; border-top: 1px solid var(--line); color: var(--muted); font-size: 8.5pt; }
+</style>
+</head>
+<body>
+
+<h1>AEP as the Agentic-Container OS</h1>
+<div class="meta">
+  <strong>High-Level Design (HLD) · v1.1</strong> · Status: Proposed · Branch: <code>docs/dual-lane-governance-proposal</code> · Companion: <code>aep-lld-v1.1.html</code><br>
+  Supersedes: v1 (dual-lane governance proposal, <code>docs/draft-proposal.html</code> v1)
+</div>
+
+<h2>1. Purpose and scope</h2>
+<p>This document consolidates the design decisions reached in the working discussion into one reference: how the Autonomous Engineering Platform (AEP) is built and deployed portably, and how it governs two kinds of autonomous execution — fast local <strong>ralph-loop</strong> lanes and sandboxed <strong>ESF</strong> (Engineering Software Factory) pipelines — on a shared set of core services.</p>
+<p>It is a design, not a record of finished work. Section 9 states exactly what exists in the repository today and what is still to be built; reading the rest of the document as "already implemented" would be wrong.</p>
+
+<h2>2. Decision log</h2>
+<table>
+  <tr><th>#</th><th>Decision</th><th>Rationale</th><th>Status</th></tr>
+  <tr><td>D1</td><td>Orchestration tier is a single Go binary, <code>aep</code>; NeuroStrata stays in Rust.</td><td>Static cross-compiled binaries need no Python on Windows/embedded hosts; <code>golang.org/x/sys</code> gives Job Objects, <code>flock</code>/<code>LockFileEx</code> and process groups. Python's one real edge (<code>ast</code>-based test classification in <code>mechanical_verify.py</code>) is narrow.</td><td><span class="tag built">Built (core)</span></td></tr>
+  <tr><td>D2</td><td>Artifact targets: <code>dist/bin/aep-{linux,darwin}-{amd64,arm64}</code>, <code>dist/vm/linux-{amd64,arm64}</code>, plus OCI image/context.</td><td>Covers Linux servers, the 8&nbsp;GB Muse ARM64 VM, Apple Silicon and Intel Macs, and any Docker/Podman host. Native Windows is explicitly out of the target list (WSL2 or container only).</td><td><span class="tag built">Built</span></td></tr>
+  <tr><td>D3</td><td>Two execution lanes: Tier 1 ralph-loop, Tier 2 ESF.</td><td>Local worktree lanes are fast but share the host kernel; ESF adds microVM isolation and durable workflows for untrusted or high-blast-radius work.</td><td><span class="tag planned">Planned</span></td></tr>
+  <tr><td>D4</td><td>AEP is the "container OS": five shared core services on the substrate; lanes are ephemeral containers above it.</td><td>One memory, one ledger, one rate limiter, one policy for every lane — no per-lane drift.</td><td><span class="tag planned">Planned</span></td></tr>
+  <tr><td>D5</td><td>Runtime: one Colima VM (<code>vz</code> + <code>virtiofs</code>) sized 12 CPU / 48&nbsp;GB RAM / 220&nbsp;GB disk, multiplexing containers. Not one VM per lane.</td><td>Dynamic sharing of CPU/RAM across lanes; per-profile VMs only where kernel-level isolation is required.</td><td><span class="tag planned">Planned</span></td></tr>
+  <tr><td>D6</td><td><code>beads</code> is the single macro task ledger. The Superpowers SDD ledger (<code>.superpowers/sdd/&lt;plan&gt;/progress.md</code>) stays a per-plan micro ledger and does not replace it.</td><td>Different lifetimes and purposes: durable cross-session backlog vs. ephemeral compaction-recovery record.</td><td><span class="tag planned">Planned</span></td></tr>
+  <tr><td>D7</td><td>ESF workflow IDs are keyed to beads issue IDs (<code>esf-beads-&lt;ID&gt;</code>).</td><td>Prevents orphan factory runs and dual-backlog drift.</td><td><span class="tag planned">Planned</span></td></tr>
+  <tr><td>D8</td><td>Factory-tagged tasks degrade explicitly when Temporal/CubeSandbox are unreachable (quarantine, or fenced local lane with escalated review) — never hang.</td><td>Removes the load-bearing failure found in review: the loop stalling on infrastructure that does not exist on most hosts.</td><td><span class="tag planned">Planned</span></td></tr>
+</table>
+
+<h2>3. Goals and non-goals</h2>
+<h3>Goals</h3>
+<ul>
+  <li>One-command install and run on Linux (x86_64 and ARM64), the Muse 8&nbsp;GB VM, and macOS (Intel and Apple Silicon).</li>
+  <li>Many parallel lanes under one governance plane with bounded, predictable resource use.</li>
+  <li>Deterministic verification decides success; an agent saying "done" never does.</li>
+  <li>Fail closed: no autonomous run starts if the environment is unfit.</li>
+</ul>
+<h3>Non-goals (v1.1)</h3>
+<ul>
+  <li>Native Windows binaries or service wrappers.</li>
+  <li>macOS guest VM images (macOS runs the native binary under <code>launchd</code>).</li>
+  <li>Replacing <code>beads</code> or NeuroStrata.</li>
+  <li>Modifying the vendored <code>reference/esf</code> tree (it changes only by re-vendoring).</li>
+</ul>
+
+<h2>4. System architecture</h2>
+<svg viewBox="0 0 900 520" role="img" aria-label="AEP architecture: host, Colima VM, substrate services, tier 1 and tier 2 lanes">
+  <rect x="5" y="5" width="890" height="510" rx="10" fill="#fff" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="20" y="28" font-size="13" font-weight="700" fill="#0f172a">Host (macOS arm64 / Linux)</text>
+  <text x="20" y="46" font-size="10.5" fill="#475569">T3 Code · Herdr · Orca · repo + git worktrees (bind-mounted via virtiofs)</text>
+
+  <rect x="20" y="60" width="860" height="445" rx="8" fill="#f8fafc" stroke="#4f46e5" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <text x="34" y="82" font-size="12.5" font-weight="700" fill="#4f46e5">Colima VM — 12 vCPU · 48 GB RAM · 220 GB disk (vz + virtiofs)</text>
+
+  <rect x="34" y="94" width="832" height="150" rx="8" fill="#ecfdf5" stroke="#047857" stroke-width="1.5"/>
+  <text x="48" y="116" font-size="12" font-weight="700" fill="#047857">AEP SUBSTRATE — core runtime services (≈2 vCPU · 8 GB · 30 GB)</text>
+  <rect x="48"  y="128" width="152" height="52" rx="6" fill="#fff" stroke="#047857"/><text x="124" y="150" text-anchor="middle" font-size="11" font-weight="700">NeuroStrata</text><text x="124" y="166" text-anchor="middle" font-size="9.5" fill="#475569">memory daemon :34343</text>
+  <rect x="210" y="128" width="152" height="52" rx="6" fill="#fff" stroke="#047857"/><text x="286" y="150" text-anchor="middle" font-size="11" font-weight="700">beads / backlog</text><text x="286" y="166" text-anchor="middle" font-size="9.5" fill="#475569">single task ledger</text>
+  <rect x="372" y="128" width="152" height="52" rx="6" fill="#fff" stroke="#047857"/><text x="448" y="150" text-anchor="middle" font-size="11" font-weight="700">ghg gateway</text><text x="448" y="166" text-anchor="middle" font-size="9.5" fill="#475569">capped GitHub API</text>
+  <rect x="534" y="128" width="152" height="52" rx="6" fill="#fff" stroke="#047857"/><text x="610" y="150" text-anchor="middle" font-size="11" font-weight="700">policy.data</text><text x="610" y="166" text-anchor="middle" font-size="9.5" fill="#475569">git-bound enforcement</text>
+  <rect x="696" y="128" width="158" height="52" rx="6" fill="#fff" stroke="#047857"/><text x="775" y="150" text-anchor="middle" font-size="11" font-weight="700">aep boot + supervisor</text><text x="775" y="166" text-anchor="middle" font-size="9.5" fill="#475569">preflight · dispatch · admission</text>
+  <text x="48" y="206" font-size="10" fill="#475569">All lanes reach these services over the VM-internal network; none holds its own copy of memory, ledger, rate budget or policy.</text>
+  <text x="48" y="226" font-size="10" fill="#475569">Dispatch decides tier from the beads issue's tier tag, then admission control reserves RAM/CPU before a lane starts.</text>
+
+  <line x1="450" y1="244" x2="450" y2="268" stroke="#0f172a" stroke-width="1.5" marker-end="url(#a)"/>
+  <defs><marker id="a" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#0f172a"/></marker></defs>
+
+  <rect x="34" y="272" width="406" height="220" rx="8" fill="#f0f9ff" stroke="#0369a1" stroke-width="1.5"/>
+  <text x="48" y="294" font-size="12" font-weight="700" fill="#0369a1">TIER 1 — ralph-loop lanes</text>
+  <text x="48" y="314" font-size="10.5">Target 8–10 concurrent · ~1.5–2 GB each · ≈16 GB total</text>
+  <text x="48" y="332" font-size="10.5">Fabric: OCI container + isolated git worktree</text>
+  <text x="48" y="350" font-size="10.5">Engine: plan → TDD → review → verify (SDD ledger inside)</text>
+  <text x="48" y="368" font-size="10.5">Gate: <tspan font-family="monospace">aep verify</tspan> (hash-chained receipts)</text>
+  <text x="48" y="386" font-size="10.5">Output: branch + verified PR; learnings → NeuroStrata</text>
+  <rect x="48" y="402" width="30" height="22" rx="3" fill="#bae6fd" stroke="#0369a1"/><rect x="84" y="402" width="30" height="22" rx="3" fill="#bae6fd" stroke="#0369a1"/><rect x="120" y="402" width="30" height="22" rx="3" fill="#bae6fd" stroke="#0369a1"/><rect x="156" y="402" width="30" height="22" rx="3" fill="#bae6fd" stroke="#0369a1"/><text x="200" y="418" font-size="11" fill="#0369a1">… lane containers</text>
+  <text x="48" y="448" font-size="9.5" fill="#475569">Risk: shares the VM kernel; isolation is cgroup + worktree, not a hypervisor.</text>
+
+  <rect x="460" y="272" width="406" height="220" rx="8" fill="#eef2ff" stroke="#4f46e5" stroke-width="1.5"/>
+  <text x="474" y="294" font-size="12" font-weight="700" fill="#4f46e5">TIER 2 — ESF factory pipelines</text>
+  <text x="474" y="314" font-size="10.5">Target 4–6 concurrent · ~4–6 GB each · ≈24 GB total</text>
+  <text x="474" y="332" font-size="10.5">Fabric: Temporal worker + CubeSandbox microVM</text>
+  <text x="474" y="350" font-size="10.5">Engine: opencode2 / Claude Code / Codex / Pi harness</text>
+  <text x="474" y="368" font-size="10.5">Gate: in-VM build.sh / test.sh (exit code only)</text>
+  <text x="474" y="386" font-size="10.5">Output: patch + evidence → re-verified in a Tier-1 lane</text>
+  <rect x="474" y="402" width="30" height="22" rx="3" fill="#c7d2fe" stroke="#4f46e5"/><rect x="510" y="402" width="30" height="22" rx="3" fill="#c7d2fe" stroke="#4f46e5"/><rect x="546" y="402" width="30" height="22" rx="3" fill="#c7d2fe" stroke="#4f46e5"/><text x="590" y="418" font-size="11" fill="#4f46e5">… pipelines</text>
+  <text x="474" y="448" font-size="9.5" fill="#b91c1c">Requires nested virtualization + Temporal + CubeSandbox — unvalidated here.</text>
+</svg>
+
+<h2>5. Components</h2>
+<h3>5.1 Core runtime services (substrate)</h3>
+<table>
+  <tr><th>Service</th><th>Responsibility</th><th>Key constraint</th></tr>
+  <tr><td>NeuroStrata</td><td>Hybrid vector + full-text memory (<code>ladybug.db</code>, nomic-embed-text-v1.5). Retrieval before planning, inscription after verification.</td><td>Embedding model cache pre-seeded; <code>HF_HUB_OFFLINE=1</code>; DB backed up by change-detected watchdog.</td></tr>
+  <tr><td>beads / backlog</td><td>Single canonical task ledger; carries the tier tag and the foreign key used by ESF workflow IDs.</td><td>Telemetry off (<code>bd metrics off</code>); Dolt remote host allowlisted if egress is blocked.</td></tr>
+  <tr><td>ghg</td><td>Counted, coalescing GitHub gateway: 3,500/5,000 core req/h self-cap, one poller per watched run.</td><td>Governs only callers that use it; direct <code>gh</code> remains an ungated vector.</td></tr>
+  <tr><td>policy.data</td><td>Env-variable scrub fragments, sensitive-path patterns, hardware profile; bound to the committed git blob.</td><td>Edits land via PR; boot refuses a policy that differs from <code>HEAD</code>.</td></tr>
+  <tr><td>aep boot / supervisor</td><td>Fail-closed preflight, dispatch, capacity admission, periodic ticks.</td><td>Exit non-zero rather than start in a degraded state.</td></tr>
+</table>
+
+<h3>5.2 Execution lanes</h3>
+<table>
+  <tr><th></th><th>Tier 1 · ralph-loop</th><th>Tier 2 · ESF</th></tr>
+  <tr><td>Intended work</td><td>Features, fixes, refactors, tests, docs</td><td>Untrusted dependencies, CVE remediation, multi-repo or high-blast-radius change</td></tr>
+  <tr><td>Isolation</td><td>Container + git worktree + process group / Job Object</td><td>Hardware-isolated microVM per run, destroyed on every exit path</td></tr>
+  <tr><td>Orchestration</td><td>Scheduler tick (default 2 h), ≤6 iterations, 3-strike stop</td><td>Temporal durable workflow with replay-safe activities</td></tr>
+  <tr><td>Verification</td><td><code>aep verify</code></td><td>Repo <code>build.sh</code>/<code>test.sh</code> in the microVM (target: bake <code>aep verify</code> into the template)</td></tr>
+  <tr><td>Human gate</td><td>PR review; circuit breaker</td><td><code>factory review --approve/--reject</code></td></tr>
+</table>
+
+<h2>6. Resource model (12 CPU / 48&nbsp;GB / 220&nbsp;GB)</h2>
+<table>
+  <tr><th>Resource</th><th>Total</th><th>Substrate</th><th>Tier 1</th><th>Tier 2</th></tr>
+  <tr><td>vCPU</td><td>12</td><td>2 reserved</td><td>4–6 shared</td><td>4–6 priority</td></tr>
+  <tr><td>RAM</td><td>48 GB</td><td>8 GB</td><td>16 GB</td><td>24 GB</td></tr>
+  <tr><td>Disk</td><td>220 GB</td><td>30 GB (models, DB)</td><td>70 GB (worktrees, caches)</td><td>120 GB (microVM images, artifacts)</td></tr>
+</table>
+<div class="note"><strong>Capacity is memory-bound, not count-bound.</strong>
+Six Tier-2 pipelines at 4&nbsp;GB fit the 24&nbsp;GB budget; six at 6&nbsp;GB do not (36&nbsp;GB). The "4–6 pipelines" and "8–10 lanes" figures are therefore <em>ceilings under typical sizing</em>, not guarantees. The design enforces this with admission control that reserves memory per lane before start (LLD §6), rather than a fixed lane count.
+Per-lane footprints are estimates from capacity reasoning; <strong>they have not been benchmarked on this machine</strong>, and no container runtime is currently installed on the host to measure with.</div>
+<p>Reference sizing for other targets: the Muse 8&nbsp;GB VM runs the substrate plus at most 2 lanes (<code>AEP_MAX_LANES=2</code>, 384&nbsp;MiB floor, ONNX threads 2); Tier 2 is not expected on Muse.</p>
+
+<h2>7. Platform and artifact coverage</h2>
+<table>
+  <tr><th>Artifact</th><th>Covers</th><th>Does not cover</th></tr>
+  <tr><td><code>dist/bin/aep-linux-amd64</code></td><td>Linux x86_64 servers, cloud VMs, CI runners</td><td>32-bit x86; native Windows</td></tr>
+  <tr><td><code>dist/bin/aep-linux-arm64</code></td><td>Muse ARM64 VM, Graviton/Ampere, Raspberry Pi 4/5 (64-bit)</td><td>32-bit ARM</td></tr>
+  <tr><td><code>dist/bin/aep-darwin-arm64</code></td><td>Apple Silicon Macs</td><td>Intel Macs (Rosetta only)</td></tr>
+  <tr><td><code>dist/bin/aep-darwin-amd64</code></td><td>Intel Macs</td><td>—</td></tr>
+  <tr><td><code>dist/vm/linux-{amd64,arm64}</code></td><td>Cloud-init + systemd bundles with per-arch hardware profile</td><td>Non-systemd distros</td></tr>
+  <tr><td>OCI image / <code>dist/oci</code> context</td><td>Any Docker/Podman host; Kubernetes-style schedulers</td><td>Hosts with no container runtime</td></tr>
+</table>
+
+<h2>8. Dispatch and lifecycle</h2>
+<ol>
+  <li><strong>Intake.</strong> Work is a beads issue carrying a tier tag (<code>local</code> or <code>factory</code>) and acceptance criteria.</li>
+  <li><strong>Preflight.</strong> <code>aep boot</code> must pass: binaries, NeuroStrata answering, standing guards present, policy blob matches <code>HEAD</code>, memory floor met.</li>
+  <li><strong>Admission.</strong> Dispatcher reserves RAM/CPU for the lane against the profile budget; if it cannot, the task waits (bounded) rather than oversubscribing.</li>
+  <li><strong>Execute.</strong> Tier 1: claim worktree, start lane container, run plan/TDD/review/verify. Tier 2: submit <code>factory run</code> with workflow ID <code>esf-beads-&lt;ID&gt;</code>.</li>
+  <li><strong>Verify.</strong> Both lanes emit SHA-256 receipts. ESF patches are applied in a clean Tier-1 lane and re-verified before any PR.</li>
+  <li><strong>Close.</strong> PR merges, <code>bd close</code>, learnings inscribed to NeuroStrata, lane and reservation released.</li>
+</ol>
+
+<h2>9. Governance invariants</h2>
+<ul>
+  <li>No lane starts unless <code>aep boot</code> passes (fail closed).</li>
+  <li>All GitHub traffic from lanes goes through <code>ghg</code>.</li>
+  <li><code>policy.data</code> must equal the committed blob; lanes run with credential-named env vars scrubbed.</li>
+  <li>ESF refuses to run with <code>hardening.acknowledge_open_egress = true</code> in a governed deployment (the upstream default for a fresh <code>factory init</code> is <code>true</code>, so AEP must assert the opposite).</li>
+  <li>Model tiering: ralph lanes at <code>standard</code>/<code>measured</code>; <code>frontier</code>/<code>thorough</code> reserved for factory runs.</li>
+  <li>A task has exactly one ledger identity (the beads ID) across both lanes.</li>
+</ul>
+
+<h2>10. Implementation status (as of this document)</h2>
+<h3><span class="tag built">Built</span> in <code>develop</code></h3>
+<ul>
+  <li><code>cmd/aep</code> with <code>version</code>, <code>info</code>, <code>boot</code>, <code>verify</code>, <code>supervisor</code>, <code>lock-test</code>.</li>
+  <li><code>internal/platform/{memory,lock,process}</code> for Linux, macOS and Windows; <code>internal/verifier/runner</code> (allowlist discovery, tail-capped output, SHA-256 receipts, memory preflight, budgets).</li>
+  <li><code>Makefile</code> targets <code>binaries</code>, <code>vm</code>, <code>oci</code>; <code>scripts/package-vm.sh</code>, <code>scripts/package-oci.sh</code>; <code>Containerfile</code>, <code>docker-compose.yml</code>.</li>
+  <li>Root CI runs <code>gofmt</code>, <code>go vet</code>, <code>go test</code>.</li>
+</ul>
+<h3><span class="tag planned">Not yet built</span></h3>
+<ul>
+  <li><code>aep boot</code> today checks only the memory floor and platform; the NeuroStrata/guard/gh-auth/policy checks still live in <code>scripts/boot-gate.sh</code>.</li>
+  <li><code>aep supervisor</code> today runs boot gate + one verification pass per tick; it does not dispatch lanes or ESF runs.</li>
+  <li>Lane coordination remains in <code>scripts/lane-coord.sh</code> (Linux <code>flock</code>); no Go lane manager, no admission control, no beads adapter, no dispatcher, no ESF client, no Colima profile or compose topology for the substrate.</li>
+  <li>The "unified verifier inside the CubeSandbox template" and NeuroStrata hooks in the ESF harness are design intent only.</li>
+</ul>
+
+<h2>11. Risks and open questions</h2>
+<table>
+  <tr><th>Risk / question</th><th>Why it matters</th><th>Cheapest check</th></tr>
+  <tr><td><span class="tag risk">High</span> Tier 2 needs KVM inside the Colima VM</td><td>CubeSandbox microVMs require nested virtualization. On Apple Silicon this depends on chip generation, macOS version and Colima support. If unavailable, Tier 2 cannot run on the Mac at all.</td><td>Start Colima with nested virtualization enabled and run <code>ls /dev/kvm</code> in the VM.</td></tr>
+  <tr><td><span class="tag risk">High</span> CubeSandbox and Temporal are external</td><td>ESF discovers an existing CubeSandbox; it never installs one. Neither exists on this host.</td><td><code>factory doctor</code> against the target environment.</td></tr>
+  <tr><td><span class="tag risk">Med</span> Lane footprints are unmeasured</td><td>Admission thresholds depend on real RSS of ralph and ESF lanes.</td><td>Install Colima, run 3 representative lanes, record peak RSS.</td></tr>
+  <tr><td><span class="tag risk">Med</span> Tier-1 isolation is weaker than it sounds</td><td>Lane containers share one VM kernel; a hostile task in Tier 1 is not contained like Tier 2.</td><td>Keep untrusted work routed to Tier 2; make the tier tag mandatory.</td></tr>
+  <tr><td><span class="tag risk">Med</span> Boot parity gap</td><td>Moving to <code>aep boot</code> without the daemon/guard/policy checks would silently weaken governance versus <code>boot-gate.sh</code>.</td><td>Port checks with tests before retiring the shell gate.</td></tr>
+  <tr><td><span class="tag risk">Low</span> Singular/plural docs path</td><td>This document lives in <code>docs/plan/</code>; the repo already has <code>docs/plans/</code> and <code>docs/superpowers/plans/</code>.</td><td>Decide on one location.</td></tr>
+</table>
+
+<h2>12. Review status</h2>
+<p>The v1 → v1.1 review applied the paperthin lenses (<code>hate</code>, <code>ssotize</code>, <code>modelchk</code>, <code>factchk</code>, <code>debloat</code>) as a single-author pass. It surfaced the dispatch-stall root objection, the dual-ledger drift risk and the egress-default fact. It was <strong>not an independent multi-reviewer panel</strong>, and its "full approval" wording should be read as "no remaining objections from that pass". An independent adversarial run should precede production activation, and it should specifically attack the nested-virtualization assumption above.</p>
+
+<footer>AEP HLD v1.1 · generated from the design discussion on 2026-11-08 · see the LLD for interfaces, data formats, sequencing and the task breakdown.</footer>
+</body>
+</html>
