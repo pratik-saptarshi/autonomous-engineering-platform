@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AEP Dual-Lane Governance Proposal: Ralph-Loop & ESF</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card-bg: #1e293b;
+      --border: #334155;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --primary: #38bdf8;
+      --secondary: #818cf8;
+      --accent: #f43f5e;
+      --success: #34d399;
+      --warning: #fbbf24;
+      --code-bg: #0b1120;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      padding: 2rem 1rem;
+    }
+    .container {
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+    header {
+      border-bottom: 2px solid var(--border);
+      padding-bottom: 1.5rem;
+      margin-bottom: 2rem;
+    }
+    h1 {
+      font-size: 2.2rem;
+      color: var(--primary);
+      margin-bottom: 0.5rem;
+      letter-spacing: -0.025em;
+    }
+    .meta-tag {
+      display: inline-block;
+      padding: 0.25rem 0.6rem;
+      border-radius: 9999px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      margin-right: 0.5rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .tag-draft { background: rgba(56, 189, 248, 0.15); color: var(--primary); border: 1px solid var(--primary); }
+    .tag-arch { background: rgba(129, 140, 248, 0.15); color: var(--secondary); border: 1px solid var(--secondary); }
+    .tag-panel { background: rgba(244, 63, 94, 0.15); color: var(--accent); border: 1px solid var(--accent); }
+
+    h2 {
+      font-size: 1.5rem;
+      color: var(--secondary);
+      margin: 2.5rem 0 1rem 0;
+      padding-bottom: 0.4rem;
+      border-bottom: 1px solid var(--border);
+    }
+    h3 {
+      font-size: 1.2rem;
+      color: var(--text);
+      margin: 1.5rem 0 0.75rem 0;
+    }
+    p, ul, ol {
+      margin-bottom: 1rem;
+      color: #cbd5e1;
+    }
+    ul, ol {
+      padding-left: 1.5rem;
+    }
+    li { margin-bottom: 0.4rem; }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 1.25rem;
+      margin: 1.5rem 0;
+    }
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 0.5rem;
+      padding: 1.25rem;
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2);
+    }
+    .card-tier1 { border-top: 4px solid var(--primary); }
+    .card-tier2 { border-top: 4px solid var(--secondary); }
+    .card-adversarial { border-top: 4px solid var(--accent); }
+    .card-governance { border-top: 4px solid var(--success); }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 1.5rem 0;
+      background: var(--card-bg);
+      border-radius: 0.5rem;
+      overflow: hidden;
+      border: 1px solid var(--border);
+    }
+    th, td {
+      padding: 0.75rem 1rem;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+    th {
+      background: #0f172a;
+      color: var(--primary);
+      font-size: 0.9rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    tr:hover { background: rgba(255, 255, 255, 0.02); }
+
+    pre, code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.9rem;
+    }
+    code {
+      background: var(--code-bg);
+      padding: 0.2rem 0.4rem;
+      border-radius: 0.25rem;
+      color: #38bdf8;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+    }
+    pre {
+      background: var(--code-bg);
+      padding: 1rem;
+      border-radius: 0.5rem;
+      overflow-x: auto;
+      border: 1px solid var(--border);
+      margin: 1rem 0;
+    }
+    pre code {
+      background: none;
+      padding: 0;
+      border: none;
+      color: #e2e8f0;
+    }
+
+    .diagram {
+      background: #0b1120;
+      border: 1px solid var(--border);
+      border-radius: 0.5rem;
+      padding: 1.5rem;
+      margin: 1.5rem 0;
+      font-family: ui-monospace, monospace;
+      white-space: pre;
+      line-height: 1.3;
+      color: #94a3b8;
+      overflow-x: auto;
+    }
+    .diagram .hl-pri { color: var(--primary); font-weight: bold; }
+    .diagram .hl-sec { color: var(--secondary); font-weight: bold; }
+    .diagram .hl-acc { color: var(--accent); font-weight: bold; }
+    .diagram .hl-suc { color: var(--success); font-weight: bold; }
+
+    .callout {
+      border-left: 4px solid var(--primary);
+      background: rgba(56, 189, 248, 0.08);
+      padding: 1rem;
+      border-radius: 0 0.375rem 0.375rem 0;
+      margin: 1.5rem 0;
+    }
+    .callout-hate {
+      border-left-color: var(--accent);
+      background: rgba(244, 63, 94, 0.08);
+    }
+    .callout-hate h4 { color: var(--accent); margin-bottom: 0.4rem; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>AEP Dual-Lane Governance Architecture</h1>
+      <p style="color: var(--text-muted); margin-bottom: 0.75rem;">
+        Formal Technical Design Proposal for Co-Governing <strong>ralph-loop</strong> and <strong>ESF (Engineering Software Factory)</strong> under Autonomous Engineering Platform Control.
+      </p>
+      <div>
+        <span class="meta-tag tag-draft">Status: Proposed Draft</span>
+        <span class="meta-tag tag-arch">Architecture: Dual-Lane Tiered Execution</span>
+        <span class="meta-tag tag-panel">Review: Paperthin Adversarial Audit</span>
+      </div>
+    </header>
+
+    <section id="executive-summary">
+      <h2>1. Executive Summary & Objective</h2>
+      <p>
+        The Autonomous Engineering Platform (AEP) currently implements a periodic autonomous loop (<code>ralph-loop</code>) that operates directly on host Git worktrees, alongside a vendored reference implementation of the Engineering Software Factory (<code>reference/esf</code>) designed for microVM-isolated execution.
+      </p>
+      <p>
+        This proposal specifies the formal architecture to integrate both engines into a <strong>Dual-Lane Unified Governance Framework</strong>. It provides a single source of truth for task routing, policy enforcement, cognitive memory sharing, and deterministic verification, preventing divergence while maximizing development velocity and execution safety.
+      </p>
+    </section>
+
+    <section id="system-topology">
+      <h2>2. System Topology & Dual-Lane Model</h2>
+      <div class="diagram">
++---------------------------------------------------------------------------------------------------+
+|                                  AEP UNIFIED GOVERNANCE PLANE                                     |
+|  - aep boot / boot-gate (Fail-Closed Preflight)         - policy.data (Git-Bound Policy & Scrub)  |
+|  - NeuroStrata Cognitive Memory (ladybug.db)            - ghg Gateway (Capped GitHub Poller)     |
++-------------------------------------------------+-------------------------------------------------+
+                                                  |
+                                    [ Task Dispatcher & Risk Assessment ]
+                                                  |
+                     +----------------------------+----------------------------+
+                     |                                                         |
+                     v (Tier 1: Local / Standard)                              v (Tier 2: High-Risk / Sandboxed)
++------------------------------------------+             +------------------------------------------+
+|          <span class="hl-pri">RALPH-LOOP (INNER LOOP)</span>         |             |            <span class="hl-sec">ESF FACTORY (OUTER LANE)</span>      |
+|  * Isolation: Git Worktree + flock       |             |  * Isolation: CubeSandbox MicroVM        |
+|  * Cadence: Periodic 2-Hour Autonomous   |             |  * Cadence: Event-Driven Temporal Run    |
+|  * Engine: Subagent-Driven TDD           |             |  * Engine: OpenCode / Claude Code / Pi   |
+|  * Gate: mechanical_verify.py            |             |  * Gate: Deterministic In-VM build.sh    |
+|  * Output: Direct Working-Tree Branch    |             |  * Output: Cryptographic Patch + Evidence|
++--------------------+---------------------+             +--------------------+---------------------+
+                     |                                                        |
+                     +----------------------------+---------------------------+
+                                                  |
+                                                  v
+                     [ Inscription & Verification: NeuroStrata & Pull Request ]
+      </div>
+
+      <div class="grid">
+        <div class="card card-tier1">
+          <h3>Tier 1: Ralph-Loop (Fast Inner Lane)</h3>
+          <ul>
+            <li><strong>Work Scope:</strong> Day-to-day feature work, bug fixes, refactoring, test additions, and documentation.</li>
+            <li><strong>Isolation:</strong> Host Git worktrees isolated by <code>scripts/lane-coord.sh</code> using descriptor-bound file locks and process group isolation.</li>
+            <li><strong>Cadence:</strong> 2-hour scheduler (cron / <code>aep supervisor</code>) bounded to at most 6 task iterations.</li>
+            <li><strong>Verification:</strong> <code>mechanical_verify.py</code> allowlist test discovery with 64KB tail-capped outputs and SHA-256 receipts.</li>
+          </ul>
+        </div>
+
+        <div class="card card-tier2">
+          <h3>Tier 2: ESF Factory (Sandboxed Outer Lane)</h3>
+          <ul>
+            <li><strong>Work Scope:</strong> High-risk tasks, untrusted dependencies, multi-repo changes, security spikes, and large migrations.</li>
+            <li><strong>Isolation:</strong> Hardware-isolated <strong>CubeSandbox microVMs</strong>; destroyed unconditionally on every exit path.</li>
+            <li><strong>Cadence:</strong> Asynchronous execution orchestrated by <strong>Temporal</strong> durable workflows.</li>
+            <li><strong>Verification:</strong> Deterministic in-VM verification gates (<code>build.sh</code>, <code>test.sh</code>) evaluated strictly by exit code.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section id="governance-invariants">
+      <h2>3. Shared Governance & Safety Invariants</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Governance Pillar</th>
+            <th>Tier 1 (Ralph) Enforcement</th>
+            <th>Tier 2 (ESF) Enforcement</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Fail-Closed Preflight</strong></td>
+            <td><code>aep boot</code> verifies CLIs, daemon, guards, and policy hash before loop start.</td>
+            <td><code>factory doctor</code> and <code>aep boot --factory</code> verify Temporal, Cube, and templates before worker launch.</td>
+          </tr>
+          <tr>
+            <td><strong>Policy Enforcement</strong></td>
+            <td><code>scripts/policy.data</code> strips credentials from child process environments and blocks sensitive directories.</td>
+            <td><code>[egress]</code> configuration with measured boundaries (<code>acknowledge_open_egress = false</code>; ADR 0007).</td>
+          </tr>
+          <tr>
+            <td><strong>Cognitive Memory</strong></td>
+            <td>Queries <code>NeuroStrata</code> (127.0.0.1:34343) before planning; inscribes verified root causes post-completion.</td>
+            <td>Pre-run step queries <code>NeuroStrata</code> for past failure modes; post-run step inscribes patch and audit evidence.</td>
+          </tr>
+          <tr>
+            <td><strong>GitHub Rate Limiting</strong></td>
+            <td>All GitHub calls route through <code>tools/ghg/ghg.py</code> (3,500 core req/h cap, coalesced run watching).</td>
+            <td>Worker and agent harnesses route GitHub operations through <code>ghg</code> shim to prevent fleet API exhaustion.</td>
+          </tr>
+          <tr>
+            <td><strong>Circuit Breakers</strong></td>
+            <td>Hard stop after 3 consecutive failures on a task; maximum 6 iterations per scheduled session.</td>
+            <td>Per-activity Temporal timeouts, execution cancellation, and human approval gates (<code>factory review</code>).</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="interoperability-protocol">
+      <h2>4. Hand-off & Interoperability Protocol</h2>
+      <ol>
+        <li><strong>Task Tagging:</strong> Issues in <code>backlog.md</code> or <code>beads</code> carry an explicit tier annotation (<code>execution_tier: local</code> vs <code>execution_tier: factory</code>).</li>
+        <li><strong>Delegated Dispatch:</strong> If Ralph encounters a task flagged for factory execution, it invokes:
+          <pre><code>factory run --repo &lt;REPO_URL&gt; --rev &lt;SHA&gt; --task "&lt;DESCRIPTION&gt;" --agent opencode2 --verification default</code></pre>
+        </li>
+        <li><strong>Sandboxed Execution & Evidence:</strong> ESF runs the agent inside a Cube microVM, runs deterministic gates, and exports <code>patch.diff</code>, <code>run.json</code>, and verification logs to <code>internal/artifacts</code>.</li>
+        <li><strong>Patch Verification & Inscription:</strong> Ralph ingests the generated patch into a local Git worktree, runs <code>aep verify</code>, opens the PR, and inscribes durable findings into NeuroStrata memory.</li>
+      </ol>
+    </section>
+
+    <section id="adversarial-panel">
+      <h2>5. Adversarial Assessment Panel (Paperthin Skills Audit)</h2>
+      <p style="color: var(--text-muted);">
+        A formal adversarial assessment was conducted using the repository's vendored <strong>Paperthin Methodology</strong> (<code>skills/hate</code>, <code>skills/modelchk</code>, <code>skills/factchk</code>, <code>skills/ssotize</code>, <code>skills/detool</code>, <code>skills/debloat</code>).
+      </p>
+
+      <div class="card card-adversarial">
+        <div class="callout callout-hate">
+          <h4>[hate] Single Load-Bearing Root Objection</h4>
+          <p>
+            <strong>Root Objection:</strong> The proposal treats the bridge between Ralph (local single-process shell/worktree) and ESF (distributed Temporal/Cube cluster) as a light procedural handoff, ignoring that <strong>CubeSandbox and Temporal require heavyweight external infrastructure that does not exist on local developer machines or the 8GB Muse VM</strong>. If the factory lane requires external servers to run, Ralph delegating to it either hangs indefinitely or fails closed on 100% of factory-tagged tasks.
+          </p>
+          <p>
+            <strong>The First Nail (Cheapest Falsification):</strong> Run <code>factory doctor</code> against an unconfigured local machine. It immediately fails on missing Temporal and Cube endpoints. A single task tagged <code>execution_tier: factory</code> in an unmanaged environment will freeze the autonomous loop.
+          </p>
+        </div>
+      </div>
+
+      <div class="grid" style="margin-top: 1.5rem;">
+        <div class="card">
+          <h3>[ssotize] Single Source of Truth</h3>
+          <p><strong>Finding:</strong> Dual backlogs create state drift. If ESF tracks work via Temporal <code>Changes</code> and PostgreSQL, while Ralph tracks work via <code>backlog.md</code> and <code>beads</code>, status synchronization will inevitably desynchronize.</p>
+          <p><strong>Mitigation:</strong> Enforce <code>beads</code> as the sole canonical source of truth for work items. ESF runs must be keyed directly to the <code>beads</code> issue ID.</p>
+        </div>
+
+        <div class="card">
+          <h3>[modelchk] Cognitive Budget & Sizing</h3>
+          <p><strong>Finding:</strong> Running high-reasoning frontier models inside both Ralph subagents and ESF microVM workers simultaneously will exhaust rate limits and GPU/API budgets.</p>
+          <p><strong>Mitigation:</strong> Bind Ralph planning to <code>standard</code> tier with <code>measured</code> reasoning effort. Reserve <code>frontier</code> tier with <code>thorough</code> reasoning exclusively for microVM factory runs.</p>
+        </div>
+
+        <div class="card">
+          <h3>[factchk] Reality-Grounded Verification</h3>
+          <p><strong>Finding:</strong> The proposal asserts that <code>acknowledged_open_egress = false</code> guarantees network closure. Fact check: In ESF, fresh installs default to <code>true</code> and bypass egress restrictions unless explicitly overridden in <code>factory.toml</code>.</p>
+          <p><strong>Mitigation:</strong> Add an assertive check in <code>aep boot</code> that exits with error code 1 if <code>factory.toml</code> has <code>hardening.acknowledge_open_egress = true</code>.</p>
+        </div>
+
+        <div class="card">
+          <h3>[detool & debloat] Redundancy Removal</h3>
+          <p><strong>Finding:</strong> Both Ralph (via <code>mechanical_verify.py</code>) and ESF (via <code>internal/verification</code>) implement separate test runners, log tail buffers, and receipt collectors.</p>
+          <p><strong>Mitigation:</strong> Port ESF's verification harness to invoke the unified <code>aep verify</code> binary inside the microVM, eliminating duplicated verification codebases.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="verdict-recommendations">
+      <h2>6. Panel Verdict & Implementation Directives</h2>
+      <div class="callout" style="border-left-color: var(--success); background: rgba(52, 211, 153, 0.08);">
+        <h4 style="color: var(--success); margin-bottom: 0.5rem;">Panel Verdict: CONDITIONAL APPROVAL</h4>
+        <p>The Dual-Lane architecture is sound in principle, but must implement the following three non-negotiable mitigations before production activation:</p>
+        <ol style="margin-top: 0.5rem;">
+          <li><strong>Graceful Degradation Fallback:</strong> If Temporal or CubeSandbox is unreachable, <code>aep dispatch</code> must refuse to stall; it must either fail closed with an explicit diagnostic or fall back to an isolated worktree lane with an escalated confirmation prompt.</li>
+          <li><strong>Single Issue State Ledger:</strong> Key all Temporal workflows directly to <code>beads</code> issue IDs; never allow ESF to create orphan changes untracked by the platform backlog.</li>
+          <li><strong>Shared Unified Verifier:</strong> Compile <code>aep verify</code> as a standalone static binary and bake it into the CubeSandbox base image so verification rules are identical in both lanes.</li>
+        </ol>
+      </div>
+    </section>
+  </div>
+</body>
+</html>
