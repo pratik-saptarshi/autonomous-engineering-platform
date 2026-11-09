@@ -128,7 +128,7 @@ class TestEnabled(TelemetryTestCase):
         os.environ[telemetry.ENV_VAR] = str(target)
         self.assertTrue(telemetry.enabled())
         with telemetry.operation("check", actor="tester") as handle:
-            handle.finish(0)
+            handle.finish(0, "allowed")
         records = self.read_records(target)
         self.assertEqual(len(records), 1)
         rec = records[0]
@@ -169,11 +169,32 @@ class TestEnabled(TelemetryTestCase):
         target = self.otel_file()
         os.environ[telemetry.ENV_VAR] = str(target)
         with telemetry.operation("check", actor="tester") as handle:
-            handle.finish(75)
+            handle.finish(75, "denied")
         records = self.read_records(target)
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0]["attributes"]["gate_verdict"], "denied")
         self.assertEqual(records[0]["attributes"]["exit_code"], 75)
+
+    def test_finish_without_verdict_is_not_evaluated(self):
+        target = self.otel_file("spans-no-verdict.jsonl")
+        os.environ[telemetry.ENV_VAR] = str(target)
+        with telemetry.operation("check", actor="tester") as handle:
+            handle.finish(75)
+        records = self.read_records(target)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(
+            records[0]["attributes"]["gate_verdict"], "not_evaluated")
+        self.assertEqual(records[0]["attributes"]["exit_code"], 75)
+
+        target2 = self.otel_file("spans-explicit-allowed.jsonl")
+        os.environ[telemetry.ENV_VAR] = str(target2)
+        with telemetry.operation("check", actor="tester") as handle:
+            handle.finish(75, "allowed")
+        records2 = self.read_records(target2)
+        self.assertEqual(len(records2), 1)
+        self.assertEqual(
+            records2[0]["attributes"]["gate_verdict"], "allowed")
+        self.assertEqual(records2[0]["attributes"]["exit_code"], 75)
 
     def test_canary_never_leaks(self):
         target = self.otel_file()

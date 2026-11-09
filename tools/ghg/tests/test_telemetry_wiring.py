@@ -252,6 +252,54 @@ class TestByteIdentical(WiringTestCase):
                                  set(telemetry.ALLOWED_ATTRIBUTES))
 
 
+class TestGateVerdictWiring(WiringTestCase):
+    @unittest.skipUnless(SDK_AVAILABLE, "opentelemetry-sdk not installed")
+    def test_check_ledger_unavailable_is_unavailable(self):
+        otel = self.root / "spans-check-unavailable.jsonl"
+        with mock.patch.object(ghg, "_open_ledger", return_value=None):
+            code, _out, _err = self.call_main(
+                ["check", "--", "pr", "view", "1"],
+                self.fresh_env(otel_file=otel))
+        self.assertEqual(code, 70)
+        spans = [r for r in self.read_spans(otel)
+                 if r["name"] == "ghg.check"]
+        self.assertEqual(len(spans), 1)
+        self.assertEqual(spans[0]["attributes"]["exit_code"], 70)
+        self.assertEqual(
+            spans[0]["attributes"]["gate_verdict"], "unavailable")
+
+    @unittest.skipUnless(SDK_AVAILABLE, "opentelemetry-sdk not installed")
+    def test_run_child_exit_75_is_allowed_not_denied(self):
+        otel = self.root / "spans-run-child75.jsonl"
+        code, _out, _err = self.call_main(
+            ["run", "--", "pr", "view", "1"],
+            self.fresh_env(otel_file=otel,
+                           extra={"GHG_STUB_EXIT": "75"}))
+        self.assertEqual(code, 75)
+        spans = [r for r in self.read_spans(otel)
+                 if r["name"] == "ghg.run"]
+        self.assertEqual(len(spans), 1)
+        self.assertEqual(spans[0]["attributes"]["exit_code"], 75)
+        self.assertEqual(
+            spans[0]["attributes"]["gate_verdict"], "allowed")
+
+    @unittest.skipUnless(SDK_AVAILABLE, "opentelemetry-sdk not installed")
+    def test_run_bypass_child_exit_75_is_bypass(self):
+        otel = self.root / "spans-run-bypass75.jsonl"
+        code, _out, _err = self.call_main(
+            ["run", "--", "pr", "view", "1"],
+            self.fresh_env(otel_file=otel,
+                           extra={"GHG_STUB_EXIT": "75",
+                                  "GHG_BYPASS": "1"}))
+        self.assertEqual(code, 75)
+        spans = [r for r in self.read_spans(otel)
+                 if r["name"] == "ghg.run"]
+        self.assertEqual(len(spans), 1)
+        self.assertEqual(spans[0]["attributes"]["exit_code"], 75)
+        self.assertEqual(
+            spans[0]["attributes"]["gate_verdict"], "bypass")
+
+
 class TestWatchWiring(WiringTestCase):
     @unittest.skipUnless(SDK_AVAILABLE, "opentelemetry-sdk not installed")
     def test_watch_dispatch_is_traced(self):

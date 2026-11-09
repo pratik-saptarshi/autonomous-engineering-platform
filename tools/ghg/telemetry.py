@@ -257,8 +257,14 @@ class _OperationHandle:
         except Exception:
             pass
 
-    def finish(self, exit_code):
-        """Record exit_code, duration_ms and gate_verdict."""
+    def finish(self, exit_code, gate_verdict=None):
+        """Record exit_code, duration_ms and gate_verdict.
+
+        The verdict is taken only from the explicit argument; it is
+        never derived from the exit code. When no verdict is given,
+        the gate was not evaluated for this operation, recorded as
+        "not_evaluated".
+        """
         try:
             duration_ms = float(
                 (time.monotonic() - self._start) * 1000.0)
@@ -266,7 +272,8 @@ class _OperationHandle:
             self.set_attribute("duration_ms", duration_ms)
             self.set_attribute(
                 "gate_verdict",
-                "denied" if exit_code == 75 else "allowed")
+                gate_verdict if gate_verdict is not None
+                else "not_evaluated")
             self._finished = True
         except Exception:
             pass
