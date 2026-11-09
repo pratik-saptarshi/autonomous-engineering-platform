@@ -1,0 +1,749 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AEP Architecture Diagrams & Vertical Slices (v1.2)</title>
+<style>
+  @page { size: A3 landscape; margin: 12mm 10mm; }
+  :root {
+    --ink: #0f172a;
+    --muted: #475569;
+    --line: #cbd5e1;
+    --soft: #f8fafc;
+    --pri: #0369a1;
+    --sec: #4f46e5;
+    --ok: #047857;
+    --warn: #b45309;
+    --bad: #b91c1c;
+    --t1: #0284c7;
+    --t2: #6366f1;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: var(--ink);
+    line-height: 1.45;
+    font-size: 10pt;
+    max-width: 1360px;
+    margin: 0 auto;
+    padding: 24px;
+    background: #fff;
+  }
+  h1 { font-size: 22pt; margin: 0 0 4px; color: var(--pri); font-weight: 700; }
+  h2 { font-size: 14pt; margin: 28px 0 10px; padding-bottom: 4px; border-bottom: 2px solid var(--line); color: var(--sec); page-break-after: avoid; }
+  h3 { font-size: 11pt; margin: 16px 0 6px; color: var(--pri); }
+  p { margin: 0 0 8px; }
+  .meta { color: var(--muted); font-size: 9pt; margin-bottom: 18px; }
+  .diagram-container {
+    background: #ffffff;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 16px;
+    margin: 16px 0 24px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    page-break-inside: avoid;
+  }
+  svg { width: 100%; height: auto; display: block; }
+  .note {
+    border-left: 4px solid var(--sec);
+    background: #f5f3ff;
+    padding: 10px 14px;
+    margin: 14px 0;
+    border-radius: 0 6px 6px 0;
+    font-size: 9pt;
+  }
+  .grid-legend {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 12px;
+    margin-top: 14px;
+    font-size: 8.5pt;
+  }
+  .legend-box {
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 10px;
+    background: var(--soft);
+  }
+  .legend-box strong { color: var(--pri); display: block; margin-bottom: 4px; }
+  footer {
+    margin-top: 36px;
+    padding-top: 10px;
+    border-top: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 8.5pt;
+  }
+</style>
+</head>
+<body>
+
+<h1>Autonomous Engineering Platform (AEP) — Architecture Reference</h1>
+<div class="meta">
+  <strong>System Architecture &amp; Operational Tiers &middot; Version:</strong> v1.2 (Immutable Artifact) &middot; 
+  <strong>Date:</strong> 2026-11-09 &middot; <strong>Branch:</strong> <code>docs/dual-lane-governance-proposal</code> &middot; 
+  <strong>Companion Docs:</strong> <code>aep-hld-v1.2.html</code>, <code>aep-lld-v1.2.html</code>, <code>aep-backlog-v1.2.html</code>
+</div>
+
+<p>
+  This reference artifact captures the complete architectural topology of the Autonomous Engineering Platform (AEP) as the Agentic-Container OS.
+  It formalizes two complementary operational tiers—fast inner-loop container lanes (Tier 1: Ralph) and sandboxed outer-factory pipelines (Tier 2: ESF)—governed by a shared substrate, fail-closed preflight gates, and cryptographic auditability.
+</p>
+
+<!-- ========================================================================= -->
+<!-- DIAGRAM 1: HIGH LEVEL ARCHITECTURE OVERVIEW -->
+<!-- ========================================================================= -->
+<h2>1. High-Level Architecture Overview (AEP as the Agentic-Container OS)</h2>
+<p>
+  End-to-end topology showing physical host hardware profiles, containment runtimes, control plane governance, substrate core services, dual-lane execution fabric, and verifiable settlement.
+</p>
+
+<div class="diagram-container">
+<svg viewBox="0 0 1200 780" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#334155" />
+    </marker>
+    <marker id="arrow-pri" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#0284c7" />
+    </marker>
+    <marker id="arrow-sec" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#4f46e5" />
+    </marker>
+    <linearGradient id="grad-host" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#f8fafc"/>
+    </linearGradient>
+    <linearGradient id="grad-sub" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#ecfdf5"/>
+      <stop offset="100%" stop-color="#f0fdf4"/>
+    </linearGradient>
+    <filter id="shadow" x="-2%" y="-2%" width="104%" height="106%" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="1" dy="2" stdDeviation="2" flood-opacity="0.08"/>
+    </filter>
+  </defs>
+
+  <!-- ================= HOST BOUNDARY ================= -->
+  <rect x="15" y="15" width="1170" height="750" rx="12" fill="url(#grad-host)" stroke="#64748b" stroke-width="2" filter="url(#shadow)"/>
+  <rect x="25" y="25" width="1150" height="40" rx="6" fill="#0f172a"/>
+  <text x="40" y="50" font-size="14" font-weight="700" fill="#f8fafc">PHYSICAL HOST &amp; RUNTIME SPECTRUM</text>
+  <text x="360" y="50" font-size="11" fill="#94a3b8">Profiles: nano-8g (2vCPU/8GB N100) &middot; small-16g (4vCPU/16GB) &middot; medium-32g (8vCPU/32GB) &middot; workstation-48g (12vCPU/48GB M3 Max)</text>
+  <text x="1050" y="50" font-size="11" font-weight="600" fill="#38bdf8">macOS vz / Linux cgroups v2</text>
+
+  <!-- ================= CONTROL & GOVERNANCE PLANE ================= -->
+  <g transform="translate(35, 80)">
+    <rect x="0" y="0" width="1130" height="110" rx="8" fill="#f1f5f9" stroke="#cbd5e1" stroke-width="1.5"/>
+    <text x="18" y="24" font-size="12" font-weight="700" fill="#0369a1">AEP CONTROL PLANE &amp; GOVERNANCE LAYER</text>
+
+    <!-- aep boot -->
+    <rect x="20" y="36" width="190" height="60" rx="6" fill="#fff" stroke="#0284c7" stroke-width="1.2"/>
+    <text x="115" y="58" text-anchor="middle" font-size="11" font-weight="700" fill="#0f172a">aep boot (Fail-Closed)</text>
+    <text x="115" y="74" text-anchor="middle" font-size="9" fill="#475569">Preflight &middot; Token Parity</text>
+    <text x="115" y="87" text-anchor="middle" font-size="8.5" fill="#0369a1">Total RAM &ge; 7.5 GiB check</text>
+
+    <!-- policy.data -->
+    <rect x="230" y="36" width="190" height="60" rx="6" fill="#fff" stroke="#0284c7" stroke-width="1.2"/>
+    <text x="325" y="58" text-anchor="middle" font-size="11" font-weight="700" fill="#0f172a">policy.data Guard</text>
+    <text x="325" y="74" text-anchor="middle" font-size="9" fill="#475569">Git HEAD-Blob Cryptohash</text>
+    <text x="325" y="87" text-anchor="middle" font-size="8.5" fill="#b91c1c">Tamper lockout (Exit 1)</text>
+
+    <!-- admission controller -->
+    <rect x="440" y="36" width="230" height="60" rx="6" fill="#fff" stroke="#0284c7" stroke-width="1.2"/>
+    <text x="555" y="58" text-anchor="middle" font-size="11" font-weight="700" fill="#0f172a">Dual Admission Control</text>
+    <text x="555" y="74" text-anchor="middle" font-size="9" fill="#475569">FileLock (admission.lock)</text>
+    <text x="555" y="87" text-anchor="middle" font-size="8.5" fill="#047857">Capacity Ceilings &amp; Underflow-Safe RAM</text>
+
+    <!-- beads unified ledger -->
+    <rect x="690" y="36" width="200" height="60" rx="6" fill="#fff" stroke="#0284c7" stroke-width="1.2"/>
+    <text x="790" y="58" text-anchor="middle" font-size="11" font-weight="700" fill="#0f172a">Beads Ledger (SSOT)</text>
+    <text x="790" y="74" text-anchor="middle" font-size="9" fill="#475569">bd list --limit 0 &middot; DAG Blockers</text>
+    <text x="790" y="87" text-anchor="middle" font-size="8.5" fill="#4f46e5">tier:local vs tier:factory</text>
+
+    <!-- aep supervisor dispatcher -->
+    <rect x="910" y="36" width="200" height="60" rx="6" fill="#fff" stroke="#0284c7" stroke-width="1.2"/>
+    <text x="1010" y="58" text-anchor="middle" font-size="11" font-weight="700" fill="#0f172a">Supervisor Dispatcher</text>
+    <text x="1010" y="74" text-anchor="middle" font-size="9" fill="#475569">§7 Deterministic Matrix</text>
+    <text x="1010" y="87" text-anchor="middle" font-size="8.5" fill="#b45309">Quarantine-First (No Silent Downgrade)</text>
+  </g>
+
+  <!-- ================= SUBSTRATE CORE SERVICES ================= -->
+  <g transform="translate(35, 205)">
+    <rect x="0" y="0" width="1130" height="115" rx="8" fill="url(#grad-sub)" stroke="#059669" stroke-width="1.5"/>
+    <text x="18" y="24" font-size="12" font-weight="700" fill="#047857">AEP SUBSTRATE CORE SERVICES &amp; IPC RELAYS (HOST RUNTIME)</text>
+
+    <!-- NeuroStrata -->
+    <rect x="20" y="36" width="260" height="65" rx="6" fill="#fff" stroke="#059669" stroke-width="1.2"/>
+    <text x="150" y="58" text-anchor="middle" font-size="11" font-weight="700" fill="#0f172a">NeuroStrata Cognitive Memory</text>
+    <text x="150" y="74" text-anchor="middle" font-size="9" fill="#475569">ladybug.db &middot; Hybrid Vector/FTS</text>
+    <text x="150" y="88" text-anchor="middle" font-size="8.5" fill="#047857">Host Daemon (127.0.0.1:34343) / Compose aep-net</text>
+
+    <!-- GHG Gateway -->
+    <rect x="300" y="36" width="260" height="65" rx="6" fill="#fff" stroke="#059669" stroke-width="1.2"/>
+    <text x="430" y="58" text-anchor="middle" font-size="11" font-weight="700" fill="#0f172a">ghg Rate-Limited Gateway</text>
+    <text x="430" y="74" text-anchor="middle" font-size="9" fill="#475569">3,500 req/h Cap &middot; Coalesced Poller</text>
+    <text x="430" y="88" text-anchor="middle" font-size="8.5" fill="#0369a1">Host GitHub Token Isolated (Zero Container Leak)</text>
+
+    <!-- Supervisor Relays -->
+    <rect x="580" y="36" width="530" height="65" rx="6" fill="#fff" stroke="#059669" stroke-width="1.2"/>
+    <text x="845" y="56" text-anchor="middle" font-size="11" font-weight="700" fill="#0f172a">SUPERVISOR-MEDIATED IPC DOMAIN SOCKET RELAYS (/run/aep/lanes/&lt;laneId&gt;/)</text>
+    
+    <rect x="595" y="66" width="115" height="26" rx="4" fill="#e0f2fe" stroke="#0284c7"/>
+    <text x="652" y="83" text-anchor="middle" font-size="9" font-weight="600" fill="#0369a1">memory.sock</text>
+    
+    <rect x="725" y="66" width="115" height="26" rx="4" fill="#e0f2fe" stroke="#0284c7"/>
+    <text x="782" y="83" text-anchor="middle" font-size="9" font-weight="600" fill="#0369a1">ghg.sock</text>
+
+    <rect x="855" y="66" width="115" height="26" rx="4" fill="#e0f2fe" stroke="#0284c7"/>
+    <text x="912" y="83" text-anchor="middle" font-size="9" font-weight="600" fill="#0369a1">git.sock</text>
+
+    <rect x="985" y="66" width="115" height="26" rx="4" fill="#fef3c7" stroke="#b45309"/>
+    <text x="1042" y="83" text-anchor="middle" font-size="9" font-weight="600" fill="#92400e">exec.sock (Model)</text>
+  </g>
+
+  <!-- Connection line from Control Plane to Substrate -->
+  <path d="M 600,190 L 600,205" stroke="#475569" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- Connection lines to Execution Fabric -->
+  <path d="M 315,320 L 315,350" stroke="#0284c7" stroke-width="2" marker-end="url(#arrow-pri)"/>
+  <path d="M 885,320 L 885,350" stroke="#4f46e5" stroke-width="2" marker-end="url(#arrow-sec)"/>
+
+  <!-- ================= DUAL LANE EXECUTION FABRIC ================= -->
+  <!-- TIER 1: RALPH INNER LOOP -->
+  <g transform="translate(35, 350)">
+    <rect x="0" y="0" width="545" height="280" rx="10" fill="#f0f9ff" stroke="#0284c7" stroke-width="2"/>
+    <rect x="0" y="0" width="545" height="34" rx="10" fill="#0284c7"/>
+    <text x="20" y="22" font-size="12" font-weight="700" fill="#fff">TIER 1: FAST INNER LOOP (RALPH CONTAINER LANES)</text>
+    <text x="440" y="22" font-size="10" fill="#e0f2fe">Low/Standard Risk</text>
+
+    <text x="18" y="55" font-size="10.5" font-weight="600" fill="#0f172a">&bull; Concurrency:</text>
+    <text x="110" y="55" font-size="10.5" fill="#334155">1–2 lanes (Nano) up to 8–10 concurrent (Workstation-48g)</text>
+
+    <text x="18" y="75" font-size="10.5" font-weight="600" fill="#0f172a">&bull; Execution Fabric:</text>
+    <text x="130" y="75" font-size="10.5" fill="#334155">OCI Container &middot; Memory cap: 1.5–2 GB &middot; tmpfs /tmp</text>
+
+    <text x="18" y="95" font-size="10.5" font-weight="600" fill="#0f172a">&bull; Network Boundary:</text>
+    <text x="135" y="95" font-size="10.5" font-weight="700" fill="#b91c1c">--network none (Zero Outbound Egress &middot; No Leaked Keys)</text>
+
+    <text x="18" y="115" font-size="10.5" font-weight="600" fill="#0f172a">&bull; Git Isolation:</text>
+    <text x="105" y="115" font-size="10.5" fill="#334155">Isolated branch worktree &middot; Private index &middot; Host git.sock commit</text>
+
+    <text x="18" y="135" font-size="10.5" font-weight="600" fill="#0f172a">&bull; Model Inference:</text>
+    <text x="130" y="135" font-size="10.5" fill="#334155">Host Harness executes model; sends tools over exec.sock</text>
+
+    <text x="18" y="155" font-size="10.5" font-weight="600" fill="#0f172a">&bull; Verification:</text>
+    <text x="100" y="155" font-size="10.5" fill="#334155">Go-native aep verify &middot; AST checks &middot; Full-stream test logs</text>
+
+    <!-- Visual Containers -->
+    <rect x="20" y="175" width="505" height="90" rx="6" fill="#fff" stroke="#bae6fd" stroke-width="1.2"/>
+    <text x="32" y="195" font-size="10" font-weight="700" fill="#0369a1">PARALLEL RALPH CONTAINERS (aep-lane-t1-xxxxxx)</text>
+
+    <rect x="30" y="205" width="105" height="48" rx="4" fill="#e0f2fe" stroke="#0284c7"/>
+    <text x="82" y="225" text-anchor="middle" font-size="9.5" font-weight="700">Lane #1</text>
+    <text x="82" y="240" text-anchor="middle" font-size="8.5" fill="#475569">Plan/TDD</text>
+
+    <rect x="155" y="205" width="105" height="48" rx="4" fill="#e0f2fe" stroke="#0284c7"/>
+    <text x="207" y="225" text-anchor="middle" font-size="9.5" font-weight="700">Lane #2</text>
+    <text x="207" y="240" text-anchor="middle" font-size="8.5" fill="#475569">Refactor</text>
+
+    <rect x="280" y="205" width="105" height="48" rx="4" fill="#e0f2fe" stroke="#0284c7"/>
+    <text x="332" y="225" text-anchor="middle" font-size="9.5" font-weight="700">Lane #3</text>
+    <text x="332" y="240" text-anchor="middle" font-size="8.5" fill="#475569">Testing</text>
+
+    <rect x="405" y="205" width="105" height="48" rx="4" fill="#e0f2fe" stroke="#0284c7"/>
+    <text x="457" y="225" text-anchor="middle" font-size="9.5" font-weight="700">Lane #N ...</text>
+    <text x="457" y="240" text-anchor="middle" font-size="8.5" fill="#475569">Workstation Max</text>
+  </g>
+
+  <!-- TIER 2: ESF OUTER FACTORY -->
+  <g transform="translate(620, 350)">
+    <rect x="0" y="0" width="545" height="280" rx="10" fill="#f5f3ff" stroke="#4f46e5" stroke-width="2"/>
+    <rect x="0" y="0" width="545" height="34" rx="10" fill="#4f46e5"/>
+    <text x="20" y="22" font-size="12" font-weight="700" fill="#fff">TIER 2: OUTER FACTORY (ESF SANDBOX PIPELINES)</text>
+    <text x="415" y="22" font-size="10" fill="#ede9fe">High Risk / Untrusted</text>
+
+    <text x="18" y="55" font-size="10.5" font-weight="600" fill="#0f172a">&bull; Concurrency:</text>
+    <text x="110" y="55" font-size="10.5" fill="#334155">1 pipeline (Nano) up to 4–6 concurrent (Workstation-48g)</text>
+
+    <text x="18" y="75" font-size="10.5" font-weight="600" fill="#0f172a">&bull; Orchestration:</text>
+    <text x="115" y="75" font-size="10.5" fill="#334155">Temporal Worker &middot; Replay-safe activities &middot; esf-beads-&lt;id&gt;</text>
+
+    <text x="18" y="95" font-size="10.5" font-weight="600" fill="#0f172a">&bull; Sandbox Hierarchy:</text>
+    <text x="145" y="95" font-size="10.5" font-weight="700" fill="#4f46e5">Local-First (Cube/KVM &rarr; libkrun vz &rarr; gVisor systrap)</text>
+
+    <text x="18" y="115" font-size="10.5" font-weight="600" fill="#0f172a">&bull; Hardening &amp; Probe:</text>
+    <text x="145" y="115" font-size="10.5" fill="#334155">ack_open_egress=false &middot; In-VM EgressProbe SHA-256 evidence</text>
+
+    <text x="18" y="135" font-size="10.5" font-weight="600" fill="#0f172a">&bull; Fallback Policy:</text>
+    <text x="120" y="135" font-size="10.5" font-weight="700" fill="#b91c1c">Remote cluster is LAST RESORT &middot; Quarantine-first on missing virt</text>
+
+    <text x="18" y="155" font-size="10.5" font-weight="600" fill="#0f172a">&bull; Re-Verification:</text>
+    <text x="125" y="155" font-size="10.5" fill="#334155">Fresh disposable sandbox meeting MinIsolation (Never on host)</text>
+
+    <!-- Visual Pipelines -->
+    <rect x="20" y="175" width="505" height="90" rx="6" fill="#fff" stroke="#ddd6fe" stroke-width="1.2"/>
+    <text x="32" y="195" font-size="10" font-weight="700" fill="#4f46e5">PARALLEL ESF FACTORY PIPELINES (esf-beads-xxxxxx)</text>
+
+    <rect x="30" y="205" width="115" height="48" rx="4" fill="#ede9fe" stroke="#6366f1"/>
+    <text x="87" y="224" text-anchor="middle" font-size="9" font-weight="700">Pipeline #1</text>
+    <text x="87" y="239" text-anchor="middle" font-size="8" fill="#475569">Cube/KVM microVM</text>
+
+    <rect x="155" y="205" width="115" height="48" rx="4" fill="#ede9fe" stroke="#6366f1"/>
+    <text x="212" y="224" text-anchor="middle" font-size="9" font-weight="700">Pipeline #2</text>
+    <text x="212" y="239" text-anchor="middle" font-size="8" fill="#475569">libkrun (macOS vz)</text>
+
+    <rect x="280" y="205" width="115" height="48" rx="4" fill="#ede9fe" stroke="#6366f1"/>
+    <text x="337" y="224" text-anchor="middle" font-size="9" font-weight="700">Pipeline #3</text>
+    <text x="337" y="239" text-anchor="middle" font-size="8" fill="#475569">gVisor systrap</text>
+
+    <rect x="405" y="205" width="115" height="48" rx="4" fill="#fef2f2" stroke="#dc2626"/>
+    <text x="462" y="224" text-anchor="middle" font-size="9" font-weight="700" fill="#991b1b">Remote Fallback</text>
+    <text x="462" y="239" text-anchor="middle" font-size="8" fill="#b91c1c">Emergency Last Resort</text>
+  </g>
+
+  <!-- ================= AUDIT, SETTLEMENT & RE-VERIFICATION ================= -->
+  <g transform="translate(35, 645)">
+    <rect x="0" y="0" width="1130" height="105" rx="8" fill="#f8fafc" stroke="#64748b" stroke-width="1.5"/>
+    <text x="18" y="22" font-size="11.5" font-weight="700" fill="#0f172a">CRYPTOGRAPHIC RECEIPT, AUDITABILITY &amp; SETTLEMENT PIPELINE</text>
+
+    <path d="M 270,-15 L 270,10" stroke="#0284c7" stroke-width="2" marker-end="url(#arrow-pri)"/>
+    <path d="M 890,-15 L 890,10" stroke="#4f46e5" stroke-width="2" marker-end="url(#arrow-sec)"/>
+
+    <!-- Verifier Box -->
+    <rect x="20" y="32" width="340" height="60" rx="6" fill="#fff" stroke="#64748b" stroke-width="1.2"/>
+    <text x="190" y="52" text-anchor="middle" font-size="11" font-weight="700" fill="#0f172a">Disposable Sandbox Re-Verification</text>
+    <text x="190" y="68" text-anchor="middle" font-size="9" fill="#475569">Dynamic tests execute in fresh microVM meeting MinIsolation</text>
+    <text x="190" y="81" text-anchor="middle" font-size="8.5" fill="#b91c1c">Untrusted code never re-enters host kernel</text>
+
+    <!-- Receipt Generator Box -->
+    <rect x="380" y="32" width="370" height="60" rx="6" fill="#fff" stroke="#64748b" stroke-width="1.2"/>
+    <text x="565" y="52" text-anchor="middle" font-size="11" font-weight="700" fill="#0f172a">Ed25519-Signed CommandReceipt</text>
+    <text x="565" y="68" text-anchor="middle" font-size="9" fill="#475569">Full-stream StdoutSha + StderrSha + Merkle Tail + Nonce</text>
+    <text x="565" y="81" text-anchor="middle" font-size="8.5" fill="#047857">Tamper-evident RFC 8785 canonical JSON</text>
+
+    <!-- Ledger & Memory Close Box -->
+    <rect x="770" y="32" width="340" height="60" rx="6" fill="#fff" stroke="#64748b" stroke-width="1.2"/>
+    <text x="940" y="52" text-anchor="middle" font-size="11" font-weight="700" fill="#0f172a">Ledger Settlement &amp; Cognitive Inscription</text>
+    <text x="940" y="68" text-anchor="middle" font-size="9" fill="#475569">Verified receipt required before bd close &lt;issueId&gt;</text>
+    <text x="940" y="81" text-anchor="middle" font-size="8.5" fill="#4f46e5">Continuous inscription into NeuroStrata memory</text>
+  </g>
+</svg>
+</div>
+
+<div class="grid-legend">
+  <div class="legend-box">
+    <strong>Dual-Constraint Admission</strong>
+    Simultaneously enforces hard concurrent lane count ceilings and cumulative RAM budgets parameterized by hardware profile. Protects host memory floor with underflow-safe arithmetic.
+  </div>
+  <div class="legend-box">
+    <strong>Zero-Egress Isolation</strong>
+    Lanes execute with <code>--network none</code>. All I/O occurs via host-side socket relays (<code>memory.sock</code>, <code>ghg.sock</code>, <code>git.sock</code>, <code>exec.sock</code>). Provider keys and PAT tokens never enter containers.
+  </div>
+  <div class="legend-box">
+    <strong>Local-First Sandbox Hierarchy</strong>
+    Tier 2 prioritizes local execution: (1) Linux KVM, (2) macOS <code>libkrun</code> (<code>vz</code>), (3) user-space <code>gVisor</code> (<code>systrap</code>). Remote clusters are strictly an emergency last resort; otherwise tasks safely quarantine.
+  </div>
+  <div class="legend-box">
+    <strong>Cryptographic Settlement</strong>
+    Command receipts bind full-stream stdout/stderr SHA-256 hashes and egress proofs signed with Ed25519. Required for Beads ledger closure and NeuroStrata memory inscription.
+  </div>
+</div>
+
+<!-- ========================================================================= -->
+<!-- DIAGRAM 2: DUAL LANE UNIFIED ARCHITECTURE & ESF VERTICAL SLICES -->
+<!-- ========================================================================= -->
+<h2>2. Dual-Lane Unified Architecture &amp; ESF Deep Dive (Vertical Slices)</h2>
+<p>
+  Detailed architectural decomposition comparing Tier 1 (Ralph Inner Loop) and Tier 2 (ESF Outer Factory), mapping the 7 vertical operational slices of the sandboxed factory.
+</p>
+
+<div class="diagram-container">
+<svg viewBox="0 0 1200 920" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="grad-esf" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#f5f3ff"/>
+    </linearGradient>
+    <linearGradient id="grad-t1" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#f0f9ff"/>
+    </linearGradient>
+  </defs>
+
+  <!-- ================= TIER 1 VS TIER 2 COMPARISON ================= -->
+  <rect x="15" y="15" width="1170" height="235" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+  <rect x="25" y="25" width="1150" height="32" rx="6" fill="#0f172a"/>
+  <text x="40" y="46" font-size="12" font-weight="700" fill="#f8fafc">TWO COMPLEMENTARY OPERATIONAL TIERS: INNER LOOP VS OUTER FACTORY</text>
+
+  <!-- Tier 1 Overview Card -->
+  <rect x="35" y="68" width="550" height="170" rx="8" fill="url(#grad-t1)" stroke="#0284c7" stroke-width="1.5"/>
+  <text x="50" y="90" font-size="11.5" font-weight="700" fill="#0369a1">TIER 1: RALPH-LOOP (FAST INNER LOOP)</text>
+  
+  <text x="50" y="112" font-size="9.5" font-weight="600">Workload Target:</text>
+  <text x="145" y="112" font-size="9.5" fill="#334155">Features, refactors, tests, docs, low-blast-radius code</text>
+
+  <text x="50" y="130" font-size="9.5" font-weight="600">Isolation Level:</text>
+  <text x="135" y="130" font-size="9.5" fill="#334155">OCI Container &middot; cgroups v2 &middot; Read-only rootfs &middot; Private /tmp</text>
+
+  <text x="50" y="148" font-size="9.5" font-weight="600">Network Posture:</text>
+  <text x="145" y="148" font-size="9.5" font-weight="700" fill="#b91c1c">Zero direct egress (--network none) &middot; IPC socket relays</text>
+
+  <text x="50" y="166" font-size="9.5" font-weight="600">Inference Model:</text>
+  <text x="145" y="166" font-size="9.5" fill="#334155">Host Harness executes model &middot; Tools relayed via exec.sock</text>
+
+  <text x="50" y="184" font-size="9.5" font-weight="600">Git Workspace:</text>
+  <text x="135" y="184" font-size="9.5" fill="#334155">Dedicated worktree branch &middot; Private index &middot; git.sock commit</text>
+
+  <text x="50" y="202" font-size="9.5" font-weight="600">Verification Gate:</text>
+  <text x="145" y="202" font-size="9.5" fill="#334155">Go-native aep verify &middot; Static analysis &middot; Full test log capture</text>
+
+  <text x="50" y="222" font-size="9" fill="#0369a1">Speed: Seconds to minutes &middot; Concurrency: 1–2 (Nano) to 8–10 (Workstation)</text>
+
+  <!-- Tier 2 Overview Card -->
+  <rect x="615" y="68" width="550" height="170" rx="8" fill="url(#grad-esf)" stroke="#4f46e5" stroke-width="1.5"/>
+  <text x="630" y="90" font-size="11.5" font-weight="700" fill="#4338ca">TIER 2: ESF PIPELINE (OUTER FACTORY)</text>
+  
+  <text x="630" y="112" font-size="9.5" font-weight="600">Workload Target:</text>
+  <text x="725" y="112" font-size="9.5" fill="#334155">Untrusted code/deps, CVE remediation, high-blast-radius execution</text>
+
+  <text x="630" y="130" font-size="9.5" font-weight="600">Isolation Level:</text>
+  <text x="715" y="130" font-size="9.5" font-weight="700" fill="#4f46e5">Hardware microVM (KVM/vz) or User-space kernel (gVisor)</text>
+
+  <text x="630" y="148" font-size="9.5" font-weight="600">Network Posture:</text>
+  <text x="725" y="148" font-size="9.5" fill="#334155">Measured closed boundary &middot; Cryptographic in-VM EgressProbe</text>
+
+  <text x="630" y="166" font-size="9.5" font-weight="600">Orchestration:</text>
+  <text x="715" y="166" font-size="9.5" fill="#334155">Temporal durable workflow &middot; Replay-safe activities</text>
+
+  <text x="630" y="184" font-size="9.5" font-weight="600">Dependencies:</text>
+  <text x="715" y="184" font-size="9.5" fill="#334155">Pre-baked base images &middot; Read-only virtiofs volume caches</text>
+
+  <text x="630" y="202" font-size="9.5" font-weight="600">Re-Verification:</text>
+  <text x="725" y="202" font-size="9.5" fill="#334155">Fresh disposable sandbox meeting MinIsolation (Never on host)</text>
+
+  <text x="630" y="222" font-size="9" fill="#4f46e5">Depth: 15–45 min &middot; Concurrency: 1 (Nano) to 4–6 (Workstation)</text>
+
+  <!-- ================= ESF VERTICAL SLICES DEEP DIVE ================= -->
+  <rect x="15" y="265" width="1170" height="640" rx="10" fill="#fff" stroke="#4f46e5" stroke-width="2"/>
+  <rect x="25" y="275" width="1150" height="34" rx="6" fill="#4f46e5"/>
+  <text x="40" y="297" font-size="13" font-weight="700" fill="#fff">ESF (ENGINEERING SOFTWARE FACTORY) — CORE ARCHITECTURE &amp; VERTICAL SLICES</text>
+  <text x="890" y="297" font-size="11" fill="#ede9fe">Deterministic Sandboxed Lifecycle</text>
+
+  <!-- Vertical Slice 1: Orchestration & Lifecycle -->
+  <g transform="translate(35, 325)">
+    <rect x="0" y="0" width="150" height="560" rx="8" fill="#f8fafc" stroke="#6366f1" stroke-width="1.2"/>
+    <rect x="0" y="0" width="150" height="30" rx="8" fill="#6366f1"/>
+    <text x="75" y="20" text-anchor="middle" font-size="10.5" font-weight="700" fill="#fff">SLICE 1: WORKFLOW</text>
+
+    <text x="12" y="50" font-size="9.5" font-weight="700" fill="#0f172a">Temporal Engine</text>
+    <text x="12" y="68" font-size="8.5" fill="#475569">&bull; Durable state</text>
+    <text x="12" y="84" font-size="8.5" fill="#475569">&bull; Activity retries</text>
+    <text x="12" y="100" font-size="8.5" fill="#475569">&bull; Replay safety</text>
+    <text x="12" y="116" font-size="8.5" fill="#475569">&bull; Activity heartbeats</text>
+
+    <rect x="10" y="135" width="130" height="65" rx="5" fill="#fff" stroke="#cbd5e1"/>
+    <text x="75" y="153" text-anchor="middle" font-size="9" font-weight="700">Idempotency Key</text>
+    <text x="75" y="170" text-anchor="middle" font-size="8" fill="#4f46e5">esf-beads-&lt;id&gt;</text>
+    <text x="75" y="185" text-anchor="middle" font-size="7.5" fill="#475569">Prevents double-runs</text>
+
+    <rect x="10" y="215" width="130" height="85" rx="5" fill="#fff" stroke="#cbd5e1"/>
+    <text x="75" y="233" text-anchor="middle" font-size="9" font-weight="700">Worker Pool</text>
+    <text x="75" y="250" text-anchor="middle" font-size="8" fill="#334155">Queue: esf-pipeline</text>
+    <text x="75" y="265" text-anchor="middle" font-size="8" fill="#334155">Max concurrent pollers</text>
+    <text x="75" y="280" text-anchor="middle" font-size="8" fill="#334155">Profile-budgeted</text>
+
+    <text x="12" y="325" font-size="9" font-weight="700" fill="#0f172a">Lifecycle States</text>
+    <text x="12" y="343" font-size="8" fill="#334155">1. Provision Sandbox</text>
+    <text x="12" y="360" font-size="8" fill="#334155">2. Ingest Repo Spec</text>
+    <text x="12" y="377" font-size="8" fill="#334155">3. Run Agent Engine</text>
+    <text x="12" y="394" font-size="8" fill="#334155">4. Probe Egress</text>
+    <text x="12" y="411" font-size="8" fill="#334155">5. Extract Patch</text>
+    <text x="12" y="428" font-size="8" fill="#334155">6. Re-Verify Sandbox</text>
+    <text x="12" y="445" font-size="8" fill="#334155">7. Sign Receipt &amp; Settle</text>
+
+    <rect x="10" y="475" width="130" height="70" rx="5" fill="#fef2f2" stroke="#ef4444"/>
+    <text x="75" y="495" text-anchor="middle" font-size="8.5" font-weight="700" fill="#991b1b">Failure Modes</text>
+    <text x="75" y="512" text-anchor="middle" font-size="7.5" fill="#b91c1c">Temporal lost: retry</text>
+    <text x="75" y="525" text-anchor="middle" font-size="7.5" fill="#b91c1c">Egress probe fail: halt</text>
+    <text x="75" y="538" text-anchor="middle" font-size="7.5" fill="#b91c1c">No silent downgrade</text>
+  </g>
+
+  <!-- Vertical Slice 2: Pluggable Sandbox Hierarchy -->
+  <g transform="translate(198, 325)">
+    <rect x="0" y="0" width="155" height="560" rx="8" fill="#f8fafc" stroke="#6366f1" stroke-width="1.2"/>
+    <rect x="0" y="0" width="155" height="30" rx="8" fill="#6366f1"/>
+    <text x="77" y="20" text-anchor="middle" font-size="10.5" font-weight="700" fill="#fff">SLICE 2: SANDBOXES</text>
+
+    <text x="12" y="50" font-size="9.5" font-weight="700" fill="#0f172a">Local-First Hierarchy</text>
+
+    <!-- Priority 1: Linux KVM -->
+    <rect x="10" y="65" width="135" height="85" rx="5" fill="#fff" stroke="#047857" stroke-width="1.2"/>
+    <text x="77" y="82" text-anchor="middle" font-size="9" font-weight="700" fill="#047857">1. Cube / Linux KVM</text>
+    <text x="77" y="98" text-anchor="middle" font-size="8" fill="#334155">Hardware microVM</text>
+    <text x="77" y="112" text-anchor="middle" font-size="8" fill="#334155">/dev/kvm acceleration</text>
+    <text x="77" y="126" text-anchor="middle" font-size="8" fill="#334155">Colima vz --nested-virt</text>
+    <text x="77" y="140" text-anchor="middle" font-size="7.5" fill="#047857">Full kernel boundary</text>
+
+    <!-- Priority 2: macOS libkrun -->
+    <rect x="10" y="160" width="135" height="85" rx="5" fill="#fff" stroke="#0284c7" stroke-width="1.2"/>
+    <text x="77" y="177" text-anchor="middle" font-size="9" font-weight="700" fill="#0284c7">2. libkrun (macOS vz)</text>
+    <text x="77" y="193" text-anchor="middle" font-size="8" fill="#334155">Apple Virtualization.fw</text>
+    <text x="77" y="207" text-anchor="middle" font-size="8" fill="#334155">Direct hypervisor call</text>
+    <text x="77" y="221" text-anchor="middle" font-size="8" fill="#334155">Zero nested KVM req</text>
+    <text x="77" y="235" text-anchor="middle" font-size="7.5" fill="#0284c7">Hardware isolation</text>
+
+    <!-- Priority 3: gVisor systrap -->
+    <rect x="10" y="255" width="135" height="85" rx="5" fill="#fff" stroke="#b45309" stroke-width="1.2"/>
+    <text x="77" y="272" text-anchor="middle" font-size="9" font-weight="700" fill="#b45309">3. gVisor (runsc)</text>
+    <text x="77" y="288" text-anchor="middle" font-size="8" fill="#334155">systrap mode (No KVM)</text>
+    <text x="77" y="302" text-anchor="middle" font-size="8" fill="#334155">User-space kernel</text>
+    <text x="77" y="316" text-anchor="middle" font-size="8" fill="#334155">Intel N100 / Cloud VMs</text>
+    <text x="77" y="330" text-anchor="middle" font-size="7.5" fill="#b45309">Syscall interception</text>
+
+    <!-- Fallback of Last Resort -->
+    <rect x="10" y="350" width="135" height="80" rx="5" fill="#fef2f2" stroke="#dc2626" stroke-width="1.2"/>
+    <text x="77" y="368" text-anchor="middle" font-size="8.5" font-weight="700" fill="#991b1b">Remote Sandbox</text>
+    <text x="77" y="384" text-anchor="middle" font-size="8" fill="#b91c1c">Emergency Last Resort</text>
+    <text x="77" y="398" text-anchor="middle" font-size="7.5" fill="#334155">External Cube/E2B</text>
+    <text x="77" y="412" text-anchor="middle" font-size="7.5" fill="#334155">Used ONLY if local fails</text>
+    <text x="77" y="424" text-anchor="middle" font-size="7.5" fill="#991b1b">Explicit config req</text>
+
+    <!-- Quarantine Policy -->
+    <rect x="10" y="445" width="135" height="100" rx="5" fill="#fff" stroke="#94a3b8"/>
+    <text x="77" y="465" text-anchor="middle" font-size="8.5" font-weight="700" fill="#0f172a">Quarantine Invariant</text>
+    <text x="77" y="482" text-anchor="middle" font-size="7.5" fill="#475569">If no backend valid:</text>
+    <text x="77" y="496" text-anchor="middle" font-size="7.5" fill="#b91c1c">quarantined_unsupported</text>
+    <text x="77" y="510" text-anchor="middle" font-size="7.5" fill="#475569">Never auto-downgrade</text>
+    <text x="77" y="524" text-anchor="middle" font-size="7.5" fill="#475569">Operator override only</text>
+    <text x="77" y="538" text-anchor="middle" font-size="7.5" fill="#0369a1">Audited decision record</text>
+  </g>
+
+  <!-- Vertical Slice 3: Agent Engines -->
+  <g transform="translate(366, 325)">
+    <rect x="0" y="0" width="155" height="560" rx="8" fill="#f8fafc" stroke="#6366f1" stroke-width="1.2"/>
+    <rect x="0" y="0" width="155" height="30" rx="8" fill="#6366f1"/>
+    <text x="77" y="20" text-anchor="middle" font-size="10.5" font-weight="700" fill="#fff">SLICE 3: AGENTS</text>
+
+    <text x="12" y="50" font-size="9.5" font-weight="700" fill="#0f172a">Multi-Agent Engines</text>
+
+    <rect x="10" y="65" width="135" height="60" rx="5" fill="#fff" stroke="#cbd5e1"/>
+    <text x="77" y="85" text-anchor="middle" font-size="9" font-weight="700">OpenCode v2</text>
+    <text x="77" y="100" text-anchor="middle" font-size="8" fill="#475569">Autonomous codegen</text>
+    <text x="77" y="114" text-anchor="middle" font-size="7.5" fill="#0369a1">Self-contained loop</text>
+
+    <rect x="10" y="135" width="135" height="60" rx="5" fill="#fff" stroke="#cbd5e1"/>
+    <text x="77" y="155" text-anchor="middle" font-size="9" font-weight="700">Claude Code Engine</text>
+    <text x="77" y="170" text-anchor="middle" font-size="8" fill="#475569">Multi-file refactorings</text>
+    <text x="77" y="184" text-anchor="middle" font-size="7.5" fill="#0369a1">High reasoning tier</text>
+
+    <rect x="10" y="205" width="135" height="60" rx="5" fill="#fff" stroke="#cbd5e1"/>
+    <text x="77" y="225" text-anchor="middle" font-size="9" font-weight="700">Codex / Pi Harness</text>
+    <text x="77" y="240" text-anchor="middle" font-size="8" fill="#475569">Deterministic patches</text>
+    <text x="77" y="254" text-anchor="middle" font-size="7.5" fill="#0369a1">Format compliance</text>
+
+    <text x="12" y="290" font-size="9" font-weight="700" fill="#0f172a">Closed Dependency Cache</text>
+    <rect x="10" y="300" width="135" height="110" rx="5" fill="#fff" stroke="#cbd5e1"/>
+    <text x="77" y="318" text-anchor="middle" font-size="8.5" font-weight="700">Pre-Baked Packages</text>
+    <text x="77" y="335" text-anchor="middle" font-size="7.5" fill="#475569">Base image bakes compilers</text>
+    <text x="77" y="348" text-anchor="middle" font-size="7.5" fill="#475569">Go, Rust, Node, Python</text>
+    <text x="77" y="365" text-anchor="middle" font-size="8.5" font-weight="700">Read-Only Volume Cache</text>
+    <text x="77" y="380" text-anchor="middle" font-size="7.5" fill="#475569">Shared package cache</text>
+    <text x="77" y="394" text-anchor="middle" font-size="7.5" fill="#047857">Solves egress catch-22</text>
+
+    <rect x="10" y="425" width="135" height="120" rx="5" fill="#f0f9ff" stroke="#0284c7"/>
+    <text x="77" y="445" text-anchor="middle" font-size="8.5" font-weight="700" fill="#0369a1">Context Ingestion</text>
+    <text x="77" y="462" text-anchor="middle" font-size="7.5" fill="#334155">&bull; Target git commit SHA</text>
+    <text x="77" y="476" text-anchor="middle" font-size="7.5" fill="#334155">&bull; Beads issue requirements</text>
+    <text x="77" y="490" text-anchor="middle" font-size="7.5" fill="#334155">&bull; Injected test fixtures</text>
+    <text x="77" y="504" text-anchor="middle" font-size="7.5" fill="#334155">&bull; Invariant checklists</text>
+    <text x="77" y="525" text-anchor="middle" font-size="8" font-weight="700" fill="#0284c7">Prompt &rarr; Code &rarr; Patch</text>
+  </g>
+
+  <!-- Vertical Slice 4: Measured Boundary & Egress -->
+  <g transform="translate(534, 325)">
+    <rect x="0" y="0" width="155" height="560" rx="8" fill="#f8fafc" stroke="#6366f1" stroke-width="1.2"/>
+    <rect x="0" y="0" width="155" height="30" rx="8" fill="#6366f1"/>
+    <text x="77" y="20" text-anchor="middle" font-size="10.5" font-weight="700" fill="#fff">SLICE 4: EGRESS</text>
+
+    <text x="12" y="50" font-size="9.5" font-weight="700" fill="#0f172a">factory.toml Guard</text>
+
+    <rect x="10" y="65" width="135" height="85" rx="5" fill="#fff" stroke="#cbd5e1"/>
+    <text x="77" y="82" text-anchor="middle" font-size="8.5" font-weight="700">Hardening Policy</text>
+    <text x="77" y="98" text-anchor="middle" font-size="7.5" fill="#475569">acknowledge_open =</text>
+    <text x="77" y="112" text-anchor="middle" font-size="8.5" font-weight="700" fill="#b91c1c">false (Upstream Default)</text>
+    <text x="77" y="128" text-anchor="middle" font-size="7.5" fill="#475569">allow_internet = false</text>
+    <text x="77" y="142" text-anchor="middle" font-size="7.5" fill="#047857">Rejects open posture</text>
+
+    <text x="12" y="170" font-size="9.5" font-weight="700" fill="#0f172a">in-VM EgressProbe</text>
+
+    <rect x="10" y="185" width="135" height="110" rx="5" fill="#fff" stroke="#047857" stroke-width="1.2"/>
+    <text x="77" y="203" text-anchor="middle" font-size="8.5" font-weight="700" fill="#047857">Active Network Probe</text>
+    <text x="77" y="220" text-anchor="middle" font-size="7.5" fill="#334155">Fires DNS, TCP, ICMP</text>
+    <text x="77" y="234" text-anchor="middle" font-size="7.5" fill="#334155">Asserts ENETUNREACH</text>
+    <text x="77" y="250" text-anchor="middle" font-size="8.5" font-weight="700">Cryptographic Proof</text>
+    <text x="77" y="265" text-anchor="middle" font-size="7.5" fill="#475569">SHA-256 evidence digest</text>
+    <text x="77" y="280" text-anchor="middle" font-size="7.5" fill="#0369a1">Bound into run receipt</text>
+
+    <rect x="10" y="310" width="135" height="115" rx="5" fill="#fef2f2" stroke="#ef4444"/>
+    <text x="77" y="330" text-anchor="middle" font-size="8.5" font-weight="700" fill="#991b1b">Enforcement vs Ack</text>
+    <text x="77" y="348" text-anchor="middle" font-size="7.5" fill="#b91c1c">PR Review Finding C1:</text>
+    <text x="77" y="362" text-anchor="middle" font-size="7.5" fill="#334155">Ack flag only records risk;</text>
+    <text x="77" y="376" text-anchor="middle" font-size="7.5" fill="#334155">does not enforce boundary.</text>
+    <text x="77" y="394" text-anchor="middle" font-size="7.5" font-weight="700" fill="#047857">AEP mandates active</text>
+    <text x="77" y="408" text-anchor="middle" font-size="7.5" font-weight="700" fill="#047857">probe verification</text>
+
+    <rect x="10" y="440" width="135" height="105" rx="5" fill="#fff" stroke="#cbd5e1"/>
+    <text x="77" y="460" text-anchor="middle" font-size="8.5" font-weight="700">Audit Verification</text>
+    <text x="77" y="478" text-anchor="middle" font-size="7.5" fill="#475569">VerifyEgressProbe()</text>
+    <text x="77" y="492" text-anchor="middle" font-size="7.5" fill="#475569">Validates probe signature</text>
+    <text x="77" y="510" text-anchor="middle" font-size="7.5" fill="#b91c1c">Corrupt/Missing probe &rarr;</text>
+    <text x="77" y="525" text-anchor="middle" font-size="8" font-weight="700" fill="#b91c1c">Quarantine &amp; Block PR</text>
+  </g>
+
+  <!-- Vertical Slice 5: In-VM Build & Test -->
+  <g transform="translate(702, 325)">
+    <rect x="0" y="0" width="155" height="560" rx="8" fill="#f8fafc" stroke="#6366f1" stroke-width="1.2"/>
+    <rect x="0" y="0" width="155" height="30" rx="8" fill="#6366f1"/>
+    <text x="77" y="20" text-anchor="middle" font-size="10.5" font-weight="700" fill="#fff">SLICE 5: IN-VM TEST</text>
+
+    <text x="12" y="50" font-size="9.5" font-weight="700" fill="#0f172a">Deterministic Execution</text>
+
+    <rect x="10" y="65" width="135" height="85" rx="5" fill="#fff" stroke="#cbd5e1"/>
+    <text x="77" y="83" text-anchor="middle" font-size="8.5" font-weight="700">Repo build.sh / test.sh</text>
+    <text x="77" y="100" text-anchor="middle" font-size="7.5" fill="#334155">Runs in guest sandbox</text>
+    <text x="77" y="114" text-anchor="middle" font-size="7.5" fill="#334155">Non-root user (aep:1000)</text>
+    <text x="77" y="128" text-anchor="middle" font-size="7.5" fill="#334155">Captured exit codes</text>
+    <text x="77" y="142" text-anchor="middle" font-size="7.5" fill="#047857">Full test log stream</text>
+
+    <rect x="10" y="160" width="135" height="100" rx="5" fill="#fff" stroke="#cbd5e1"/>
+    <text x="77" y="178" text-anchor="middle" font-size="8.5" font-weight="700">Full-Stream Hashing</text>
+    <text x="77" y="195" text-anchor="middle" font-size="7.5" fill="#b91c1c">PR Review Finding C12:</text>
+    <text x="77" y="210" text-anchor="middle" font-size="7.5" fill="#334155">Tails are display-only.</text>
+    <text x="77" y="225" text-anchor="middle" font-size="8" font-weight="700" fill="#0369a1">StdoutSha + StderrSha</text>
+    <text x="77" y="240" text-anchor="middle" font-size="7.5" fill="#334155">Hashes every output byte</text>
+    <text x="77" y="252" text-anchor="middle" font-size="7.5" fill="#047857">Detects silent failures</text>
+
+    <rect x="10" y="270" width="135" height="110" rx="5" fill="#fff" stroke="#cbd5e1"/>
+    <text x="77" y="290" text-anchor="middle" font-size="8.5" font-weight="700">Cryptographic Patch</text>
+    <text x="77" y="308" text-anchor="middle" font-size="7.5" fill="#475569">Diff extracted from guest</text>
+    <text x="77" y="322" text-anchor="middle" font-size="7.5" fill="#334155">PatchDigest: SHA-256</text>
+    <text x="77" y="338" text-anchor="middle" font-size="7.5" fill="#334155">Filtered for path traversal</text>
+    <text x="77" y="352" text-anchor="middle" font-size="7.5" fill="#334155">Zero sensitive leak</text>
+    <text x="77" y="366" text-anchor="middle" font-size="8" font-weight="600" fill="#0284c7">Emitted as Artifact</text>
+
+    <rect x="10" y="390" width="135" height="155" rx="5" fill="#f0fdf4" stroke="#16a34a"/>
+    <text x="77" y="410" text-anchor="middle" font-size="8.5" font-weight="700" fill="#15803d">Quality Gates</text>
+    <text x="77" y="430" text-anchor="middle" font-size="8" font-weight="700">Uncle Bob (UB) Gates:</text>
+    <text x="77" y="448" text-anchor="middle" font-size="7.5" fill="#334155">1. CRAP Score &lt; 10</text>
+    <text x="77" y="462" text-anchor="middle" font-size="7.5" fill="#334155">CC &gt; 8 forbidden</text>
+    <text x="77" y="480" text-anchor="middle" font-size="7.5" fill="#334155">2. DRY Ratio &lt; 0.8</text>
+    <text x="77" y="494" text-anchor="middle" font-size="7.5" fill="#334155">dupl AST scan</text>
+    <text x="77" y="512" text-anchor="middle" font-size="7.5" fill="#334155">3. Mutation Kill &gt; 85%</text>
+    <text x="77" y="526" text-anchor="middle" font-size="7.5" fill="#334155">100% boundary kill</text>
+  </g>
+
+  <!-- Vertical Slice 6: Disposable Sandbox Re-Verification -->
+  <g transform="translate(870, 325)">
+    <rect x="0" y="0" width="150" height="560" rx="8" fill="#f8fafc" stroke="#6366f1" stroke-width="1.2"/>
+    <rect x="0" y="0" width="150" height="30" rx="8" fill="#6366f1"/>
+    <text x="75" y="20" text-anchor="middle" font-size="10.5" font-weight="700" fill="#fff">SLICE 6: RE-VERIFY</text>
+
+    <text x="12" y="50" font-size="9.5" font-weight="700" fill="#0f172a">Sandbox Re-Verification</text>
+
+    <rect x="10" y="65" width="130" height="110" rx="5" fill="#fef2f2" stroke="#dc2626"/>
+    <text x="75" y="85" text-anchor="middle" font-size="8.5" font-weight="700" fill="#991b1b">Host Protection</text>
+    <text x="75" y="103" text-anchor="middle" font-size="7.5" fill="#b91c1c">PR Review Finding C4:</text>
+    <text x="75" y="118" text-anchor="middle" font-size="7.5" fill="#334155">Running untrusted tests</text>
+    <text x="75" y="132" text-anchor="middle" font-size="7.5" fill="#334155">in Tier 1 re-exposes</text>
+    <text x="75" y="146" text-anchor="middle" font-size="7.5" fill="#334155">host to malicious code.</text>
+    <text x="75" y="162" text-anchor="middle" font-size="7.5" font-weight="700" fill="#b91c1c">Host Kernel Protected</text>
+
+    <rect x="10" y="185" width="130" height="115" rx="5" fill="#fff" stroke="#047857" stroke-width="1.2"/>
+    <text x="75" y="205" text-anchor="middle" font-size="8.5" font-weight="700" fill="#047857">MinIsolation Rule</text>
+    <text x="75" y="222" text-anchor="middle" font-size="7.5" fill="#b91c1c">PR Review Finding C8:</text>
+    <text x="75" y="238" text-anchor="middle" font-size="7.5" fill="#334155">Re-verification must match</text>
+    <text x="75" y="252" text-anchor="middle" font-size="7.5" fill="#334155">or exceed run isolation.</text>
+    <text x="75" y="268" text-anchor="middle" font-size="7.5" fill="#047857">gVisor runs &rarr; gVisor verify</text>
+    <text x="75" y="282" text-anchor="middle" font-size="7.5" fill="#047857">KVM runs &rarr; KVM verify</text>
+
+    <rect x="10" y="310" width="130" height="105" rx="5" fill="#fff" stroke="#cbd5e1"/>
+    <text x="75" y="330" text-anchor="middle" font-size="8.5" font-weight="700">Disposable Sandbox</text>
+    <text x="75" y="348" text-anchor="middle" font-size="7.5" fill="#475569">Fresh instance spawned</text>
+    <text x="75" y="362" text-anchor="middle" font-size="7.5" fill="#334155">Applies generated patch</text>
+    <text x="75" y="376" text-anchor="middle" font-size="7.5" fill="#334155">Executes clean build/test</text>
+    <text x="75" y="390" text-anchor="middle" font-size="7.5" fill="#334155">Destroyed on exit</text>
+    <text x="75" y="404" text-anchor="middle" font-size="7.5" fill="#047857">Zero residual state</text>
+
+    <rect x="10" y="425" width="130" height="120" rx="5" fill="#fff" stroke="#cbd5e1"/>
+    <text x="75" y="445" text-anchor="middle" font-size="8.5" font-weight="700">Tier 1 Static Gate</text>
+    <text x="75" y="465" text-anchor="middle" font-size="7.5" fill="#334155">Tier 1 performs static</text>
+    <text x="75" y="480" text-anchor="middle" font-size="7.5" fill="#334155">verification only:</text>
+    <text x="75" y="495" text-anchor="middle" font-size="7.5" fill="#475569">&bull; AST syntax check</text>
+    <text x="75" y="510" text-anchor="middle" font-size="7.5" fill="#475569">&bull; Diff cleanliness</text>
+    <text x="75" y="525" text-anchor="middle" font-size="7.5" fill="#475569">&bull; License scanning</text>
+  </g>
+
+  <!-- Vertical Slice 7: Cryptographic Receipt & Settlement -->
+  <g transform="translate(1032, 325)">
+    <rect x="0" y="0" width="135" height="560" rx="8" fill="#f8fafc" stroke="#6366f1" stroke-width="1.2"/>
+    <rect x="0" y="0" width="135" height="30" rx="8" fill="#6366f1"/>
+    <text x="67" y="20" text-anchor="middle" font-size="10.5" font-weight="700" fill="#fff">SLICE 7: SETTLE</text>
+
+    <text x="10" y="50" font-size="9.5" font-weight="700" fill="#0f172a">Audit &amp; Settlement</text>
+
+    <rect x="8" y="65" width="120" height="110" rx="5" fill="#fff" stroke="#047857" stroke-width="1.2"/>
+    <text x="67" y="85" text-anchor="middle" font-size="8.5" font-weight="700" fill="#047857">Ed25519 Receipt</text>
+    <text x="67" y="102" text-anchor="middle" font-size="7" fill="#475569">Canonical RFC 8785</text>
+    <text x="67" y="116" text-anchor="middle" font-size="7.5" fill="#334155">&bull; CommitSha</text>
+    <text x="67" y="130" text-anchor="middle" font-size="7.5" fill="#334155">&bull; Full StdoutSha</text>
+    <text x="67" y="144" text-anchor="middle" font-size="7.5" fill="#334155">&bull; EgressProof</text>
+    <text x="67" y="158" text-anchor="middle" font-size="7.5" fill="#334155">&bull; Nonce + LedgerSeq</text>
+    <text x="67" y="170" text-anchor="middle" font-size="7" fill="#047857">Replay-protected</text>
+
+    <rect x="8" y="185" width="120" height="115" rx="5" fill="#fff" stroke="#cbd5e1"/>
+    <text x="67" y="205" text-anchor="middle" font-size="8.5" font-weight="700">Beads Ledger Close</text>
+    <text x="67" y="222" text-anchor="middle" font-size="7.5" fill="#334155">Command:</text>
+    <text x="67" y="236" text-anchor="middle" font-size="8" font-weight="700" fill="#4f46e5">bd close &lt;issueId&gt;</text>
+    <text x="67" y="254" text-anchor="middle" font-size="7" fill="#475569">Settlement Guard:</text>
+    <text x="67" y="268" text-anchor="middle" font-size="7" fill="#b91c1c">Requires verified receipt</text>
+    <text x="67" y="282" text-anchor="middle" font-size="7" fill="#b91c1c">Refuses unverified close</text>
+    <text x="67" y="294" text-anchor="middle" font-size="7" fill="#047857">Single source of truth</text>
+
+    <rect x="8" y="310" width="120" height="110" rx="5" fill="#fff" stroke="#059669" stroke-width="1.2"/>
+    <text x="67" y="328" text-anchor="middle" font-size="8" font-weight="700" fill="#047857">Cognitive Inscription</text>
+    <text x="67" y="344" text-anchor="middle" font-size="7.5" fill="#334155">Writes into NeuroStrata</text>
+    <text x="67" y="358" text-anchor="middle" font-size="7" fill="#475569">&bull; Root cause vector</text>
+    <text x="67" y="372" text-anchor="middle" font-size="7" fill="#475569">&bull; Fix diff embedding</text>
+    <text x="67" y="386" text-anchor="middle" font-size="7" fill="#475569">&bull; Edge case patterns</text>
+    <text x="67" y="400" text-anchor="middle" font-size="7" fill="#475569">&bull; Receipt Merkle hash</text>
+    <text x="67" y="414" text-anchor="middle" font-size="7" fill="#059669">Continuous Learning</text>
+
+    <rect x="8" y="430" width="120" height="115" rx="5" fill="#f0fdf4" stroke="#16a34a"/>
+    <text x="67" y="450" text-anchor="middle" font-size="8.5" font-weight="700" fill="#15803d">Auditor Check</text>
+    <text x="67" y="470" text-anchor="middle" font-size="7.5" fill="#334155">Public key validation</text>
+    <text x="67" y="485" text-anchor="middle" font-size="7.5" fill="#334155">Altered byte in test</text>
+    <text x="67" y="500" text-anchor="middle" font-size="7.5" fill="#b91c1c">fails verification</text>
+    <text x="67" y="515" text-anchor="middle" font-size="7.5" fill="#334155">Non-repudiation</text>
+    <text x="67" y="530" text-anchor="middle" font-size="8" font-weight="700" fill="#15803d">Audit Passed</text>
+  </g>
+
+  <!-- Connectors between slices -->
+  <path d="M 185,450 L 198,450" stroke="#6366f1" stroke-width="1.5" marker-end="url(#arrow-sec)"/>
+  <path d="M 353,450 L 366,450" stroke="#6366f1" stroke-width="1.5" marker-end="url(#arrow-sec)"/>
+  <path d="M 521,450 L 534,450" stroke="#6366f1" stroke-width="1.5" marker-end="url(#arrow-sec)"/>
+  <path d="M 689,450 L 702,450" stroke="#6366f1" stroke-width="1.5" marker-end="url(#arrow-sec)"/>
+  <path d="M 857,450 L 870,450" stroke="#6366f1" stroke-width="1.5" marker-end="url(#arrow-sec)"/>
+  <path d="M 1020,450 L 1032,450" stroke="#6366f1" stroke-width="1.5" marker-end="url(#arrow-sec)"/>
+</svg>
+</div>
+
+<div class="note">
+  <strong>ESF Vertical Slice Invariants:</strong>
+  Every ESF pipeline executes through all 7 vertical slices in order. An issue cannot settle (<code>bd close</code>) without passing in-VM egress proof verification (Slice 4), full-stream test logging (Slice 5), disposable sandbox re-verification meeting the original <code>IsolationClass</code> (Slice 6), and Ed25519 signature binding (Slice 7).
+</div>
+
+<footer>
+  Autonomous Engineering Platform &middot; Architecture Diagrams &amp; Vertical Slices v1.2 &middot; Branch: <code>docs/dual-lane-governance-proposal</code>
+</footer>
+
+</body>
+</html>
