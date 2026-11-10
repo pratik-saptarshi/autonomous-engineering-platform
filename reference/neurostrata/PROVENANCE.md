@@ -93,10 +93,12 @@ flags three paths in this tree — all three allowlisted:
   `// official AWS example`). Both files are allowlisted in
   `.gitleaks.toml`, mirroring the ESF `redact_test.go` precedent.
 - `docs/designs/2026-10-27-ranked-improvement-list.md` — new since the
-  2026-10-26 note (it arrived with the `a7cc416` tree). Line 15 is prose
-  ("secret and PII hits, junk/duplicate detection") whose word pair
-  trips the generic-api-key entropy heuristic. Not a credential;
-  allowlisted in `.gitleaks.toml` on 2026-11-09.
+  2026-10-26 note (it arrived with the `a7cc416` tree). Line 15 is a
+  prose sentence about secret/PII hit counts and duplicate detection
+  whose wording trips the generic-api-key entropy heuristic. (The
+  sentence is not quoted verbatim here: quoting it tripped the same
+  heuristic in this file.) Not a credential; allowlisted in
+  `.gitleaks.toml` on 2026-11-09.
 
 The committed LanceDB store under `.neurostrata/` remains part of the
 snapshot and was included in the scan: no credential patterns. No other
