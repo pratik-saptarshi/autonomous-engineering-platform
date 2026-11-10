@@ -1,8 +1,8 @@
 # Provenance — vendored ESF reference snapshot
 
 - **Upstream:** https://github.com/pratik-saptarshi/esf
-- **Pinned commit:** `705808f11a670357646e76be1032873267e14ef9` ("chore(deps): bump certifi in uv.lock to 2026.10.23 (Dependabot) (#6)")
-- **Snapshot date:** 2026-10-26
+- **Pinned commit:** `388583d` ("chore(deps): bump filelock to 4.2.9 via litellm 1.108.3 (#8)")
+- **Snapshot date:** 2026-11-09
 - **License:** MIT (copyright 2026 Owain Lewis; fork by mitkox — see `docs/upstream.md`). `LICENSE` is preserved verbatim in this tree.
 - **Excluded from the vendor:** `.git` (history) and `bin/` (local build output).
 - **Purpose:** reference implementation for the AEP factory lane — studied and built from, not executed from here.
@@ -15,6 +15,7 @@ Note: `bin/` build output is NOT vendored. The factory binaries were built local
 
 ## Update history
 
+- 2026-11-09: re-vendored at `388583d`. One fork commit over the previous pin (`705808f`): fork PR #8 bumps filelock to 4.2.9 via litellm 1.108.3 in `uv.lock` (the targeted filelock fix from the vendored-repo maintenance queue — filelock 3.32.7 carried the high-severity alert chain). Content delta vs the previous snapshot: exactly 1 file (`uv.lock`). 506 files in manifest (unchanged count).
 - 2026-10-21: re-vendored at `804fb46` (#43 — qualification-gated Harness2 improvement for OpenCode2 factory runs). 505 files in manifest (was 478). Secret-scan: same single synthetic fixture in `redact_test.go`, no new hits.
 - 2026-10-26: re-vendored at `705808f`. Two upstream changes over the previous pin (`3f6430b`): fork PR #5 bumps the controlplane web dependencies (vite 8.3.4 → 8.3.5 in `internal/controlplane/web/package.json`; undici → 8.12.3 in `package-lock.json`), and fork PR #6 bumps certifi in `uv.lock` to 2026.10.23. The `uv.lock` change also repairs a provenance divergence: the previous snapshot carried certifi 2026.10.19 from AEP PR #29's in-place Dependabot merge, which matched no fork commit; the snapshot now carries the fork's 2026.10.23, an upgrade, and the tree once again matches a single upstream commit byte-for-byte. Content delta vs the previous snapshot: exactly 3 files (`internal/controlplane/web/package.json`, `internal/controlplane/web/package-lock.json`, `uv.lock`). 506 files in manifest. Secret-scan (gitleaks, repo CI configuration): no leaks; the only credential-pattern fixtures remain the allowlisted synthetic ones in `internal/factory/redact_test.go` and `internal/factory/evidence_test.go`, both unchanged.
 
