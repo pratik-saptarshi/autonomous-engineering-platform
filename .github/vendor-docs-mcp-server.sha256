@@ -70,7 +70,7 @@ fcb822060e027e9f0cecf0c1266e23849dfc34e0e52f9a8ac2d82c6607a17f7d  ./.releaserc.j
 7efe5519339394a1eab877bd1ad9393464dbabf424ed9f223f7a59888a715506  ./CONTRIBUTING.md
 f77670e147bcaae492a1d7457c742986de95a99bb7f01639eae3bfd14413eea7  ./Dockerfile
 e6cb7201b3a7a41503859e0761ac5f2f755392c6e0826ae81e5a1beadf918a31  ./LICENSE
-312f5d0bfbcfbcd721d27b71d493179b1b26dafef01c30d465d67365e11f8aab  ./PROVENANCE.md
+c07db55ac13e7d10d62947f88c0bded0be8ae1cd0172b75e3995dd8085e18e3a  ./PROVENANCE.md
 501917ed151d74b6ad1ab05133492ba0dd66eb2910fa73848b40fcf8ce556c83  ./README.md
 a7c55afcc7ebecf4ca44b080c47b97d481be4a541518c4fc315c5d0de283fed9  ./biome.json
 bea2f03f0d4556e94d6b3bda0592016efee93497252ed81feea315c8241e8614  ./commitlint.config.js
@@ -397,8 +397,8 @@ b6fbfdddbbc134820b25994671213e63c713ac8646809df849884a26ea63c9b6  ./openspec/spe
 702573571b3be8e07cf68ec5ca82fb6c570a88504d8732c6063ed7f3b87b6ac3  ./openspec/specs/url-normalization/spec.md
 b4b8bd43289ded0baa9f76d3d97ecfd3923ed9b8ad2c69df2245465fc53a19a1  ./openspec/specs/version-resolution/spec.md
 e336831f22436d416988cd2ca8af83c9f01786949555ae8281eba2827425bd3b  ./openspec/specs/zip-processing/spec.md
-ddb1ce1f9bbf573ffa5e62f363a0d1b601766a129c54887c3a42e519e59c1bfe  ./package-lock.json
-69b8e9cca24727ce6f69f26b380d3d82444ec75aaee68b0eaaca24e9cf044378  ./package.json
+fc4e47e41a7b3b3d302954511071b45689beb84cbb23de6f343441337a1405ff  ./package-lock.json
+e7cdb59383147cbb0d1b56727a7c99ae5ae307a6a2826ff417f2455754b980e9  ./package.json
 ee0ed5c163f4ba1f342fda148c8408a3f72153632a9c4d0d3672f9ba77fdcadc  ./public/android-icon-144x144.png
 911032bd2db9daf24904d85fa0461da0ccbb4a6a442289398e15c49dead317ca  ./public/android-icon-192x192.png
 724c734c5ae3f5fb59e55bdecd45760f40c72382f0495ed85ff00093b05f075b  ./public/android-icon-36x36.png
@@ -594,8 +594,8 @@ db253c2555f9a916558f8361ed16dbef717f536b84d49d53e2b9895f55f1bb10  ./src/scraper/
 b3bdf5d26b75564723ebb8084ea6f977f15900f00e2ff6f8f741c7635847c67f  ./src/scraper/utils/defaultPatterns.ts
 f9e15529ac59e8b3c206f610664d9d5397b8ac1fbaf502de4072fa6ebc97b967  ./src/scraper/utils/llmsTxtParser.test.ts
 92a0d4734dfde9d98ea206d241b1fbdb3f8736acd6d053bafb0974ac5a7402bf  ./src/scraper/utils/llmsTxtParser.ts
-65ee01ab06e9e3bc2cf96a9666ce1282c529dd05ff6a28a2c1896019f5375cd8  ./src/scraper/utils/patternMatcher.test.ts
-85e323411a2137f317dbf934cacc997c334394ec5634688ed16d32b96f466878  ./src/scraper/utils/patternMatcher.ts
+464a20b61a9247f53ae3302a74a757d613aca8f0a72b2e63ed12b707d4055470  ./src/scraper/utils/patternMatcher.test.ts
+a77eb4f3a2d1c2d0182b693ef69fe0f3d8f9685fa7fda7817b77896bbacc8b9d  ./src/scraper/utils/patternMatcher.ts
 24a6ce1d2bdf5c55edf6f9fcfe465a4b3c9aa9d3986569b839f4eaa2ec786395  ./src/scraper/utils/scope.test.ts
 a4eb43a9393b4fdc12aba736cd9b0fc0106558339fc7be38ee771400627a66ef  ./src/scraper/utils/scope.ts
 ff433e6c479d28fb11f4303c70df4bbc830efb2460fbe1b53be649d21483e44e  ./src/services/apiClient.test.ts
