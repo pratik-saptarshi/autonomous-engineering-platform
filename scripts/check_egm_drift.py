@@ -52,6 +52,7 @@ from pathlib import Path
 
 BLOCK_INDICATOR_RE = re.compile(r"^[>|][+-]?[0-9]?$")
 TABLE_PAIR_RE = re.compile(r"`(egm-[a-z0-9-]+)`\s*→\s*`([a-z0-9_]+)`")
+FRONTMATTER_NAMES_RE = re.compile(r"\*\*Frontmatter Names\*\*")
 MAP_PAIR_RE = re.compile(r'"([^"]+)"\s*:\s*"([^"]+)"')
 STANDARD_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 BRACKET_LIST_RE = re.compile(r"\[([^\[\]]+)\]")
@@ -132,21 +133,34 @@ def check_yaml_parity(root, findings):
 
 
 def _normalization_pairs(text):
-    """(name, shortname, lineno) triples from the normalization table.
+    """(pairs, problem) for the normalization table in the loop file.
 
-    The scan is anchored to the table itself -- the paragraph block
-    carrying the most ``name -> shortname`` pairs (ties go to the
-    earliest such block) -- so a pair mentioned in prose elsewhere in
-    the file cannot stand in for a deleted table row.
+    The scan reads ONLY the designated block: the paragraph block
+    carrying the ``**Frontmatter Names**`` lead-in, which is how the
+    loop file itself designates the block that holds the table
+    ("Normalize it through this table"). Pairs anywhere else in the
+    file are prose: they can neither stand in for a table row nor
+    trigger a finding. (An earlier version anchored on the block
+    carrying the most pairs; a verbatim roster restated in prose
+    could hijack that anchor and silently certify a corrupt table --
+    panel finding J117-1.)
+
+    ``problem`` is None on success; otherwise it describes why the
+    designated block could not be used, and the caller fails closed.
     """
-    best = []
-    for start, block in _paragraph_blocks(text):
-        pairs = [(match.group(1), match.group(2),
-                  start + block[:match.start()].count("\n"))
-                 for match in TABLE_PAIR_RE.finditer(block)]
-        if len(pairs) > len(best):
-            best = pairs
-    return best
+    designated = [(start, block) for start, block in _paragraph_blocks(text)
+                  if FRONTMATTER_NAMES_RE.search(block)]
+    if len(designated) != 1:
+        return [], (f"found {len(designated)} block(s) carrying the "
+                    f"**Frontmatter Names** lead-in")
+    start, block = designated[0]
+    pairs = [(match.group(1), match.group(2),
+              start + block[:match.start()].count("\n"))
+             for match in TABLE_PAIR_RE.finditer(block)]
+    if not pairs:
+        return [], ("the designated **Frontmatter Names** block "
+                    "carries no name -> shortname pairs")
+    return pairs, None
 
 
 def check_normalization_table(root, bundle, findings):
@@ -165,8 +179,15 @@ def check_normalization_table(root, bundle, findings):
         findings.append("egm-review-loop: missing SKILL.md")
         return
     loop_text = loop_file.read_text(encoding="utf-8")
+    pairs, problem = _normalization_pairs(loop_text)
+    if problem is not None:
+        findings.append(
+            f"egm-review-loop/SKILL.md: cannot read the normalization "
+            f"table: {problem}; rule (b) fails closed rather than "
+            f"guessing which block is the table")
+        return
     table = {}
-    for name, shortname, lineno in _normalization_pairs(loop_text):
+    for name, shortname, lineno in pairs:
         if name in table:
             findings.append(
                 f"egm-review-loop/SKILL.md:{lineno}: normalization "
