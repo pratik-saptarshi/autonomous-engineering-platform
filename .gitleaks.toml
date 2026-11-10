@@ -9,10 +9,17 @@
 # test suites (src/secrets.rs, src/buffer.rs, both #[cfg(test)]) carry
 # sequential fake ghp_ material and AWS documentation example keys,
 # documented in reference/neurostrata/PROVENANCE.md.
+#
+# One more NeuroStrata false positive, added 2026-11-09 during the
+# PR #140 re-vendor (regenerated at pin 4f487f4):
+# docs/designs/2026-10-27-ranked-improvement-list.md line 15 is
+# prose ("secret and PII hits, junk/duplicate detection") whose word pair
+# trips the generic-api-key entropy heuristic. Not a credential.
 [extend]
 useDefault = true
 [allowlist]
 description = "Synthetic fixtures in vendored redaction tests (ESF, NeuroStrata)"
 paths = ['''reference/esf/internal/factory/redact_test.go''', '''reference/esf/internal/factory/evidence_test.go''',
 '''reference/neurostrata/src/secrets.rs''',
-'''reference/neurostrata/src/buffer.rs''']
+'''reference/neurostrata/src/buffer.rs''',
+'''reference/neurostrata/docs/designs/2026-10-27-ranked-improvement-list.md''']
