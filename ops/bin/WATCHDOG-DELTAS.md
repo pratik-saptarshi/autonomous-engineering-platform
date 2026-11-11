@@ -1,15 +1,119 @@
 # WATCHDOG-DELTAS.md — `ops/bin/watchdog-backup.sh` vs the live script
 
 Canonical watchdog source: `~/workspace/neurostrata/bin/watchdog-backup.sh`
-(live script, on-demand model, Oct 28 patch).
+(live script, direct-restart model).
 
-- Live sha256: `bb0754cc8c29a5e42599c6a93ff89cee72ceaadc07aa3467517e79729bf0cf86`
-  (332 lines, verified 2026-11-04 at build start; re-verified unchanged at build end)
-- New sha256: `f3cdd2bc533a986bee94d8718e3a096633282d394e33c26887fa99787ce03894`
-  (333 lines, after fix round 2 — Delta D; prior three-delta build was
-  `1598bffb1d3bed8d12b7bfcdcb343634254e261e52b5386f213476d72aaec9ad`,
-  331 lines)
-- `bash -n ops/bin/watchdog-backup.sh`: clean.
+- Live sha256: `6a7d4fb3071483f0b3c9da2ad9029acce6ed69072f3cb3cc8fb643993e73cd12`
+  (447 lines, verified 2026-11-11 at re-baseline)
+- Repo sha256: `c8fd432853ef483a0f833778ce7da4ba407548c0ac02a7e4b3ed5d2c995f5a21`
+  (461 lines, after the 2026-11-11 re-baseline below)
+- `bash -n ops/bin/watchdog-backup.sh`: clean. `shellcheck` (CI set,
+  0.9.0): clean. `shfmt -d -i 2` (pinned v3.10.0, as CI): clean.
+  `ops/tests/test_watchdog_ops.sh`: ALL PASS.
+
+## Re-baseline 2026-11-11 — per-delta dispositions
+
+The 2026-11-04 repo build (record retained below) was derived from
+the live script of that era (sha256 `bb0754cc…`, 332 lines, on-demand
+model). Live has since been rewritten around a different model: no
+MCP client exists in this deployment, so the watchdog restarts the
+daemon directly and guards the restart with an EXIT trap; it polls
+health instead of sleeping a fixed window; it distinguishes an
+idle-reaper shutdown from an unexpected one (`reaped_expected`); it
+prunes the Drive snapshot folder under the 2026-10-27 owner rule; it
+pins `TZ=UTC`; and it orders staging by filename-embedded timestamp
+(Overseer A1/A2). The repo copy was therefore stale in both
+directions. This re-baseline takes the CURRENT live script as the
+base and re-adjudicates every 2026-11-04 delta against it:
+
+- **Delta A (header rewrite to on-demand truth): NOT re-applied —
+  superseded.** The on-demand model it documented no longer exists
+  in live. The current live header (adaptation notes plus the
+  seven-step run description) is the truthful one and is carried
+  verbatim.
+- **Delta B (dead `start_daemon` removal): NOT re-applied.** The
+  precondition is gone: in current live, `start_daemon` is called
+  from the EXIT trap, the unexpected-down path, and the post-backup
+  restart. Removing it would break the script.
+- **Delta C (`stop_daemon` moved above first use): MOOT.** Current
+  live has no `stop_daemon` function and no use-before-definition;
+  the stop is inline in step 3, so there is nothing to move. One
+  behavioral difference is inherited from live unchanged and is
+  flagged here, not fixed: the inline stop signals only the first
+  `pgrep` match, where the 2026-11-04 baseline's `stop_daemon`
+  signalled every match (its comment warned that the binary forks
+  and `head -1` can miss the live daemon). Live is canonical; if
+  that behavior is wanted back it must land in live first and be
+  backported by a future re-baseline.
+- **Delta D (shellcheck fixes + shfmt reformat): RE-APPLIED, with
+  the SC2012 resolutions changed where live's semantics moved.**
+  - `shfmt -w -i 2` (pinned v3.10.0, as CI) over the whole file.
+  - `drive_catch_up`'s newest-staged selection and the step-8
+    staging prune: find-based and NUL-safe as in fix round 2, but
+    ordered by filename (`-printf '%f'`, `sort -z`) — NOT by mtime.
+    Live orders these by filename-embedded timestamp on purpose
+    (Overseer A2): staged copies are made with `cp -p` and carry
+    their source's mtime, so round 2's mtime pipelines would have
+    selected and pruned the wrong copies. Verified by direct
+    pipeline probes with scrambled mtimes (filename order wins;
+    empty staging yields an empty selection and deletes nothing)
+    and by behavioral case (g), which also pins the prune's
+    watermark protection.
+  - The daemon-log rotation in `start_daemon` keeps fix round 2's
+    mtime find pipeline: rotation files are created by `mv`, so
+    mtime is the true criterion there.
+  - New findings since the 2026-11-04 build, fixed in code:
+    SC2034 — the unused `line` local in `drive_prune_snapshots`
+    is removed. SC2120/SC2119 — `wait_healthy` is now called with
+    its explicit 60-second argument at all three call sites (the
+    same value as its `${1:-60}` default).
+  - SC2317 (9 hits, all inside `on_exit`): false positive,
+    suppressed with a scoped directive and an in-file
+    justification instead of a restructure. `on_exit` runs only
+    via the EXIT trap; its restart block is reachable whenever
+    step 3 sets `RESTART_NEEDED=true` before an abrupt exit.
+    Shellcheck's reachability pass cannot model trap invocation
+    (reproduced on 0.9.0 and 0.10.0; string-compare and
+    init-order variants do not clear it).
+- **Public-tree scrub (new in this re-baseline):** one machine path
+  carried in from live is generalized in the repo copy — the
+  `start_daemon` core-dump comment's "the daemon's cwd (/home/hatch,
+  per core_pattern)" reads "the daemon's working directory (per
+  core_pattern)" here. The live file keeps its machine-specific
+  wording; the public tree does not carry it. No behavior change.
+
+Also carried in with the new base — live features with no 2026-11-04
+counterpart: `drive_prune_snapshots`, `reaped_expected`,
+`wait_healthy`, the `TZ=UTC` pin, Drive catch-up in-run retry, and
+`BIN` at `~/go/bin/neurostrata-mcp`. Dropped with the old base
+(they existed only in the on-demand baseline): `archive_logs`,
+`log_memory`, `rotate_daemon_log`, and the `IDLE_SECS` idle check —
+idle-stop is the standalone idle-reaper's job again (see
+`ops/bin/RETIRED.md`, whose retirement this re-baseline reverses).
+
+The behavioral suite was re-specified for the direct-restart model
+in the same re-baseline: the fixture stub now lives at the
+watchdog's real `BIN` path (`~/go/bin`), cases (b)/(c) pin the
+reaped-vs-unexpected down behavior, (d)/(e) pin restart-after-backup,
+and case (g) pins the prune's filename ordering and watermark
+protection.
+
+## Notes (not deltas)
+
+- The `/opt/hatch/bin/hatch_gws_cli` runtime binary path is unchanged
+  from live (allowlisted exception: required for the Drive upload tier;
+  no credential value is embedded — only the binary path).
+
+## 2026-11-04 build record (superseded — retained for lineage)
+
+The 2026-11-04 build recorded live sha256
+`bb0754cc8c29a5e42599c6a93ff89cee72ceaadc07aa3467517e79729bf0cf86`
+(332 lines) → repo sha256
+`f3cdd2bc533a986bee94d8718e3a096633282d394e33c26887fa99787ce03894`
+(333 lines, after fix round 2). Its delta sections follow verbatim;
+claims in them describe the superseded on-demand baseline, and the
+Delta C section's "exactly three logical changes" sentence was
+already superseded by its own Delta D section.
 
 ## Delta A — "Every run" header block rewritten to on-demand truth
 
@@ -134,7 +238,7 @@ count — it is recorded in `ops/bin/RETIRED.md` (bare `9>&-` →
 `exec 9>&-` plus reformat; the naive `true 9>&-` was rejected
 because it would have applied only to the `true` command).
 
-## Notes (not deltas)
+## Notes (not deltas) — 2026-11-04 build
 
 - The live line-43 comment ("see 9>&- in start_daemon") still references
   the removed function in the new file. It was left in place because fix

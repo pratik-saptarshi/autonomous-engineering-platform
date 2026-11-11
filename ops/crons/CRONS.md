@@ -1,22 +1,25 @@
 # Scheduler wiring — NeuroStrata lifecycle jobs (current reality)
 
 This page records the scheduled jobs that actually exist for the
-NeuroStrata lifecycle, as of 2026-11-04. Retired jobs are listed with
-their evidence so a future reader does not re-wire them by mistake.
+NeuroStrata lifecycle, as of 2026-11-04 (idle-reaper status corrected
+2026-11-11). Retired jobs are listed with their evidence so a future
+reader does not re-wire them by mistake.
 
 | Job | Cadence | Runs | Status |
 | --- | --- | --- | --- |
 | `neurostrata-watchdog` | Every 2h | `bash ~/workspace/neurostrata/bin/watchdog-backup.sh` | Current — see `watchdog-cron-record.md` and the canonical script in `ops/bin/watchdog-backup.sh` |
-| `neurostrata-idle-reaper` | Was every 15m | `bash ~/workspace/neurostrata/bin/idle-reaper.sh` | Retired — see `ops/bin/RETIRED.md` |
+| `neurostrata-idle-reaper` | Every 15m | `bash ~/workspace/neurostrata/bin/idle-reaper.sh` | Current — 2026-11-04 retirement reversed 2026-11-11, see `ops/bin/RETIRED.md` |
 | `neurostrata-export` | Was every 168h (7d) | `neurostrata-mcp export-graph` to `~/workspace/neurostrata/exports/` | Retired — see evidence below |
 
-## Retired: standalone idle reaper
+## Standalone idle reaper — retirement reversed (2026-11-11)
 
-Evidence: no live `~/workspace/neurostrata/bin/idle-reaper.sh`, no
-idle-reaper cron in `~/workspace/cron.d` or goal crons, no `reaper.log`
-under `~/workspace/neurostrata/`. Full note: `ops/bin/RETIRED.md`.
-Idle-stop behavior was absorbed, not abolished: it lives on inside the
-canonical watchdog (`ops/bin/watchdog-backup.sh`, `IDLE_SECS` idle check).
+The 2026-11-04 retirement of this job was based on evidence that no
+longer holds: a live `~/workspace/neurostrata/bin/idle-reaper.sh`
+exists, the `neurostrata-idle-reaper` cron (every 15m) is present in
+the environment goal's cron set, and `reaper.log` is actively
+written (the watchdog's `reaped_expected` parses it). Idle-stop was
+not absorbed into the watchdog: the current watchdog has no idle
+check. The reaper is a current job. Full record: `ops/bin/RETIRED.md`.
 
 ## Retired: export job
 

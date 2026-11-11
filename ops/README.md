@@ -11,20 +11,23 @@ live until it is deployed by hand (see Deployment below).
 `ops/bin/watchdog-backup.sh` is the **canonical SOURCE** for the
 watchdog. It is the live deployed watchdog (base:
 `~/workspace/neurostrata/bin/watchdog-backup.sh`, sha256 recorded in
-`ops/bin/WATCHDOG-DELTAS.md`) plus exactly four documented deltas:
-a corrected header block, removal of the dead `start_daemon`
-definition, the `stop_daemon` definition moved above its first
-use, and shellcheck fixes plus a full `shfmt -i 2` reformat (fix
-round 2). Every deviation from the live script is recorded in
-`ops/bin/WATCHDOG-DELTAS.md`; no other difference exists.
+`ops/bin/WATCHDOG-DELTAS.md`) plus the documented lint/format delta
+set recorded there. Re-baselined 2026-11-11 against the current
+live script: the 2026-11-04 build's header-rewrite and dead-code
+deltas were NOT re-applied (live's model changed under them), the
+definition-move delta is moot, and the shellcheck/shfmt delta was
+re-applied with filename-ordered find pipelines. Every deviation
+from the live script is recorded in `ops/bin/WATCHDOG-DELTAS.md`;
+no other difference exists.
 
 ## What is legacy, and what is a snapshot
 
 - `scripts/watchdog-backup.sh` (repo root) is the **legacy
   always-on-era copy**, kept with its test
   (`scripts/tests/test_watchdog.sh`). It is NOT the canonical source.
-  Do not treat its always-on behavior (restart promises, EXIT trap)
-  as current practice.
+  Its marker-based leave-down behavior is a different lineage; the
+  canonical copy's direct-restart behavior (including its EXIT
+  trap) comes from the current live script, not from this file.
 - `reference/neurostrata-ops/` is the **dated Oct 26 snapshot** of the
   operator's live ops directory, vendored under its manifest. It is
   untouched by this PR and is not a source for new work — it is the
@@ -74,13 +77,13 @@ drift apart; the drift check, when enabled, is what catches that.
 
 | Path | What it is |
 | --- | --- |
-| `ops/bin/watchdog-backup.sh` | Canonical watchdog (live base + 4 documented deltas + reformat) |
-| `ops/bin/WATCHDOG-DELTAS.md` | Delta table: header rewrite, dead-code removal, definition move, shellcheck fixes + reformat |
+| `ops/bin/watchdog-backup.sh` | Canonical watchdog (current live base + documented lint/format deltas; re-baselined 2026-11-11) |
+| `ops/bin/WATCHDOG-DELTAS.md` | Delta record: 2026-11-11 re-baseline dispositions + the superseded 2026-11-04 build record |
 | `ops/tests/test_watchdog_ops.sh` | Behavioral test, per daemon state, with PID-namespace isolation guard |
-| `ops/bin/idle-reaper.sh` | Retired standalone reaper, preserved with an in-file retirement banner |
-| `ops/bin/RETIRED.md` | Retirement evidence: standalone reaper retired, idle-stop behavior absorbed into the watchdog |
+| `ops/bin/idle-reaper.sh` | Standalone idle reaper — live component; ops copy re-baselined from the live script 2026-11-11 |
+| `ops/bin/RETIRED.md` | Reaper retirement record — REVERSED 2026-11-11, with the reversal evidence |
 | `ops/crons/watchdog-cron-record.md` | Dated scheduler record, derived from the live cron body only |
-| `ops/crons/CRONS.md` | Current scheduler reality: watchdog every 2h; reaper and export retired |
+| `ops/crons/CRONS.md` | Current scheduler reality: watchdog every 2h; reaper every 15m; export retired |
 | `ops/runbooks/OPERATIONS.md` | Kit-era operations runbook, preserved with an era banner |
 | `ops/runbooks/IDLE-REAPER.md` | Kit-era reaper runbook, preserved with an era banner |
 | `ops/runbooks/ERA-NOTE.md` | Delta table for the preserved documents + named stale facts |

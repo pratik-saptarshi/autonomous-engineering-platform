@@ -1,12 +1,4 @@
 #!/usr/bin/env bash
-# RETIRED — DO NOT DEPLOY
-#
-# The standalone idle reaper is retired. Idle-stop behavior was absorbed,
-# not abolished: it lives on inside ops/bin/watchdog-backup.sh (IDLE_SECS
-# idle check), which backs up and stops an idle daemon under the on-demand
-# model. This file is preserved as the only surviving copy of the
-# standalone reaper. Do not deploy this file.
-#
 # idle-reaper.sh — NeuroStrata idle daemon reaper
 # Created: 2026-10-19 (Task 2 of the idle-reaper plan, plan: ~/workspace/plans/2026-10-19-neurostrata-idle-reaper.md)
 # Purpose: shut the NeuroStrata daemon down cleanly after it has sat idle,
