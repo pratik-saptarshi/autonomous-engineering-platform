@@ -5,10 +5,11 @@ Canonical watchdog source: `~/workspace/neurostrata/bin/watchdog-backup.sh`
 
 - Live sha256: `6a7d4fb3071483f0b3c9da2ad9029acce6ed69072f3cb3cc8fb643993e73cd12`
   (447 lines, verified 2026-11-11 at re-baseline)
-- Repo sha256: `c8fd432853ef483a0f833778ce7da4ba407548c0ac02a7e4b3ed5d2c995f5a21`
-  (461 lines, after the 2026-11-11 re-baseline below)
-- `bash -n ops/bin/watchdog-backup.sh`: clean. `shellcheck` (CI set,
-  0.9.0): clean. `shfmt -d -i 2` (pinned v3.10.0, as CI): clean.
+- Repo sha256: `ee38932c4676d6d368db43ae187af5479e7dbabac029cc4daf7b30519e695063`
+  (462 lines, after the 2026-11-11 re-baseline below)
+- `bash -n ops/bin/watchdog-backup.sh`: clean. `shellcheck` (CI set;
+  verified under 0.9.0, 0.10.0, and the CI runner's 0.11.0): clean.
+  `shfmt -d -i 2` (pinned v3.10.0, as CI): clean.
   `ops/tests/test_watchdog_ops.sh`: ALL PASS.
 
 ## Re-baseline 2026-11-11 — per-delta dispositions
@@ -74,7 +75,11 @@ base and re-adjudicates every 2026-11-04 delta against it:
     step 3 sets `RESTART_NEEDED=true` before an abrupt exit.
     Shellcheck's reachability pass cannot model trap invocation
     (reproduced on 0.9.0 and 0.10.0; string-compare and
-    init-order variants do not clear it).
+    init-order variants do not clear it). The CI runner's
+    shellcheck 0.11.0 raises the companion SC2329 ("function
+    never invoked") on the same handler — same root cause — and
+    the first CI run of the re-baseline PR caught it; the scoped
+    suppression names both codes.
 - **Public-tree scrub (new in this re-baseline):** one machine path
   carried in from live is generalized in the repo copy — the
   `start_daemon` core-dump comment's "the daemon's cwd (/home/hatch,

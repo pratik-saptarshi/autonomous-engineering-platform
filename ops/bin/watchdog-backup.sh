@@ -295,11 +295,12 @@ reaped_expected() {
 
 # --- EXIT trap: the daemon must never be left down by this script. ---
 RESTART_NEEDED=false
-# SC2317 is a false positive for on_exit: it runs only via the EXIT trap,
-# and its restart block is reachable whenever step 3 sets RESTART_NEEDED=true
-# before an abrupt exit. Shellcheck's reachability pass cannot model trap
-# invocation, so the block reads as dead code to the analyzer.
-# shellcheck disable=SC2317
+# SC2317/SC2329 are false positives for on_exit: it runs only via the
+# EXIT trap, and its restart block is reachable whenever step 3 sets
+# RESTART_NEEDED=true before an abrupt exit. Shellcheck's analysis
+# cannot model trap invocation, so the handler reads as never invoked
+# (SC2329, shellcheck 0.11+) and its block as dead code (SC2317).
+# shellcheck disable=SC2317,SC2329
 on_exit() {
   if $RESTART_NEEDED; then
     log "exit trap: ensuring daemon restart"
