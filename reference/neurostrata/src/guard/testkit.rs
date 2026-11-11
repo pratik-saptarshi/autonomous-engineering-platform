@@ -38,6 +38,8 @@ pub struct MockStore {
     search_fails: Mutex<bool>,
     /// Track which (namespace, id) pairs have had increment_access_count called.
     incremented_ids: Mutex<Vec<(String, String)>>,
+    /// Track every batched increment call as (namespace, ids), in call order.
+    batch_calls: Mutex<Vec<(String, Vec<String>)>>,
 }
 
 impl MockStore {
@@ -48,6 +50,7 @@ impl MockStore {
             fail_next_upsert_in_namespace: Mutex::new(None),
             search_fails: Mutex::new(false),
             incremented_ids: Mutex::new(Vec::new()),
+            batch_calls: Mutex::new(Vec::new()),
         }
     }
 
@@ -76,6 +79,12 @@ impl MockStore {
             .lock()
             .expect("mock store lock")
             .clone()
+    }
+
+    /// Every batched increment call as (namespace, ids), in call order.
+    /// Used by tests to verify a search lands as one batched write.
+    pub(crate) fn batch_calls(&self) -> Vec<(String, Vec<String>)> {
+        self.batch_calls.lock().expect("mock store lock").clone()
     }
 
     /// Configure whether `search` and `search_with_domain` should fail.
@@ -183,6 +192,7 @@ impl VectorStore for MockStore {
                     kind: crate::traits::EvidenceKind::DirectMatch,
                     path: vec![],
                     explanation: "This memory matched the query vector.".to_string(),
+                    derivation: vec![],
                 }]),
             })
             .collect())
@@ -196,6 +206,8 @@ impl VectorStore for MockStore {
         _include_tasks: bool,
         _include_archived: bool,
         domains: &[String],
+        _query_text: Option<&str>,
+        _exact: bool,
     ) -> Result<DomainSearchOutcome> {
         if *self.search_fails.lock().expect("mock store lock") {
             return Err(anyhow::anyhow!(
@@ -232,6 +244,7 @@ impl VectorStore for MockStore {
                     kind: crate::traits::EvidenceKind::DirectMatch,
                     path: vec![],
                     explanation: "This memory matched the query vector.".to_string(),
+                    derivation: vec![],
                 }]),
             };
 
@@ -377,7 +390,8 @@ impl VectorStore for MockStore {
         Ok(0)
     }
 
-    async fn relink_edges(&self, _namespace: &str) -> Result<usize> {
+
+    async fn relink_edges(&self, _namespace: &str, _source_key: &str) -> Result<usize> {
         Ok(0)
     }
 
@@ -434,6 +448,20 @@ impl VectorStore for MockStore {
             .lock()
             .expect("mock store lock")
             .push((namespace.to_string(), id.to_string()));
+        Ok(())
+    }
+
+    async fn increment_access_counts(&self, namespace: &str, ids: &[String]) -> Result<()> {
+        self.batch_calls
+            .lock()
+            .expect("mock store lock")
+            .push((namespace.to_string(), ids.to_vec()));
+        // The batch lands each id exactly once, so the singles record —
+        // which rows were counted — gains one entry per id as well.
+        let mut singles = self.incremented_ids.lock().expect("mock store lock");
+        for id in ids {
+            singles.push((namespace.to_string(), id.clone()));
+        }
         Ok(())
     }
 

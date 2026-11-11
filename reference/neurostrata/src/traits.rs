@@ -6,6 +6,11 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
+pub use crate::graph_read::memories_for_file::{GraphMatchKind, MemoryHit};
+pub use crate::graph_read::related::{
+    Cursor as RelatedCursor, Direction as RelatedDirection, RelatedResult,
+};
+
 /// Trait for downcasting VectorStore to concrete implementations.
 pub trait AsAny {
     fn as_any(&self) -> &dyn std::any::Any;
@@ -69,6 +74,11 @@ pub struct MemoryPayload {
 /// takes: absent, JSON null, and a blank string all read as unsourced, while a
 /// non-empty string ("owner 2026-10-08") or a structured object
 /// ({kind, ref, captured_at}) read as sourced.
+/// takes: absent, JSON null, and a blank string all read as unsourced, while
+/// a non-empty string ("owner 2026-10-08") or a non-empty JSON object
+/// ({kind, ref, captured_at}) read as sourced. Numbers, booleans, and arrays
+/// carry no provenance semantics, so they read as unsourced too (`{"source":
+/// 42}` is not an origin).
 ///
 /// The task gate fails rules without one and the search ranker rewards them.
 /// They must agree on that line, so both call this rather than each carrying a
@@ -77,7 +87,10 @@ pub struct MemoryPayload {
 pub fn has_source(metadata: &Value) -> bool {
     metadata
         .get("source")
-        .map(|s| !s.is_null() && (s.as_str().map(|x| !x.trim().is_empty()).unwrap_or(true)))
+        .map(|s| {
+            s.as_str().is_some_and(|x| !x.trim().is_empty())
+                || s.as_object().is_some_and(|o| !o.is_empty())
+        })
         .unwrap_or(false)
 }
 
@@ -119,6 +132,8 @@ pub struct SearchEvidence {
     pub kind: EvidenceKind,
     pub path: Vec<EvidenceEdge>,
     pub explanation: String,
+    #[serde(default)]
+    pub derivation: Vec<String>,
 }
 
 /// Returns true when the evidence carries a DirectMatch — the shared
@@ -127,7 +142,8 @@ pub struct SearchEvidence {
 /// so they cannot drift.
 pub fn is_direct_match(evidence: &Option<Vec<SearchEvidence>>) -> bool {
     evidence.as_ref().map_or(false, |evs| {
-        evs.iter().any(|e| e.kind == EvidenceKind::DirectMatch)
+        evs.iter()
+            .any(|e| e.kind == EvidenceKind::DirectMatch)
     })
 }
 
@@ -141,6 +157,13 @@ pub enum DomainMatchMode {
     Vector,
 }
 
+/// Search mode: Default (existing pipeline) or Hybrid (normalized distances).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchMode {
+    Default,
+    Hybrid,
+}
+
 /// The outcome of a domain-filtered search.
 #[derive(Debug, Clone)]
 pub struct DomainSearchOutcome {
@@ -149,6 +172,15 @@ pub struct DomainSearchOutcome {
     /// Set true when the FETCH_MULTIPLIER budget was exhausted and more
     /// candidates remain — callers must paginate to avoid losing matches.
     pub incomplete: bool,
+}
+
+/// The outcome of an in-house lexical search.
+#[derive(Debug, Clone)]
+pub struct LexicalSearchOutcome {
+    pub results: Vec<SearchResult>,
+    /// True when a requested domain filter actually selected the rows.
+    /// False covers both "no filter asked for" and the documented fallback.
+    pub domain_filter_applied: bool,
 }
 
 /// What an attempt to move a memory between namespaces found.
@@ -162,6 +194,38 @@ pub enum RelocateOutcome {
     Ingested,
     /// Source and target are the same namespace, so there is nothing to do.
     SameNamespace,
+}
+
+
+/// Embedding-space identity persisted on namespace metadata. Enforcement on
+/// every vector path ensures incompatible spaces are never mixed.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+pub struct EmbeddingDescriptor {
+    pub provider: String,
+    pub model: String,
+    pub revision: String,
+    pub dims: usize,
+    pub normalization: String,
+    pub preprocessing: String,
+    pub distance_metric: String,
+}
+
+impl EmbeddingDescriptor {
+    pub fn unknown() -> Self {
+        Self {
+            provider: "unknown".into(),
+            model: "unknown".into(),
+            revision: "unknown".into(),
+            dims: 0,
+            normalization: "unknown".into(),
+            preprocessing: "unknown".into(),
+            distance_metric: "unknown".into(),
+        }
+    }
+
+    pub fn compatible(&self, other: &Self) -> bool {
+        self == other
+    }
 }
 
 /// The core interface for generating vector embeddings from text.
@@ -193,6 +257,19 @@ pub trait Embedder: Send + Sync {
     /// override it.
     fn session_loaded_snapshot(&self) -> Option<bool> {
         None
+    }
+
+    /// Stable identity of the embedding space this embedder produces.
+    fn embedding_descriptor(&self) -> EmbeddingDescriptor {
+        EmbeddingDescriptor {
+            provider: "unknown".into(),
+            model: self.embedder_id().to_string(),
+            revision: "unknown".into(),
+            dims: self.dimensions(),
+            normalization: "unknown".into(),
+            preprocessing: "unknown".into(),
+            distance_metric: "cosine".into(),
+        }
     }
 }
 
@@ -256,7 +333,18 @@ pub trait VectorStore: Send + Sync + AsAny {
     async fn init(&self, namespace: &str) -> Result<()>;
 
     /// Downcast support for store-specific capabilities (e.g., IntakeStore).
-    fn as_any(&self) -> &dyn std::any::Any;
+    ///
+    /// Delegates through `AsAny` so implementors declare the cast once; the
+    /// supertrait method is the single definition the calls resolve into.
+    fn as_any(&self) -> &dyn std::any::Any {
+        crate::traits::AsAny::as_any(self)
+    }
+
+    /// Access store-specific intake capabilities without downcasting to a
+    /// concrete type. Returns `None` for stores that do not support intake.
+    fn as_intake_store(&self) -> Option<&dyn IntakeStore> {
+        None
+    }
 
     /// Insert or update a memory with its associated vector and metadata.
     async fn upsert(
@@ -333,7 +421,66 @@ pub trait VectorStore: Send + Sync + AsAny {
     /// and re-creates every code node, taking those edges with it -- and the
     /// rules pointing at that code are not rewritten, so the links stay lost
     /// until something replays them (bead neurostrata-sij).
-    async fn relink_edges(&self, namespace: &str) -> Result<usize>;
+    async fn relink_edges(&self, namespace: &str, source_key: &str) -> Result<usize>;
+
+    /// Begin a staged ingestion: allocate a fresh generation for this namespace
+    /// and source and return it. Nodes written against it are invisible to edge
+    /// resolution until `publish_generation` flips the active pointer onto it.
+    ///
+    /// The generation is keyed by `(namespace, source_key)`, so two concurrent
+    /// worktrees of one repository (two sources) never overwrite each other's
+    /// active pointer.
+    ///
+    /// Default `0` = a store without staged ingestion publishes as it writes.
+    async fn begin_generation(&self, _namespace: &str, _source_key: &str) -> Result<u64> {
+        Ok(0)
+    }
+
+    /// Atomically make `generation` the active generation for `namespace` and
+    /// `source_key`. The previous active generation's nodes remain as history,
+    /// unreachable through edge resolution.
+    async fn publish_generation(
+        &self,
+        _namespace: &str,
+        _source_key: &str,
+        _generation: u64,
+    ) -> Result<()> {
+        tracing::warn!(
+            "VectorStore::publish_generation default no-op called for '{_namespace}:{_source_key}' gen {_generation}"
+        );
+        Ok(())
+    }
+
+    /// Discard a staged generation's nodes, leaving the previous active
+    /// generation untouched. Used when a build fails midway so a half-built
+    /// tree never becomes visible.
+    async fn abort_generation(
+        &self,
+        _namespace: &str,
+        _source_key: &str,
+        _generation: u64,
+    ) -> Result<()> {
+        tracing::warn!(
+            "VectorStore::abort_generation default no-op called for '{_namespace}:{_source_key}' gen {_generation}"
+        );
+        Ok(())
+    }
+
+    /// The generation currently active for `namespace` and `source_key`
+    /// (`0` = none published).
+    async fn active_generation(&self, _namespace: &str, _source_key: &str) -> Result<u64> {
+        Ok(0)
+    }
+
+    /// The ids of every node in `generation`. A storage-level primitive for
+    /// generation-scoped filtering and tests; the default returns nothing.
+    async fn generation_nodes(
+        &self,
+        _namespace: &str,
+        _generation: u64,
+    ) -> Result<Vec<String>> {
+        Ok(Vec::new())
+    }
 
     /// List all memories, optionally filtered by user_id and/or memory_type.
     /// Pushing filters into the query (rather than filtering in Rust) avoids
@@ -371,6 +518,22 @@ pub trait VectorStore: Send + Sync + AsAny {
     /// Increment the access count of a specific memory by its ID.
     async fn increment_access_count(&self, namespace: &str, id: &str) -> Result<()>;
 
+    /// Increment the access counts of several memories in one namespace.
+    ///
+    /// The default loops the single-row method; stores override it to land
+    /// the whole batch in one write session, so one search costs one write
+    /// instead of one spawned write per hit — and the batch's
+    /// read-modify-writes cannot interleave with each other and lose
+    /// updates the way concurrent per-hit writes could. Ids are applied in
+    /// slice order, and each occurrence of an id counts once, exactly as
+    /// repeated single calls would. An empty slice performs no write.
+    async fn increment_access_counts(&self, namespace: &str, ids: &[String]) -> Result<()> {
+        for id in ids {
+            self.increment_access_count(namespace, id).await?;
+        }
+        Ok(())
+    }
+
     /// Search with an optional domain key set. The default implementation ignores
     /// the key set and reports `Vector`, so a store that cannot filter stays honest.
     async fn search_with_domain(
@@ -381,6 +544,8 @@ pub trait VectorStore: Send + Sync + AsAny {
         include_tasks: bool,
         include_archived: bool,
         _domains: &[String],
+        _query_text: Option<&str>,
+        _exact: bool,
     ) -> Result<DomainSearchOutcome> {
         let results = self
             .search(namespace, vector, limit, include_tasks, include_archived)
@@ -390,6 +555,31 @@ pub trait VectorStore: Send + Sync + AsAny {
             mode: DomainMatchMode::Vector,
             incomplete: false,
         })
+    }
+
+    /// Search with the in-house multi-field lexical engine.
+    ///
+    /// The default implementation refuses instead of returning an empty list:
+    /// a backend that cannot do lexical search must not look like a namespace
+    /// with no matching memories.
+    async fn search_lexical(
+        &self,
+        _namespace: &str,
+        _query: &str,
+        _limit: usize,
+        _include_tasks: bool,
+        _include_archived: bool,
+        _domains: &[String],
+        _principal: &str,
+        _fuzzy_max_distance: usize,
+    ) -> Result<LexicalSearchOutcome> {
+        anyhow::bail!("lexical-inhouse search is not supported by this store")
+    }
+
+    /// Rebuild the in-house lexical index from the store of record. Returns the
+    /// number of documents indexed.
+    async fn rebuild_lexical_index(&self, _namespace: Option<&str>) -> Result<usize> {
+        anyhow::bail!("lexical-inhouse search is not supported by this store")
     }
 
     /// Write a self-contained snapshot of the store into `dir`.
@@ -416,6 +606,58 @@ pub trait VectorStore: Send + Sync + AsAny {
     fn is_dirty(&self) -> bool {
         true
     }
+}
+
+/// Graph-read capability, exposed beside `VectorStore` rather than folded into
+/// it (spec §4.6): file nodes carry a zero vector, so any backend that only
+/// knows vector search cannot answer these and must say so. A backend that
+/// does not implement `GraphRead` is reached through `AsAny` and answered with
+/// `unsupported`, never an empty result.
+#[async_trait]
+pub trait GraphRead: Send + Sync {
+    /// Deterministic, zero-embedding lookup of the active `rule`/`fact`/
+    /// `procedure` memories governing a file, symbol, or its ancestors.
+    ///
+    /// `source` (a source key) selects the active generation to resolve node
+    /// ids against; `None` uses the most recently published generation.
+    /// `memory_types` is empty meaning "no type filter"; `limit` is capped at
+    /// `MAX_LIMIT` by the implementation. `exclude_ids` names memory ids to
+    /// drop, and is applied *before* `limit` so an excluded hit never crowds
+    /// out a live one.
+    async fn memories_for_file(
+        &self,
+        namespace: &str,
+        source: Option<&str>,
+        path: &str,
+        symbol: Option<&str>,
+        include_ancestors: bool,
+        memory_types: &[String],
+        exclude_ids: &[String],
+        limit: usize,
+    ) -> Result<Vec<MemoryHit>>;
+
+    /// Bounded 1–2 hop traversal from a seed node (spec §4.2). `relations`
+    /// empty means all four; `direction` controls orientation; `max_hops` is
+    /// clamped to `[1, 2]`; `memory_types` empty means no type filter; `limit`
+    /// is clamped to `[1, MAX_LIMIT]`. `cursor` resumes a page only when its
+    /// fingerprint and generation still match the current query and store, so
+    /// retirement/privacy are rechecked on every page.
+    /// retirement/privacy are rechecked on every page. `cross_namespace` is
+    /// the boundary policy: same-namespace hops are always allowed, and a
+    /// cross-namespace hop requires an explicit opt-in (plus an optional
+    /// target allowlist).
+    async fn related(
+        &self,
+        namespace: &str,
+        seed: &str,
+        relations: &[String],
+        direction: RelatedDirection,
+        max_hops: usize,
+        memory_types: &[String],
+        limit: usize,
+        cursor: Option<&RelatedCursor>,
+        cross_namespace: &crate::graph_read::traversal::CrossNamespacePolicy,
+    ) -> Result<RelatedResult>;
 }
 
 /// Trait for durable task intake ledger operations (PQTH).
@@ -474,13 +716,14 @@ mod tests {
     #[test]
     fn memory_vocabulary_v7_parses_and_has_exact_relations() {
         let v = memory_vocabulary();
-        assert_eq!(v["vocabulary_version"], 7);
+        assert_eq!(v["vocabulary_version"], 10);
         let rels = v["relations"].as_object().unwrap();
         assert!(rels.contains_key("GOVERNS"));
         assert!(rels.contains_key("CONTAINS"));
         assert!(rels.contains_key("RELATES_TO"));
         assert!(rels.contains_key("EXTRACTED_FROM"));
-        assert_eq!(rels.len(), 4);
+        assert!(rels.contains_key("DEPENDS_ON"));
+        assert_eq!(rels.len(), 5);
         assert_eq!(rels["GOVERNS"]["direction"], "directed");
         assert_eq!(rels["CONTAINS"]["direction"], "directed");
         assert_eq!(rels["RELATES_TO"]["direction"], "undirected");
@@ -652,6 +895,7 @@ mod tests {
                 kind: EvidenceKind::DirectMatch,
                 path: vec![],
                 explanation: "test".into(),
+                derivation: vec![],
             }]),
         };
         let json = serde_json::to_value(&sr).unwrap();
@@ -686,6 +930,7 @@ mod tests {
                 },
             ],
             explanation: "explanation".into(),
+            derivation: vec![],
         };
         let json = serde_json::to_value(&ev).unwrap();
         assert_eq!(json["kind"], "governs_2hop");
@@ -699,6 +944,10 @@ mod tests {
     /// the field legitimately takes has to land on the right side of it, and a
     /// blank has to be indistinguishable from absent -- otherwise padding a rule
     /// with `"source": ""` would satisfy neither.
+    /// the field legitimately takes has to land on the right side of it: a
+    /// blank has to be indistinguishable from absent (padding with
+    /// `"source": ""` must not satisfy the gate), and number/boolean/array
+    /// sources carry no provenance.
     #[test]
     fn has_source_covers_every_shape_the_field_takes() {
         for absent in [json!({}), json!({ "kind": "rule" })] {
@@ -710,21 +959,26 @@ mod tests {
         }
         for blank in [
             json!({ "source": null }),
+            json!({ "source": {} }),
             json!({ "source": "" }),
             json!({ "source": "  " }),
+            json!({ "source": 42 }),
+            json!({ "source": true }),
+            json!({ "source": [] }),
+            json!({ "source": ["a"] }),
         ] {
             assert!(
                 !has_source(&blank),
-                "blank source is not provenance: {}",
+                "shapeless source is not provenance: {}",
                 blank
             );
         }
         for real in [
             json!({ "source": "owner 2026-10-08" }),
             json!({ "source": { "kind": "derived", "ref": "task-wiot", "captured_at": "2026-10-09" } }),
-            json!({ "source": ["a"] }),
         ] {
             assert!(has_source(&real), "real source is provenance: {}", real);
         }
     }
+
 }

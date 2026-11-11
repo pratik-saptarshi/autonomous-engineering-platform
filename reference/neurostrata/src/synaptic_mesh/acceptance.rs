@@ -84,7 +84,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!(
             "ns-mesh-acc-{tag}-{}-{}",
             std::process::id(),
-            Uuid::new_v4()
+            Uuid::now_v7()
         ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -116,7 +116,7 @@ mod tests {
         let db = std::env::temp_dir().join(format!(
             "ns-mesh-acc-db-{label}-{}-{}",
             std::process::id(),
-            Uuid::new_v4()
+            Uuid::now_v7()
         ));
         Arc::new(LadybugStore::for_testing(&db, 4).expect("open temp store"))
     }
@@ -161,7 +161,7 @@ mod tests {
 
     fn entry(op: &str, id: &str, content: &str, metadata: Value, memory_type: &str) -> OutboxEntry {
         OutboxEntry {
-            stable_op_id: Uuid::new_v4(),
+            stable_op_id: Uuid::now_v7(),
             op: op.to_string(),
             id: id.to_string(),
             namespace: NS.to_string(),
@@ -185,7 +185,7 @@ mod tests {
 
     /// `mesh init → bootstrap commit → push → clone into <base>/<tag>-b`
     /// (the two teammates' first handshake, exactly as storage.rs does it).
-    fn joined_pair(base: &Path, tag: &str) -> (MeshStorage, MeshStorage) {
+    async fn joined_pair(base: &Path, tag: &str) -> (MeshStorage, MeshStorage) {
         let remote = bare_remote(base, tag);
         let a_dir = base.join(format!("{tag}-a"));
         let a = MeshStorage::init(
@@ -195,9 +195,9 @@ mod tests {
             &[NS.to_string()],
             Some(remote.to_str().unwrap()),
         )
-        .unwrap();
-        a.commit_all("bootstrap", "node-a").unwrap();
-        a.push().unwrap();
+        .await.unwrap();
+        a.commit_all("bootstrap", "node-a").await.unwrap();
+        a.push().await.unwrap();
         let branch = git_out(a.root(), &["branch", "--show-current"]);
         aim_remote_head(&remote, &branch);
 
@@ -219,15 +219,15 @@ mod tests {
 
     /// Drain one WAL (drain_once itself authors the single commit), then
     /// push — the worker's publish cycle.
-    fn publish(mesh: &MeshStorage, outbox: &Outbox, node: &str, pending: OutboxEntry) {
+    async fn publish(mesh: &MeshStorage, outbox: &Outbox, node: &str, pending: OutboxEntry) {
         outbox.append(&pending).unwrap();
-        let report = super::super::worker::drain_once(outbox, mesh, node).unwrap();
+        let report = super::super::worker::drain_once(outbox, mesh, node).await.unwrap();
         assert_eq!(report.applied, 1, "drain must publish: {report:?}");
         assert!(
             report.committed,
             "drain_once must author the commit itself: {report:?}"
         );
-        mesh.push().unwrap();
+        mesh.push().await.unwrap();
     }
 
     // ---- scenario 1: two offline nodes, disjoint adds -----------------------
@@ -241,7 +241,7 @@ mod tests {
     #[tokio::test]
     async fn two_offline_nodes_disjoint_adds_converge() {
         let base = scratch("acc-disjoint");
-        let (a, b) = joined_pair(&base, "disjoint");
+        let (a, b) = joined_pair(&base, "disjoint").await;
         let a_out = Outbox::open(&outbox_dir_for(a.root())).unwrap();
         let b_out = Outbox::open(&outbox_dir_for(b.root())).unwrap();
         let m1 = Uuid::new_v4();
@@ -258,12 +258,12 @@ mod tests {
             shareable_meta("node-a 2026-10-11"),
             "rule",
         );
-        publish(&a, &a_out, "node-a", first);
+        publish(&a, &a_out, "node-a", first).await;
         let a0 = apply_pass(&a, &a_store).await;
         assert_eq!(a0.applied, 1, "A's own row applies locally: {a0:?}");
 
         // B comes online: pull before draining, then apply A's add.
-        b.pull().unwrap();
+        b.pull().await.unwrap();
         let b_store = fresh_store("acc-disjoint-b").await;
         let b1 = apply_pass(&b, &b_store).await;
         assert_eq!(b1.applied, 1, "A's add applies on B: {b1:?}");
@@ -280,12 +280,12 @@ mod tests {
             shareable_meta("node-b 2026-10-11"),
             "rule",
         );
-        publish(&b, &b_out, "node-b", second);
+        publish(&b, &b_out, "node-b", second).await;
         let b2 = apply_pass(&b, &b_store).await;
         assert_eq!(b2.applied, 1, "B's own row applies locally: {b2:?}");
 
         // A pulls B's add back and applies it.
-        a.pull().unwrap();
+        a.pull().await.unwrap();
         let a2 = apply_pass(&a, &a_store).await;
         assert_eq!(a2.applied, 1, "B's add applies on A: {a2:?}");
         assert_eq!(
@@ -335,9 +335,9 @@ mod tests {
     #[tokio::test]
     async fn same_id_conflict_across_two_nodes_preserves_variants() {
         let base = scratch("acc-conflict");
-        let (a, b) = joined_pair(&base, "conflict");
+        let (a, b) = joined_pair(&base, "conflict").await;
         let a_out = Outbox::open(&outbox_dir_for(a.root())).unwrap();
-        let id = Uuid::new_v4();
+        let id = Uuid::now_v7();
 
         // A publishes the original record.
         let first = entry(
@@ -348,10 +348,10 @@ mod tests {
             "rule",
         );
         let update_a1 = first.stable_op_id;
-        publish(&a, &a_out, "node-a", first);
+        publish(&a, &a_out, "node-a", first).await;
 
         // B accepts it.
-        b.pull().unwrap();
+        b.pull().await.unwrap();
         let b_store = fresh_store("acc-conflict-b").await;
         let b1 = apply_pass(&b, &b_store).await;
         assert_eq!(b1.applied, 1, "{b1:?}");
@@ -366,14 +366,14 @@ mod tests {
             "rule",
         );
         let update_a2 = second.stable_op_id;
-        publish(&a, &a_out, "node-a", second);
+        publish(&a, &a_out, "node-a", second).await;
 
         // B's crash: the accepted-head cursor is gone, so B's next replay is
         // the full-tree path — the designed concurrency trigger.
         let cursor = cursor_file(b.root());
         std::fs::remove_file(&cursor).unwrap();
 
-        b.pull().unwrap();
+        b.pull().await.unwrap();
         let b2 = apply_pass(&b, &b_store).await;
         assert!(b2.full_tree, "crash forces the full-tree pass");
         assert_eq!(b2.conflicted, 1, "{b2:?}");
@@ -442,9 +442,9 @@ mod tests {
     #[tokio::test]
     async fn archived_on_a_gone_from_b_within_one_sync_cycle() {
         let base = scratch("acc-archived");
-        let (a, b) = joined_pair(&base, "archived");
+        let (a, b) = joined_pair(&base, "archived").await;
         let a_out = Outbox::open(&outbox_dir_for(a.root())).unwrap();
-        let id = Uuid::new_v4();
+        let id = Uuid::now_v7();
         let text = "the staged rollout rule";
 
         // A: create → push; B pulls and accepts.
@@ -455,8 +455,8 @@ mod tests {
             shareable_meta("node-a 2026-10-11"),
             "rule",
         );
-        publish(&a, &a_out, "node-a", created);
-        b.pull().unwrap();
+        publish(&a, &a_out, "node-a", created).await;
+        b.pull().await.unwrap();
         let b_store = fresh_store("acc-archived-b").await;
         assert_eq!(apply_pass(&b, &b_store).await.applied, 1);
         let (_, live) = b_store.get(NS, &id.to_string()).await.unwrap().unwrap();
@@ -475,10 +475,10 @@ mod tests {
             json!({ "eligibility": "shareable", "archived_at": 1_700_000_050_i64 }),
             "rule",
         );
-        publish(&a, &a_out, "node-a", archived);
+        publish(&a, &a_out, "node-a", archived).await;
 
         // B's pull + replay: within one sync cycle the archive crosses.
-        b.pull().unwrap();
+        b.pull().await.unwrap();
         let upd = apply_pass(&b, &b_store).await;
         assert_eq!(upd.applied, 1, "{upd:?}");
         let (_, gone) = b_store.get(NS, &id.to_string()).await.unwrap().unwrap();
@@ -513,8 +513,8 @@ mod tests {
             shareable_meta("node-a 2026-10-11, again"),
             "rule",
         );
-        publish(&a, &a_out, "node-a", revival);
-        b.pull().unwrap();
+        publish(&a, &a_out, "node-a", revival).await;
+        b.pull().await.unwrap();
         let third = apply_pass(&b, &b_store).await;
         assert_eq!(
             third.applied, 1,
@@ -556,7 +556,7 @@ mod tests {
     #[tokio::test]
     async fn full_tree_recovery_preserves_private_rows_and_procedure_state_in_one_pass() {
         let base = scratch("acc-recovery");
-        let (a, b) = joined_pair(&base, "recovery");
+        let (a, b) = joined_pair(&base, "recovery").await;
         let a_out = Outbox::open(&outbox_dir_for(a.root())).unwrap();
         let rule_id = Uuid::new_v4();
         let proc_id = Uuid::new_v4();
@@ -570,7 +570,7 @@ mod tests {
             shareable_meta("node-a 2026-10-11"),
             "rule",
         );
-        publish(&a, &a_out, "node-a", rule);
+        publish(&a, &a_out, "node-a", rule).await;
         let proc = entry(
             OP_CREATED,
             &proc_id.to_string(),
@@ -585,11 +585,11 @@ mod tests {
             }),
             "procedure",
         );
-        publish(&a, &a_out, "node-a", proc);
+        publish(&a, &a_out, "node-a", proc).await;
 
         // B accepts both, and holds one PRIVATE row (no provenance —
         // someone's local note).
-        b.pull().unwrap();
+        b.pull().await.unwrap();
         let b_store = fresh_store("acc-recovery-b").await;
         let first = apply_pass(&b, &b_store).await;
         assert_eq!(first.applied, 2, "both of A's records apply: {first:?}");
@@ -622,7 +622,7 @@ mod tests {
         // concurrent conflict (the merge table pins that; import.rs owns
         // those rows) — the recovery pass here proves the survival side,
         // not the conflict side.
-        let fresh_id = Uuid::new_v4();
+        let fresh_id = Uuid::now_v7();
         let added = entry(
             OP_CREATED,
             &fresh_id.to_string(),
@@ -630,9 +630,9 @@ mod tests {
             shareable_meta("node-a 2026-10-11, second"),
             "rule",
         );
-        publish(&a, &a_out, "node-a", added);
+        publish(&a, &a_out, "node-a", added).await;
 
-        b.pull().unwrap();
+        b.pull().await.unwrap();
         let recovery = apply_pass(&b, &b_store).await;
         assert!(recovery.full_tree, "crash → full-tree pass");
         assert_eq!(
@@ -705,7 +705,7 @@ mod tests {
     /// reflects the new epoch. The manifest-edit trick this suite uses for
     /// epoch-bump fixtures (no real `filter-repo` history rewrite needed to
     /// exercise the gate).
-    fn reopen_with_epoch(mesh: &MeshStorage, epoch: u32) -> MeshStorage {
+    async fn reopen_with_epoch(mesh: &MeshStorage, epoch: u32) -> MeshStorage {
         let mut manifest = mesh.manifest().clone();
         manifest.epoch = epoch;
         let json = serde_json::to_string_pretty(&manifest).unwrap();
@@ -714,7 +714,7 @@ mod tests {
             format!("{json}\n"),
         )
         .unwrap();
-        mesh.commit_all("epoch migration", "node-a").unwrap();
+        mesh.commit_all("epoch migration", "node-a").await.unwrap();
         MeshStorage::open(mesh.root()).unwrap()
     }
 
@@ -734,10 +734,10 @@ mod tests {
     #[tokio::test]
     async fn old_epoch_peer_records_refused_on_pull_and_stale_outbox_quarantined() {
         let base = scratch("acc-old-epoch");
-        let (a, b) = joined_pair(&base, "old-epoch");
+        let (a, b) = joined_pair(&base, "old-epoch").await;
         let b_out = Outbox::open(&outbox_dir_for(b.root())).unwrap();
-        let s_id = Uuid::new_v4();
-        let t_id = Uuid::new_v4();
+        let s_id = Uuid::now_v7();
+        let t_id = Uuid::now_v7();
 
         // 1. B publishes S at epoch 1 and pushes; A pulls it.
         let s = entry(
@@ -747,8 +747,8 @@ mod tests {
             shareable_meta("node-b 2026-10-11"),
             "rule",
         );
-        publish(&b, &b_out, "node-b", s);
-        a.pull().unwrap();
+        publish(&b, &b_out, "node-b", s).await;
+        a.pull().await.unwrap();
 
         // 2. B captures T at epoch 1 but leaves it pending (no drain).
         let t = entry(
@@ -761,9 +761,9 @@ mod tests {
         b_out.append(&t).unwrap();
 
         // 3. A migrates to epoch 2 (manifest edit + commit + push); B pulls.
-        let a = reopen_with_epoch(&a, 2);
-        a.push().unwrap();
-        b.pull().unwrap();
+        let a = reopen_with_epoch(&a, 2).await;
+        a.push().await.unwrap();
+        b.pull().await.unwrap();
         let b = MeshStorage::open(b.root()).unwrap(); // reflect the migrated manifest
 
         // 4. A's import refuses S (epoch 1 < epoch 2): named, store untouched.
@@ -782,7 +782,7 @@ mod tests {
         );
 
         // 5. B's drain quarantines T (epoch 1 < epoch 2): skipped, named, pending.
-        let drain = super::super::worker::drain_once(&b_out, &b, "node-b").unwrap();
+        let drain = super::super::worker::drain_once(&b_out, &b, "node-b").await.unwrap();
         assert_eq!(
             drain.applied, 0,
             "the stale entry must not publish: {drain:?}"
