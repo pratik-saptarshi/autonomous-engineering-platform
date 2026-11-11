@@ -53,7 +53,7 @@ class EgmDriftTests(unittest.TestCase):
             "name: egm-review-loop\n"
             "description: Loop.\n"
             "---\n\n"
-            "Normalize: `egm-alpha` → `alpha`, `egm-beta` →\n"
+            "**Frontmatter Names**: `egm-alpha` → `alpha`, `egm-beta` →\n"
             "`beta`.\n")
         _write(
             self.skills / "egm-review-loop" / "skill.yaml",
@@ -150,6 +150,55 @@ class EgmDriftTests(unittest.TestCase):
         result = self.run_check()
         self.assertEqual(result.returncode, 1)
         self.assertIn("no normalization-table entry", result.stdout)
+
+    def test_prose_roster_cannot_hijack_anchor(self):
+        # Panel finding J117-1, case A2: a verbatim roster paragraph
+        # carrying the same pairs as the table, inserted BEFORE the
+        # designated block, plus one mapping in the real table
+        # corrupted. The old density anchor (most pairs, earliest
+        # wins ties) moved to the roster and certified the corrupt
+        # table (exit 0). The designated-block anchor must still
+        # judge the table itself.
+        loop_path = self.skills / "egm-review-loop" / "SKILL.md"
+        loop_path.write_text(
+            "Roster: `egm-alpha` → `alpha`, `egm-beta` → `beta`.\n\n"
+            + loop_path.read_text(encoding="utf-8").replace(
+                "**Frontmatter Names**: `egm-alpha` → `alpha`",
+                "**Frontmatter Names**: `egm-alpha` → `alfa`"),
+            encoding="utf-8")
+        result = self.run_check()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("normalization table maps", result.stdout)
+
+    def test_prose_block_with_more_pairs_is_ignored(self):
+        # Panel finding J117-1, case B: a prose block carrying MORE
+        # pairs than the table (here the two real pairs plus a
+        # retired persona) hijacked the old density anchor from any
+        # position and produced a false fail blaming the table. The
+        # designated-block anchor ignores prose pairs entirely, so a
+        # correct table passes.
+        loop_path = self.skills / "egm-review-loop" / "SKILL.md"
+        loop_path.write_text(
+            loop_path.read_text(encoding="utf-8")
+            + "\nHistory: `egm-alpha` → `alpha`, `egm-beta` → `beta`, "
+              "`egm-ghost` → `ghost`.\n",
+            encoding="utf-8")
+        result = self.run_check()
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_missing_designated_block_fails_closed(self):
+        # With no block carrying the **Frontmatter Names** lead-in,
+        # rule (b) must fail closed with a clear message -- never
+        # fall back to scanning the file for the densest pair block.
+        loop_path = self.skills / "egm-review-loop" / "SKILL.md"
+        loop_path.write_text(
+            loop_path.read_text(encoding="utf-8").replace(
+                "**Frontmatter Names**: ", "Names: "),
+            encoding="utf-8")
+        result = self.run_check()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("fails closed", result.stdout)
+        self.assertIn("Frontmatter Names", result.stdout)
 
     def test_extra_table_persona_fails(self):
         # Reverse direction: the table names a persona the bundle
