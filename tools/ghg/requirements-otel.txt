@@ -1,0 +1,5 @@
+# Optional OpenTelemetry dependencies for ghg.
+# ghg runs unchanged without these packages installed; telemetry is
+# only enabled when GHG_OTEL_FILE is set AND the SDK is importable.
+opentelemetry-api==1.45.2
+opentelemetry-sdk==1.45.2

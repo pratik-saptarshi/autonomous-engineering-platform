@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AEP Agentic-Container OS — Refined Backlog & Feature Map (v1.1)</title>
+<style>
+  @page { size: A4; margin: 14mm 12mm; }
+  :root {
+    --ink: #0f172a;
+    --muted: #475569;
+    --line: #cbd5e1;
+    --soft: #f8fafc;
+    --pri: #0369a1;
+    --sec: #4f46e5;
+    --ok: #047857;
+    --warn: #b45309;
+    --bad: #b91c1c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: var(--ink);
+    line-height: 1.45;
+    font-size: 9.5pt;
+    max-width: 1060px;
+    margin: 0 auto;
+    padding: 24px;
+    background: #fff;
+  }
+  h1 { font-size: 20pt; margin: 0 0 4px; color: var(--pri); font-weight: 700; }
+  h2 { font-size: 13pt; margin: 22px 0 8px; padding-bottom: 4px; border-bottom: 2px solid var(--line); color: var(--sec); page-break-after: avoid; }
+  h3 { font-size: 11pt; margin: 16px 0 6px; color: var(--pri); page-break-after: avoid; }
+  h4 { font-size: 9.5pt; margin: 10px 0 4px; color: var(--ink); text-transform: uppercase; letter-spacing: 0.03em; }
+  p, li { margin: 0 0 5px; }
+  ul, ol { padding-left: 18px; margin: 0 0 8px; }
+  code {
+    font-family: ui-monospace, Menlo, Consolas, Monaco, monospace;
+    font-size: 8.5pt;
+    background: #f1f5f9;
+    padding: 1px 4px;
+    border-radius: 3px;
+    color: #0f172a;
+  }
+  pre {
+    background: #f8fafc;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 8px 12px;
+    overflow-x: auto;
+    font-size: 8pt;
+    page-break-inside: avoid;
+    line-height: 1.35;
+  }
+  pre code { background: none; padding: 0; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 8px 0 14px;
+    font-size: 8.5pt;
+    page-break-inside: avoid;
+  }
+  th, td {
+    border: 1px solid var(--line);
+    padding: 5px 7px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { background: #f1f5f9; font-weight: 600; color: var(--ink); }
+  .meta { color: var(--muted); font-size: 9pt; margin-bottom: 14px; }
+  .tag {
+    display: inline-block;
+    font-size: 7.5pt;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 4px;
+    border: 1px solid;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-right: 3px;
+  }
+  .tag.req { color: #0284c7; border-color: #bae6fd; background: #f0f9ff; }
+  .tag.cap { color: #7c3aed; border-color: #ddd6fe; background: #f5f3ff; }
+  .tag.feat { color: #0d9488; border-color: #99f6e4; background: #f0fdfa; }
+  .tag.task { color: #ea580c; border-color: #fed7aa; background: #fff7ed; }
+  .tag.func { color: #4338ca; border-color: #c7d2fe; background: #eef2ff; }
+  .tag.ac { color: #15803d; border-color: #bbf7d0; background: #f0fdf4; }
+  .note {
+    border-left: 4px solid var(--warn);
+    background: #fffbeb;
+    padding: 8px 12px;
+    margin: 10px 0;
+    page-break-inside: avoid;
+    font-size: 8.5pt;
+  }
+  .note.info { border-color: var(--pri); background: #f0f9ff; }
+  .note.danger { border-color: var(--bad); background: #fef2f2; }
+  .item-card {
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: #fff;
+    padding: 10px 12px;
+    margin-bottom: 12px;
+    page-break-inside: avoid;
+  }
+  .item-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    border-bottom: 1px solid #e2e8f0;
+    padding-bottom: 4px;
+    margin-bottom: 6px;
+  }
+  .item-title { font-weight: 700; font-size: 10pt; color: var(--ink); }
+  .item-ref { font-family: monospace; font-size: 8pt; color: var(--muted); }
+  .ac-box {
+    background: #f0fdf4;
+    border: 1px solid #bbf7d0;
+    border-radius: 4px;
+    padding: 6px 10px;
+    margin-top: 6px;
+    font-size: 8pt;
+  }
+  .func-box {
+    background: #f8fafc;
+    border-left: 3px solid var(--sec);
+    padding: 6px 10px;
+    margin: 6px 0;
+    font-family: monospace;
+    font-size: 8pt;
+  }
+  footer {
+    margin-top: 24px;
+    padding-top: 8px;
+    border-top: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 8pt;
+  }
+</style>
+</head>
+<body>
+
+<h1>AEP System Engineering Backlog &amp; Feature Map</h1>
+<div class="meta">
+  <strong>Traceability Hierarchy:</strong> Requirements (REQ) &rarr; Capabilities (CAP) &rarr; Features (FEAT) &rarr; Tasks (TASK) &rarr; Functions (FUNC) &rarr; Acceptance Criteria (AC)<br>
+  <strong>Version:</strong> v1.1 (Refined &amp; Post-Adversarial Panel Audit) &middot; <strong>Date:</strong> 2026-11-09 &middot; <strong>Branch:</strong> <code>docs/dual-lane-governance-proposal</code> &middot; <strong>PR:</strong> #133
+</div>
+
+<!-- ========================================================================= -->
+<!-- 1. ADVERSARIAL PANEL AUDIT & REMEDIATION -->
+<!-- ========================================================================= -->
+<h2>1. Adversarial Panel Findings &amp; Architecture Calibrations</h2>
+<div class="note danger">
+  <strong>Adversarial Audit Summary (Planning-Wringer, Paperthin &amp; Uncle Bob):</strong>
+  The adversarial review panel audited the v1.1 backlog against the live repository (<code>cmd/aep</code>, <code>internal/</code>, <code>tools/ghg</code>, <code>reference/esf</code>) and surfaced 4 fatal design risks and interface coupling flaws that have been remediated in this refined plan:
+</div>
+
+<table>
+  <thead>
+    <tr>
+      <th>Adversarial Finding &amp; Challenge</th>
+      <th>Ground-Truth Reality &amp; Risk</th>
+      <th>Applied Backlog Remediation</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>1. ESF Multi-Backend Gap</strong><br>(Planning-Wringer)</td>
+      <td><code>reference/esf/go.mod:7</code> hardcodes <code>CubeSandbox/sdk/go v0.7.3</code>. Zero native code exists for <code>libkrun</code> or <code>gvisor</code>. Modifying <code>reference/esf</code> is forbidden.</td>
+      <td><strong>Descope in-tree ESF modifications:</strong> Cube/KVM is the verified factory path. <code>libkrun</code> and <code>gvisor</code> are designed as out-of-tree runner adapters behind the <code>factory.BackendAdapter</code> seam. Unsupported hosts cleanly quarantine.</td>
+    </tr>
+    <tr>
+      <td><strong>2. VirtioFS / Worktree Deadlock</strong><br>(Paperthin Devil's Advocate)</td>
+      <td>Running 8–10 parallel container lanes mounted to host Git worktrees via VirtioFS on macOS Colima causes severe inode lock contention and <code>.git/index.lock</code> race collisions.</td>
+      <td><strong>Strict Worktree Isolation:</strong> Each lane operates in an independent branch worktree with dedicated build cache volumes (tmpfs). Commits are serialized through the host-side <code>git.sock</code> relay; the lane mounts no host <code>.git</code> directory (the linked-worktree <code>.git</code> file is masked).</td>
+    </tr>
+    <tr>
+      <td><strong>3. Interface Coupling &amp; SRP Violations</strong><br>(Uncle Bob Clean Architecture)</td>
+      <td><code>lane.Manager</code> and <code>factory.Client</code> were god interfaces bundling process execution, worktree allocation, filesystem fencing, and cryptographic auditing into monolithic structs.</td>
+      <td><strong>Interface Segregation (ISP):</strong> Segregated into <code>WorktreeAllocator</code>, <code>ContainerRuntime</code>, <code>FenceCoordinator</code>, <code>BackendProbe</code>, and <code>EgressAuditor</code>. Pure domain policies separated from disk I/O.</td>
+    </tr>
+    <tr>
+      <td><strong>4. Closed-Egress Dependency Catch-22</strong><br>(Paperthin Adversary)</td>
+      <td>Enforcing <code>allow_internet=false</code> inside Tier-2 sandboxes prevents tasks from downloading missing compiler packages or external test dependencies during builds.</td>
+      <td><strong>Pre-Baked Runtime Images &amp; Read-Only Caches:</strong> System dependencies and language modules are pre-seeded in the base lane image or mounted via read-only host volume caches. Egress remains strictly closed.</td>
+    </tr>
+    <tr>
+      <td><strong>5. Fatal 8 GB RAM Physical Check Bug</strong><br>(Planning-Wringer)</td>
+      <td>Backlog AC-07.1.1.3 checked for <code>&lt; 8 GB available RAM</code>, which fails on physical 8 GB machines (Intel N100) because OS overhead leaves ~6–7 GB available.</td>
+      <td><strong>Check Physical Memory:</strong> AC-07.1.1.3 updated to evaluate <em>total installed physical RAM</em> (<code>Total &gt;= 7.5 GiB</code>) rather than instantaneous available memory.</td>
+    </tr>
+    <tr>
+      <td><strong>6. Redundant Receipt Package</strong><br>(Planning-Wringer)</td>
+      <td>Backlog invented a redundant <code>internal/receipt</code> package duplicating existing <code>runner.CommandReceipt</code> in <code>internal/verifier/runner/runner.go:21-30</code>.</td>
+      <td><strong>SSOT Consolidation:</strong> Merged receipt generation into existing <code>internal/verifier/runner</code> primitives, eliminating split-brain receipt structures.</td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- ========================================================================= -->
+<!-- 2. THREE DETERMINISTIC QUALITY GATES -->
+<!-- ========================================================================= -->
+<h2>2. Three Deterministic Quality Gates (Uncle Bob's Discipline)</h2>
+<p>Every PR deliverable must pass three automated, non-negotiable quality gates in CI before merge:</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>Quality Gate</th>
+      <th>Threshold &amp; Formula</th>
+      <th>Tooling &amp; Enforcement</th>
+      <th>Failure Action</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>1. CRAP Score Gate</strong><br>(Change Risk Anti-Patterns)</td>
+      <td><code>CRAP(m) = CC(m)^2 * (1 - Cov(m))^3 + CC(m) &lt; 10</code><br>Cyclomatic complexity &gt; 8 strictly forbidden.</td>
+      <td><code>gocyclo</code> + <code>go test -coverprofile</code>.<br>Any complex branch must have high test coverage.</td>
+      <td>PR blocked; function must be split into cohesive sub-functions.</td>
+    </tr>
+    <tr>
+      <td><strong>2. Structural DRY Gate</strong><br>(Duplication Elimination)</td>
+      <td>Token similarity ratio &lt; 0.8<br>(Minimum 92% non-duplicated code).</td>
+      <td>Automated AST scanner (<code>dupl -threshold 35 ./internal/...</code>). Zero duplicate blocks in decision logic or admission math.</td>
+      <td>PR blocked; common logic must be consolidated to SSOT helpers.</td>
+    </tr>
+    <tr>
+      <td><strong>3. Mutation Kill Gate</strong><br>(Test Kill Efficacy)</td>
+      <td>Mutation Kill Score &gt; 85% on domain logic.<br>100% kill on boundary operators (<code>&lt;</code>, <code>&lt;=</code>, <code>==</code>, <code>!=</code>).</td>
+      <td><code>go-mutesting</code> executed on <code>internal/admission</code>, <code>internal/dispatch</code>, and <code>internal/policy</code>.</td>
+      <td>PR blocked; tests must be enhanced to assert behavior, not line coverage.</td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- ========================================================================= -->
+<!-- 3. FEATURE MAP & EXECUTION ROADMAP -->
+<!-- ========================================================================= -->
+<h2>3. Feature Map &amp; Dependency Waves (4 Milestones)</h2>
+<p>Work is organized into 4 non-circular dependency waves, strictly sequenced to enable test-driven progression without mock staleness:</p>
+
+<pre><code>WAVE 1: CORE FOUNDATION &amp; SUBSTRATE BOOT (Pure Domain &amp; Primitives)
+  ├── PR-01a/b/c: Hardware Profile Domain &amp; Host Prober (internal/profile)
+  ├── PR-02a/b:   Policy Tamper Verifier &amp; Env Scrubber (internal/policy)
+  └── PR-03a/b:   Memory Relay Client &amp; Go Boot Gate (internal/memoryd, internal/boot)
+         │
+         ▼
+WAVE 2: ADMISSION &amp; INNER-LOOP RALPH FABRIC (Tier 1 Concurrency)
+  ├── PR-04a/b:   Pure Admission Engine &amp; FileLock Store (internal/admission)
+  ├── PR-05a/b:   Beads Issue Ledger &amp; Dependency DAG Resolver (internal/ledger)
+  ├── PR-06a/b:   GitHub Gateway Socket Daemon &amp; Coalescing Cache (internal/gateway)
+  └── PR-07a/b/c: Zero-Egress Lane Engine &amp; Container Driver (internal/lane, deploy/compose)
+         │
+         ▼
+WAVE 3: GOVERNANCE &amp; FACTORY MICROVM SANDBOXING (Tier 2 Isolation)
+  ├── PR-08a/b:   Pure Dispatch Decision Matrix &amp; Quarantine Audit (internal/dispatch)
+  ├── PR-09:      Supervisor Polling Loop &amp; Dispatch Hook (cmd/aep)
+  └── PR-10a/b:   ESF Factory Cube/KVM Adapter &amp; Egress Guard (internal/factory)
+         │
+         ▼
+WAVE 4: VERIFICATION, RECEIPTS &amp; SETTLEMENT (Completion &amp; Audit)
+  ├── PR-11a/b:   Disposable Sandbox Re-Verification Runner (internal/verifier)
+  └── PR-12:      Cryptographic CommandReceipt &amp; Beads Issue Closer (internal/ledger)</code></pre>
+
+<!-- ========================================================================= -->
+<!-- 4. ATOMIC WORK UNITS & SIZING MATRIX -->
+<!-- ========================================================================= -->
+<h2>4. Atomic Work Units &amp; Sizing Matrix (21 PR Slices)</h2>
+<p>In accordance with Uncle Bob's small-commit discipline, the 11 high-level tasks are broken into 21 bite-sized, atomic deliverables (&le; 300–400 LOC each):</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>PR Slice</th>
+      <th>Deliverable Package &amp; Responsibility</th>
+      <th>Est. LOC</th>
+      <th>Primary Quality &amp; Test Focus</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>PR-01a</strong></td>
+      <td><code>internal/profile</code>: Domain models, presets (<code>nano-8g</code> to <code>workstation-48g</code>), validation math</td>
+      <td>~180</td>
+      <td>Pure unit tests; assert overcommit rejection and physical RAM arithmetic.</td>
+    </tr>
+    <tr>
+      <td><strong>PR-01b</strong></td>
+      <td><code>internal/profile</code>: Hardware probers (<code>/proc/cpuinfo</code>, <code>/dev/kvm</code>, <code>sysctl</code>) behind <code>HostProbe</code> seam</td>
+      <td>~240</td>
+      <td>Faked OS probes for Linux KVM, macOS VZ, and N100 KVM-free hosts.</td>
+    </tr>
+    <tr>
+      <td><strong>PR-01c</strong></td>
+      <td><code>cmd/aep</code>: Wire <code>aep profile detect</code> and <code>aep profile show</code> CLI subcommands</td>
+      <td>~160</td>
+      <td>Golden output CLI tests; JSON formatting.</td>
+    </tr>
+    <tr>
+      <td><strong>PR-02a</strong></td>
+      <td><code>internal/policy</code>: Environment sanitizer (<code>ScrubEnv</code>) and policy token parser</td>
+      <td>~210</td>
+      <td>Table tests verifying zero leakage of <code>GITHUB_TOKEN</code>, <code>PAT</code>, or API secrets.</td>
+    </tr>
+    <tr>
+      <td><strong>PR-02b</strong></td>
+      <td><code>internal/policy</code>: Git HEAD-blob cryptographic tamper verifier (<code>git rev-parse HEAD</code>)</td>
+      <td>~250</td>
+      <td>Git fixture test; proves uncommitted modifications fail closed.</td>
+    </tr>
+    <tr>
+      <td><strong>PR-03a</strong></td>
+      <td><code>internal/memoryd</code>: Host socket relay client &amp; CLI subprocess bridge</td>
+      <td>~260</td>
+      <td>UNIX socket connection resilience; graceful failure on offline daemon.</td>
+    </tr>
+    <tr>
+      <td><strong>PR-03b</strong></td>
+      <td><code>internal/boot</code>: Go-native boot gate orchestrator replacing <code>boot-gate.sh</code></td>
+      <td>~320</td>
+      <td>Parity test against shell gate; verifies identical <code>BOOT-GATE:</code> output tokens.</td>
+    </tr>
+    <tr>
+      <td><strong>PR-04a</strong></td>
+      <td><code>internal/admission</code>: Pure admission calculation engine (memory budgets &amp; lane limits)</td>
+      <td>~220</td>
+      <td>Concurrent race tests with 20 goroutines; mutation score &gt; 85%.</td>
+    </tr>
+    <tr>
+      <td><strong>PR-04b</strong></td>
+      <td><code>internal/admission</code>: File-locked state persistence (<code>admission.json</code> using <code>lock.FileLock</code>)</td>
+      <td>~280</td>
+      <td>Process kill fault-injection; stale lock recovery after 30s.</td>
+    </tr>
+    <tr>
+      <td><strong>PR-05a</strong></td>
+      <td><code>internal/ledger</code>: Beads domain models, blocker DAG resolution, missing-tag policy</td>
+      <td>~240</td>
+      <td>Pure graph tests; unclosed blockers defer candidate issues.</td>
+    </tr>
+    <tr>
+      <td><strong>PR-05b</strong></td>
+      <td><code>internal/ledger</code>: <code>bd</code> CLI JSON runner adapter with unpinned limit guard (<code>--limit 0</code>)</td>
+      <td>~270</td>
+      <td>JSON streaming fixture tests; <code>ErrFetchCeilingExceeded</code> validation.</td>
+    </tr>
+    <tr>
+      <td><strong>PR-06a</strong></td>
+      <td><code>internal/gateway</code>: Wire protocol, rate limiter, and PR status coalescing cache</td>
+      <td>~290</td>
+      <td>Coalescing test: 10 parallel queries collapsed into 1 upstream call.</td>
+    </tr>
+    <tr>
+      <td><strong>PR-06b</strong></td>
+      <td><code>internal/gateway</code>: <code>aep gwd</code> UNIX domain socket daemon and host <code>ghg.py</code> bridge</td>
+      <td>~310</td>
+      <td>Socket client/server IPC tests; branch name scoping security.</td>
+    </tr>
+    <tr>
+      <td><strong>PR-07a</strong></td>
+      <td><code>internal/lane</code>: Worktree allocator &amp; file-lock fence state machine</td>
+      <td>~280</td>
+      <td>Isolated worktree path verification; zero collision in parent repo.</td>
+    </tr>
+    <tr>
+      <td><strong>PR-07b</strong></td>
+      <td><code>internal/lane</code>: OCI container runtime driver (Docker/Podman zero-egress runner)</td>
+      <td>~340</td>
+      <td>Behavioral container test: verified <code>ENETUNREACH</code> and read-only rootfs.</td>
+    </tr>
+    <tr>
+      <td><strong>PR-07c</strong></td>
+      <td><code>cmd/aep</code>: Wire <code>aep lane claim|release|reap</code> CLI subcommands</td>
+      <td>~210</td>
+      <td>Zombie container reaper test; launcher crash recovery.</td>
+    </tr>
+    <tr>
+      <td><strong>PR-08a</strong></td>
+      <td><code>internal/dispatch</code>: Pure decision engine (evaluating LLD &sect;7 decision matrix)</td>
+      <td>~320</td>
+      <td>100% table coverage of every row in &sect;7; quarantine-first on missing KVM.</td>
+    </tr>
+    <tr>
+      <td><strong>PR-08b</strong></td>
+      <td><code>internal/dispatch</code>: Decision audit recorder (<code>decisions/&lt;ts&gt;-&lt;issue&gt;.json</code>) &amp; dry-run CLI</td>
+      <td>~230</td>
+      <td>Audit persistence; verifies zero silent downgrades to Tier 1.</td>
+    </tr>
+    <tr>
+      <td><strong>PR-09</strong></td>
+      <td><code>cmd/aep</code>: Supervisor daemon integration (polling loop under <code>--dispatch</code>)</td>
+      <td>~260</td>
+      <td>Idempotent loop test; unassigned work claimed and dispatched cleanly.</td>
+    </tr>
+    <tr>
+      <td><strong>PR-10a</strong></td>
+      <td><code>internal/factory</code>: Factory config parser, open-egress guard, Cube/KVM adapter</td>
+      <td>~350</td>
+      <td>Rejection of <code>acknowledge_open_egress=true</code> with exit code 4.</td>
+    </tr>
+    <tr>
+      <td><strong>PR-10b</strong></td>
+      <td><code>internal/factory</code>: In-VM egress probe SHA-256 evidence validator &amp; quarantine hooks</td>
+      <td>~310</td>
+      <td>Cryptographic probe validation; corrupted evidence blocks PR creation.</td>
+    </tr>
+    <tr>
+      <td><strong>PR-11a</strong></td>
+      <td><code>internal/verifier</code>: Disposable sandbox test runner executing repo build/test scripts, with isolation meeting the task <code>Requirement</code></td>
+      <td>~360</td>
+      <td>Isolation test: untrusted patch tests execute inside disposable sandbox only.</td>
+    </tr>
+    <tr>
+      <td><strong>PR-11b</strong></td>
+      <td><code>internal/verifier</code> + <code>internal/ledger</code>: full-stream <code>StdoutSha</code>/<code>StderrSha</code>, <code>Nonce</code>, <code>IssuedAt</code>, <code>LedgerSeq</code>, <code>KeyID</code>, Ed25519 <code>Signature</code>, and <code>bd close</code> settlement guard</td>
+      <td>~280</td>
+      <td>Verified receipt required before issue state transitions to closed. Altered output, replay, wrong key, or missing signature fails verification.</td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- ========================================================================= -->
+<!-- 5. REFINED REQUIREMENTS, CAPABILITIES & FUNCTIONS -->
+<!-- ========================================================================= -->
+<h2>5. Detailed Backlog Specifications (ISP / SRP Refactored)</h2>
+
+<div class="item-card">
+  <div class="item-header">
+    <span class="item-title"><span class="tag cap">CAP-01</span> Tier-1 Ralph Container Isolation</span>
+    <span class="item-ref">REQ-01.1 &middot; Package: <code>internal/lane</code></span>
+  </div>
+  <p>Executes inner-loop tasks in ephemeral OCI containers with isolated network namespaces, tmpfs <code>/tmp</code>, virtiofs git worktrees, and IPC relays.</p>
+
+  <div class="func-box">
+    <strong>Segregated Clean Interfaces (ISP):</strong><br>
+    <code>type WorktreeAllocator interface {<br>
+    &nbsp;&nbsp;Allocate(ctx context.Context, issueID string) (worktreePath string, err error)<br>
+    &nbsp;&nbsp;Free(ctx context.Context, worktreePath string) error<br>
+    }<br>
+    type ContainerRuntime interface {<br>
+    &nbsp;&nbsp;Start(ctx context.Context, spec ContainerSpec) (containerID string, err error)<br>
+    &nbsp;&nbsp;Wait(ctx context.Context, containerID string) (exitCode int, err error)<br>
+    &nbsp;&nbsp;Stop(ctx context.Context, containerID string) error<br>
+    }<br>
+    type LaneManager struct {<br>
+    &nbsp;&nbsp;allocator WorktreeAllocator<br>
+    &nbsp;&nbsp;runtime   ContainerRuntime<br>
+    &nbsp;&nbsp;fences    FenceStore<br>
+    }</code>
+  </div>
+
+  <div class="ac-box">
+    <strong>Behavioral Acceptance Criteria (TDD):</strong>
+    <ul>
+      <li><strong>AC-01.1 (Confinement):</strong> GIVEN a spawned container, WHEN executing any outbound socket call, THEN the kernel returns <code>ENETUNREACH</code> or <code>EPERM</code> immediately. The lane cannot originate a model request; inference runs in the host harness.</li>
+      <li><strong>AC-01.2 (Serialized Commits):</strong> GIVEN 4 concurrent lanes, WHEN commits execute, THEN they are serialized through the host-side <code>git.sock</code> relay and no host <code>.git</code> directory is mounted.</li>
+      <li><strong>AC-01.3 (Reap Safety):</strong> GIVEN a launcher process killed with <code>SIGKILL</code> while the container runs, WHEN <code>aep lane reap</code> runs, THEN it marks the lane active and refuses to delete state until the container stops.</li>
+      <li><strong>AC-01.4 (Exec Boundary):</strong> GIVEN a lane with <code>--network none</code>, WHEN it requests an allowlisted command, THEN <code>exec.sock</code> runs it under the lane cgroup; a shell interpolation or unlisted argv is rejected.</li>
+      <li><strong>AC-01.5 (Git Boundary):</strong> GIVEN a lane worktree, WHEN it commits through <code>git.sock</code>, THEN the commit appears on the host branch, <code>/workspace/.git</code> contains no <code>gitdir:</code> pointer, and <code>git -C /workspace rev-parse</code> fails.</li>
+    </ul>
+  </div>
+</div>
+
+<div class="item-card">
+  <div class="item-header">
+    <span class="item-title"><span class="tag cap">CAP-02</span> Tier-2 Local-First Sandbox Factory</span>
+    <span class="item-ref">REQ-01.2 &middot; Package: <code>internal/factory</code></span>
+  </div>
+  <p>Executes untrusted dependencies, multi-repo changes, and CVE remediation in an approved local sandbox backend (hardware microVM or gVisor) with measured egress.</p>
+
+  <div class="func-box">
+    <strong>Segregated Clean Interfaces (ISP):</strong><br>
+    <code>type BackendProbe interface {<br>
+    &nbsp;&nbsp;Probe(ctx context.Context) (BackendKind, error)<br>
+    }<br>
+    type PipelineRunner interface {<br>
+    &nbsp;&nbsp;Submit(ctx context.Context, req RunRequest) (handle RunHandle, err error)<br>
+    &nbsp;&nbsp;Status(ctx context.Context, handle RunHandle) (RunStatus, error)<br>
+    }<br>
+    type EgressAuditor interface {<br>
+    &nbsp;&nbsp;VerifyProbeDigest(ctx context.Context, evidencePath string) (bool, error)<br>
+    }</code>
+  </div>
+
+  <div class="ac-box">
+    <strong>Behavioral Acceptance Criteria (TDD):</strong>
+    <ul>
+      <li><strong>AC-02.1 (Hardening Guard):</strong> GIVEN <code>factory.toml</code> with <code>hardening.acknowledge_open_egress = true</code>, WHEN submitted, THEN runner rejects with exit 4.</li>
+      <li><strong>AC-02.2 (Backend Resolution):</strong> GIVEN Linux with <code>/dev/kvm</code>, THEN selects <code>cube-kvm</code>; GIVEN host lacking hardware virtualization, THEN selects <code>gvisor</code> adapter or safely quarantines.</li>
+      <li><strong>AC-02.3 (Dependency Pre-Baking):</strong> GIVEN closed egress (<code>allow_internet=false</code>), WHEN build scripts run, THEN required dependencies resolve from pre-seeded image layers or read-only volume mounts without external network access.</li>
+    </ul>
+  </div>
+</div>
+
+<div class="item-card">
+  <div class="item-header">
+    <span class="item-title"><span class="tag cap">CAP-07</span> Multi-Hardware Profile Registry &amp; Admission</span>
+    <span class="item-ref">REQ-04.1 &middot; Package: <code>internal/profile</code> &amp; <code>internal/admission</code></span>
+  </div>
+  <p>Enforces hardware budget scaling from 2 vCPU / 8 GB (Intel N100) up to 12 vCPU / 48 GB (Apple M3 Max) with dual-constraint admission.</p>
+
+  <div class="func-box">
+    <strong>Pure Domain Logic Decoupled from I/O:</strong><br>
+    <code>type Usage struct {<br>
+    &nbsp;&nbsp;ActiveLanes int<br>
+    &nbsp;&nbsp;AllocatedRAM int<br>
+    }<br>
+    // Pure calculation without disk locking or syscalls:<br>
+    func CalculateAdmission(u Usage, p Profile, req Request) (*Reservation, error)</code>
+  </div>
+
+  <div class="ac-box">
+    <strong>Behavioral Acceptance Criteria (TDD):</strong>
+    <ul>
+      <li><strong>AC-07.1 (Physical Memory Floor):</strong> GIVEN a host with <code>TotalRAM &gt;= 7.5 GiB</code> (physical 8 GB), WHEN <code>aep profile detect</code> runs, THEN it successfully assigns preset <code>nano-8g</code> regardless of ephemeral available RAM.</li>
+      <li><strong>AC-07.2 (Dual-Constraint Concurrency):</strong> GIVEN an active memory budget of 4.0 GB, WHEN two 2.0 GB lanes are active, THEN a 3rd lane request receives <code>ErrNoCapacity</code> even if the lane count ceiling is not reached.</li>
+      <li><strong>AC-07.3 (Busy Host):</strong> GIVEN an 8 GB physical host with only 1 GB currently available, WHEN <code>aep profile detect</code> runs, THEN it selects <code>nano-8g</code> (total &gt;= 7.5 GiB); WHEN a 2 GB lane is admitted, THEN it receives <code>ErrNoCapacity</code> from admission, not a profile error.</li>
+      <li><strong>AC-07.4 (Checked Arithmetic):</strong> GIVEN <code>AvailableBytes</code> below the requested bytes, WHEN <code>Admit</code> runs, THEN it rejects with <code>ErrNoCapacity</code>; a zero request or an overflowing <code>MemMiB</code> is <code>ErrInvalidRequest</code>. The predicate never subtracts before comparing.</li>
+      <li><strong>AC-07.5 (Nano Capacity):</strong> GIVEN <code>nano-8g</code> with 1536 MiB Tier-2 budget, WHEN a 1536 MiB gVisor lane is admitted, THEN it succeeds; a 2048 MiB request is <code>ErrNoCapacity</code> with the capacity reason, not <code>ErrTier2Unsupported</code>.</li>
+      <li><strong>AC-07.6 (Preset Validation):</strong> GIVEN any preset, WHEN <code>Profile.Validate</code> runs, THEN <code>MaxTier1Lanes * Tier1LaneMiB &lt;= Tier1BudgetMiB</code> and <code>MaxTier2Lanes * Tier2LaneMiB &lt;= Tier2BudgetMiB</code> for nano/small/medium/workstation; the workstation 10-lane preset uses 1536 MiB lanes so 10×1536 &lt;= 16384.</li>
+    </ul>
+  </div>
+</div>
+
+<footer>
+  AEP System Engineering Backlog v1.1 &middot; Refined with Adversarial Panel Review &middot; Autonomous Engineering Platform
+</footer>
+
+</body>
+</html>

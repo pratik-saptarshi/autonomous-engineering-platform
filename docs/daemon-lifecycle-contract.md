@@ -7,6 +7,35 @@
 
 ---
 
+## Amendment (2026-11-04) — canonical source in `ops/`
+
+This amendment adds one rule; it does not rewrite any statement below.
+`ops/bin/watchdog-backup.sh` in this repo is the **canonical source**
+for the watchdog: the live deployed watchdog plus three documented
+deltas (corrected header block, dead `start_daemon` removed,
+`stop_daemon` moved above its first use), recorded in
+`ops/bin/WATCHDOG-DELTAS.md`. When a plan or a reader needs the
+watchdog, cite `ops/`.
+
+The deployed script still governs runtime on disagreement — the
+canonical rule in §1 stands unchanged. The two rules answer different
+questions: `ops/` is what to cite, the deployed script is what
+actually runs.
+
+Two framing notes, recorded here rather than by editing history. First,
+the deployed-script table in §1 is **2026-10-24-dated**: it claims a
+`reaped_expected()`, an EXIT trap, and a called `start_daemon()` in the
+deployed script, none of which is true of the current live script
+(the current live script has no `reaped_expected()`, no EXIT trap, and
+its `start_daemon` definition was dead code, removed in the canonical
+copy). Read that table as a dated snapshot, not as current fact.
+Second, this amendment adds a rule to a document whose own status line
+above calls it descriptive, not a policy: the canonical-source rule is
+an addition agreed for the `ops/` kit, not a reclassification of this
+document.
+
+---
+
 ## 1. The Fork
 
 There are **two** watchdog scripts, and they disagree.

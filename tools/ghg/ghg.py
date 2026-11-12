@@ -37,6 +37,11 @@ import time
 import uuid
 from pathlib import Path
 
+try:
+    import telemetry as _telemetry
+except Exception:  # optional dependency of the module layout; absence is a no-op
+    _telemetry = None
+
 DEFAULT_INTERVAL_FLOOR = 45
 DEFAULT_TIMEOUT = 1800
 
@@ -174,8 +179,45 @@ def _denial_line(ledger):
     return "ghg: DENIED bucket=%s reset=%s cap=%s" % (bucket, reset, cap)
 
 
+# ------------------------------------------- gate-decision recorder
+# The CLI is single-threaded, so a module-level recorder carries the
+# gate's actual decision from _gated / cmd_check / cmd_watch to
+# _dispatch_traced, which passes it explicitly to telemetry's
+# finish(). The verdict is never inferred from the process exit
+# code. Precedence when several gated calls occur under one traced
+# verb (watch makes several): denied > unavailable > bypass >
+# allowed > none.
+_GATE_VERDICT_PRECEDENCE = {
+    "allowed": 1,
+    "bypass": 2,
+    "unavailable": 3,
+    "denied": 4,
+}
+_gate_verdict = None
+
+
+def _reset_gate_verdict():
+    global _gate_verdict
+    _gate_verdict = None
+
+
+def _record_gate_verdict(verdict):
+    global _gate_verdict
+    if verdict not in _GATE_VERDICT_PRECEDENCE:
+        return
+    if _gate_verdict is None or (
+            _GATE_VERDICT_PRECEDENCE[verdict]
+            > _GATE_VERDICT_PRECEDENCE[_gate_verdict]):
+        _gate_verdict = verdict
+
+
+def _recorded_gate_verdict():
+    return _gate_verdict
+
+
 def _fail_open(argv, actor, capture, timeout, reason):
     """GateBroken path: exec anyway, leave the designed traces."""
+    _record_gate_verdict("unavailable")
     print("ghg: WARNING gateway unavailable (%s); executing ungated"
           % reason, file=sys.stderr, flush=True)
     _fallback_log("ghg gate broken: %s; ungated pass-through argv=%s"
@@ -209,6 +251,7 @@ def _gated(argv, actor, timeout=None, capture=True, wait=0.0,
         except Exception as exc:
             return _fail_open(argv, actor, capture, timeout,
                               "ledger open failed: %s" % exc)
+        _record_gate_verdict("bypass")
         code, out = _exec_real_gh(argv, capture, timeout)
         try:
             _record_terminal(ledger, classify(argv), actor, argv,
@@ -253,8 +296,10 @@ def _gated(argv, actor, timeout=None, capture=True, wait=0.0,
                 return _fail_open(argv, actor, capture, timeout,
                                   "reserve failed: %s" % exc)
             if row_ids is not None:
+                _record_gate_verdict("allowed")
                 break
             if deadline is None or time.monotonic() >= deadline:
+                _record_gate_verdict("denied")
                 return 75, _denial_line(ledger)
             time.sleep(min(30.0, max(0.0, deadline - time.monotonic())))
         exec_timeout = timeout
@@ -1088,6 +1133,7 @@ def cmd_watch(args):
     except (sqlite3.Error, GateBroken) as exc:
         # Degrade deliberately like the other verbs (exit 70, the
         # shim's code for broken gateway state) — never a traceback.
+        _record_gate_verdict("unavailable")
         print("ghg: gateway state unavailable: %s" % exc,
               file=sys.stderr, flush=True)
         return 70
@@ -1425,9 +1471,11 @@ def cmd_check(args):
         return 2
     ledger = _open_ledger()
     if ledger is None:
+        _record_gate_verdict("unavailable")
         return 70
     try:
         if not _reap_housekeeping(ledger):
+            _record_gate_verdict("unavailable")
             return 70
         try:
             ledger.snapshot()  # opportunistic refresh + first-use seed
@@ -1435,9 +1483,11 @@ def cmd_check(args):
             pass  # snapshot is failure-tolerant by design
         denial = ledger.fits(classify(gh_args))
         if denial is not None:
+            _record_gate_verdict("denied")
             ledger.last_denial = denial
             print(_denial_line(ledger), file=sys.stderr, flush=True)
             return 75
+        _record_gate_verdict("allowed")
         print("ghg check: OK — charges fit current headroom")
         return 0
     finally:
@@ -1485,6 +1535,17 @@ def cmd_prune(args):
 
 # ------------------------------------------------------------------ cli
 
+def _dispatch_traced(verb, args, handler):
+    _reset_gate_verdict()
+    if _telemetry is None:
+        return handler(args)
+    explicit = getattr(args, "actor", None)
+    with _telemetry.operation(verb, lambda: resolve_actor(explicit)) as op:
+        code = handler(args)
+        op.finish(code, _recorded_gate_verdict())
+        return code
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="ghg", description="ghg — GitHub gateway")
@@ -1507,11 +1568,11 @@ def main(argv=None):
     sub.add_parser("prune", help="delete calls rows older than 30 days")
     args = parser.parse_args(argv)
     if args.verb == "watch":
-        return cmd_watch(args)
+        return _dispatch_traced("watch", args, cmd_watch)
     if args.verb == "run":
-        return cmd_run(args)
+        return _dispatch_traced("run", args, cmd_run)
     if args.verb == "check":
-        return cmd_check(args)
+        return _dispatch_traced("check", args, cmd_check)
     if args.verb == "status":
         return cmd_status(args)
     if args.verb == "prune":

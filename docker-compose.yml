@@ -1,0 +1,26 @@
+services:
+  aep:
+    build:
+      context: .
+      dockerfile: Containerfile
+    image: aep:latest
+    container_name: aep-engine
+    restart: unless-stopped
+    environment:
+      - AEP_HARDWARE_TIER=server-vm-x86_64
+      - AEP_MAX_LANES=4
+    volumes:
+      - aep-workspace:/workspace
+      - aep-state:/home/aep/.local/state
+    # By default the supervisor verifies the installed system itself: the
+    # image carries the bundle's self-check payload at the pinned root
+    # below — the same root the VM bundle's systemd unit configures. To
+    # verify a project instead, mount a checkout at /workspace (a bind
+    # mount in place of the aep-workspace volume above) and set
+    # working_dir: /workspace with the command's --root set to /workspace.
+    working_dir: /usr/local/lib/aep/verify
+    command: ["supervisor", "--loop", "--root=/usr/local/lib/aep/verify"]
+
+volumes:
+  aep-workspace:
+  aep-state:

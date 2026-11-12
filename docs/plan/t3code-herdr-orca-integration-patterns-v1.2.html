@@ -1,0 +1,648 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Integration Patterns Across T3 Code, Herdr, and Orca (v1.2)</title>
+<style>
+  @page { size: A3 landscape; margin: 12mm 10mm; }
+  :root {
+    --ink: #0f172a;
+    --muted: #475569;
+    --line: #cbd5e1;
+    --soft: #f8fafc;
+    --pri: #0369a1;
+    --sec: #4f46e5;
+    --ok: #047857;
+    --warn: #b45309;
+    --bad: #b91c1c;
+    --t1: #0284c7;
+    --t2: #6366f1;
+    --herdr: #7c3aed;
+    --orca: #0284c7;
+    --t3: #2563eb;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: var(--ink);
+    line-height: 1.45;
+    font-size: 10pt;
+    max-width: 1360px;
+    margin: 0 auto;
+    padding: 24px;
+    background: #fff;
+  }
+  h1 { font-size: 22pt; margin: 0 0 4px; color: var(--pri); font-weight: 700; }
+  h2 { font-size: 14pt; margin: 28px 0 10px; padding-bottom: 4px; border-bottom: 2px solid var(--line); color: var(--sec); page-break-after: avoid; }
+  h3 { font-size: 11pt; margin: 16px 0 6px; color: var(--pri); }
+  p { margin: 0 0 8px; }
+  .meta { color: var(--muted); font-size: 9pt; margin-bottom: 18px; }
+  .diagram-container {
+    background: #ffffff;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 16px;
+    margin: 16px 0 24px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    page-break-inside: avoid;
+  }
+  svg { width: 100%; height: auto; display: block; }
+  .note {
+    border-left: 4px solid var(--sec);
+    background: #f5f3ff;
+    padding: 10px 14px;
+    margin: 14px 0;
+    border-radius: 0 6px 6px 0;
+    font-size: 9pt;
+  }
+  .grid-legend {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 12px;
+    margin-top: 14px;
+    font-size: 8.5pt;
+  }
+  .legend-box {
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 10px;
+    background: var(--soft);
+  }
+  .legend-box strong { color: var(--pri); display: block; margin-bottom: 4px; }
+  pre {
+    background: #0f172a;
+    color: #f8fafc;
+    padding: 14px;
+    border-radius: 6px;
+    font-size: 8.5pt;
+    overflow-x: auto;
+    line-height: 1.4;
+  }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+  footer {
+    margin-top: 36px;
+    padding-top: 10px;
+    border-top: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 8.5pt;
+  }
+</style>
+</head>
+<body>
+
+<h1>Integration Patterns Across T3 Code, Herdr, and Orca</h1>
+<div class="meta">
+  <strong>System Integration Architecture &middot; Version:</strong> v1.2 (Immutable Artifact) &middot; 
+  <strong>Date:</strong> 2026-11-09 &middot; <strong>Branch:</strong> <code>docs/dual-lane-governance-proposal</code> &middot; 
+  <strong>PR:</strong> #133 &middot; 
+  <strong>Companion Docs:</strong> <code>aep-architecture-diagrams-v1.2.html</code>, <code>aep-hld-v1.2.html</code>, <code>aep-lld-v1.2.html</code>
+</div>
+
+<p>
+  This reference artifact formalizes the integration topology connecting the developer desktop environment to the Autonomous Engineering Platform (AEP) substrate. It establishes the technical contracts, event pipelines, and credential boundaries between <strong>T3 Code</strong> (AI-assisted harness and thread orchestrator), <strong>Herdr</strong> (GPUI agent multiplexer and terminal harness), and <strong>Orca</strong> (agent lifecycle, telemetry, and supervision daemon).
+</p>
+
+<!-- ========================================================================= -->
+<!-- DIAGRAM 1: SYSTEM INTEGRATION TOPOLOGY -->
+<!-- ========================================================================= -->
+<h2>1. System Integration Topology: T3 Code, Herdr, Orca &amp; AEP Substrate</h2>
+<p>
+  Full architectural mapping showing desktop operator tools, shared virtiofs filesystems, supervisor domain socket relays, and dual-lane execution containment.
+</p>
+
+<div class="diagram-container">
+<svg viewBox="0 0 1200 760" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arrow" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#334155" />
+    </marker>
+    <marker id="arrow-t3" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#2563eb" />
+    </marker>
+    <marker id="arrow-herdr" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#7c3aed" />
+    </marker>
+    <marker id="arrow-orca" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#0284c7" />
+    </marker>
+    <marker id="arrow-sub" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#047857" />
+    </marker>
+    <linearGradient id="grad-desktop" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#f8fafc"/>
+    </linearGradient>
+    <linearGradient id="grad-t3" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#eff6ff"/>
+      <stop offset="100%" stop-color="#dbeafe"/>
+    </linearGradient>
+    <linearGradient id="grad-herdr" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#f5f3ff"/>
+      <stop offset="100%" stop-color="#ede9fe"/>
+    </linearGradient>
+    <linearGradient id="grad-orca" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#f0f9ff"/>
+      <stop offset="100%" stop-color="#e0f2fe"/>
+    </linearGradient>
+  </defs>
+
+  <!-- ================= HOST DESKTOP BOUNDARY ================= -->
+  <rect x="15" y="15" width="1170" height="340" rx="12" fill="url(#grad-desktop)" stroke="#64748b" stroke-width="2"/>
+  <rect x="25" y="25" width="1150" height="36" rx="6" fill="#0f172a"/>
+  <text x="40" y="48" font-size="13" font-weight="700" fill="#f8fafc">HOST DEVELOPER ENVIRONMENT (macOS Apple Silicon / Linux x86_64)</text>
+  <text x="560" y="48" font-size="11" fill="#94a3b8">Desktop Operator Interface &middot; The Triad: T3 Code &middot; Herdr &middot; Orca</text>
+  <text x="1060" y="48" font-size="10.5" font-weight="600" fill="#38bdf8">Trusted Host Ring</text>
+
+  <!-- ================= T3 CODE COMPONENT ================= -->
+  <g transform="translate(35, 75)">
+    <rect x="0" y="0" width="350" height="155" rx="8" fill="url(#grad-t3)" stroke="#2563eb" stroke-width="1.5"/>
+    <rect x="0" y="0" width="350" height="28" rx="8" fill="#2563eb"/>
+    <text x="15" y="19" font-size="11" font-weight="700" fill="#fff">T3 CODE (HARNESS &amp; ORCHESTRATOR)</text>
+    
+    <text x="15" y="46" font-size="9.5" font-weight="700" fill="#1e3a8a">&bull; Thread Engine:</text>
+    <text x="100" y="46" font-size="9" fill="#334155">t3_thread_launch &middot; send &middot; read &middot; transfer</text>
+
+    <text x="15" y="66" font-size="9.5" font-weight="700" fill="#1e3a8a">&bull; Worktree Strategy:</text>
+    <text x="125" y="66" font-size="9" fill="#334155">Allocates branch checkout per thread</text>
+
+    <text x="15" y="86" font-size="9.5" font-weight="700" fill="#1e3a8a">&bull; MCP Server &amp; Tools:</text>
+    <text x="125" y="86" font-size="9" fill="#334155">preview_*, html_render, link_pull_request</text>
+
+    <text x="15" y="106" font-size="9.5" font-weight="700" fill="#1e3a8a">&bull; Delegation Router:</text>
+    <text x="120" y="106" font-size="9" fill="#334155">delegate_task cross-provider arbitration</text>
+
+    <rect x="15" y="118" width="320" height="26" rx="4" fill="#fff" stroke="#93c5fd"/>
+    <text x="175" y="135" text-anchor="middle" font-size="8.5" font-weight="600" fill="#1d4ed8">PR Linking &middot; Checks &amp; Review Watcher</text>
+  </g>
+
+  <!-- ================= HERDR COMPONENT ================= -->
+  <g transform="translate(425, 75)">
+    <rect x="0" y="0" width="350" height="155" rx="8" fill="url(#grad-herdr)" stroke="#7c3aed" stroke-width="1.5"/>
+    <rect x="0" y="0" width="350" height="28" rx="8" fill="#7c3aed"/>
+    <text x="15" y="19" font-size="11" font-weight="700" fill="#fff">HERDR (GPUI AGENT MULTIPLEXER)</text>
+    
+    <text x="15" y="46" font-size="9.5" font-weight="700" fill="#4c1d95">&bull; GPUI Engine:</text>
+    <text x="88" y="46" font-size="9" fill="#334155">GPU-accelerated terminal panes &amp; layouts</text>
+
+    <text x="15" y="66" font-size="9.5" font-weight="700" fill="#4c1d95">&bull; Folder Watcher:</text>
+    <text x="105" y="66" font-size="9" fill="#334155">watchFolder API (instant virtiofs diff updates)</text>
+
+    <text x="15" y="86" font-size="9.5" font-weight="700" fill="#4c1d95">&bull; Operator Toasts:</text>
+    <text x="105" y="86" font-size="9" fill="#334155">notify() alerts on SessionWaiting / needs input</text>
+
+    <text x="15" y="106" font-size="9.5" font-weight="700" fill="#4c1d95">&bull; Shared Mod State:</text>
+    <text x="115" y="106" font-size="9" fill="#334155">shared/setShared reactive mod coordination</text>
+
+    <rect x="15" y="118" width="320" height="26" rx="4" fill="#fff" stroke="#c4b5fd"/>
+    <text x="175" y="135" text-anchor="middle" font-size="8.5" font-weight="600" fill="#6d28d9">IPC Domain Socket: ~/.config/herdr-app/herdr-app.sock</text>
+  </g>
+
+  <!-- ================= ORCA COMPONENT ================= -->
+  <g transform="translate(815, 75)">
+    <rect x="0" y="0" width="350" height="155" rx="8" fill="url(#grad-orca)" stroke="#0284c7" stroke-width="1.5"/>
+    <rect x="0" y="0" width="350" height="28" rx="8" fill="#0284c7"/>
+    <text x="15" y="19" font-size="11" font-weight="700" fill="#fff">ORCA (LIFECYCLE &amp; SUPERVISION)</text>
+    
+    <text x="15" y="46" font-size="9.5" font-weight="700" fill="#0c4a6e">&bull; Protocol Daemon:</text>
+    <text x="110" y="46" font-size="9" fill="#334155">com.stablyai.orca background service</text>
+
+    <text x="15" y="66" font-size="9.5" font-weight="700" fill="#0c4a6e">&bull; Turn FSM States:</text>
+    <text x="105" y="66" font-size="9" font-weight="600" fill="#0284c7">Start &rarr; Busy &rarr; Waiting &rarr; Idle/Error</text>
+
+    <text x="15" y="86" font-size="9.5" font-weight="700" fill="#0c4a6e">&bull; Engine Adapters:</text>
+    <text x="105" y="86" font-size="9" fill="#334155">OpenCode plugin, Claude Code, Pi harness</text>
+
+    <text x="15" y="106" font-size="9.5" font-weight="700" fill="#0c4a6e">&bull; Stream Security:</text>
+    <text x="105" y="106" font-size="9" fill="#334155">E2EE keypairs &middot; Zero provider token leak</text>
+
+    <rect x="15" y="118" width="320" height="26" rx="4" fill="#fff" stroke="#7dd3fc"/>
+    <text x="175" y="135" text-anchor="middle" font-size="8.5" font-weight="600" fill="#0369a1">Orca Status TUI &middot; Real-Time Indicators</text>
+  </g>
+
+  <!-- ================= SUBSTRATE CORE SERVICES STRIP ================= -->
+  <g transform="translate(35, 245)">
+    <rect x="0" y="0" width="1130" height="95" rx="8" fill="#ecfdf5" stroke="#059669" stroke-width="1.5"/>
+    <text x="18" y="20" font-size="11.5" font-weight="700" fill="#047857">AEP SUBSTRATE CORE SERVICES (HOST-BOUND PROTECTED SERVICES)</text>
+
+    <rect x="15" y="30" width="260" height="52" rx="6" fill="#fff" stroke="#059669"/>
+    <text x="145" y="50" text-anchor="middle" font-size="10.5" font-weight="700">NeuroStrata Cognitive Memory</text>
+    <text x="145" y="66" text-anchor="middle" font-size="8.5" fill="#475569">ladybug.db &middot; Vector/FTS &middot; Memory Relay</text>
+
+    <rect x="290" y="30" width="260" height="52" rx="6" fill="#fff" stroke="#059669"/>
+    <text x="420" y="50" text-anchor="middle" font-size="10.5" font-weight="700">Beads Task Ledger (SSOT)</text>
+    <text x="420" y="66" text-anchor="middle" font-size="8.5" fill="#475569">bd list --limit 0 &middot; bd close &lt;issueId&gt;</text>
+
+    <rect x="565" y="30" width="260" height="52" rx="6" fill="#fff" stroke="#059669"/>
+    <text x="695" y="50" text-anchor="middle" font-size="10.5" font-weight="700">ghg Gateway Proxy</text>
+    <text x="695" y="66" text-anchor="middle" font-size="8.5" fill="#475569">3,500 req/h Cap &middot; Host Token (Zero Leak)</text>
+
+    <rect x="840" y="30" width="275" height="52" rx="6" fill="#fff" stroke="#059669"/>
+    <text x="977" y="50" text-anchor="middle" font-size="10.5" font-weight="700">AEP Supervisor &amp; Boot Gate</text>
+    <text x="977" y="66" text-anchor="middle" font-size="8.5" fill="#475569">Preflight &middot; Admission &middot; Profile Detection</text>
+  </g>
+
+  <!-- ================= VIRTIOFS & SOCKET RELAY INTERFACE ================= -->
+  <g transform="translate(35, 370)">
+    <rect x="0" y="0" width="1130" height="70" rx="8" fill="#f1f5f9" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="6 3"/>
+    <text x="18" y="20" font-size="11" font-weight="700" fill="#334155">SHARED VIRTUALIZATION BOUNDARY (VIRTIOFS &amp; SUPERVISOR IPC RELAYS)</text>
+
+    <rect x="15" y="30" width="350" height="30" rx="4" fill="#fff" stroke="#64748b"/>
+    <text x="190" y="50" text-anchor="middle" font-size="9.5" font-weight="600" fill="#0f172a">Git Worktrees: /repo/.worktrees/lane-* (virtiofs)</text>
+
+    <rect x="380" y="30" width="735" height="30" rx="4" fill="#fff" stroke="#64748b"/>
+    <text x="747" y="50" text-anchor="middle" font-size="9.5" font-weight="600" fill="#0369a1">Supervisor Sockets: /run/aep/lanes/&lt;laneId&gt;/ (memory.sock &middot; ghg.sock &middot; git.sock &middot; exec.sock)</text>
+  </g>
+
+  <!-- Connector Lines between Host Desktop and Relays -->
+  <path d="M 210,230 L 210,370" stroke="#2563eb" stroke-width="1.8" stroke-dasharray="4 2" marker-end="url(#arrow-t3)"/>
+  <path d="M 600,230 L 600,370" stroke="#7c3aed" stroke-width="1.8" stroke-dasharray="4 2" marker-end="url(#arrow-herdr)"/>
+  <path d="M 990,230 L 990,370" stroke="#0284c7" stroke-width="1.8" stroke-dasharray="4 2" marker-end="url(#arrow-orca)"/>
+
+  <!-- Triad Peer IPC Links -->
+  <path d="M 385,150 L 425,150" stroke="#7c3aed" stroke-width="1.8" marker-end="url(#arrow-herdr)"/>
+  <path d="M 775,150 L 815,150" stroke="#0284c7" stroke-width="1.8" marker-end="url(#arrow-orca)"/>
+
+  <!-- ================= EXECUTION TIERS (GUEST RUNTIME) ================= -->
+  <!-- Tier 1 -->
+  <g transform="translate(35, 455)">
+    <rect x="0" y="0" width="550" height="280" rx="10" fill="#f0f9ff" stroke="#0284c7" stroke-width="2"/>
+    <rect x="0" y="0" width="550" height="32" rx="10" fill="#0284c7"/>
+    <text x="20" y="21" font-size="11.5" font-weight="700" fill="#fff">TIER 1: RALPH-LOOP CONTAINER LANES (FAST INNER LOOP)</text>
+    
+    <text x="18" y="52" font-size="9.5" font-weight="600">&bull; Network Boundary:</text>
+    <text x="130" y="52" font-size="9.5" font-weight="700" fill="#b91c1c">--network none (Zero Direct Network Access)</text>
+
+    <text x="18" y="72" font-size="9.5" font-weight="600">&bull; Storage Mount:</text>
+    <text x="110" y="72" font-size="9.5" fill="#334155">Dedicated Git worktree &middot; Private tmpfs /tmp &middot; Read-only rootfs</text>
+
+    <text x="18" y="92" font-size="9.5" font-weight="600">&bull; Model Execution:</text>
+    <text x="120" y="92" font-size="9.5" fill="#334155">Host Harness runs LLM; tool calls dispatched via exec.sock</text>
+
+    <text x="18" y="112" font-size="9.5" font-weight="600">&bull; Agent Lifecycle:</text>
+    <text x="110" y="112" font-size="9.5" fill="#334155">Emits OpenCode / Claude status to Orca daemon via IPC</text>
+
+    <text x="18" y="132" font-size="9.5" font-weight="600">&bull; Verification:</text>
+    <text x="98" y="132" font-size="9.5" fill="#334155">Go binary aep verify &middot; Full stdout/stderr SHA-256 capture</text>
+
+    <rect x="18" y="150" width="514" height="115" rx="6" fill="#fff" stroke="#bae6fd"/>
+    <text x="30" y="170" font-size="9.5" font-weight="700" fill="#0369a1">PARALLEL CONTAINER LANES (aep-lane-t1-*)</text>
+    
+    <rect x="30" y="180" width="115" height="70" rx="4" fill="#e0f2fe" stroke="#0284c7"/>
+    <text x="87" y="200" text-anchor="middle" font-size="9" font-weight="700">Lane #1 (TDD)</text>
+    <text x="87" y="215" text-anchor="middle" font-size="8" fill="#475569">worktree: t1-c10</text>
+    <text x="87" y="235" text-anchor="middle" font-size="7.5" font-weight="600" fill="#0284c7">Status: SessionBusy</text>
+
+    <rect x="160" y="180" width="115" height="70" rx="4" fill="#fef3c7" stroke="#d97706"/>
+    <text x="217" y="200" text-anchor="middle" font-size="9" font-weight="700">Lane #2 (Refactor)</text>
+    <text x="217" y="215" text-anchor="middle" font-size="8" fill="#475569">worktree: t1-c11</text>
+    <text x="217" y="235" text-anchor="middle" font-size="7.5" font-weight="700" fill="#b45309">SessionWaiting</text>
+
+    <rect x="290" y="180" width="115" height="70" rx="4" fill="#e0f2fe" stroke="#0284c7"/>
+    <text x="347" y="200" text-anchor="middle" font-size="9" font-weight="700">Lane #3 (Testing)</text>
+    <text x="347" y="215" text-anchor="middle" font-size="8" fill="#475569">worktree: t1-c12</text>
+    <text x="347" y="235" text-anchor="middle" font-size="7.5" font-weight="600" fill="#0284c7">Status: SessionBusy</text>
+
+    <rect x="420" y="180" width="100" height="70" rx="4" fill="#f1f5f9" stroke="#94a3b8"/>
+    <text x="470" y="210" text-anchor="middle" font-size="9" font-weight="700" fill="#475569">Lane #N ...</text>
+    <text x="470" y="228" text-anchor="middle" font-size="8" fill="#64748b">Profile budget</text>
+  </g>
+
+  <!-- Tier 2 -->
+  <g transform="translate(615, 455)">
+    <rect x="0" y="0" width="550" height="280" rx="10" fill="#f5f3ff" stroke="#4f46e5" stroke-width="2"/>
+    <rect x="0" y="0" width="550" height="32" rx="10" fill="#4f46e5"/>
+    <text x="20" y="21" font-size="11.5" font-weight="700" fill="#fff">TIER 2: ESF FACTORY PIPELINES (OUTER FACTORY)</text>
+    
+    <text x="18" y="52" font-size="9.5" font-weight="600">&bull; Containment Hierarchy:</text>
+    <text x="145" y="52" font-size="9.5" font-weight="700" fill="#4f46e5">Local-First: Cube/KVM &rarr; libkrun &rarr; gVisor</text>
+
+    <text x="18" y="72" font-size="9.5" font-weight="600">&bull; Egress Verification:</text>
+    <text x="130" y="72" font-size="9.5" fill="#334155">In-VM EgressProbe asserts closed posture &middot; SHA-256 evidence</text>
+
+    <text x="18" y="92" font-size="9.5" font-weight="600">&bull; Orchestration:</text>
+    <text x="105" y="92" font-size="9.5" fill="#334155">Temporal durable activities &middot; Idempotency key esf-beads-&lt;id&gt;</text>
+
+    <text x="18" y="112" font-size="9.5" font-weight="600">&bull; Re-Verification Gate:</text>
+    <text x="140" y="112" font-size="9.5" font-weight="700" fill="#b91c1c">MinIsolation Rule: Fresh disposable sandbox</text>
+
+    <text x="18" y="132" font-size="9.5" font-weight="600">&bull; Settlement Output:</text>
+    <text x="125" y="132" font-size="9.5" fill="#334155">Ed25519 CommandReceipt &middot; bd close &middot; NeuroStrata inscription</text>
+
+    <rect x="18" y="150" width="514" height="115" rx="6" fill="#fff" stroke="#ddd6fe"/>
+    <text x="30" y="170" font-size="9.5" font-weight="700" fill="#4f46e5">PARALLEL FACTORY RUNS (esf-beads-*)</text>
+
+    <rect x="30" y="180" width="150" height="70" rx="4" fill="#ede9fe" stroke="#6366f1"/>
+    <text x="105" y="200" text-anchor="middle" font-size="9" font-weight="700">Pipeline #1 (MicroVM)</text>
+    <text x="105" y="215" text-anchor="middle" font-size="8" fill="#475569">CVE Remediation</text>
+    <text x="105" y="235" text-anchor="middle" font-size="7.5" font-weight="600" fill="#4f46e5">Hardware Isolated (vz)</text>
+
+    <rect x="195" y="180" width="150" height="70" rx="4" fill="#ede9fe" stroke="#6366f1"/>
+    <text x="270" y="200" text-anchor="middle" font-size="9" font-weight="700">Pipeline #2 (gVisor)</text>
+    <text x="270" y="215" text-anchor="middle" font-size="8" fill="#475569">Untrusted Dependency</text>
+    <text x="270" y="235" text-anchor="middle" font-size="7.5" font-weight="600" fill="#4f46e5">runsc systrap</text>
+
+    <rect x="360" y="180" width="155" height="70" rx="4" fill="#fef2f2" stroke="#ef4444"/>
+    <text x="437" y="200" text-anchor="middle" font-size="8.5" font-weight="700" fill="#991b1b">Quarantine Gate</text>
+    <text x="437" y="215" text-anchor="middle" font-size="7.5" fill="#b91c1c">No Silent Downgrade</text>
+    <text x="437" y="235" text-anchor="middle" font-size="7.5" font-weight="600" fill="#475569">Remote = Last Resort</text>
+  </g>
+
+  <!-- Connectors from Sockets/Virtiofs to Execution Tiers -->
+  <path d="M 210,440 L 210,455" stroke="#0284c7" stroke-width="2" marker-end="url(#arrow)"/>
+  <path d="M 890,440 L 890,455" stroke="#4f46e5" stroke-width="2" marker-end="url(#arrow)"/>
+</svg>
+</div>
+
+<!-- ========================================================================= -->
+<!-- DIAGRAM 2: SEQUENCE & INTERACTION LIFECYCLE -->
+<!-- ========================================================================= -->
+<h2>2. Interaction Sequence &amp; Agent Lifecycle State Machine</h2>
+<p>
+  Sequential flow demonstrating task allocation, instant file reflection via virtiofs, Orca session lifecycle states, human-in-the-loop attention routing, and verifiable settlement.
+</p>
+
+<div class="diagram-container">
+<svg viewBox="0 0 1200 640" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="sq-ar" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L7,3 z" fill="#0369a1" />
+    </marker>
+    <marker id="sq-ar-ret" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L7,3 z" fill="#475569" />
+    </marker>
+    <marker id="sq-ar-alert" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L7,3 z" fill="#b45309" />
+    </marker>
+    <marker id="sq-ar-ok" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L7,3 z" fill="#047857" />
+    </marker>
+  </defs>
+
+  <!-- Lifeline Columns -->
+  <!-- Col 1: User/Operator -->
+  <rect x="40" y="20" width="140" height="34" rx="6" fill="#0f172a"/>
+  <text x="110" y="42" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">Developer / User</text>
+  <line x1="110" y1="54" x2="110" y2="610" stroke="#cbd5e1" stroke-width="1.5" stroke-dasharray="4 3"/>
+
+  <!-- Col 2: T3 Code -->
+  <rect x="220" y="20" width="140" height="34" rx="6" fill="#2563eb"/>
+  <text x="290" y="42" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">T3 Code Harness</text>
+  <line x1="290" y1="54" x2="290" y2="610" stroke="#cbd5e1" stroke-width="1.5" stroke-dasharray="4 3"/>
+
+  <!-- Col 3: Herdr -->
+  <rect x="400" y="20" width="150" height="34" rx="6" fill="#7c3aed"/>
+  <text x="475" y="42" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">Herdr Multiplexer</text>
+  <line x1="475" y1="54" x2="475" y2="610" stroke="#cbd5e1" stroke-width="1.5" stroke-dasharray="4 3"/>
+
+  <!-- Col 4: Orca -->
+  <rect x="590" y="20" width="140" height="34" rx="6" fill="#0284c7"/>
+  <text x="660" y="42" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">Orca Daemon</text>
+  <line x1="660" y1="54" x2="660" y2="610" stroke="#cbd5e1" stroke-width="1.5" stroke-dasharray="4 3"/>
+
+  <!-- Col 5: AEP Lane -->
+  <rect x="770" y="20" width="170" height="34" rx="6" fill="#4f46e5"/>
+  <text x="855" y="42" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">AEP Execution Lane</text>
+  <line x1="855" y1="54" x2="855" y2="610" stroke="#cbd5e1" stroke-width="1.5" stroke-dasharray="4 3"/>
+
+  <!-- Col 6: Substrate -->
+  <rect x="980" y="20" width="180" height="34" rx="6" fill="#059669"/>
+  <text x="1070" y="42" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">Substrate (Beads &amp; Memory)</text>
+  <line x1="1070" y1="54" x2="1070" y2="610" stroke="#cbd5e1" stroke-width="1.5" stroke-dasharray="4 3"/>
+
+  <!-- Step 1: User -> T3 -->
+  <path d="M 110,80 L 290,80" stroke="#0369a1" stroke-width="1.8" marker-end="url(#sq-ar)"/>
+  <text x="195" y="74" text-anchor="middle" font-size="9" font-weight="700">1. Launch task (Prompt / Thread)</text>
+
+  <!-- Step 2: T3 internal worktree allocation -->
+  <rect x="230" y="95" width="120" height="28" rx="4" fill="#eff6ff" stroke="#2563eb"/>
+  <text x="290" y="112" text-anchor="middle" font-size="8" font-weight="600">workspaceStrategy: "worktree"</text>
+
+  <!-- Step 3: T3 -> AEP Lane -->
+  <path d="M 290,140 L 855,140" stroke="#0369a1" stroke-width="1.8" marker-end="url(#sq-ar)"/>
+  <text x="572" y="134" text-anchor="middle" font-size="9" font-weight="700">2. Dispatch task to Lane container / microVM</text>
+
+  <!-- Step 4: AEP -> Orca SessionStart -->
+  <path d="M 855,165 L 660,165" stroke="#0284c7" stroke-width="1.8" marker-end="url(#sq-ar)"/>
+  <text x="757" y="159" text-anchor="middle" font-size="9" font-weight="700">3. SessionStart &middot; Register turn</text>
+
+  <!-- Step 5: Orca -> Herdr SessionBusy -->
+  <path d="M 660,190 L 475,190" stroke="#7c3aed" stroke-width="1.8" marker-end="url(#sq-ar)"/>
+  <text x="567" y="184" text-anchor="middle" font-size="9" font-weight="700">4. SessionBusy &middot; Update pane spinner</text>
+
+  <!-- Box: Execution inside sandbox -->
+  <rect x="420" y="210" width="700" height="85" rx="6" fill="#f0f9ff" stroke="#0284c7" stroke-width="1.2" stroke-dasharray="5 3"/>
+  <text x="435" y="228" font-size="9" font-weight="700" fill="#0369a1">SANDBOX EXECUTION (--network none &middot; virtiofs file reflection)</text>
+
+  <path d="M 855,245 L 1070,245" stroke="#059669" stroke-width="1.5" marker-end="url(#sq-ar)"/>
+  <text x="962" y="240" text-anchor="middle" font-size="8.5">5. Relayed query via memory.sock</text>
+
+  <path d="M 855,270 L 475,270" stroke="#7c3aed" stroke-width="1.5" stroke-dasharray="4 2" marker-end="url(#sq-ar)"/>
+  <text x="665" y="265" text-anchor="middle" font-size="8.5">6. File changes reflected; Herdr watchFolder triggers instant pane diff</text>
+
+  <!-- Attention Gate: Operator Input -->
+  <rect x="25" y="310" width="850" height="90" rx="6" fill="#fef3c7" stroke="#d97706" stroke-width="1.2"/>
+  <text x="40" y="328" font-size="9" font-weight="700" fill="#92400e">HUMAN-IN-THE-LOOP OPERATOR ATTENTION GATE</text>
+
+  <path d="M 855,345 L 660,345" stroke="#b45309" stroke-width="1.8" marker-end="url(#sq-ar-alert)"/>
+  <text x="757" y="339" text-anchor="middle" font-size="8.5" font-weight="700" fill="#b45309">7. Agent needs input (SessionWaiting)</text>
+
+  <path d="M 660,365 L 475,365" stroke="#b45309" stroke-width="1.8" marker-end="url(#sq-ar-alert)"/>
+  <text x="567" y="359" text-anchor="middle" font-size="8.5" font-weight="700" fill="#b45309">8. Fire Herdr toast notification</text>
+
+  <path d="M 475,385 L 110,385" stroke="#b45309" stroke-width="1.8" marker-end="url(#sq-ar-alert)"/>
+  <text x="290" y="380" text-anchor="middle" font-size="8.5" font-weight="700" fill="#b45309">9. Focus pane &middot; Prompt operator decision</text>
+
+  <!-- User approves -->
+  <path d="M 110,415 L 855,415" stroke="#047857" stroke-width="1.8" marker-end="url(#sq-ar-ok)"/>
+  <text x="480" y="410" text-anchor="middle" font-size="8.5" font-weight="700" fill="#047857">10. Operator submits form/approval via exec.sock</text>
+
+  <!-- Verification & Settlement Box -->
+  <rect x="630" y="435" width="490" height="85" rx="6" fill="#f5f3ff" stroke="#4f46e5" stroke-width="1.2"/>
+  <text x="645" y="453" font-size="9" font-weight="700" fill="#4338ca">DETERMINISTIC VERIFICATION &amp; SETTLEMENT</text>
+
+  <path d="M 855,470 L 855,488" stroke="#4f46e5" stroke-width="2"/>
+  <text x="865" y="480" font-size="8.5">11. Run aep verify &middot; StdoutSha + StderrSha</text>
+
+  <path d="M 855,505 L 1070,505" stroke="#059669" stroke-width="1.8" marker-end="url(#sq-ar)"/>
+  <text x="962" y="499" text-anchor="middle" font-size="8.5" font-weight="700" fill="#047857">12. Ed25519 Receipt &middot; bd close &middot; Inscribe</text>
+
+  <!-- Turn completion -->
+  <path d="M 855,540 L 660,540" stroke="#0284c7" stroke-width="1.8" marker-end="url(#sq-ar)"/>
+  <text x="757" y="534" text-anchor="middle" font-size="8.5" font-weight="700">13. SessionIdle (Completed turn)</text>
+
+  <path d="M 660,560 L 475,560" stroke="#7c3aed" stroke-width="1.8" marker-end="url(#sq-ar)"/>
+  <text x="567" y="554" text-anchor="middle" font-size="8.5">14. Herdr badge: Green Checkmark</text>
+
+  <path d="M 660,580 L 290,580" stroke="#2563eb" stroke-width="1.8" marker-end="url(#sq-ar)"/>
+  <text x="475" y="574" text-anchor="middle" font-size="8.5" font-weight="700">15. T3 thread turn resolved &middot; link_pull_request</text>
+
+  <path d="M 290,600 L 110,600" stroke="#2563eb" stroke-width="1.8" marker-end="url(#sq-ar)"/>
+  <text x="195" y="594" text-anchor="middle" font-size="8.5" font-weight="700">16. Rendered deliverable card shown to user</text>
+</svg>
+</div>
+
+<!-- ========================================================================= -->
+<!-- CORE INTEGRATION PATTERNS DEEP DIVE -->
+<!-- ========================================================================= -->
+<h2>3. Detailed Specifications of the Four Integration Patterns</h2>
+
+<div class="grid-legend">
+  <div class="legend-box">
+    <strong>Pattern A: Workspace Reflection (Virtiofs)</strong>
+    T3 Code provisions Git worktrees bound to isolated thread IDs. Virtiofs reflects all file modifications between container lanes and the host instantly. Herdr's <code>watchFolder</code> receives kernel events without polling, instantly refreshing syntax-highlighted diffs in open multiplexer panes.
+  </div>
+  <div class="legend-box">
+    <strong>Pattern B: Agent Lifecycle FSM (Orca)</strong>
+    OpenCode, Claude Code, and Pi harness execution states flow into Orca's daemon over local domain sockets. State transitions (<code>SessionStart</code> &rarr; <code>SessionBusy</code> &rarr; <code>SessionWaiting</code> &rarr; <code>SessionIdle</code>) drive Herdr's attention routing and T3 Code's turn completions.
+  </div>
+  <div class="legend-box">
+    <strong>Pattern C: Zero-Token-Leak Socket Relays</strong>
+    Execution lanes are locked down with <code>--network none</code> or measured <code>EgressProbe</code> boundaries. GitHub PATs and LLM provider secrets stay strictly on the host. Sockets mounted at <code>/run/aep/lanes/&lt;laneId&gt;/</code> proxy memory queries, GitHub calls (capped at 3,500 req/h), and model harness interactions.
+  </div>
+  <div class="legend-box">
+    <strong>Pattern D: Cryptographic Settlement</strong>
+    Verification executes via the Go static binary <code>aep verify</code>, hashing every stdout/stderr byte. RFC 8785 canonical receipts signed with Ed25519 are mandatory for <code>bd close &lt;issueId&gt;</code> ledger settlement, continuous memory inscription, and automatic GitHub PR linking.
+  </div>
+</div>
+
+<!-- ========================================================================= -->
+<!-- MERMAID SOURCE REFERENCE -->
+<!-- ========================================================================= -->
+<h2>4. Raw Mermaid Diagrams Source (v1.2)</h2>
+<p>
+  The exact Mermaid source definitions used for this release, compliant with standard Mermaid parsers:
+</p>
+
+<h3>4.1 Integration Topology (Flowchart TD)</h3>
+<pre><code>flowchart TD
+  subgraph HOST_DESKTOP["Host Developer Environment (macOS / Linux)"]
+    subgraph T3_CODE["T3 Code (Harness &amp; Orchestrator)"]
+      T3_Thread["Thread Engine\n(Launch / Send / Read / Transfer)"]
+      T3_Worktree["Worktree Strategy\n(Branch Isolation)"]
+      T3_MCP["T3 MCP Server\n(Previews, Devices, PR Link)"]
+      T3_Delegator["Delegate Task\n(Cross-Provider Routing)"]
+    end
+
+    subgraph HERDR["Herdr (GPUI Agent Multiplexer)"]
+      Herdr_Core["Herdr Core Daemon\n(herdr.d.ts / IPC Socket)"]
+      Herdr_UI["GPUI Terminal Panes\n(Multi-Agent Multiplexer)"]
+      Herdr_Watcher["Folder Watcher\n(watchFolder API)"]
+      Herdr_Toasts["Notification Toasts\n(User Attention Alerts)"]
+    end
+
+    subgraph ORCA["Orca (Agent Lifecycle &amp; Supervision)"]
+      Orca_Daemon["Orca Protocol Daemon\n(com.stablyai.orca)"]
+      Orca_FSM["Session Lifecycle FSM\n(Start -> Busy -> Waiting -> Idle)"]
+      Orca_TUI["Orca Status TUI\n(Real-Time Indicators)"]
+      Orca_E2EE["Telemetry &amp; E2EE Keys\n(Zero Token Leakage)"]
+    end
+
+    subgraph SUBSTRATE["AEP Substrate Core Services"]
+      NS_Memory["NeuroStrata Cognitive Memory\n(ladybug.db / Vector / FTS)"]
+      Beads_Ledger["Beads Issue Ledger\n(Single Source of Truth)"]
+      GHG_Gateway["GHG GitHub Gateway\n(3,500 req/h Cap / Host Token)"]
+      AEP_Supervisor["AEP Supervisor &amp; Boot Gate\n(Preflight &amp; Admission Control)"]
+    end
+  end
+
+  subgraph VIRT_FILESYSTEM["Shared Filesystem &amp; Relays (Virtiofs)"]
+    Git_Worktrees["Git Worktree Storage\n(/repo/.worktrees/lane-*)"]
+    Unix_Sockets["Supervisor Socket Relays\n(/run/aep/lanes/&lt;laneId&gt;/)"]
+  end
+
+  subgraph EXECUTION_TIERS["Dual-Lane Execution Substrate"]
+    subgraph TIER1["Tier 1: Ralph-Loop Lanes (Fast Inner Loop)"]
+      Ralph_Container["OCI Container (--network none)\nPrivate tmpfs / Read-Only rootfs"]
+      Ralph_Agent["Agent Loop (TDD / Plan / Verify)\nHost Model via exec.sock"]
+      Ralph_Verifier["aep verify Binary\nFull-stream Stdout/Stderr SHA-256"]
+    end
+
+    subgraph TIER2["Tier 2: ESF Factory Pipelines (Outer Factory)"]
+      ESF_Temporal["Temporal Durable Workflow\n(esf-beads-&lt;id&gt;)"]
+      ESF_Sandbox["Local-First Sandbox\n(Cube/KVM -> libkrun -> gVisor)"]
+      ESF_Probe["In-VM EgressProbe\n(Measured Closed Boundary)"]
+      ESF_Reverifier["Fresh Disposable Sandbox\n(MinIsolation Rule)"]
+    end
+  end
+
+  T3_Worktree -->|"1. Allocates isolated branch"| Git_Worktrees
+  Git_Worktrees -->|"2. Virtiofs event reflection"| Herdr_Watcher
+  Herdr_Watcher -->|"3. Instant UI diff refresh"| Herdr_UI
+
+  T3_Thread -->|"Spawns lane task"| AEP_Supervisor
+  AEP_Supervisor -->|"Admits &amp; provisions"| Ralph_Container
+  AEP_Supervisor -->|"Dispatches factory task"| ESF_Temporal
+
+  Ralph_Agent -->|"Lifecycle events"| Orca_FSM
+  ESF_Temporal -->|"Pipeline status"| Orca_FSM
+  Orca_FSM -->|"Broadcasts Waiting / Idle"| Orca_Daemon
+  Orca_Daemon -->|"IPC socket relay"| Herdr_Core
+  Herdr_Core -->|"Fires desktop toast"| Herdr_Toasts
+  Herdr_Core -->|"Updates pane status badge"| Herdr_UI
+  Orca_Daemon -->|"Syncs thread state"| T3_Thread
+
+  Ralph_Container -->|"Zero direct network"| Unix_Sockets
+  ESF_Sandbox -->|"Measured egress proxy"| Unix_Sockets
+  Unix_Sockets -->|"Proxy GitHub calls (no token in lane)"| GHG_Gateway
+  Unix_Sockets -->|"Memory retrieval / inscription"| NS_Memory
+
+  Ralph_Verifier -->|"Ed25519 CommandReceipt"| Beads_Ledger
+  ESF_Reverifier -->|"Verified patch digest"| Beads_Ledger
+  Beads_Ledger -->|"Atomic settlement (bd close)"| NS_Memory
+  Beads_Ledger -->|"Settled state trigger"| T3_MCP
+  T3_MCP -->|"link_pull_request / PR review"| T3_Thread</code></pre>
+
+<h3>4.2 Interaction Lifecycle (Sequence Diagram)</h3>
+<pre><code>sequenceDiagram
+  autonumber
+  actor User as Developer / Operator
+  participant T3 as T3 Code
+  participant Herdr as Herdr Multiplexer
+  participant Orca as Orca Daemon
+  participant AEP as AEP Supervisor &amp; Lanes
+  participant Substrate as Substrate (Beads &amp; Memory)
+
+  User->>T3: Launch engineering task (Thread / Goal)
+  T3->>T3: Allocate Git worktree (workspaceStrategy: "worktree")
+  T3->>AEP: Dispatch task to Lane (Tier 1 Ralph or Tier 2 ESF)
+  AEP->>Orca: Agent session started (SessionStart)
+  Orca->>Herdr: Post status: Lane Busy (SessionBusy)
+  Herdr->>Herdr: Render active spinner in agent pane
+
+  rect rgb(240, 248, 255)
+    note over AEP,Substrate: Execution inside --network none sandbox
+    AEP->>AEP: Run agent loop &amp; execute code changes
+    AEP->>Substrate: Relayed tool/memory query via supervisor socket
+    AEP->>T3: File writes reflected via virtiofs
+    Herdr->>Herdr: watchFolder detects changes (instant UI reflection)
+  end
+
+  alt Agent requires operator input / approval
+    AEP->>Orca: Form / permission requested
+    Orca->>Orca: Transition FSM to SessionWaiting
+    Orca->>Herdr: Broadcast waiting state over IPC socket
+    Herdr->>User: Fire notification toast &amp; focus agent pane
+    User->>Herdr: Review diff &amp; submit approval
+    Herdr->>AEP: Pass input back via exec.sock
+  end
+
+  rect rgb(245, 243, 255)
+    note over AEP,Substrate: Deterministic Verification &amp; Settlement
+    AEP->>AEP: Run aep verify (full StdoutSha / StderrSha)
+    AEP->>AEP: Sign CommandReceipt with Ed25519
+    AEP->>Substrate: Settle issue (bd close &lt;id&gt;) &amp; inscribe NeuroStrata
+  end
+
+  AEP->>Orca: Session completed (SessionIdle)
+  Orca->>Herdr: Update terminal badge to green checkmark
+  Orca->>T3: Report thread turn completion
+  T3->>T3: Call link_pull_request with verified branch PR
+  T3->>User: Display completed task summary &amp; rendered deliverables</code></pre>
+
+<footer>
+  Autonomous Engineering Platform (AEP) &middot; Integration Patterns Across T3 Code, Herdr, and Orca v1.2 &middot; Branch: <code>docs/dual-lane-governance-proposal</code>
+</footer>
+
+</body>
+</html>
