@@ -23,6 +23,7 @@
 adopting-external-skills
 agent_operations
 aim
+archify
 autobahn
 brainstorming
 catchup
@@ -62,6 +63,7 @@ merging-gated-prs
 modelchk
 nba
 neurogenesis
+neurogenesis_teams
 neurostrata_memory
 open-code-review-delegate
 overnight-parallel-lanes
@@ -72,6 +74,7 @@ planning-wringer
 prism
 product-refinement-loop
 prototype
+ralph_loop
 re0
 re0-git
 re0-loop
@@ -82,11 +85,13 @@ re0-release
 re0-work
 readchk
 receiving-code-review
+recurring-workflows
 reorder
 requesting-code-review
 research
 retro
 reverse_engineering
+roundtable_review
 scrubbing-public-tree
 self_test_gym
 shower
@@ -94,11 +99,14 @@ sip
 ssotize
 subagent-driven-development
 systematic-debugging
+teach
 test-driven-development
+to-questionnaire
 untangle-codebase
 using-git-worktrees
 verification-before-completion
 wizard
+writing-articles
 writing-for-agents
 writing-plans
 writing-skills
