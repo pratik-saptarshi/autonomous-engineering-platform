@@ -15,17 +15,19 @@ use std::sync::Arc;
 /// rather than pretty, because this string is also an HTTP response body and an
 /// operator `jq`ing it does not want to scroll.
 ///
-/// The serialization cannot fail in practice -- `BusMetrics` is eight integers
+/// The serialization cannot fail in practice -- `BusMetrics` is nine integers
 /// -- so an `expect` here is a statement about that, not a swallowed error.
 pub async fn handle_bus_metrics(bus: Arc<ThalamicBus>) -> String {
     let mut value = serde_json::to_value(bus.metrics())
-        .expect("BusMetrics is eight integers and always serializes");
+        .expect("BusMetrics is nine integers and always serializes");
     if let Some(obj) = value.as_object_mut() {
         obj.insert(
             "domain_filter".to_string(),
             crate::recall_metrics::domain_filter_snapshot(),
         );
         obj.insert("recall".to_string(), crate::recall_metrics::recall_snapshot());
+    } else {
+        tracing::warn!("bus.metrics() did not serialize to a JSON object");
     }
     serde_json::to_string(&value).expect("the composite metrics body always serializes")
 }
