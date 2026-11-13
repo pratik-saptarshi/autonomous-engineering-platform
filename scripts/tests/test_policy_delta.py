@@ -662,6 +662,21 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head)
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
 
+    def test_ghg_conditional_class_capture_retains_both(self):
+        # Codex PR #148: the mirror image -- a conditional class
+        # binding that DOES execute and captures a table must also
+        # be retained: resolution is disjunctive over the class
+        # binding and the outer fallback.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_caps = {}\n'
+                   '\nclass _Uncap:\n'
+                   '    if True:\n'
+                   '        _caps = DEFAULT_LIMITS\n'
+                   '    _caps.clear()\n')
+        head = self.commit("conditional-class-capture")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)

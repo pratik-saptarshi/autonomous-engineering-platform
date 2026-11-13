@@ -634,47 +634,55 @@ def ghg_binding_census(tree):
                                   set()).add(name)
 
     def is_watched(name_node):
-        # One shadow-aware walk outward. At each scope: a function
-        # scope's global/nonlocal declaration for the name redirects
-        # the read (to module scope / to the scope that actually
-        # binds the name); otherwise a binding in the scope decides.
+        # One shadow-aware walk outward. At each function scope, a
+        # global/nonlocal declaration for the name redirects the
+        # read (to module scope / to the scope that actually binds
+        # the name); otherwise a binding in the scope decides.
         # Nearer bindings win -- a comprehension target between the
         # read and the declaring function shadows the declaration.
-        scope = scope_of[id(name_node)]
-        first = True
-        while True:
-            key = id(scope) if scope is not None else None
-            if scope is not None \
-                    and not isinstance(scope, ast.ClassDef):
-                kind = declared.get(key, {}).get(name_node.id)
-                if kind == "global":
-                    return (None, name_node.id) in watched
-                if kind == "nonlocal":
-                    tgt = nonlocal_target(scope, name_node.id)
-                    if tgt == "MODULE":
+        # Class namespaces are not lexical scopes for enclosed code
+        # (skipped), but a read in the class body itself sees them,
+        # subject to execution order: a binding that certainly
+        # executed (guaranteed form, or the read is inside its own
+        # statement) decides alone, while a merely conditional
+        # binding leaves BOTH resolutions possible -- the read is
+        # watched if either the class binding or the outward
+        # resolution is watched.
+        def resolve(scope, first):
+            while True:
+                if scope is None:
+                    return name_node.id in bound_in_scope.get(
+                        None, ()) and (None, name_node.id) in watched
+                key = id(scope)
+                if not isinstance(scope, ast.ClassDef):
+                    kind = declared.get(key, {}).get(name_node.id)
+                    if kind == "global":
                         return (None, name_node.id) in watched
-                    if tgt is not None:
-                        return (id(tgt), name_node.id) in watched
-            # Class namespaces are not lexical scopes for enclosed
-            # code: a method's read skips an enclosing class's
-            # bindings entirely. A read whose own scope IS the class
-            # body sees them -- but only from the class's first
-            # binding of the name onward (class bodies execute
-            # imperatively; an earlier read falls back outward).
-            decides = first or not isinstance(scope, ast.ClassDef)
-            if decides and isinstance(scope, ast.ClassDef):
-                rp = (name_node.lineno, name_node.col_offset)
-                decides = any(
-                    eff <= rp and (rp <= en or guar)
-                    for eff, st, en, guar in class_bindings.get(
-                        (key, name_node.id), ()))
-            if decides \
-                    and name_node.id in bound_in_scope.get(key, ()):
-                return (key, name_node.id) in watched
-            if scope is None:
-                return False
-            first = False
-            scope = scope_parent.get(id(scope))
+                    if kind == "nonlocal":
+                        tgt = nonlocal_target(scope, name_node.id)
+                        if tgt == "MODULE":
+                            return (None, name_node.id) in watched
+                        if tgt is not None:
+                            return (id(tgt), name_node.id) in watched
+                    if name_node.id in bound_in_scope.get(key, ()):
+                        return (key, name_node.id) in watched
+                elif first \
+                        and name_node.id in bound_in_scope.get(
+                            key, ()):
+                    rp = (name_node.lineno, name_node.col_offset)
+                    entries = class_bindings.get((key, name_node.id),
+                                                  ())
+                    if any(eff <= rp and (rp <= en or guar)
+                           for eff, st, en, guar in entries):
+                        return (key, name_node.id) in watched
+                    if entries:
+                        return (key, name_node.id) in watched or \
+                            resolve(scope_parent.get(key), False)
+                    return (key, name_node.id) in watched
+                scope = scope_parent.get(key)
+                first = False
+
+        return resolve(scope_of[id(name_node)], True)
 
     def param_defaults(node):
         """[(param name, default expr)] for a def/lambda node."""
