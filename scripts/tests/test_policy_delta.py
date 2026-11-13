@@ -928,6 +928,92 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head2)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_callee_alias_is_a_local_definition(self):
+        # Codex PR #148: invoking a local helper through an
+        # assigned alias escaped the local-definition argument
+        # check, which only recognized the definition's own name.
+        cases = {
+            "func-alias": '\ndef _uncap(caps):\n    caps.clear()\n'
+                          '\n_run = _uncap\n_run(DEFAULT_LIMITS)\n',
+            "method-alias": '\nclass _U:\n'
+                            '    @staticmethod\n'
+                            '    def run(caps):\n'
+                            '        caps.clear()\n'
+                            '\n_run = _U.run\n_run(DEFAULT_LIMITS)\n',
+        }
+        prev = self.base
+        for label, snippet in cases.items():
+            with self.subTest(form=label):
+                self.write("tools/ghg/ghg.py", GHG_PY + snippet)
+                head = self.commit(label)
+                r = self.run_tool("diff", prev, head)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                prev = head
+                self.write("tools/ghg/ghg.py", GHG_PY)
+        # Precision: an alias of an imported callable is not a
+        # local definition.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nimport json\n_run = json.dumps\n'
+                   '_s = _run(DEFAULT_LIMITS)\n')
+        head = self.commit("imported-alias")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_ghg_wrapper_alias_keeps_table_grade(self):
+        # Codex PR #148: treating every name as a structural
+        # source granted the scalar exemption to aliases of
+        # wrapper containers; provenance follows the binding.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\n_wrapped = [("caps", DEFAULT_LIMITS)]\n'
+                   'for _key, _value in _wrapped:\n'
+                   '    _uncap(_value)\n')
+        head = self.commit("wrapper-alias")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: an alias of a structural view stays exempt
+        # for its scalar components.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Ledger:\n'
+                   '    def spend(self, bucket):\n'
+                   '        return bucket\n'
+                   '\n_led = _Ledger()\n'
+                   '_items = DEFAULT_LIMITS.items()\n'
+                   'for _bucket, _pairs in _items:\n'
+                   '    _led.spend(_bucket)\n')
+        head2 = self.commit("view-alias")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_ghg_enter_return_value_is_tracked(self):
+        # Codex PR #148: a with-target bound from a locally
+        # defined context manager whose __enter__ returns a table
+        # never entered the alias fixpoint.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Ctx:\n'
+                   '    def __enter__(self):\n'
+                   '        return DEFAULT_LIMITS\n'
+                   '    def __exit__(self, *a):\n'
+                   '        return False\n'
+                   '\nwith _Ctx() as _t:\n'
+                   '    _t.clear()\n')
+        head = self.commit("enter-return")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: an __enter__ returning an unrelated value is
+        # not a table source.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Ctx:\n'
+                   '    def __enter__(self):\n'
+                   '        return {}\n'
+                   '    def __exit__(self, *a):\n'
+                   '        return False\n'
+                   '\nwith _Ctx() as _t:\n'
+                   '    _t.clear()\n')
+        head2 = self.commit("enter-unrelated")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)

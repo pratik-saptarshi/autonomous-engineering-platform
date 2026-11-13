@@ -350,14 +350,16 @@ def ghg_binding_census(tree):
     """Whitelist census of every binding touching the ghg tables.
 
     Returns (definitions, is_watched, hands_over, local_defs,
-    local_methods, is_strong): definitions maps each modelled name
-    to its accepted top-level literal Assign node; is_watched
-    resolves a Name occurrence (per scope, shadow-aware) to whether
-    it denotes a protected table or an alias of one; hands_over is
-    the unified value/receiver predicate; local_defs names the
-    functions/classes defined in the file and local_methods the
-    methods of classes defined in the file; is_strong is is_watched
-    restricted to table-grade bindings (see the strong set below).
+    local_methods, is_strong, callee_aliases): definitions maps
+    each modelled name to its accepted top-level literal Assign
+    node; is_watched resolves a Name occurrence (per scope,
+    shadow-aware) to whether it denotes a protected table or an
+    alias of one; hands_over is the unified value/receiver
+    predicate; local_defs names the functions/classes defined in
+    the file and local_methods the methods of classes defined in
+    the file; is_strong is is_watched restricted to table-grade
+    bindings (see the strong set below); callee_aliases names
+    aliases of locally defined functions and methods.
 
     Posture (the class-level closure for the mutation/rebinding
     escape family): a binding of a protected name -- the modelled
@@ -809,6 +811,64 @@ def ghg_binding_census(tree):
     # a table the parameter then shadows).
     returning = set()
 
+    # Locally defined context managers: class name -> its
+    # __enter__ method, for the classes whose __enter__ returns a
+    # watched table (enter_returning, filled by the fixpoint).
+    enter_of = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            for sub in node.body:
+                if isinstance(sub, (ast.FunctionDef,
+                                    ast.AsyncFunctionDef)) \
+                        and sub.name == "__enter__":
+                    enter_of[id(sub)] = node.name
+    enter_returning = set()
+    instance_names = set()
+
+    # Names bound (anywhere) to a fresh container -- a literal, a
+    # comprehension, or a container BinOp -- or to another such
+    # name. A fresh container can wrap the table itself as an
+    # element, so aliases of one are not structural sources even
+    # though they are plain names.
+    def _fresh_container(v):
+        if isinstance(v, (ast.List, ast.Tuple, ast.Set, ast.Dict,
+                          ast.ListComp, ast.SetComp, ast.DictComp,
+                          ast.GeneratorExp, ast.BinOp)):
+            return True
+        if isinstance(v, ast.IfExp):
+            return _fresh_container(v.body) \
+                or _fresh_container(v.orelse)
+        if isinstance(v, ast.NamedExpr):
+            return _fresh_container(v.value)
+        return False
+
+    wrapper_names = set()
+    _taint = True
+    while _taint:
+        _taint = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                value, targets = node.value, node.targets
+            elif isinstance(node, ast.AnnAssign) \
+                    and node.value is not None:
+                value, targets = node.value, [node.target]
+            elif isinstance(node, ast.NamedExpr):
+                value, targets = node.value, [node.target]
+            else:
+                continue
+            if _fresh_container(value) \
+                    or (isinstance(value, ast.Name)
+                        and value.id in wrapper_names):
+                for t in targets:
+                    for n in _bound_names(t):
+                        # The protected tables are themselves
+                        # literals -- they are the model, never a
+                        # wrapper around it.
+                        if n not in wrapper_names \
+                                and n not in protected:
+                            wrapper_names.add(n)
+                            _taint = True
+
     def structural_source(v):
         """The iteration source has the modelled tables' own shape:
         a table/sub-table access chain, its .items()/.values()/
@@ -819,7 +879,7 @@ def ghg_binding_census(tree):
         while isinstance(v, (ast.Subscript, ast.Attribute)):
             v = v.value
         if isinstance(v, ast.Name):
-            return True
+            return v.id not in wrapper_names
         if isinstance(v, ast.Call):
             if isinstance(v.func, ast.Attribute) \
                     and v.func.attr in ("items", "values", "keys"):
@@ -898,15 +958,48 @@ def ghg_binding_census(tree):
     while changed:
         changed = False
         for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) \
-                    and node.name not in returning:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                is_enter = id(node) in enter_of
+                if node.name in returning \
+                        and not (is_enter
+                                 and enter_of[id(node)]
+                                 not in enter_returning):
+                    continue
                 for sub in ast.walk(node):
                     if isinstance(sub, ast.Return) \
                             and sub.value is not None \
                             and hands_over(sub.value):
-                        returning.add(node.name)
-                        changed = True
+                        if node.name not in returning:
+                            returning.add(node.name)
+                            changed = True
+                        if is_enter \
+                                and enter_of[id(node)] \
+                                not in enter_returning:
+                            enter_returning.add(enter_of[id(node)])
+                            changed = True
                         break
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) \
+                    and isinstance(node.value, ast.Call) \
+                    and isinstance(node.value.func, ast.Name) \
+                    and node.value.func.id in enter_returning:
+                for t in node.targets:
+                    instance_names.update(_bound_names(t))
+            if isinstance(node, ast.withitem) \
+                    and node.optional_vars is not None:
+                ctx = node.context_expr
+                hit = (isinstance(ctx, ast.Call)
+                       and isinstance(ctx.func, ast.Name)
+                       and ctx.func.id in enter_returning) \
+                    or (isinstance(ctx, ast.Name)
+                        and ctx.id in instance_names)
+                if hit:
+                    for n in _bound_names(node.optional_vars):
+                        key = binding_key(node, n)
+                        if (key, n) not in watched:
+                            watched.add((key, n))
+                            strong.add((key, n))
+                            changed = True
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
                                  ast.Lambda)):
@@ -1015,12 +1108,38 @@ def ghg_binding_census(tree):
                      for sub in n.body
                      if isinstance(sub, (ast.FunctionDef,
                                          ast.AsyncFunctionDef))}
+    # Aliases of locally defined callees (`_run = _uncap`,
+    # `_run = _Uncap.run`): invoking through the alias reaches
+    # local code exactly as invoking the definition does.
+    callee_aliases = set()
+    _alias = True
+    while _alias:
+        _alias = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                value, targets = node.value, node.targets
+            elif isinstance(node, ast.AnnAssign) \
+                    and node.value is not None:
+                value, targets = node.value, [node.target]
+            else:
+                continue
+            if (isinstance(value, ast.Name)
+                    and (value.id in local_defs
+                         or value.id in callee_aliases)) \
+                    or (isinstance(value, ast.Attribute)
+                        and value.attr in local_methods):
+                for t in targets:
+                    for n in _bound_names(t):
+                        if n not in callee_aliases:
+                            callee_aliases.add(n)
+                            _alias = True
     return definitions, is_watched, hands_over, local_defs, \
-        local_methods, is_strong
+        local_methods, is_strong, callee_aliases
 
 
 def ghg_mutation_sites(tree, is_watched, hands_over, local_defs,
-                       local_methods=(), is_strong=None):
+                       local_methods=(), is_strong=None,
+                       callee_aliases=()):
     """[(lineno, description)] for runtime mutations of watched tables:
     item/augmented assignment, deletion, and mutator calls on a
     watched table or any alias of one (aliases resolve per scope;
@@ -1134,7 +1253,8 @@ def ghg_mutation_sites(tree, is_watched, hands_over, local_defs,
                     desc = "watched value stored into a container"
             if desc is None \
                     and ((isinstance(node.func, ast.Name)
-                          and node.func.id in local_defs)
+                          and (node.func.id in local_defs
+                               or node.func.id in callee_aliases))
                          or (isinstance(node.func, ast.Attribute)
                              and node.func.attr in local_methods)):
                 if any(hands_over_strong(a) for a in args):
@@ -1152,9 +1272,11 @@ def model_ghg(text):
     except SyntaxError as e:
         raise DifferError(f"{GHG_PY}: unparsable Python ({e})") from e
     definitions, is_watched, hands_over, local_defs, \
-        local_methods, is_strong = ghg_binding_census(tree)
+        local_methods, is_strong, callee_aliases = \
+        ghg_binding_census(tree)
     sites = ghg_mutation_sites(tree, is_watched, hands_over,
-                               local_defs, local_methods, is_strong)
+                               local_defs, local_methods, is_strong,
+                               callee_aliases)
     if sites:
         detail = "; ".join(f"line {ln}: {desc}" for ln, desc in sites[:5])
         raise DifferError(
