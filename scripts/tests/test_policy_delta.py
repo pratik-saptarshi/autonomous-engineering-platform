@@ -622,6 +622,19 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head2)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_class_loop_binding_effect_position(self):
+        # Codex PR #148: a class-body loop target takes effect
+        # after the iterable evaluates but before the body runs --
+        # not at the compound statement's end.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_caps = {}\n'
+                   '\nclass _Uncap:\n'
+                   '    for _caps in DEFAULT_LIMITS.values():\n'
+                   '        _caps.clear()\n')
+        head = self.commit("class-loop-effect")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)

@@ -472,21 +472,37 @@ def ghg_binding_census(tree):
     # class body (the END of the binding statement: its RHS,
     # decorators, and defaults all evaluate before the store).
 
-    def _effect_pos(node):
-        """(lineno, col) at which a binding statement takes effect,
-        or None if unlocatable. ast.withitem carries no position of
-        its own; use its target (or context expression) instead."""
+    def _end_pos(node):
+        if node is None:
+            return None
         if hasattr(node, "end_lineno"):
             return (node.end_lineno, node.end_col_offset)
         if hasattr(node, "lineno"):
             return (node.lineno, node.col_offset)
-        if isinstance(node, ast.withitem):
-            for part in (node.optional_vars, node.context_expr):
-                if part is not None:
-                    pos = _effect_pos(part)
-                    if pos is not None:
-                        return pos
         return None
+
+    def _effect_pos(node):
+        """(lineno, col) at which a binding takes effect in a class
+        body -- binding-form specific. Simple statements (assign,
+        import, def/class names): the statement's end, since the
+        RHS / header evaluates first. Compound bindings take effect
+        mid-statement: a loop target after its iterable evaluates
+        (before the body), a with-target after its context
+        expression, an except-name after its type expression.
+        ast.withitem carries no position of its own."""
+        if isinstance(node, (ast.For, ast.AsyncFor)):
+            return _end_pos(node.iter)
+        if isinstance(node, ast.withitem):
+            for part in (node.context_expr, node.optional_vars):
+                pos = _end_pos(part)
+                if pos is not None:
+                    return pos
+            return None
+        if isinstance(node, ast.ExceptHandler):
+            if node.type is not None:
+                return _end_pos(node.type)
+            return _end_pos(node)
+        return _end_pos(node)
 
     def note_raw(scope, names, node=None):
         if names:
