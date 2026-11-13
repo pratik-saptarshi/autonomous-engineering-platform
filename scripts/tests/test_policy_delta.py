@@ -1067,6 +1067,63 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head2)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_generator_yields_are_tracked(self):
+        # Codex PR #148: a local generator yielding a protected
+        # table was invisible -- the returning census only scanned
+        # Return nodes, so iteration targets never became watched.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _tables():\n    yield DEFAULT_LIMITS\n'
+                   '\nfor _caps in _tables():\n'
+                   '    _caps.clear()\n')
+        head = self.commit("generator-yield")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _tables():\n    yield DEFAULT_LIMITS\n'
+                   '\n_t = _tables()\n'
+                   'for _caps in _t:\n'
+                   '    _caps.clear()\n')
+        head2 = self.commit("generator-bound")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: a generator yielding unrelated values is not
+        # a table source.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _tables():\n    yield {}\n'
+                   '\nfor _caps in _tables():\n'
+                   '    _caps.clear()\n')
+        head3 = self.commit("generator-unrelated")
+        r = self.run_tool("diff", self.base, head3)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_ghg_wrapper_return_is_not_structural(self):
+        # Codex PR #148: "returning" only establishes that a
+        # return value CONTAINS a table; a function returning a
+        # wrapper container is not a structural source, so
+        # destructuring its result keeps table grade.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\ndef _wrapped():\n'
+                   '    return [("caps", DEFAULT_LIMITS)]\n'
+                   '\nfor _key, _value in _wrapped():\n'
+                   '    _uncap(_value)\n')
+        head = self.commit("wrapper-return")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: a function returning the table itself IS a
+        # structural source -- its .items() keys stay exempt.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Ledger:\n'
+                   '    def spend(self, bucket):\n'
+                   '        return bucket\n'
+                   '\ndef _table():\n    return DEFAULT_LIMITS\n'
+                   '\n_led = _Ledger()\n'
+                   'for _bucket, _pairs in _table().items():\n'
+                   '    _led.spend(_bucket)\n')
+        head2 = self.commit("direct-return-view")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)

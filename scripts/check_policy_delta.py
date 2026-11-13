@@ -811,6 +811,12 @@ def ghg_binding_census(tree):
     # a table the parameter then shadows).
     returning = set()
     returning_aliases = set()
+    # The direct subset of returning: the return/yield expressions
+    # denote the table or a sub-table THEMSELVES (structural
+    # shape), not a fresh container holding one. Only direct
+    # callees are structural sources for callers.
+    returning_direct = set()
+    returning_direct_aliases = set()
 
     # View provenance for names: a name bound to a table's
     # .items()/.keys()/.values() view keeps the view's kind when
@@ -912,8 +918,8 @@ def ghg_binding_census(tree):
                     and v.func.attr in ("items", "values", "keys"):
                 return structural_source(v.func.value)
             if isinstance(v.func, ast.Name) \
-                    and (v.func.id in returning
-                         or v.func.id in returning_aliases):
+                    and (v.func.id in returning_direct
+                         or v.func.id in returning_direct_aliases):
                 return True
         return False
 
@@ -990,6 +996,7 @@ def ghg_binding_census(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 is_enter = id(node) in enter_of
                 if node.name in returning \
+                        and node.name in returning_direct \
                         and not (is_enter
                                  and enter_of[id(node)]
                                  not in enter_returning):
@@ -1001,12 +1008,27 @@ def ghg_binding_census(tree):
                         if node.name not in returning:
                             returning.add(node.name)
                             changed = True
+                        if structural_source(sub.value) \
+                                and node.name not in returning_direct:
+                            returning_direct.add(node.name)
+                            changed = True
                         if is_enter \
                                 and enter_of[id(node)] \
                                 not in enter_returning:
                             enter_returning.add(enter_of[id(node)])
                             changed = True
-                        break
+                    elif isinstance(sub, (ast.Yield, ast.YieldFrom)) \
+                            and sub.value is not None \
+                            and hands_over(sub.value):
+                        # A generator yielding tables is a table
+                        # source for its callers, like a return.
+                        if node.name not in returning:
+                            returning.add(node.name)
+                            changed = True
+                        if structural_source(sub.value) \
+                                and node.name not in returning_direct:
+                            returning_direct.add(node.name)
+                            changed = True
         for node in ast.walk(tree):
             if isinstance(node, ast.Assign):
                 value, targets = node.value, node.targets
@@ -1026,6 +1048,16 @@ def ghg_binding_census(tree):
                     for n in _bound_names(t):
                         if n not in returning_aliases:
                             returning_aliases.add(n)
+                            changed = True
+            if (isinstance(value, ast.Name)
+                    and (value.id in returning_direct
+                         or value.id in returning_direct_aliases)) \
+                    or (isinstance(value, ast.Attribute)
+                        and value.attr in returning_direct):
+                for t in targets:
+                    for n in _bound_names(t):
+                        if n not in returning_direct_aliases:
+                            returning_direct_aliases.add(n)
                             changed = True
         for node in ast.walk(tree):
             if isinstance(node, ast.Assign) \
