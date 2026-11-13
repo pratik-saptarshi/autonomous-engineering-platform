@@ -19,19 +19,30 @@ Model scope (what the differ sees):
   * scripts/policy.data -- deny-sets by section ([sensitive-paths],
     [env-scrub], ...). A pattern REMOVED from a deny-set is power newly
     allowed; a pattern ADDED is newly denied.
-  * tools/ghg/ghg.py -- DEFAULT_LIMITS bucket caps (a cap increase, a
-    new bucket, or a new window is newly allowed call volume; the mirror
-    operations are newly denied) and the mutating-classification sets
-    (_MUTATING_SUBCOMMANDS / _MUTATING_METHODS): an entry REMOVED there
+  * tools/ghg/ghg.py -- DEFAULT_LIMITS bucket caps. Direction follows
+    ghg's own semantics (classify() emits a fixed bucket set;
+    Ledger.fits/reserve_all check a charge against every window of its
+    bucket, and a bucket with no entry is uncapped): a cap increase or
+    a new bucket (a newly routed call class) is newly allowed; a cap
+    decrease or a new window (an additional constraint) is newly
+    denied; removing a window or a whole bucket removes a constraint
+    and is therefore newly allowed (relaxation). Plus the
+    mutating-classification sets (_MUTATING_SUBCOMMANDS /
+    _MUTATING_METHODS): an entry REMOVED there
     means those calls escape mutating classification (newly allowed);
     an entry ADDED is newly denied. Any other change to ghg.py is
     reported as an explicit note ("changed, modelled power unchanged")
     -- never as silence. A ghg.py that *mutates* the modelled tables at
-    runtime (item assignment, augmented assignment, deletion, or a
-    mutator call on DEFAULT_LIMITS / the classification sets / the
-    derived LIMITS table) is refused with an error instead: the differ
-    cannot model runtime mutation, and reporting a literal-only delta
-    for it would be a false statement, not a gap.
+    runtime is refused with an error instead: the differ cannot model
+    runtime mutation, and reporting a literal-only delta for it would
+    be a false statement, not a gap. The refusal census covers item /
+    augmented assignment, deletion, and mutator calls on the tables
+    (DEFAULT_LIMITS, the classification sets, the derived LIMITS),
+    the same through aliases (names bound to a table, to a lookup
+    rooted at one, to a container holding one, or to a local function
+    returning one), and a modelled table passed as a call argument.
+    Mutation via dynamic indirection (getattr/setattr/eval/globals())
+    remains outside the model and is named as such in every report.
   * .github/skills-sync-scope.txt -- the governed skill set, in the
     file's own three-section grammar: [skills] entries are grants (a
     skill entering scope is newly allowed surface, leaving is newly
@@ -239,26 +250,55 @@ def _root_name(node):
     return node.id if isinstance(node, ast.Name) else None
 
 
+def _value_touches_watched(value, watched):
+    """True if an assigned value hands over a watched table (or part of
+    it): a bare name, a lookup rooted at one (subscript / method chain),
+    or a container literal holding one."""
+    if _root_name(value) in watched:
+        return True
+    if isinstance(value, (ast.List, ast.Tuple, ast.Set, ast.Dict)):
+        return any(isinstance(n, ast.Name) and n.id in watched
+                   for n in ast.walk(value))
+    return False
+
+
 def ghg_mutation_sites(tree):
     """[(lineno, description)] for runtime mutations of watched tables.
 
-    Watched names are the modelled tables plus plain aliases of them
-    (``_L = DEFAULT_LIMITS``): a mutation through an alias or through a
-    chained lookup (``.get(...)``) is the same runtime rewrite as a
-    direct one. Read-only aliasing is not a site.
+    Census of the escape family (this list is the class-level closure;
+    anything outside it is named in the tool's not-modelled boundary):
+    direct item/augmented assignment, deletion, and mutator calls on a
+    watched table; the same through aliases -- names bound to a watched
+    table, to a lookup rooted at one (``_caps = DEFAULT_LIMITS["x"]``),
+    to a container holding one, or to the result of a local function
+    that returns one; and a watched table passed as a call argument
+    (the callee can mutate it; the differ cannot rule it out, so it
+    refuses). Read-only aliasing and read-only method calls on the
+    tables (.get/.items/iteration) are not sites.
     """
     watched = set(GHG_WATCH_NAMES)
+    # Local functions that return a watched table hand it to callers.
+    returning = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Return) and sub.value is not None \
+                        and _value_touches_watched(sub.value, watched):
+                    returning.add(node.name)
     changed = True
     while changed:  # alias fixpoint: _L = DEFAULT_LIMITS; _M = _L
         changed = False
         for node in ast.walk(tree):
             if isinstance(node, ast.Assign) and len(node.targets) == 1 \
                     and isinstance(node.targets[0], ast.Name) \
-                    and isinstance(node.value, ast.Name) \
-                    and node.value.id in watched \
                     and node.targets[0].id not in watched:
-                watched.add(node.targets[0].id)
-                changed = True
+                value = node.value
+                if _value_touches_watched(value, watched) or (
+                        isinstance(value, ast.Call)
+                        and isinstance(value.func, ast.Name)
+                        and value.func.id in returning):
+                    watched.add(node.targets[0].id)
+                    changed = True
     sites = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Store) \
@@ -279,6 +319,11 @@ def ghg_mutation_sites(tree):
                 and node.func.attr in _MUTATOR_METHODS \
                 and _root_name(node.func.value) in watched:
             sites.append((node.lineno, f".{node.func.attr}() call"))
+        elif isinstance(node, ast.Call):
+            args = list(node.args) + [kw.value for kw in node.keywords]
+            if any(_value_touches_watched(a, watched) for a in args):
+                sites.append((node.lineno,
+                              "modelled table passed as a call argument"))
     return sites
 
 
@@ -393,19 +438,27 @@ def diff_ghg(base, head, base_text, head_text):
                 "-> newly allowed call class")
             continue
         if bucket not in hl:
-            newly_denied.append(
-                f"ghg caps: bucket '{bucket}' removed -> newly denied call class")
+            # classify() emits a fixed bucket set; a bucket with no
+            # limits entry is checked against zero windows, i.e. it is
+            # uncapped. Removing the entry relaxes, it does not deny.
+            newly_allowed.append(
+                f"ghg caps: bucket '{bucket}' removed -> calls in it "
+                "are now uncapped -> newly allowed (constraint removed)")
             continue
         bmap, hmap = dict(bl[bucket]), dict(hl[bucket])
         for w in sorted(set(bmap) | set(hmap)):
+            # Windows are a conjunction of constraints (Ledger.fits /
+            # reserve_all iterate the window list; a missing window
+            # imposes no cap). Adding one tightens; removing one
+            # relaxes -- the reverse of the grant direction.
             if w not in bmap:
-                newly_allowed.append(
-                    f"ghg caps: bucket '{bucket}' new window {w}s "
-                    f"cap {hmap[w]} -> newly allowed")
-            elif w not in hmap:
                 newly_denied.append(
+                    f"ghg caps: bucket '{bucket}' new window {w}s "
+                    f"cap {hmap[w]} -> newly denied (additional constraint)")
+            elif w not in hmap:
+                newly_allowed.append(
                     f"ghg caps: bucket '{bucket}' window {w}s removed "
-                    "-> newly denied")
+                    "-> newly allowed (constraint removed)")
             elif hmap[w] > bmap[w]:
                 newly_allowed.append(
                     f"ghg caps: bucket '{bucket}' window {w}s cap "

@@ -131,6 +131,41 @@ class CoreDeltaTests(SyntheticRepo):
         _, d2 = self.diff(head, head2)
         self.assertTrue(any("search" in x for x in d2["newly_denied"]))
 
+    def test_window_removed_is_relaxation_newly_allowed(self):
+        # ghg checks a charge against every window; a missing window
+        # imposes no cap. Removing one relaxes, it does not deny.
+        self.write("tools/ghg/ghg.py", GHG_PY.replace(
+            '"core": [(3600, 3500)]',
+            '"core": [(3600, 3500), (60, 100)]'))
+        two = self.commit("two windows")
+        self.write("tools/ghg/ghg.py", GHG_PY)
+        head = self.commit("one window")
+        r, d = self.diff(two, head)
+        self.assertEqual(r.returncode, 1)
+        self.assertTrue(any("window 60s removed" in x
+                            for x in d["newly_allowed"]))
+        self.assertEqual(d["newly_denied"], [])
+
+    def test_window_added_is_tightening_newly_denied(self):
+        self.write("tools/ghg/ghg.py", GHG_PY.replace(
+            '"core": [(3600, 3500)]',
+            '"core": [(3600, 3500), (60, 100)]'))
+        head = self.commit("two windows")
+        r, d = self.diff(self.base, head)
+        self.assertEqual(r.returncode, 0)
+        self.assertTrue(any("new window 60s" in x
+                            for x in d["newly_denied"]))
+        self.assertEqual(d["newly_allowed"], [])
+
+    def test_bucket_removed_is_relaxation_newly_allowed(self):
+        self.write("tools/ghg/ghg.py", GHG_PY.replace(
+            '    "search": [(60, 20)],\n', ""))
+        head = self.commit("no search bucket")
+        r, d = self.diff(self.base, head)
+        self.assertEqual(r.returncode, 1)
+        self.assertTrue(any("'search'" in x and "uncapped" in x
+                            for x in d["newly_allowed"]))
+
     def test_new_bucket_is_newly_allowed_call_class(self):
         self.write("tools/ghg/ghg.py", GHG_PY.replace(
             '"search": [(60, 20)],',
@@ -215,6 +250,34 @@ class CoreDeltaTests(SyntheticRepo):
                    '\n_S = _MUTATING_SUBCOMMANDS\n_S.discard("merge")\n')
         head3 = self.commit("alias-discard")
         r = self.run_tool("diff", head2, head3)
+        self.assertEqual(r.returncode, 2)
+
+    def test_ghg_nested_alias_mutation_is_refused_exit_2(self):
+        # Alias to a nested table (via subscript), then a mutator call.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_caps = DEFAULT_LIMITS["core"]\n_caps.clear()\n')
+        head = self.commit("nested-alias")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2)
+        # Alias held in a container, mutated through it.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_box = [DEFAULT_LIMITS]\n_box[0]["core"] = [(1, 1)]\n')
+        head2 = self.commit("container-alias")
+        r = self.run_tool("diff", head, head2)
+        self.assertEqual(r.returncode, 2)
+        # Modelled table passed as a call argument (callee may mutate).
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _boost(limits):\n    limits["core"] = [(1, 1)]\n'
+                   '\n_boost(DEFAULT_LIMITS)\n')
+        head3 = self.commit("call-arg")
+        r = self.run_tool("diff", head2, head3)
+        self.assertEqual(r.returncode, 2)
+        # Table returned by a local function, mutated by the caller.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _tbl():\n    return DEFAULT_LIMITS\n'
+                   '\n_t = _tbl()\n_t["core"] = [(1, 1)]\n')
+        head4 = self.commit("returned-alias")
+        r = self.run_tool("diff", head3, head4)
         self.assertEqual(r.returncode, 2)
 
     def test_ghg_readonly_alias_is_not_refused(self):
