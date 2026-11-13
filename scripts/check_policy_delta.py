@@ -255,6 +255,11 @@ _MUTATOR_METHODS = {"add", "append", "clear", "difference_update",
                     "__isub__", "__imul__", "__iand__", "__ior__",
                     "__ixor__"}
 
+# Read-only lookup methods whose RESULTS are references into the
+# container (a bucket's cap list, a view): capturing one is safe,
+# but calling the capture hands over a sub-table.
+_LOOKUP_METHODS = {"get", "__getitem__", "values", "items", "keys"}
+
 
 def _bound_names(target):
     """Names a binding target actually binds: plain names and
@@ -816,6 +821,7 @@ def ghg_binding_census(tree):
     # a table the parameter then shadows).
     returning = set()
     returning_aliases = set()
+    lookup_aliases = set()
     # The direct subset of returning: the return/yield expressions
     # denote the table or a sub-table THEMSELVES (structural
     # shape), not a fresh container holding one. Only direct
@@ -965,7 +971,8 @@ def ghg_binding_census(tree):
         if isinstance(expr, ast.Call):
             return isinstance(expr.func, ast.Name) \
                 and (expr.func.id in returning
-                     or expr.func.id in returning_aliases)
+                     or expr.func.id in returning_aliases
+                     or expr.func.id in lookup_aliases)
         if isinstance(expr, (ast.ListComp, ast.SetComp,
                              ast.GeneratorExp)):
             return hands_over(expr.elt)
@@ -1000,62 +1007,75 @@ def ghg_binding_census(tree):
         return False
 
     changed = True
+    _guard = 0
     while changed:
+        _guard += 1
+        if _guard > 200:
+            # Directness oscillation on a pathological call
+            # graph: fall back to no direct callees (the
+            # conservative direction -- destructured results of
+            # calls stay table-grade).
+            returning_direct.clear()
+            returning_direct_aliases.clear()
+            break
         changed = False
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 is_enter = id(node) in enter_of
-                if node.name in returning \
-                        and node.name in returning_direct \
-                        and not (is_enter
-                                 and enter_of[id(node)]
-                                 not in enter_returning):
-                    continue
+                hits = []
                 for sub in ast.walk(node):
-                    if isinstance(sub, ast.Return) \
+                    if isinstance(sub, (ast.Return, ast.Yield,
+                                        ast.YieldFrom)) \
                             and sub.value is not None \
                             and hands_over(sub.value):
-                        if isinstance(sub.value, ast.Call) \
-                                and isinstance(sub.value.func,
-                                               ast.Attribute) \
-                                and sub.value.func.attr in (
-                                        "items", "keys", "values") \
-                                and node.name \
-                                not in returning_view_conflicts:
-                            kind = sub.value.func.attr
-                            if node.name in returning_views \
-                                    and returning_views[node.name] \
-                                    != kind:
-                                returning_view_conflicts.add(
-                                    node.name)
-                                returning_views.pop(node.name, None)
-                            elif node.name not in returning_views:
-                                returning_views[node.name] = kind
+                        hits.append(sub)
+                        if node.name not in returning:
+                            returning.add(node.name)
+                            changed = True
+                        if isinstance(sub, ast.Return):
+                            if isinstance(sub.value, ast.Call) \
+                                    and isinstance(
+                                        sub.value.func,
+                                        ast.Attribute) \
+                                    and sub.value.func.attr in (
+                                            "items", "keys",
+                                            "values") \
+                                    and node.name \
+                                    not in \
+                                    returning_view_conflicts:
+                                kind = sub.value.func.attr
+                                if node.name in returning_views \
+                                        and returning_views[
+                                                node.name] != kind:
+                                    returning_view_conflicts.add(
+                                        node.name)
+                                    returning_views.pop(
+                                        node.name, None)
+                                elif node.name not in \
+                                        returning_views:
+                                    returning_views[node.name] \
+                                        = kind
+                                    changed = True
+                            if is_enter \
+                                    and enter_of[id(node)] \
+                                    not in enter_returning:
+                                enter_returning.add(
+                                    enter_of[id(node)])
                                 changed = True
-                        if node.name not in returning:
-                            returning.add(node.name)
-                            changed = True
-                        if structural_source(sub.value) \
-                                and node.name not in returning_direct:
-                            returning_direct.add(node.name)
-                            changed = True
-                        if is_enter \
-                                and enter_of[id(node)] \
-                                not in enter_returning:
-                            enter_returning.add(enter_of[id(node)])
-                            changed = True
-                    elif isinstance(sub, (ast.Yield, ast.YieldFrom)) \
-                            and sub.value is not None \
-                            and hands_over(sub.value):
-                        # A generator yielding tables is a table
-                        # source for its callers, like a return.
-                        if node.name not in returning:
-                            returning.add(node.name)
-                            changed = True
-                        if structural_source(sub.value) \
-                                and node.name not in returning_direct:
-                            returning_direct.add(node.name)
-                            changed = True
+                # Directness is an ALL-returns property: one
+                # wrapper-shaped return revokes it, whenever in
+                # the fixpoint that return becomes visible.
+                if hits:
+                    direct = all(structural_source(s.value)
+                                 for s in hits)
+                    if direct \
+                            and node.name not in returning_direct:
+                        returning_direct.add(node.name)
+                        changed = True
+                    elif not direct \
+                            and node.name in returning_direct:
+                        returning_direct.discard(node.name)
+                        changed = True
         for node in ast.walk(tree):
             if isinstance(node, ast.Assign):
                 value, targets = node.value, node.targets
@@ -1100,6 +1120,24 @@ def ghg_binding_census(tree):
                                 returning_views[n] = \
                                     returning_views[_sn]
                                 changed = True
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                value, targets = node.value, node.targets
+            elif isinstance(node, ast.AnnAssign) \
+                    and node.value is not None:
+                value, targets = node.value, [node.target]
+            elif isinstance(node, ast.NamedExpr):
+                value, targets = node.value, [node.target]
+            else:
+                continue
+            if isinstance(value, ast.Attribute) \
+                    and value.attr in _LOOKUP_METHODS \
+                    and hands_over(value.value):
+                for t in targets:
+                    for n in _bound_names(t):
+                        if n not in lookup_aliases:
+                            lookup_aliases.add(n)
+                            changed = True
         for node in ast.walk(tree):
             # Wrapper provenance through call results: a name
             # bound to the result of a returning-but-not-direct

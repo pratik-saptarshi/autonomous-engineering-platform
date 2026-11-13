@@ -1227,6 +1227,49 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head2)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_captured_lookup_method_result_is_tracked(self):
+        # Codex PR #148: capturing a read-only lookup method is
+        # allowed (it is not a mutator), but calling the capture
+        # returns a sub-table; the call was invisible because the
+        # capture name is in no returning census.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_get = DEFAULT_LIMITS.get\n'
+                   '_get("core").clear()\n')
+        head = self.commit("captured-get")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_get = DEFAULT_LIMITS.get\n'
+                   '_caps = _get("core")\n_caps.clear()\n')
+        head2 = self.commit("captured-get-value")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: a lookup capture returning a copy is safe,
+        # and lookups on unwatched containers are ordinary.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_copy = DEFAULT_LIMITS.copy\n'
+                   '_c = _copy()\n_c.clear()\n')
+        head3 = self.commit("captured-copy")
+        r = self.run_tool("diff", self.base, head3)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_ghg_mixed_returns_are_not_direct(self):
+        # Codex PR #148: one structural return made a function
+        # "direct" even when another return wraps the table;
+        # directness requires EVERY table-carrying return to
+        # preserve the structural shape.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\ndef _tables(flag):\n'
+                   '    if flag:\n'
+                   '        return DEFAULT_LIMITS\n'
+                   '    return [("caps", DEFAULT_LIMITS)]\n'
+                   '\nfor _key, _value in _tables(True):\n'
+                   '    _uncap(_value)\n')
+        head = self.commit("mixed-returns")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)
