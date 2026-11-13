@@ -68,7 +68,10 @@ class SyntheticRepo(unittest.TestCase):
         git(self.repo, "config", "user.name", "t")
         self.write("scripts/policy.data", POLICY_DATA)
         self.write("tools/ghg/ghg.py", GHG_PY)
-        self.write(".github/skills-sync-scope.txt", "alpha\nbeta\n")
+        self.write(".github/skills-sync-scope.txt",
+                   "[skills]\nalpha\nbeta\n\n"
+                   "[exclude-paths]\nsecret-plans/**\n\n"
+                   "[exclude-content]\nINTERNAL-ONLY\n")
         self.write("skills/alpha/SKILL.md", "# Alpha\n")
         self.write("skills/alpha/scripts/run.sh", "echo old\n")
         self.write("skills/beta/SKILL.md", "# Beta\n")
@@ -155,11 +158,65 @@ class CoreDeltaTests(SyntheticRepo):
         self.assertTrue(any("modelled power" in n for n in d["notes"]))
 
     def test_scope_entry_and_exit(self):
-        self.write(".github/skills-sync-scope.txt", "alpha\ngamma\n")
+        self.write(".github/skills-sync-scope.txt",
+                   "[skills]\nalpha\ngamma\n\n"
+                   "[exclude-paths]\nsecret-plans/**\n\n"
+                   "[exclude-content]\nINTERNAL-ONLY\n")
         head = self.commit("head")
         _, d = self.diff(self.base, head)
         self.assertTrue(any("gamma" in x for x in d["newly_allowed"]))
         self.assertTrue(any("beta" in x for x in d["newly_denied"]))
+
+    def test_scope_exclusion_removed_is_newly_allowed(self):
+        # Exclusions are denials: removing one widens what syncs.
+        self.write(".github/skills-sync-scope.txt",
+                   "[skills]\nalpha\nbeta\n\n"
+                   "[exclude-paths]\nsecret-plans/**\n\n"
+                   "[exclude-content]\n")
+        head = self.commit("head")
+        r, d = self.diff(self.base, head)
+        self.assertEqual(r.returncode, 1)
+        self.assertTrue(any("INTERNAL-ONLY" in x and "exclusion removed" in x
+                            for x in d["newly_allowed"]))
+
+    def test_scope_exclusion_added_is_newly_denied(self):
+        self.write(".github/skills-sync-scope.txt",
+                   "[skills]\nalpha\nbeta\n\n"
+                   "[exclude-paths]\nsecret-plans/**\ndrafts/**\n\n"
+                   "[exclude-content]\nINTERNAL-ONLY\n")
+        head = self.commit("head")
+        r, d = self.diff(self.base, head)
+        self.assertEqual(r.returncode, 0)
+        self.assertTrue(any("drafts/**" in x and "exclusion added" in x
+                            for x in d["newly_denied"]))
+        self.assertEqual(d["newly_allowed"], [])
+
+    def test_scope_unknown_section_is_error_exit_2(self):
+        self.write(".github/skills-sync-scope.txt", "[bogus]\nalpha\n")
+        head = self.commit("head")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2)
+
+    def test_ghg_runtime_mutation_is_refused_exit_2(self):
+        # Item assignment rewriting a cap at import time.
+        self.write("tools/ghg/ghg.py",
+                   GHG_PY + '\nDEFAULT_LIMITS["core"] = [(3600, 999999)]\n')
+        head = self.commit("mut1")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("mutated at runtime", r.stderr)
+        # Mutator call escaping mutating classification.
+        self.write("tools/ghg/ghg.py",
+                   GHG_PY + '\n_MUTATING_SUBCOMMANDS.discard("merge")\n')
+        head2 = self.commit("mut2")
+        r = self.run_tool("diff", head, head2)
+        self.assertEqual(r.returncode, 2)
+        # Augmented assignment on a classification set.
+        self.write("tools/ghg/ghg.py",
+                   GHG_PY + '\n_MUTATING_METHODS -= {"DELETE"}\n')
+        head3 = self.commit("mut3")
+        r = self.run_tool("diff", head2, head3)
+        self.assertEqual(r.returncode, 2)
 
     def test_empty_diff_exits_zero(self):
         r, d = self.diff(self.base, self.base)
@@ -268,6 +325,26 @@ class SkillsTierTests(SyntheticRepo):
         _, d = self.diff(self.base, head)
         self.assertTrue(any("run.sh" in x for x in d["newly_denied"]))
 
+    def test_mode_gain_on_surviving_file_is_executable_grant(self):
+        p = self.repo / "skills/alpha/scripts/run.sh"
+        p.chmod(0o755)
+        head = self.commit("chmod +x")
+        r, d = self.diff(self.base, head)
+        self.assertEqual(r.returncode, 1)
+        self.assertTrue(any("run.sh" in x and "executable bit" in x
+                            for x in d["newly_allowed_executable"]))
+
+    def test_mode_loss_on_surviving_file_is_contraction(self):
+        p = self.repo / "skills/alpha/tool"
+        p.write_text("#!/bin/sh\n")
+        p.chmod(0o755)
+        with_x = self.commit("add tool +x")
+        p.chmod(0o644)
+        head = self.commit("chmod -x")
+        r, d = self.diff(with_x, head)
+        self.assertEqual(r.returncode, 0)
+        self.assertTrue(any("tool" in x for x in d["newly_denied"]))
+
     def test_skillmd_content_change_is_a_note(self):
         self.write("skills/alpha/SKILL.md", "# Alpha v2\n")
         head = self.commit("head")
@@ -321,12 +398,20 @@ class ReportAndAckTests(SyntheticRepo):
         self.assertEqual(r.returncode, 0, r.stderr)
 
     def test_check_rejects_stale_ack_after_new_commit(self):
+        # Head-binding, isolated: the second commit is delta-neutral
+        # (touches no modelled artefact), so only the head SHA changes.
+        # The acknowledgement must still be voided.
         head = self.escalate()
         fp = self.fingerprint(head)
-        self.write("skills/alpha/notes.md", "more\n")
-        head2 = self.commit("more")
         body = self.repo / "body.txt"
         body.write_text(f"policy-delta-sha256: {fp}\n")
+        r = self.run_tool("check", self.base, head,
+                          "--body-file", str(body))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.write("unrelated.txt", "not a modelled artefact\n")
+        head2 = self.commit("neutral")
+        _, d = self.diff(self.base, head2)
+        self.assertEqual(len(d["newly_allowed"]), 1)  # delta unchanged
         r = self.run_tool("check", self.base, head2,
                           "--body-file", str(body))
         self.assertEqual(r.returncode, 1)
@@ -400,6 +485,19 @@ class ReplayCorpusTests(unittest.TestCase):
         self.assertIn(r.returncode, (0, 1), r.stderr)
         return json.loads(r.stdout)
 
+    # Documented corrections to the prototype's recorded counts. The
+    # Phase 0 summary is evidence of the *prototype's* output and is not
+    # rewritten; where the production model is demonstrably more correct
+    # (checked against the artefact's own grammar/consumer), the
+    # corrected expectation lives here with its reason.
+    # - PR #131: the prototype's flat scope model counted
+    #   'humanizer/PROVENANCE.md' as "enters sync scope" (allowed). The
+    #   entry was in fact added to [exclude-paths] -- an exclusion,
+    #   i.e. a denial. Correct: allowed 31, denied 1. (Class found by
+    #   the Phase 1 independent review; semantics per
+    #   scripts/check_skills_manifest.py.)
+    CORRECTIONS = {131: {"allowed": 31, "denied": 1}}
+
     def test_replay_reproduces_phase0_counts(self):
         summary = json.loads(REPLAY_SUMMARY.read_text())
         self.assertEqual(len(summary), 20)
@@ -407,9 +505,19 @@ class ReplayCorpusTests(unittest.TestCase):
             with self.subTest(pr=entry["pr"]):
                 base = git(REPO_ROOT, "rev-parse", f"{entry['commit']}^1")
                 d = self.run_diff(base, entry["commit"])
-                self.assertEqual(len(d["newly_allowed"]), entry["allowed"])
-                self.assertEqual(len(d["newly_denied"]), entry["denied"])
+                want = self.CORRECTIONS.get(entry["pr"], entry)
+                self.assertEqual(len(d["newly_allowed"]), want["allowed"])
+                self.assertEqual(len(d["newly_denied"]), want["denied"])
                 self.assertEqual(len(d["notes"]), len(entry["notes"]))
+
+    def test_pr131_exclusion_classified_as_denial(self):
+        base = git(REPO_ROOT, "rev-parse", "0f5b652^1")
+        d = self.run_diff(base, "0f5b652")
+        self.assertTrue(any("humanizer/PROVENANCE.md" in x
+                            and "exclusion added" in x
+                            for x in d["newly_denied"]))
+        self.assertFalse(any("humanizer/PROVENANCE.md" in x
+                             for x in d["newly_allowed"]))
 
     def test_pr58_executable_surface_flagged(self):
         base = git(REPO_ROOT, "rev-parse", "a649e60^1")
