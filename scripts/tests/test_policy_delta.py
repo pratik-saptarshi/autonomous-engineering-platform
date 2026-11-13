@@ -280,6 +280,21 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", head3, head4)
         self.assertEqual(r.returncode, 2)
 
+    def test_ghg_complete_mutator_census_is_refused(self):
+        # dict.popitem and list.insert were the census gaps Codex found
+        # on PR #148; the refusal list is the full union of built-in
+        # container mutators.
+        self.write("tools/ghg/ghg.py",
+                   GHG_PY + "\nDEFAULT_LIMITS.popitem()\n")
+        head = self.commit("popitem")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2)
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nDEFAULT_LIMITS["core"].insert(0, (60, 1))\n')
+        head2 = self.commit("insert")
+        r = self.run_tool("diff", head, head2)
+        self.assertEqual(r.returncode, 2)
+
     def test_ghg_readonly_alias_is_not_refused(self):
         self.write("tools/ghg/ghg.py", GHG_PY +
                    '\n_L = DEFAULT_LIMITS\nCORE = _L["core"]\n')

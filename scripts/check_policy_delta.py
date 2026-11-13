@@ -229,10 +229,17 @@ MODELLED_GHG_NAMES = ("DEFAULT_LIMITS", "_MUTATING_SUBCOMMANDS",
 # runtime changes real power invisibly to a literal diff, so it is
 # refused (exit 2), never silently diffed.
 GHG_WATCH_NAMES = MODELLED_GHG_NAMES + ("LIMITS",)
-_MUTATOR_METHODS = {"add", "discard", "remove", "update", "pop", "clear",
-                    "setdefault", "extend", "append",
-                    "intersection_update", "difference_update",
-                    "symmetric_difference_update"}
+# The complete union of Python's built-in container mutators
+# (dict: clear/pop/popitem/setdefault/update; set: add/clear/
+# difference_update/discard/intersection_update/pop/remove/
+# symmetric_difference_update/update; list: append/clear/extend/
+# insert/pop/remove/reverse/sort). Matched against any watched root
+# regardless of the table's actual type -- over-refusal is the safe
+# direction for a tripwire.
+_MUTATOR_METHODS = {"add", "append", "clear", "difference_update",
+                    "discard", "extend", "insert", "intersection_update",
+                    "pop", "popitem", "remove", "reverse", "setdefault",
+                    "sort", "symmetric_difference_update", "update"}
 
 
 def _root_name(node):
