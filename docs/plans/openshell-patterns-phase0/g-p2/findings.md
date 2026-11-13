@@ -87,8 +87,8 @@ grants were likewise fully acknowledged in their records.
 Within the strict-9 tier, every grant was either a creation or was fully
 enumerated by its author (#84, #141, #132) — the differ would have added a
 mechanical checklist, not a catch. The catch came from the **skills tree**,
-the artefact class R4's Phase 1 scoping deferred ("v1 scoped to policy.data
-+ ghg cap tables only; skill manifests deferred"). As scoped, the Phase 1
+the artefact class R4's Phase 1 scoping deferred ("v1 scoped to policy.data +
+ghg cap tables only; skill manifests deferred"). As scoped, the Phase 1
 build would not have caught the #58 delta. The gate passes on the plan's
 criteria as written (the replay universe includes skill manifests), but the
 Phase 1 scope decision should be re-examined against this evidence before
