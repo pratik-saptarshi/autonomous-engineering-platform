@@ -310,8 +310,26 @@ def _scope_maps(tree):
 
     def rec(node, scope):
         scope_of[id(node)] = scope
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            scope_parent[id(node)] = scope
+            # Header expressions -- decorators, defaults, annotations
+            # -- are evaluated in the ENCLOSING scope; only the body
+            # lives in the function's own scope.
+            for dec in node.decorator_list:
+                rec(dec, scope)
+            rec(node.args, scope)
+            if node.returns is not None:
+                rec(node.returns, scope)
+            for stmt in node.body:
+                rec(stmt, node)
+            return
+        if isinstance(node, ast.Lambda):
+            scope_parent[id(node)] = scope
+            rec(node.args, scope)
+            rec(node.body, node)
+            return
         inner = scope
-        if isinstance(node, _SCOPE_NODES):
+        if isinstance(node, ast.ClassDef):
             scope_parent[id(node)] = scope
             inner = node
         for ch in ast.iter_child_nodes(node):
@@ -509,6 +527,16 @@ def ghg_binding_census(tree):
     # (a function returning an assignment alias; a default capturing
     # a table the parameter then shadows).
     returning = set()
+
+    def hands_over(value):
+        """The value hands over a watched table: it touches one
+        directly, or it is a call to a local function known to
+        return one (forwarding chains included)."""
+        return _touches_watched(value, is_watched) or (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id in returning)
+
     changed = True
     while changed:
         changed = False
@@ -518,7 +546,7 @@ def ghg_binding_census(tree):
                 for sub in ast.walk(node):
                     if isinstance(sub, ast.Return) \
                             and sub.value is not None \
-                            and _touches_watched(sub.value, is_watched):
+                            and hands_over(sub.value):
                         returning.add(node.name)
                         changed = True
                         break
@@ -526,11 +554,8 @@ def ghg_binding_census(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
                                  ast.Lambda)):
                 for param, default in param_defaults(node):
-                    hit = _touches_watched(default, is_watched) or (
-                        isinstance(default, ast.Call)
-                        and isinstance(default.func, ast.Name)
-                        and default.func.id in returning)
-                    if hit and (id(node), param) not in watched:
+                    if hands_over(default) \
+                            and (id(node), param) not in watched:
                         watched.add((id(node), param))
                         changed = True
         for node in ast.walk(tree):
@@ -546,11 +571,7 @@ def ghg_binding_census(tree):
                 value, targets = node.value, [node.target]
             else:
                 continue
-            hit = _touches_watched(value, is_watched) or (
-                isinstance(value, ast.Call)
-                and isinstance(value.func, ast.Name)
-                and value.func.id in returning)
-            if hit:
+            if hands_over(value):
                 scope = scope_of[id(node)]
                 key = id(scope) if scope is not None else None
                 for t in targets:

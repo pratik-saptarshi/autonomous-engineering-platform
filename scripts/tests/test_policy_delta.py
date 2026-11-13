@@ -340,6 +340,28 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head3)
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
 
+    def test_ghg_alias_propagation_scope_and_forwarding(self):
+        # Codex PR #148, third fixpoint round: (a) a parameter
+        # default must resolve in the ENCLOSING scope -- a default
+        # naming an outer alias of the same name captures that alias
+        # even though the parameter shadows it inside; (b) a helper
+        # returning another watched-returning helper's result is
+        # itself a returning function (forwarding chain).
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_alias = DEFAULT_LIMITS\n'
+                   '\ndef _uncap(_alias=_alias):\n'
+                   '    _alias.clear()\n\n_uncap()\n')
+        head = self.commit("default-enclosing-scope")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _table():\n    return DEFAULT_LIMITS\n'
+                   '\ndef _forward():\n    return _table()\n'
+                   '\n_a = _forward()\n_a.clear()\n')
+        head2 = self.commit("forwarding-return")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)
