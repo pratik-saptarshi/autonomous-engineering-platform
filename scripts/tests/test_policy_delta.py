@@ -1014,6 +1014,59 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head2)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_returning_status_follows_callee_aliases(self):
+        # Codex PR #148: calling a table-returning function
+        # through an assigned alias lost its returning status,
+        # because the returning census holds only definition
+        # names.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _table():\n    return DEFAULT_LIMITS\n'
+                   '\n_t = _table\n_t().clear()\n')
+        head = self.commit("returning-alias-receiver")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _table():\n    return DEFAULT_LIMITS\n'
+                   '\n_t = _table\n_x = _t()\n_x.clear()\n')
+        head2 = self.commit("returning-alias-value")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: an alias of a function returning an unrelated
+        # value is not a returning alias.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _plain():\n    return {}\n'
+                   '\n_t = _plain\n_x = _t()\n_x.clear()\n')
+        head3 = self.commit("returning-alias-unrelated")
+        r = self.run_tool("diff", self.base, head3)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_ghg_aliased_items_view_keeps_value_grade(self):
+        # Codex PR #148: when an .items() view is assigned to a
+        # name before iteration, the view kind was lost and BOTH
+        # destructured targets were marked element-grade -- but
+        # the value target retains the mutable cap list.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(pair):\n    pair.clear()\n'
+                   '\n_items = DEFAULT_LIMITS.items()\n'
+                   'for _k, _pairs in _items:\n'
+                   '    _uncap(_pairs)\n')
+        head = self.commit("aliased-items-view")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: the key target of the same aliased view is
+        # still a scalar and hands over nothing.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Ledger:\n'
+                   '    def spend(self, bucket):\n'
+                   '        return bucket\n'
+                   '\n_led = _Ledger()\n'
+                   '_items = DEFAULT_LIMITS.items()\n'
+                   'for _bucket, _pairs in _items:\n'
+                   '    _led.spend(_bucket)\n')
+        head2 = self.commit("aliased-items-key")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)

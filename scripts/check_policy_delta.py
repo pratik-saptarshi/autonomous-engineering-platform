@@ -810,6 +810,33 @@ def ghg_binding_census(tree):
     # (a function returning an assignment alias; a default capturing
     # a table the parameter then shadows).
     returning = set()
+    returning_aliases = set()
+
+    # View provenance for names: a name bound to a table's
+    # .items()/.keys()/.values() view keeps the view's kind when
+    # it is later iterated (conflicting bindings drop the record).
+    view_kinds = {}
+    _view_conflicts = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            _v, _ts = node.value, node.targets
+        elif isinstance(node, ast.AnnAssign) \
+                and node.value is not None:
+            _v, _ts = node.value, [node.target]
+        else:
+            continue
+        if isinstance(_v, ast.Call) \
+                and isinstance(_v.func, ast.Attribute) \
+                and _v.func.attr in ("items", "keys", "values"):
+            for t in _ts:
+                for n in _bound_names(t):
+                    if n in view_kinds \
+                            and view_kinds[n] != _v.func.attr:
+                        _view_conflicts.add(n)
+                    else:
+                        view_kinds[n] = _v.func.attr
+    for n in _view_conflicts:
+        view_kinds.pop(n, None)
 
     # Locally defined context managers: class name -> its
     # __enter__ method, for the classes whose __enter__ returns a
@@ -885,7 +912,8 @@ def ghg_binding_census(tree):
                     and v.func.attr in ("items", "values", "keys"):
                 return structural_source(v.func.value)
             if isinstance(v.func, ast.Name) \
-                    and v.func.id in returning:
+                    and (v.func.id in returning
+                         or v.func.id in returning_aliases):
                 return True
         return False
 
@@ -920,7 +948,8 @@ def ghg_binding_census(tree):
             return is_watched(expr)
         if isinstance(expr, ast.Call):
             return isinstance(expr.func, ast.Name) \
-                and expr.func.id in returning
+                and (expr.func.id in returning
+                     or expr.func.id in returning_aliases)
         if isinstance(expr, (ast.ListComp, ast.SetComp,
                              ast.GeneratorExp)):
             return hands_over(expr.elt)
@@ -978,6 +1007,26 @@ def ghg_binding_census(tree):
                             enter_returning.add(enter_of[id(node)])
                             changed = True
                         break
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                value, targets = node.value, node.targets
+            elif isinstance(node, ast.AnnAssign) \
+                    and node.value is not None:
+                value, targets = node.value, [node.target]
+            elif isinstance(node, ast.NamedExpr):
+                value, targets = node.value, [node.target]
+            else:
+                continue
+            if (isinstance(value, ast.Name)
+                    and (value.id in returning
+                         or value.id in returning_aliases)) \
+                    or (isinstance(value, ast.Attribute)
+                        and value.attr in returning):
+                for t in targets:
+                    for n in _bound_names(t):
+                        if n not in returning_aliases:
+                            returning_aliases.add(n)
+                            changed = True
         for node in ast.walk(tree):
             if isinstance(node, ast.Assign) \
                     and isinstance(node.value, ast.Call) \
@@ -1052,6 +1101,8 @@ def ghg_binding_census(tree):
                 if isinstance(value, ast.Call) \
                         and isinstance(value.func, ast.Attribute):
                     src_attr = value.func.attr
+                elif isinstance(value, ast.Name):
+                    src_attr = view_kinds.get(value.id)
                 for t in targets:
                     if isinstance(t, (ast.Tuple, ast.List)):
                         if src_attr == "items" and len(t.elts) >= 2:
