@@ -1060,6 +1060,44 @@ def ghg_binding_census(tree):
                             returning_direct_aliases.add(n)
                             changed = True
         for node in ast.walk(tree):
+            # Wrapper provenance through call results: a name
+            # bound to the result of a returning-but-not-direct
+            # callee (or to another wrapper-tainted name) is
+            # wrapper-tainted. Taint is sticky -- a callee not yet
+            # proven direct taints conservatively.
+            if isinstance(node, ast.Assign):
+                value, targets = node.value, node.targets
+            elif isinstance(node, ast.AnnAssign) \
+                    and node.value is not None:
+                value, targets = node.value, [node.target]
+            elif isinstance(node, ast.NamedExpr):
+                value, targets = node.value, [node.target]
+            else:
+                continue
+            tainted = False
+            if isinstance(value, ast.Name) \
+                    and value.id in wrapper_names:
+                tainted = True
+            elif isinstance(value, ast.Call):
+                f = value.func
+                if isinstance(f, ast.Name):
+                    if (f.id in returning
+                            or f.id in returning_aliases) \
+                            and f.id not in returning_direct \
+                            and f.id not in returning_direct_aliases:
+                        tainted = True
+                elif isinstance(f, ast.Attribute):
+                    if f.attr in returning \
+                            and f.attr not in returning_direct:
+                        tainted = True
+            if tainted:
+                for t in targets:
+                    for n in _bound_names(t):
+                        if n not in wrapper_names \
+                                and n not in protected:
+                            wrapper_names.add(n)
+                            changed = True
+        for node in ast.walk(tree):
             if isinstance(node, ast.Assign) \
                     and isinstance(node.value, ast.Call) \
                     and isinstance(node.value.func, ast.Name) \
@@ -1204,11 +1242,14 @@ def ghg_binding_census(tree):
             elif isinstance(node, ast.AnnAssign) \
                     and node.value is not None:
                 value, targets = node.value, [node.target]
+            elif isinstance(node, ast.NamedExpr):
+                value, targets = node.value, [node.target]
             else:
                 continue
-            if (isinstance(value, ast.Name)
-                    and (value.id in local_defs
-                         or value.id in callee_aliases)) \
+            if isinstance(value, ast.Lambda) \
+                    or (isinstance(value, ast.Name)
+                        and (value.id in local_defs
+                             or value.id in callee_aliases)) \
                     or (isinstance(value, ast.Attribute)
                         and value.attr in local_methods):
                 for t in targets:

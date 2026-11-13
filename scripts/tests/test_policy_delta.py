@@ -1124,6 +1124,55 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head2)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_lambda_callee_is_a_local_definition(self):
+        # Codex PR #148: a lambda bound to a name is locally
+        # defined code, but the name was absent from both
+        # local_defs and callee_aliases, so passing it a table
+        # escaped the argument check.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_uncap = lambda caps: caps.clear()\n'
+                   '_uncap(DEFAULT_LIMITS)\n')
+        head = self.commit("lambda-callee")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: the same lambda called with an unrelated
+        # value is ordinary code.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_f = lambda caps: caps.clear()\n_f({})\n')
+        head2 = self.commit("lambda-callee-unrelated")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_ghg_wrapper_call_result_keeps_provenance(self):
+        # Codex PR #148: a name assigned the result of a
+        # wrapper-returning call was not wrapper-tainted, so
+        # destructuring through the name wrongly took the scalar
+        # exemption.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\ndef _wrapped():\n'
+                   '    return [("caps", DEFAULT_LIMITS)]\n'
+                   '\n_w = _wrapped()\n'
+                   'for _key, _value in _w:\n'
+                   '    _uncap(_value)\n')
+        head = self.commit("wrapper-call-result")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: a name assigned a DIRECT table return keeps
+        # structural provenance.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Ledger:\n'
+                   '    def spend(self, bucket):\n'
+                   '        return bucket\n'
+                   '\ndef _table():\n    return DEFAULT_LIMITS\n'
+                   '\n_led = _Ledger()\n'
+                   '_t = _table()\n'
+                   'for _bucket, _pairs in _t.items():\n'
+                   '    _led.spend(_bucket)\n')
+        head2 = self.commit("direct-call-result")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)
