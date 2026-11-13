@@ -809,6 +809,26 @@ def ghg_binding_census(tree):
     # a table the parameter then shadows).
     returning = set()
 
+    def structural_source(v):
+        """The iteration source has the modelled tables' own shape:
+        a table/sub-table access chain, its .items()/.values()/
+        .keys() views, or a call to a function returning one -- so
+        the shapes of its elements are known. A fresh container
+        (literal, BinOp, comprehension, other calls) can wrap the
+        table itself as an element and is NOT structural."""
+        while isinstance(v, (ast.Subscript, ast.Attribute)):
+            v = v.value
+        if isinstance(v, ast.Name):
+            return True
+        if isinstance(v, ast.Call):
+            if isinstance(v.func, ast.Attribute) \
+                    and v.func.attr in ("items", "values", "keys"):
+                return structural_source(v.func.value)
+            if isinstance(v.func, ast.Name) \
+                    and v.func.id in returning:
+                return True
+        return False
+
     def hands_over(value):
         """The expression hands over (denotes) a watched table --
         ONE predicate for value positions and mutation receivers,
@@ -828,6 +848,11 @@ def ghg_binding_census(tree):
                 expr = expr.value
             elif isinstance(expr, ast.Call) \
                     and isinstance(expr.func, ast.Attribute):
+                if expr.func.attr in returning:
+                    # A locally defined method returning a table:
+                    # the call's result IS the table, not a method
+                    # result computed on the receiver.
+                    return True
                 expr = expr.func.value
             else:
                 break
@@ -921,10 +946,15 @@ def ghg_binding_census(tree):
             # Element-grade (weak) names for this binding: targets
             # destructured out of an iterated element, and targets
             # iterating .keys() -- both bind scalars of the modelled
-            # structures, never a table or sub-table.
+            # structures, never a table or sub-table. The exemption
+            # applies only to STRUCTURAL sources (the tables' own
+            # access chains and views): a fresh wrapper container
+            # can yield the table itself as an element, so its
+            # destructured components stay table-grade.
             weak = set()
             if isinstance(node, (ast.For, ast.AsyncFor,
-                                 ast.comprehension)):
+                                 ast.comprehension)) \
+                    and structural_source(value):
                 src_attr = None
                 if isinstance(value, ast.Call) \
                         and isinstance(value.func, ast.Attribute):
@@ -1002,6 +1032,49 @@ def ghg_mutation_sites(tree, is_watched, hands_over, local_defs,
     read/copy use in this file's style and is named in the boundary
     instead. Read-only aliasing and read-only method calls on the
     tables (.get/.items/iteration) are not sites."""
+
+    def hands_over_strong(expr):
+        """The expression hands over a table-grade reference: a
+        table or mutable sub-table itself, as opposed to a
+        container that merely holds watched scalars (a list of
+        window dicts built from iterated keys is watched, but
+        storing or passing it hands over no table)."""
+        if isinstance(expr, ast.Name):
+            return is_strong(expr) if is_strong is not None \
+                else hands_over(expr)
+        if isinstance(expr, (ast.Subscript, ast.Attribute)):
+            return hands_over_strong(expr.value)
+        if isinstance(expr, ast.Call):
+            return hands_over(expr)
+        if isinstance(expr, (ast.List, ast.Tuple, ast.Set)):
+            return any(hands_over_strong(e) for e in expr.elts)
+        if isinstance(expr, ast.Dict):
+            return any(hands_over_strong(e) for e in
+                       list(expr.keys) + list(expr.values)
+                       if e is not None)
+        if isinstance(expr, ast.Starred):
+            return hands_over_strong(expr.value)
+        if isinstance(expr, ast.BinOp) \
+                and isinstance(expr.op, (ast.Add, ast.Mult,
+                                         ast.BitOr)):
+            return hands_over_strong(expr.left) \
+                or hands_over_strong(expr.right)
+        if isinstance(expr, ast.IfExp):
+            return hands_over_strong(expr.body) \
+                or hands_over_strong(expr.orelse)
+        if isinstance(expr, ast.BoolOp):
+            return any(hands_over_strong(v) for v in expr.values)
+        if isinstance(expr, ast.Await):
+            return hands_over_strong(expr.value)
+        if isinstance(expr, ast.NamedExpr):
+            return hands_over_strong(expr.value)
+        if isinstance(expr, (ast.ListComp, ast.SetComp,
+                             ast.GeneratorExp)):
+            return hands_over_strong(expr.elt)
+        if isinstance(expr, ast.DictComp):
+            return hands_over_strong(expr.value)
+        return False
+
     sites = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Store):
@@ -1019,29 +1092,55 @@ def ghg_mutation_sites(tree, is_watched, hands_over, local_defs,
                         (isinstance(t, ast.Subscript)
                          and hands_over(t.value)):
                     sites.append((node.lineno, "deletion"))
-        elif isinstance(node, ast.Call) \
-                and isinstance(node.func, ast.Attribute) \
-                and node.func.attr in _MUTATOR_METHODS:
-            if hands_over(node.func.value):
-                sites.append((node.lineno, f".{node.func.attr}() call"))
-        elif isinstance(node, ast.Call) \
-                and ((isinstance(node.func, ast.Name)
-                      and node.func.id in local_defs)
-                     or (isinstance(node.func, ast.Attribute)
-                         and node.func.attr in local_methods)):
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)) \
+                and node.value is not None:
+            # Storing a table-grade value through a subscript or
+            # attribute target creates an alias inside a container
+            # the census does not track (the target binds no name).
+            # Stores into a watched container are already the item
+            # assignment site above.
+            targets = node.targets if isinstance(node, ast.Assign) \
+                else [node.target]
+            for t in targets:
+                stored = False
+                for sub in ast.walk(t):
+                    if isinstance(sub, (ast.Subscript, ast.Attribute)) \
+                            and isinstance(sub.ctx, ast.Store):
+                        root = sub
+                        while isinstance(root, (ast.Subscript,
+                                                ast.Attribute)):
+                            root = root.value
+                        if not hands_over(root) \
+                                and hands_over_strong(node.value):
+                            sites.append(
+                                (node.lineno,
+                                 "watched value stored into a container"))
+                            stored = True
+                            break
+                if stored:
+                    break
+        elif isinstance(node, ast.Call):
+            # The mutator and local-definition checks are
+            # independent: a locally defined method may itself be
+            # named like a container mutator, and either check can
+            # be the one that fires.
             args = list(node.args) + [kw.value for kw in node.keywords]
-
-            def arg_hands_over(a):
-                # A bare name hands over a table only if it is
-                # table-grade; element-grade names (iterated keys /
-                # destructured scalars) hand over nothing.
-                if isinstance(a, ast.Name) and is_strong is not None:
-                    return is_strong(a)
-                return hands_over(a)
-
-            if any(arg_hands_over(a) for a in args):
-                sites.append((node.lineno,
-                              "modelled table passed as a call argument"))
+            desc = None
+            if isinstance(node.func, ast.Attribute) \
+                    and node.func.attr in _MUTATOR_METHODS:
+                if hands_over(node.func.value):
+                    desc = f".{node.func.attr}() call"
+                elif any(hands_over_strong(a) for a in args):
+                    desc = "watched value stored into a container"
+            if desc is None \
+                    and ((isinstance(node.func, ast.Name)
+                          and node.func.id in local_defs)
+                         or (isinstance(node.func, ast.Attribute)
+                             and node.func.attr in local_methods)):
+                if any(hands_over_strong(a) for a in args):
+                    desc = "modelled table passed as a call argument"
+            if desc is not None:
+                sites.append((node.lineno, desc))
     return sites
 
 

@@ -812,6 +812,122 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head2)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_watched_store_into_container_is_a_site(self):
+        # Codex PR #148: storing a watched table into an existing
+        # container creates an alias the fixpoint never sees (the
+        # subscript target binds no name), and later mutations
+        # through the container escape.
+        cases = {
+            "subscript-store": '\n_h = {}\n_h["caps"] = DEFAULT_LIMITS\n'
+                               '_h["caps"].clear()\n',
+            "attribute-store": '\nclass _H:\n    pass\n'
+                               '_h = _H()\n_h.caps = DEFAULT_LIMITS\n'
+                               '_h.caps.clear()\n',
+            "append-store": '\n_h = []\n_h.append(DEFAULT_LIMITS)\n'
+                            '_h[0].clear()\n',
+        }
+        prev = self.base
+        for label, snippet in cases.items():
+            with self.subTest(form=label):
+                self.write("tools/ghg/ghg.py", GHG_PY + snippet)
+                head = self.commit(label)
+                r = self.run_tool("diff", prev, head)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                prev = head
+                self.write("tools/ghg/ghg.py", GHG_PY)
+        # Precision: storing unrelated values is ordinary code.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_h = {}\n_h["x"] = 1\n_h["x"] = 2\n')
+        head = self.commit("store-unrelated")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_ghg_method_return_value_is_tracked(self):
+        # Codex PR #148: a locally defined METHOD returning a
+        # table was invisible -- stripping the method-call layer
+        # discarded the callee before the returning census could
+        # be consulted, for receivers and values alike.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Uncap:\n'
+                   '    @staticmethod\n'
+                   '    def table():\n'
+                   '        return DEFAULT_LIMITS\n'
+                   '\n_Uncap.table().clear()\n')
+        head = self.commit("method-return-receiver")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Uncap:\n'
+                   '    @staticmethod\n'
+                   '    def table():\n'
+                   '        return DEFAULT_LIMITS\n'
+                   '\n_t = _Uncap.table()\n_t.clear()\n')
+        head2 = self.commit("method-return-value")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: a method returning an unrelated value is not
+        # a returning-table function.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Cfg:\n'
+                   '    @staticmethod\n'
+                   '    def table():\n'
+                   '        return {}\n'
+                   '\n_t = _Cfg.table()\n_t.clear()\n')
+        head3 = self.commit("method-return-unrelated")
+        r = self.run_tool("diff", self.base, head3)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_ghg_wrapper_destructure_keeps_table_grade(self):
+        # Codex PR #148: the element-grade (weak) exemption applies
+        # to proven scalar-producing sources only. Destructuring a
+        # wrapper container can yield the table itself, so those
+        # components stay table-grade.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\nfor _key, _value in [("caps", DEFAULT_LIMITS)]:\n'
+                   '    _uncap(_value)\n')
+        head = self.commit("wrapper-destructure")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # The proven scalar sources stay exempt: .items() keys and
+        # destructured cap-list elements are scalars of the
+        # modelled structures and hand over nothing to local code.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Ledger:\n'
+                   '    def spend(self, bucket, window_s):\n'
+                   '        return bucket\n'
+                   '\n_led = _Ledger()\n'
+                   'for _bucket, _pairs in DEFAULT_LIMITS.items():\n'
+                   '    for _w, _c in _pairs:\n'
+                   '        _led.spend(_bucket, _w)\n')
+        head2 = self.commit("scalar-grade-args")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_ghg_mutator_named_method_still_checks_arguments(self):
+        # Codex PR #148: the mutator-call branch consumed calls
+        # whose method name collides with a container mutator,
+        # so the local-definition argument check never ran when
+        # the receiver was unwatched.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Uncap:\n'
+                   '    def clear(self, caps):\n'
+                   '        caps.clear()\n'
+                   '\n_u = _Uncap()\n_u.clear(DEFAULT_LIMITS)\n')
+        head = self.commit("mutator-named-method")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: the same shape with an unrelated argument is
+        # ordinary code.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Cfg:\n'
+                   '    def clear(self, caps):\n'
+                   '        caps.clear()\n'
+                   '\n_u = _Cfg()\n_u.clear({})\n')
+        head2 = self.commit("mutator-named-method-unrelated")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)
