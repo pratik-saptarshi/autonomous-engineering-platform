@@ -943,6 +943,34 @@ def ghg_binding_census(tree):
                     and any(b in callable_classes for b in _bases):
                 callable_classes.add(_name)
                 _cc = True
+    # __call__ implementations per class (own body only), and a
+    # resolver walking locally defined bases.
+    _own_call = {}
+    for n in ast.walk(tree):
+        if isinstance(n, ast.ClassDef):
+            for sub in n.body:
+                if isinstance(sub, (ast.FunctionDef,
+                                    ast.AsyncFunctionDef)) \
+                        and sub.name == "__call__":
+                    _own_call[n.name] = sub
+
+    def _call_defs(cls):
+        seen, out, stack = set(), [], [cls]
+        while stack:
+            c = stack.pop()
+            if c in seen:
+                continue
+            seen.add(c)
+            if c in _own_call:
+                out.append(_own_call[c])
+            stack.extend(_class_bases.get(c, ()))
+        return out
+
+    # Classes whose __call__ hands over a table, and names bound
+    # to their instances (filled by the fixpoint).
+    call_returning_classes = set()
+    instance_returning_names = set()
+
     # Name inventories for the factory census: definitions,
     # methods, and lambda-bound names in this file.
     def_names = {n.name for n in ast.walk(tree)
@@ -1130,10 +1158,17 @@ def ghg_binding_census(tree):
         if isinstance(expr, ast.Name):
             return is_watched(expr)
         if isinstance(expr, ast.Call):
-            return isinstance(expr.func, ast.Name) \
-                and (expr.func.id in returning
-                     or expr.func.id in returning_aliases
-                     or expr.func.id in lookup_aliases)
+            if isinstance(expr.func, ast.Name):
+                return expr.func.id in returning \
+                    or expr.func.id in returning_aliases \
+                    or expr.func.id in lookup_aliases \
+                    or expr.func.id in instance_returning_names
+            if isinstance(expr.func, ast.Call) \
+                    and isinstance(expr.func.func, ast.Name):
+                # A fresh instance of a class whose __call__
+                # hands over a table, invoked immediately.
+                return expr.func.func.id in call_returning_classes
+            return False
         if isinstance(expr, (ast.ListComp, ast.SetComp,
                              ast.GeneratorExp)):
             return hands_over(expr.elt)
@@ -1304,6 +1339,15 @@ def ghg_binding_census(tree):
                         if n not in returning_direct_aliases:
                             returning_direct_aliases.add(n)
                             changed = True
+            if (isinstance(value, ast.Name)
+                    and value.id in returning_callables) \
+                    or (isinstance(value, ast.Attribute)
+                        and value.attr in returning_callables):
+                for t in targets:
+                    for n in _bound_names(t):
+                        if n not in returning_callables:
+                            returning_callables.add(n)
+                            changed = True
             _src_names = []
             if isinstance(value, ast.Name):
                 _src_names = [value.id]
@@ -1405,6 +1449,66 @@ def ghg_binding_census(tree):
                 elif prop in property_direct:
                     property_direct.discard(prop)
                     changed = True
+        for cls in list(_class_bases) + list(_own_call):
+            if cls not in call_returning_classes:
+                for d in _call_defs(cls):
+                    if any(isinstance(s, ast.Return)
+                           and s.value is not None
+                           and hands_over(s.value)
+                           for s in ast.walk(d)):
+                        call_returning_classes.add(cls)
+                        changed = True
+                        break
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                value, targets = node.value, node.targets
+            elif isinstance(node, ast.AnnAssign) \
+                    and node.value is not None:
+                value, targets = node.value, [node.target]
+            elif isinstance(node, ast.NamedExpr):
+                value, targets = node.value, [node.target]
+            else:
+                continue
+            if isinstance(value, ast.Call) \
+                    and isinstance(value.func, ast.Name) \
+                    and value.func.id in call_returning_classes:
+                for t in targets:
+                    for n in _bound_names(t):
+                        if n not in instance_returning_names:
+                            instance_returning_names.add(n)
+                            changed = True
+        for node in ast.walk(tree):
+            # View kinds follow call-result bindings: a name
+            # bound to a view-returning call's result carries
+            # the callee's view kind.
+            if isinstance(node, ast.Assign):
+                value, targets = node.value, node.targets
+            elif isinstance(node, ast.AnnAssign) \
+                    and node.value is not None:
+                value, targets = node.value, [node.target]
+            elif isinstance(node, ast.NamedExpr):
+                value, targets = node.value, [node.target]
+            else:
+                continue
+            if isinstance(value, ast.Call):
+                kind = None
+                if isinstance(value.func, ast.Name):
+                    kind = returning_views.get(value.func.id)
+                elif isinstance(value.func, ast.Attribute):
+                    kind = returning_views.get(value.func.attr)
+                if kind is not None:
+                    for t in targets:
+                        for n in _bound_names(t):
+                            if n in _view_conflicts:
+                                continue
+                            if n in view_kinds \
+                                    and view_kinds[n] != kind:
+                                _view_conflicts.add(n)
+                                view_kinds.pop(n, None)
+                                changed = True
+                            elif n not in view_kinds:
+                                view_kinds[n] = kind
+                                changed = True
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef,
                                  ast.AsyncFunctionDef)) \

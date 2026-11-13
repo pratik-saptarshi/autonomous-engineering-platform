@@ -1755,6 +1755,89 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head3)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_callable_instance_return_is_tracked(self):
+        # Codex PR #148: a __call__ returning a table makes the
+        # instance a returning callee, but `returning` held only
+        # the method name, never the instance's binding name.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Table:\n'
+                   '    def __call__(self):\n'
+                   '        return DEFAULT_LIMITS\n'
+                   '\n_t = _Table()\n_t().clear()\n')
+        head = self.commit("call-return-receiver")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Table:\n'
+                   '    def __call__(self):\n'
+                   '        return DEFAULT_LIMITS\n'
+                   '\n_t = _Table()\n_x = _t()\n_x.clear()\n')
+        head2 = self.commit("call-return-value")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: a __call__ returning an unrelated value is
+        # not a returning instance.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Table:\n'
+                   '    def __call__(self):\n'
+                   '        return {}\n'
+                   '\n_t = _Table()\n_x = _t()\n_x.clear()\n')
+        head3 = self.commit("call-return-unrelated")
+        r = self.run_tool("diff", self.base, head3)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_ghg_view_kind_follows_call_result_bindings(self):
+        # Codex PR #148: assigning a view-returning call's result
+        # tracked the reference but not the view kind, so the
+        # value target of later iteration was marked scalar.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(pairs):\n    pairs.clear()\n'
+                   '\ndef _entries():\n'
+                   '    return DEFAULT_LIMITS.items()\n'
+                   '\n_view = _entries()\n'
+                   'for _k, _pairs in _view:\n'
+                   '    _uncap(_pairs)\n')
+        head = self.commit("view-call-binding")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: the key target of the same bound view is
+        # still a scalar.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Ledger:\n'
+                   '    def spend(self, bucket):\n'
+                   '        return bucket\n'
+                   '\ndef _entries():\n'
+                   '    return DEFAULT_LIMITS.items()\n'
+                   '\n_led = _Ledger()\n'
+                   '_view = _entries()\n'
+                   'for _bucket, _pairs in _view:\n'
+                   '    _led.spend(_bucket)\n')
+        head2 = self.commit("view-call-binding-key")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_ghg_factory_status_follows_aliases(self):
+        # Codex PR #148: a factory invoked through an alias
+        # produced a result the callee census did not recognize,
+        # because factory status never propagated through the
+        # alias pass.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\ndef _factory():\n    return _uncap\n'
+                   '\n_make = _factory\n'
+                   '_run = _make()\n_run(DEFAULT_LIMITS)\n')
+        head = self.commit("factory-alias-chain")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: an alias of a non-factory produces no
+        # local callee.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _plain():\n    return {}\n'
+                   '\n_make = _plain\n_x = _make()\n_x.clear()\n')
+        head2 = self.commit("non-factory-alias")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)
