@@ -856,6 +856,12 @@ def ghg_binding_census(tree):
                             property_getters[n] = \
                                 funcs[sub.value.args[0].id]
     property_returns = set()
+
+    # Attribute names bound to watched values in a locally
+    # defined class body: the class (and its instances) expose
+    # the table through the attribute, so an attribute access
+    # with such a name denotes the table.
+    class_table_attrs = set()
     # The direct subset of returning: the return/yield expressions
     # denote the table or a sub-table THEMSELVES (structural
     # shape), not a fresh container holding one. Only direct
@@ -1001,10 +1007,12 @@ def ghg_binding_census(tree):
         expr = value
         while True:
             if isinstance(expr, ast.Attribute) \
-                    and expr.attr in property_returns:
+                    and (expr.attr in property_returns
+                         or expr.attr in class_table_attrs):
                 # A locally defined property whose getter hands
-                # over a table: the attribute access itself IS
-                # the table, whatever the receiver.
+                # over a table, or a class attribute bound to one:
+                # the attribute access itself IS the table,
+                # whatever the receiver.
                 return True
             if isinstance(expr, (ast.Subscript, ast.Attribute)):
                 expr = expr.value
@@ -1233,6 +1241,24 @@ def ghg_binding_census(tree):
                                 and n not in protected:
                             wrapper_names.add(n)
                             changed = True
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                for sub in node.body:
+                    if isinstance(sub, ast.Assign):
+                        _v, _ts = sub.value, sub.targets
+                    elif isinstance(sub, ast.AnnAssign) \
+                            and sub.value is not None:
+                        _v, _ts = sub.value, [sub.target]
+                    elif isinstance(sub, (ast.For, ast.AsyncFor)):
+                        _v, _ts = sub.iter, [sub.target]
+                    else:
+                        continue
+                    if hands_over(_v):
+                        for t in _ts:
+                            for n in _bound_names(t):
+                                if n not in class_table_attrs:
+                                    class_table_attrs.add(n)
+                                    changed = True
         for prop, getter in property_getters.items():
             if prop not in property_returns:
                 for sub in ast.walk(getter):

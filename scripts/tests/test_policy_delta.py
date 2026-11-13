@@ -1369,6 +1369,34 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head3)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_class_attribute_table_is_tracked(self):
+        # Codex PR #148: a class body assigning a table to an
+        # attribute exposes it outside the class; stripping the
+        # attribute layer left only the unwatched class name.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Holder:\n'
+                   '    caps = DEFAULT_LIMITS\n'
+                   '\n_Holder.caps.clear()\n')
+        head = self.commit("class-attr-class-access")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Holder:\n'
+                   '    caps = DEFAULT_LIMITS\n'
+                   '\n_h = _Holder()\n_h.caps.clear()\n')
+        head2 = self.commit("class-attr-instance-access")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: a class attribute bound to an unrelated
+        # value is not a table source.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Cfg:\n'
+                   '    caps = {}\n'
+                   '\n_Cfg.caps.clear()\n')
+        head3 = self.commit("class-attr-unrelated")
+        r = self.run_tool("diff", self.base, head3)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)
