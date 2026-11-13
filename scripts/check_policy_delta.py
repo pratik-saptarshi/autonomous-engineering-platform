@@ -439,6 +439,21 @@ def ghg_binding_census(tree):
     # included), and is watched only if that binding is watched.
     scope_of, scope_parent = _scope_maps(tree)
     watched = {(None, name) for name in protected}
+    comp_ids = {id(n) for n in ast.walk(tree)
+                if isinstance(n, (ast.ListComp, ast.SetComp, ast.DictComp,
+                                  ast.GeneratorExp))}
+
+    def binding_key(node):
+        """Scope key a binding lands in. A walrus target inside a
+        comprehension binds in the nearest enclosing
+        NON-comprehension scope (PEP 572); every other binding form
+        lands in its own scope."""
+        scope = scope_of[id(node)]
+        if isinstance(node, ast.NamedExpr):
+            while scope is not None and id(scope) in comp_ids:
+                scope = scope_parent.get(id(scope))
+        return id(scope) if scope is not None else None
+
     bound_in_scope = {}
 
     def note_bound(scope_key, names):
@@ -456,7 +471,7 @@ def ghg_binding_census(tree):
         elif isinstance(node, ast.comprehension):
             note_bound(key, _bound_names(node.target))
         elif isinstance(node, ast.NamedExpr):
-            note_bound(key, _bound_names(node.target))
+            note_bound(binding_key(node), _bound_names(node.target))
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
                                ast.ClassDef)):
             note_bound(key, [node.name])
@@ -607,8 +622,7 @@ def ghg_binding_census(tree):
             else:
                 continue
             if hands_over(value):
-                scope = scope_of[id(node)]
-                key = id(scope) if scope is not None else None
+                key = binding_key(node)
                 for t in targets:
                     for n in _bound_names(t):
                         if (key, n) not in watched:

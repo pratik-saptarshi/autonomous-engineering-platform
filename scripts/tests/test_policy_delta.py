@@ -491,6 +491,17 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head2)
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
 
+    def test_ghg_comprehension_walrus_binds_enclosing_scope(self):
+        # Codex PR #148: PEP 572 -- a walrus target inside a
+        # comprehension binds in the enclosing non-comprehension
+        # scope, unlike the comprehension's own iteration targets.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_seen = [(_caps := DEFAULT_LIMITS) for _ in (0,)]\n'
+                   '_caps.clear()\n')
+        head = self.commit("comp-walrus")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)
