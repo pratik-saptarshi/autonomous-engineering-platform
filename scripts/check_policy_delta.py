@@ -554,4 +554,13 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except BrokenPipeError:
+        # Downstream consumer closed the pipe (e.g. `| head`): exit
+        # quietly with the family's error code rather than a traceback.
+        try:
+            sys.stdout.close()
+        except OSError:
+            pass
+        sys.exit(2)
