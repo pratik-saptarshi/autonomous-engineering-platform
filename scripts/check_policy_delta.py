@@ -539,8 +539,16 @@ def ghg_binding_census(tree):
             note_raw(raw_scope(node),
                      [n for t in node.targets
                       for n in _bound_names(t)], node)
-        elif isinstance(node, (ast.AnnAssign, ast.AugAssign,
-                               ast.For, ast.AsyncFor)):
+        elif isinstance(node, ast.AnnAssign):
+            # A value-less annotation in a class body binds NO
+            # attribute (it only records __annotations__), so reads
+            # keep falling back outward. In a function it still
+            # marks a static local, so only the class case skips.
+            if not (node.value is None
+                    and isinstance(raw_scope(node), ast.ClassDef)):
+                note_raw(raw_scope(node), _bound_names(node.target),
+                         node)
+        elif isinstance(node, (ast.AugAssign, ast.For, ast.AsyncFor)):
             note_raw(raw_scope(node), _bound_names(node.target), node)
         elif isinstance(node, ast.comprehension):
             note_raw(raw_scope(node), _bound_names(node.target), node)

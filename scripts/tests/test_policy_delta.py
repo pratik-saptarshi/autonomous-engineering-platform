@@ -635,6 +635,19 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head)
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
 
+    def test_ghg_class_annotation_only_does_not_bind(self):
+        # Codex PR #148: `_caps: dict` in a class body records an
+        # annotation but binds no attribute; reads still resolve to
+        # the outer alias.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_caps = DEFAULT_LIMITS\n'
+                   '\nclass _Uncap:\n'
+                   '    _caps: dict\n'
+                   '    _caps.clear()\n')
+        head = self.commit("class-annotation-only")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)
