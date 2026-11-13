@@ -276,6 +276,28 @@ def _scope_maps(tree):
 
     def rec(node, scope):
         scope_of[id(node)] = scope
+        if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp,
+                             ast.GeneratorExp)):
+            # Comprehensions are their own scope in Python: their
+            # targets must not leak into (or shadow within) the
+            # enclosing function. The FIRST generator's iterable is
+            # evaluated in the enclosing scope; everything else --
+            # targets, later iterables, conditions, the yielded
+            # expression -- lives in the comprehension scope.
+            scope_parent[id(node)] = scope
+            for idx, g in enumerate(node.generators):
+                scope_of[id(g)] = node
+                rec(g.target, node)
+                rec(g.iter, scope if idx == 0 else node)
+                for cond in g.ifs:
+                    rec(cond, node)
+            if isinstance(node, ast.DictComp):
+                if node.key is not None:
+                    rec(node.key, node)
+                rec(node.value, node)
+            else:
+                rec(node.elt, node)
+            return
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             scope_parent[id(node)] = scope
             # Header expressions -- decorators, defaults, annotations
@@ -531,6 +553,8 @@ def ghg_binding_census(tree):
         if isinstance(expr, ast.DictComp):
             # Only the value expression carries yielded objects (a
             # watched table is unhashable and can never be a key).
+            return hands_over(expr.value)
+        if isinstance(expr, ast.NamedExpr):
             return hands_over(expr.value)
         if isinstance(expr, ast.IfExp):
             return hands_over(expr.body) or hands_over(expr.orelse)

@@ -471,6 +471,26 @@ class CoreDeltaTests(SyntheticRepo):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertLess(elapsed, 20)
 
+    def test_ghg_walrus_receiver_and_comprehension_scope(self):
+        # Codex PR #148: (a) a walrus expression is value-transparent
+        # -- (_caps := T).clear() mutates the table inline; (b)
+        # comprehension targets live in their own scope -- a comp
+        # variable reusing a watched module alias's name inside a
+        # helper must not shadow the alias for later statements.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n(_caps := DEFAULT_LIMITS).clear()\n')
+        head = self.commit("walrus-receiver")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_caps = DEFAULT_LIMITS\n'
+                   '\ndef _helper():\n'
+                   '    _seen = [_caps for _caps in ()]\n'
+                   '    _caps.clear()\n')
+        head2 = self.commit("comp-scope-shadow")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)
