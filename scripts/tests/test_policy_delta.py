@@ -1437,6 +1437,75 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_inline_lambda_call_is_a_local_definition(self):
+        # Codex PR #148: an inline lambda's callee is neither a
+        # Name nor an Attribute, so the local-definition argument
+        # check skipped it entirely.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n(lambda caps: caps.clear())(DEFAULT_LIMITS)\n')
+        head = self.commit("inline-lambda")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: an inline lambda called with an unrelated
+        # value is ordinary code.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n(lambda caps: caps.clear())({})\n')
+        head2 = self.commit("inline-lambda-unrelated")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_ghg_wrapper_provenance_through_class_attributes(self):
+        # Codex PR #148: an iteration source reached through a
+        # class attribute lost the wrapper's provenance --
+        # stripping the attribute tested the class name, which is
+        # not the tainted binding name.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\nclass _Holder:\n'
+                   '    wrapped = [("caps", DEFAULT_LIMITS)]\n'
+                   '\nfor _key, _value in _Holder.wrapped:\n'
+                   '    _uncap(_value)\n')
+        head = self.commit("wrapper-class-attr")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: a class attribute holding the table itself
+        # is structural -- its .items() keys stay exempt.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Ledger:\n'
+                   '    def spend(self, bucket):\n'
+                   '        return bucket\n'
+                   '\nclass _Holder:\n'
+                   '    table = DEFAULT_LIMITS\n'
+                   '\n_led = _Ledger()\n'
+                   'for _bucket, _pairs in _Holder.table.items():\n'
+                   '    _led.spend(_bucket)\n')
+        head2 = self.commit("table-class-attr")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_ghg_compound_class_attribute_is_collected(self):
+        # Codex PR #148: the class-attribute census examined only
+        # direct class-body statements, missing attributes bound
+        # inside compound statements (if/try/...).
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Holder:\n'
+                   '    if True:\n'
+                   '        caps = DEFAULT_LIMITS\n'
+                   '\n_Holder.caps.clear()\n')
+        head = self.commit("compound-class-attr")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: a conditionally bound unrelated attribute is
+        # not a table source.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Cfg:\n'
+                   '    if True:\n'
+                   '        caps = {}\n'
+                   '\n_Cfg.caps.clear()\n')
+        head2 = self.commit("compound-class-attr-unrelated")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)

@@ -978,6 +978,12 @@ def ghg_binding_census(tree):
         (literal, BinOp, comprehension, other calls) can wrap the
         table itself as an element and is NOT structural."""
         while isinstance(v, (ast.Subscript, ast.Attribute)):
+            if isinstance(v, ast.Attribute) \
+                    and v.attr in wrapper_names:
+                # The attribute itself is the wrapper-tainted
+                # binding (a class attribute holding a wrapper),
+                # whatever the receiver's provenance.
+                return False
             v = v.value
         if isinstance(v, ast.Name):
             return v.id not in wrapper_names
@@ -1243,7 +1249,18 @@ def ghg_binding_census(tree):
                             changed = True
         for node in ast.walk(tree):
             if isinstance(node, ast.ClassDef):
-                for sub in node.body:
+                # All class-level statements, including those
+                # nested in compound statements (if/try/for/...)
+                # -- but not the bodies of methods or nested
+                # classes, which are their own scopes.
+                stack = list(node.body)
+                while stack:
+                    sub = stack.pop()
+                    if isinstance(sub, (ast.FunctionDef,
+                                        ast.AsyncFunctionDef,
+                                        ast.ClassDef, ast.Lambda)):
+                        continue
+                    stack.extend(ast.iter_child_nodes(sub))
                     if isinstance(sub, ast.Assign):
                         _v, _ts = sub.value, sub.targets
                     elif isinstance(sub, ast.AnnAssign) \
@@ -1562,7 +1579,8 @@ def ghg_mutation_sites(tree, is_watched, hands_over, local_defs,
                           and (node.func.id in local_defs
                                or node.func.id in callee_aliases))
                          or (isinstance(node.func, ast.Attribute)
-                             and node.func.attr in local_methods)):
+                             and node.func.attr in local_methods)
+                         or isinstance(node.func, ast.Lambda)):
                 if any(hands_over_strong(a) for a in args):
                     desc = "modelled table passed as a call argument"
             if desc is not None:
