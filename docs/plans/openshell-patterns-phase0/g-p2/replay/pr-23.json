@@ -1,0 +1,15 @@
+{
+ "base": "e81c4e8552360d11a5a12c62d9c9a77272e28967",
+ "head": "071c5f6",
+ "newly_allowed": [
+  "skills: NEW skill 'feature-pr-pipeline' (3 files) -> newly allowed capability surface",
+  "skills: NEW skill 'overnight-parallel-lanes' (3 files) -> newly allowed capability surface",
+  "skills: NEW skill 'scrubbing-public-tree' (3 files) -> newly allowed capability surface",
+  "skills: file added to existing skill 'neurostrata_memory': skills/neurostrata_memory/LICENSE -> surface expansion",
+  "skills: file added to existing skill 'product-refinement-loop': skills/product-refinement-loop/LICENSE -> surface expansion"
+ ],
+ "newly_denied": [],
+ "notes": [],
+ "pr": 23,
+ "commit": "071c5f6"
+}

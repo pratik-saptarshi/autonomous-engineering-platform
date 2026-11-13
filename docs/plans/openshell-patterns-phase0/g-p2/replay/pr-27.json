@@ -1,0 +1,11 @@
+{
+ "base": "85d67ce93d91a3ba57171a0a2d582e959636d8c6",
+ "head": "8e2006d",
+ "newly_allowed": [
+  "skills: NEW skill 'archify' (204 files) -> newly allowed capability surface"
+ ],
+ "newly_denied": [],
+ "notes": [],
+ "pr": 27,
+ "commit": "8e2006d"
+}
