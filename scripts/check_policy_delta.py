@@ -523,11 +523,24 @@ def ghg_binding_census(tree):
         returning function), or it reaches one through a
         value-transparent wrapper -- a conditional expression's
         branches, a boolean operand, a starred element, an await, or
-        a container literal's elements. Calls and comprehensions are
-        NOT transparent: they produce new objects (a comprehension
-        over a table is a copy -- load_limits() depends on that)."""
+        a container literal's elements, or a comprehension's yielded
+        value (element references survive a pass-through
+        comprehension). Calls are NOT transparent: they produce new
+        objects (load_limits()' per-element list() copies depend on
+        that)."""
         if denotes_watched(value):
             return True
+        if isinstance(value, (ast.ListComp, ast.SetComp,
+                              ast.GeneratorExp)):
+            # A comprehension yielding its elements unchanged retains
+            # references to them; one that transforms each element
+            # (list(pairs), a fresh dict) does not -- the yielded
+            # expression decides, via this same predicate.
+            return hands_over(value.elt)
+        if isinstance(value, ast.DictComp):
+            # Only the value expression carries yielded objects (a
+            # watched table is unhashable and can never be a key).
+            return hands_over(value.value)
         if isinstance(value, ast.IfExp):
             return hands_over(value.body) or hands_over(value.orelse)
         if isinstance(value, ast.BoolOp):

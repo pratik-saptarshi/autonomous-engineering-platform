@@ -426,6 +426,24 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head)
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
 
+    def test_ghg_comprehension_yielded_alias_is_tracked(self):
+        # Codex PR #148: a pass-through comprehension inside a
+        # container retains references to the yielded inner lists;
+        # a transforming comprehension (list() per element, as in
+        # load_limits) produces copies and must stay accepted.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_caps = {"caps": [v for v in DEFAULT_LIMITS.values()]}\n'
+                   '_caps["caps"][-1].clear()\n')
+        head = self.commit("comp-yield-alias")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_copy = {k: list(v) for k, v in DEFAULT_LIMITS.items()}\n'
+                   '_copy.clear()\n')
+        head2 = self.commit("comp-transform-copy")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)
