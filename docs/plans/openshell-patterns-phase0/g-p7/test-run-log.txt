@@ -1,0 +1,21 @@
+G-P7 executed tests — 2026-11-13, scratch copy of the vendored ESF snapshot
+(~/workspace/worktrees/esf-phase0-probe/src), Go 1.27.2, GOFLAGS=-mod=mod, -p 1 -count=1
+
+$ go test -p 1 -count=1 -v -run 'TestNativeCLI' ./internal/agentharness/
+--- PASS: TestNativeCLIPromptAndCredentialIsolation (claude, codex subtests PASS)
+--- PASS: TestNativeCLIResolvedEndpointsArePerSandbox (claude, codex subtests PASS)
+--- PASS: TestNativeCLITerminalFailure
+--- PASS: TestNativeCLIEndpointValidation
+ok  github.com/mitkox/esf/internal/agentharness
+
+$ go test -p 1 -count=1 -run 'TestRuntimeNetwork|TestCubeEgress|TestOpenCode|TestApplyRuntimeNetwork' ./internal/factory/
+ok  github.com/mitkox/esf/internal/factory
+
+$ go test -p 1 -count=1 -run 'TestCubeNetworkRules' ./internal/sandbox/cube/
+ok  github.com/mitkox/esf/internal/sandbox/cube
+
+Inventory checks (all negative): /dev/kvm absent; nothing on TCP 7233/7243;
+no temporal/cube/esf/factory processes; /var/lib/esf absent; ~/.config/esf and
+~/.local/share/esf absent; /run/credentials empty; podman ps -a empty.
+Rotation grep (rotat|revok|expire|expiry) over credential_policy.go,
+native_cli.go, config.go: zero hits.
