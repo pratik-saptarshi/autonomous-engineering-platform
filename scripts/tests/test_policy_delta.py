@@ -444,6 +444,16 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head2)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_inline_comprehension_receiver_is_refused(self):
+        # Codex PR #148: a pass-through comprehension consumed
+        # inline as a mutation receiver has no alias at all; the
+        # receiver resolution must see through it.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n[v for v in DEFAULT_LIMITS.values()][-1].clear()\n')
+        head = self.commit("inline-comp-receiver")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)

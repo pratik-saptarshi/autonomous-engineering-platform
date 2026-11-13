@@ -497,45 +497,17 @@ def ghg_binding_census(tree):
     # a table the parameter then shadows).
     returning = set()
 
-    def denotes_watched(expr):
-        """The expression denotes a watched table: strip lookup
-        layers (subscripts, attributes, method calls on the chain);
-        what remains is a watched name or a call to a local function
-        known to return one. Covers receivers like `_table().clear()`
-        and `_table()["core"]` as well as plain rooted chains."""
-        while True:
-            if isinstance(expr, (ast.Subscript, ast.Attribute)):
-                expr = expr.value
-            elif isinstance(expr, ast.Call) \
-                    and isinstance(expr.func, ast.Attribute):
-                expr = expr.func.value
-            else:
-                break
-        if isinstance(expr, ast.Name):
-            return is_watched(expr)
-        return isinstance(expr, ast.Call) \
-            and isinstance(expr.func, ast.Name) \
-            and expr.func.id in returning
-
-    def hands_over(value):
-        """The value hands over a watched table: it denotes one
-        (directly, through a lookup chain, or through a call to a
-        returning function), or it reaches one through a
-        value-transparent wrapper -- a conditional expression's
-        branches, a boolean operand, a starred element, an await, or
-        a container literal's elements, or a comprehension's yielded
+    def transparent(value):
+        """The value reaches a watched table through a
+        value-transparent wrapper: a conditional expression's
+        branches, a boolean operand, a starred element, an await, a
+        container literal's elements, or a comprehension's yielded
         value (element references survive a pass-through
-        comprehension). Calls are NOT transparent: they produce new
-        objects (load_limits()' per-element list() copies depend on
-        that)."""
-        if denotes_watched(value):
-            return True
+        comprehension; a transforming yield like list(pairs) is a
+        copy and does not propagate). Calls are NOT transparent:
+        they produce new objects."""
         if isinstance(value, (ast.ListComp, ast.SetComp,
                               ast.GeneratorExp)):
-            # A comprehension yielding its elements unchanged retains
-            # references to them; one that transforms each element
-            # (list(pairs), a fresh dict) does not -- the yielded
-            # expression decides, via this same predicate.
             return hands_over(value.elt)
         if isinstance(value, ast.DictComp):
             # Only the value expression carries yielded objects (a
@@ -556,6 +528,33 @@ def ghg_binding_census(tree):
                        list(value.keys) + list(value.values)
                        if e is not None)
         return False
+
+    def denotes_watched(expr):
+        """The expression denotes a watched table: strip lookup
+        layers (subscripts, attributes, method calls on the chain);
+        what remains is a watched name, a call to a local function
+        known to return one, or a value-transparent form carrying
+        one (an inline pass-through comprehension used directly as
+        a receiver, `[v for v in T.values()][-1].clear()`)."""
+        while True:
+            if isinstance(expr, (ast.Subscript, ast.Attribute)):
+                expr = expr.value
+            elif isinstance(expr, ast.Call) \
+                    and isinstance(expr.func, ast.Attribute):
+                expr = expr.func.value
+            else:
+                break
+        if isinstance(expr, ast.Name):
+            return is_watched(expr)
+        if isinstance(expr, ast.Call):
+            return isinstance(expr.func, ast.Name) \
+                and expr.func.id in returning
+        return transparent(expr)
+
+    def hands_over(value):
+        """The value hands over a watched table: it denotes one, or
+        it reaches one through a value-transparent wrapper."""
+        return denotes_watched(value) or transparent(value)
 
     changed = True
     while changed:
