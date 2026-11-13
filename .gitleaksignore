@@ -1,0 +1,16 @@
+# Scoped gitleaks fingerprint allowlist for autonomous-engineering-platform.
+# Each entry suppresses exactly one finding in exactly one commit. Working-tree
+# fixtures are allowlisted by path in .gitleaks.toml instead; this file exists
+# for historical-commit instances that a path allowlist cannot retire without
+# also muting future findings in the same file.
+#
+# 2026-11-13 (CI remediation, Phase 3c): vendored provenance prose, false
+# positive. reference/neurostrata/PROVENANCE.md line 97 in commit bfbb7f2
+# quotes an English sentence describing detection categories ("secret and PII
+# hits, junk/duplicate detection"); the generic-api-key keyword/entropy
+# heuristic (entropy 3.66) trips on the quoted phrase. No credential material.
+# The prose was removed from the working tree by the 2026-11-11 re-vendor at
+# pin 0754125 (the sibling occurrence in docs/designs is path-allowlisted in
+# .gitleaks.toml); this entry covers the historical commit so the scheduled
+# full-history scan (.github/workflows/secret-scan.yml) stays green.
+bfbb7f2ddd7c97fc12720ed270ff89c8de328af4:reference/neurostrata/PROVENANCE.md:generic-api-key:97
