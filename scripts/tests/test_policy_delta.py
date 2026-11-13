@@ -2034,6 +2034,57 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head2)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_view_kind_follows_name_aliases(self):
+        # Codex PR #148: assigning a view binding to another
+        # name never propagated its view_kinds entry, so the
+        # alias's destructured value target was marked scalar.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(pairs):\n    pairs.clear()\n'
+                   '\n_v1 = DEFAULT_LIMITS.items()\n'
+                   '_v2 = _v1\n'
+                   'for _k, _pairs in _v2:\n'
+                   '    _uncap(_pairs)\n')
+        head = self.commit("view-name-alias")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: the key target through the same alias is
+        # still a scalar.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Ledger:\n'
+                   '    def spend(self, bucket):\n'
+                   '        return bucket\n'
+                   '\n_v1 = DEFAULT_LIMITS.items()\n'
+                   '_v2 = _v1\n'
+                   '_led = _Ledger()\n'
+                   'for _bucket, _pairs in _v2:\n'
+                   '    _led.spend(_bucket)\n')
+        head2 = self.commit("view-name-alias-key")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_ghg_returning_status_through_conditional_aliases(self):
+        # Codex PR #148: a conditional selecting a table-returning
+        # function made the destination a callee alias but not a
+        # returning alias, so mutations of its result escaped.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _table():\n    return DEFAULT_LIMITS\n'
+                   '\ndef _other():\n    return {}\n'
+                   '\n_t = _table if True else _other\n'
+                   '_t().clear()\n')
+        head = self.commit("conditional-returning-alias")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: a conditional between non-returning
+        # functions is not a returning alias.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _a():\n    return {}\n'
+                   '\ndef _b():\n    return {}\n'
+                   '\n_t = _a if True else _b\n'
+                   '_x = _t()\n_x.clear()\n')
+        head2 = self.commit("conditional-nonreturning-alias")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)

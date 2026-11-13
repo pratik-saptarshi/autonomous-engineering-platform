@@ -1006,6 +1006,21 @@ def ghg_binding_census(tree):
     # filled by the fixpoint.
     returning_callables = set()
 
+    def _value_leaves(v):
+        """Leaf values of a binding value through the
+        value-transparent wrappers (conditional branches, boolean
+        operands, walrus)."""
+        if isinstance(v, ast.IfExp):
+            yield from _value_leaves(v.body)
+            yield from _value_leaves(v.orelse)
+        elif isinstance(v, ast.BoolOp):
+            for x in v.values:
+                yield from _value_leaves(x)
+        elif isinstance(v, ast.NamedExpr):
+            yield from _value_leaves(v.value)
+        else:
+            yield v
+
     def _callee_value(v):
         if isinstance(v, ast.Name):
             return v.id in def_names or v.id in lambda_names \
@@ -1223,7 +1238,8 @@ def ghg_binding_census(tree):
                 or lookup_kinds.get(v.id)
         if isinstance(v, ast.Call):
             if isinstance(v.func, ast.Name):
-                return returning_views.get(v.func.id)
+                return returning_views.get(v.func.id) \
+                    or lookup_kinds.get(v.func.id)
             if isinstance(v.func, ast.Attribute):
                 return returning_views.get(v.func.attr)
         return None
@@ -1339,30 +1355,34 @@ def ghg_binding_census(tree):
                 value, targets = node.value, [node.target]
             else:
                 continue
-            if (isinstance(value, ast.Name)
-                    and (value.id in returning
-                         or value.id in returning_aliases)) \
-                    or (isinstance(value, ast.Attribute)
-                        and value.attr in returning):
+            _leaves = list(_value_leaves(value))
+            if any((isinstance(l, ast.Name)
+                    and (l.id in returning
+                         or l.id in returning_aliases))
+                   or (isinstance(l, ast.Attribute)
+                       and l.attr in returning)
+                   for l in _leaves):
                 for t in targets:
                     for n in _bound_names(t):
                         if n not in returning_aliases:
                             returning_aliases.add(n)
                             changed = True
-            if (isinstance(value, ast.Name)
-                    and (value.id in returning_direct
-                         or value.id in returning_direct_aliases)) \
-                    or (isinstance(value, ast.Attribute)
-                        and value.attr in returning_direct):
+            if any((isinstance(l, ast.Name)
+                    and (l.id in returning_direct
+                         or l.id in returning_direct_aliases))
+                   or (isinstance(l, ast.Attribute)
+                       and l.attr in returning_direct)
+                   for l in _leaves):
                 for t in targets:
                     for n in _bound_names(t):
                         if n not in returning_direct_aliases:
                             returning_direct_aliases.add(n)
                             changed = True
-            if (isinstance(value, ast.Name)
-                    and value.id in returning_callables) \
-                    or (isinstance(value, ast.Attribute)
-                        and value.attr in returning_callables):
+            if any((isinstance(l, ast.Name)
+                    and l.id in returning_callables)
+                   or (isinstance(l, ast.Attribute)
+                       and l.attr in returning_callables)
+                   for l in _leaves):
                 for t in targets:
                     for n in _bound_names(t):
                         if n not in returning_callables:
@@ -1534,9 +1554,10 @@ def ghg_binding_census(tree):
                             instance_returning_names.add(n)
                             changed = True
         for node in ast.walk(tree):
-            # View kinds follow call-result bindings: a name
-            # bound to a view-returning call's result carries
-            # the callee's view kind.
+            # View kinds follow bindings: a name bound to a
+            # view-yielding expression (a direct view call, a
+            # view-carrying name, or a view-returning call)
+            # carries the kind, with conflicts dropping out.
             if isinstance(node, ast.Assign):
                 value, targets = node.value, node.targets
             elif isinstance(node, ast.AnnAssign) \
@@ -1546,26 +1567,20 @@ def ghg_binding_census(tree):
                 value, targets = node.value, [node.target]
             else:
                 continue
-            if isinstance(value, ast.Call):
-                kind = None
-                if isinstance(value.func, ast.Name):
-                    kind = returning_views.get(value.func.id) \
-                        or lookup_kinds.get(value.func.id)
-                elif isinstance(value.func, ast.Attribute):
-                    kind = returning_views.get(value.func.attr)
-                if kind is not None:
-                    for t in targets:
-                        for n in _bound_names(t):
-                            if n in _view_conflicts:
-                                continue
-                            if n in view_kinds \
-                                    and view_kinds[n] != kind:
-                                _view_conflicts.add(n)
-                                view_kinds.pop(n, None)
-                                changed = True
-                            elif n not in view_kinds:
-                                view_kinds[n] = kind
-                                changed = True
+            kind = _view_kind_of(value)
+            if kind is not None:
+                for t in targets:
+                    for n in _bound_names(t):
+                        if n in _view_conflicts:
+                            continue
+                        if n in view_kinds \
+                                and view_kinds[n] != kind:
+                            _view_conflicts.add(n)
+                            view_kinds.pop(n, None)
+                            changed = True
+                        elif n not in view_kinds:
+                            view_kinds[n] = kind
+                            changed = True
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef,
                                  ast.AsyncFunctionDef)) \
@@ -1749,22 +1764,6 @@ def ghg_binding_census(tree):
     # `_run = _Uncap.run`): invoking through the alias reaches
     # local code exactly as invoking the definition does.
     callee_aliases = set()
-    def _value_leaves(v):
-        """Leaf values of a binding value through the
-        value-transparent wrappers (conditional branches, boolean
-        operands, walrus): an alias is a local callee if ANY leaf
-        is one."""
-        if isinstance(v, ast.IfExp):
-            yield from _value_leaves(v.body)
-            yield from _value_leaves(v.orelse)
-        elif isinstance(v, ast.BoolOp):
-            for x in v.values:
-                yield from _value_leaves(x)
-        elif isinstance(v, ast.NamedExpr):
-            yield from _value_leaves(v.value)
-        else:
-            yield v
-
     def _is_callee_form(value):
         return isinstance(value, ast.Lambda) \
             or (isinstance(value, ast.Name)
