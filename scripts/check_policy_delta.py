@@ -308,11 +308,12 @@ def _scope_maps(tree):
 def ghg_binding_census(tree):
     """Whitelist census of every binding touching the ghg tables.
 
-    Returns (definitions, is_watched, local_defs): definitions maps
-    each modelled name to its accepted top-level literal Assign
-    node; is_watched resolves a Name occurrence (per scope,
-    shadow-aware) to whether it denotes a protected table or an
-    alias of one; local_defs names the functions/classes defined in
+    Returns (definitions, is_watched, hands_over, local_defs):
+    definitions maps each modelled name to its accepted top-level
+    literal Assign node; is_watched resolves a Name occurrence (per
+    scope, shadow-aware) to whether it denotes a protected table or
+    an alias of one; hands_over is the unified value/receiver
+    predicate; local_defs names the functions/classes defined in
     the file.
 
     Posture (the class-level closure for the mutation/rebinding
@@ -497,45 +498,20 @@ def ghg_binding_census(tree):
     # a table the parameter then shadows).
     returning = set()
 
-    def transparent(value):
-        """The value reaches a watched table through a
-        value-transparent wrapper: a conditional expression's
-        branches, a boolean operand, a starred element, an await, a
-        container literal's elements, or a comprehension's yielded
-        value (element references survive a pass-through
-        comprehension; a transforming yield like list(pairs) is a
-        copy and does not propagate). Calls are NOT transparent:
-        they produce new objects."""
-        if isinstance(value, (ast.ListComp, ast.SetComp,
-                              ast.GeneratorExp)):
-            return hands_over(value.elt)
-        if isinstance(value, ast.DictComp):
-            # Only the value expression carries yielded objects (a
-            # watched table is unhashable and can never be a key).
-            return hands_over(value.value)
-        if isinstance(value, ast.IfExp):
-            return hands_over(value.body) or hands_over(value.orelse)
-        if isinstance(value, ast.BoolOp):
-            return any(hands_over(v) for v in value.values)
-        if isinstance(value, ast.Starred):
-            return hands_over(value.value)
-        if isinstance(value, ast.Await):
-            return hands_over(value.value)
-        if isinstance(value, (ast.List, ast.Tuple, ast.Set)):
-            return any(hands_over(e) for e in value.elts)
-        if isinstance(value, ast.Dict):
-            return any(hands_over(e) for e in
-                       list(value.keys) + list(value.values)
-                       if e is not None)
-        return False
-
-    def denotes_watched(expr):
-        """The expression denotes a watched table: strip lookup
-        layers (subscripts, attributes, method calls on the chain);
-        what remains is a watched name, a call to a local function
+    def hands_over(value):
+        """The expression hands over (denotes) a watched table --
+        ONE predicate for value positions and mutation receivers,
+        recursing once per sub-expression. Strip lookup layers
+        (subscripts, attributes, method calls on the chain); what
+        remains decides: a watched name, a call to a local function
         known to return one, or a value-transparent form carrying
-        one (an inline pass-through comprehension used directly as
-        a receiver, `[v for v in T.values()][-1].clear()`)."""
+        one -- a conditional's branches, a boolean operand, a
+        starred element, an await, a container's elements, or a
+        comprehension's yielded value (element references survive a
+        pass-through comprehension; a transforming yield like
+        list(pairs) is a copy and does not propagate). Plain calls
+        are NOT transparent: they produce new objects."""
+        expr = value
         while True:
             if isinstance(expr, (ast.Subscript, ast.Attribute)):
                 expr = expr.value
@@ -549,12 +525,28 @@ def ghg_binding_census(tree):
         if isinstance(expr, ast.Call):
             return isinstance(expr.func, ast.Name) \
                 and expr.func.id in returning
-        return transparent(expr)
-
-    def hands_over(value):
-        """The value hands over a watched table: it denotes one, or
-        it reaches one through a value-transparent wrapper."""
-        return denotes_watched(value) or transparent(value)
+        if isinstance(expr, (ast.ListComp, ast.SetComp,
+                             ast.GeneratorExp)):
+            return hands_over(expr.elt)
+        if isinstance(expr, ast.DictComp):
+            # Only the value expression carries yielded objects (a
+            # watched table is unhashable and can never be a key).
+            return hands_over(expr.value)
+        if isinstance(expr, ast.IfExp):
+            return hands_over(expr.body) or hands_over(expr.orelse)
+        if isinstance(expr, ast.BoolOp):
+            return any(hands_over(v) for v in expr.values)
+        if isinstance(expr, ast.Starred):
+            return hands_over(expr.value)
+        if isinstance(expr, ast.Await):
+            return hands_over(expr.value)
+        if isinstance(expr, (ast.List, ast.Tuple, ast.Set)):
+            return any(hands_over(e) for e in expr.elts)
+        if isinstance(expr, ast.Dict):
+            return any(hands_over(e) for e in
+                       list(expr.keys) + list(expr.values)
+                       if e is not None)
+        return False
 
     changed = True
     while changed:
@@ -618,7 +610,7 @@ def ghg_binding_census(tree):
         if isinstance(node, ast.Attribute) \
                 and node.attr in _MUTATOR_METHODS \
                 and id(node) not in call_funcs \
-                and denotes_watched(node.value):
+                and hands_over(node.value):
             raise DifferError(
                 f"{GHG_PY}: mutator method .{node.attr} of a modelled "
                 f"table is captured as a value (line {node.lineno}) — "
@@ -627,12 +619,10 @@ def ghg_binding_census(tree):
     local_defs = {n.name for n in ast.walk(tree)
                   if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef,
                                     ast.ClassDef))}
-    return definitions, is_watched, denotes_watched, hands_over, \
-        local_defs
+    return definitions, is_watched, hands_over, local_defs
 
 
-def ghg_mutation_sites(tree, is_watched, denotes_watched, hands_over,
-                       local_defs):
+def ghg_mutation_sites(tree, is_watched, hands_over, local_defs):
     """[(lineno, description)] for runtime mutations of watched tables:
     item/augmented assignment, deletion, and mutator calls on a
     watched table or any alias of one (aliases resolve per scope;
@@ -647,24 +637,24 @@ def ghg_mutation_sites(tree, is_watched, denotes_watched, hands_over,
     sites = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Store):
-            if denotes_watched(node.value):
+            if hands_over(node.value):
                 sites.append((node.lineno, "item assignment"))
         elif isinstance(node, ast.AugAssign):
             target = node.target
             if (isinstance(target, ast.Name) and is_watched(target)) \
                     or (isinstance(target, ast.Subscript)
-                        and denotes_watched(target.value)):
+                        and hands_over(target.value)):
                 sites.append((node.lineno, "augmented assignment"))
         elif isinstance(node, ast.Delete):
             for t in node.targets:
                 if (isinstance(t, ast.Name) and is_watched(t)) or \
                         (isinstance(t, ast.Subscript)
-                         and denotes_watched(t.value)):
+                         and hands_over(t.value)):
                     sites.append((node.lineno, "deletion"))
         elif isinstance(node, ast.Call) \
                 and isinstance(node.func, ast.Attribute) \
                 and node.func.attr in _MUTATOR_METHODS:
-            if denotes_watched(node.func.value):
+            if hands_over(node.func.value):
                 sites.append((node.lineno, f".{node.func.attr}() call"))
         elif isinstance(node, ast.Call) \
                 and isinstance(node.func, ast.Name) \
@@ -683,10 +673,10 @@ def model_ghg(text):
         tree = ast.parse(text)
     except SyntaxError as e:
         raise DifferError(f"{GHG_PY}: unparsable Python ({e})") from e
-    definitions, is_watched, denotes_watched, hands_over, \
-        local_defs = ghg_binding_census(tree)
-    sites = ghg_mutation_sites(tree, is_watched, denotes_watched,
-                               hands_over, local_defs)
+    definitions, is_watched, hands_over, local_defs = \
+        ghg_binding_census(tree)
+    sites = ghg_mutation_sites(tree, is_watched, hands_over,
+                               local_defs)
     if sites:
         detail = "; ".join(f"line {ln}: {desc}" for ln, desc in sites[:5])
         raise DifferError(

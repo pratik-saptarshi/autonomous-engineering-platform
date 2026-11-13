@@ -454,6 +454,23 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head)
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
 
+    def test_ghg_census_is_linear_on_nested_literals(self):
+        # Codex PR #148: when denotes_watched and hands_over were
+        # mutually recursive, each nesting level doubled the work
+        # (20 nested lists took ~7s; the unified predicate is
+        # linear). An unrelated deeply-nested literal must not stall.
+        import time
+        nested = "1"
+        for _ in range(22):
+            nested = f"[{nested}]"
+        self.write("tools/ghg/ghg.py", GHG_PY + f"\n_BIG = {nested}\n")
+        head = self.commit("nested-literal")
+        start = time.monotonic()
+        r = self.run_tool("diff", self.base, head)
+        elapsed = time.monotonic() - start
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertLess(elapsed, 20)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)
