@@ -546,6 +546,22 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head2)
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
 
+    def test_ghg_comprehension_binding_beats_enclosing_declaration(self):
+        # Codex PR #148: resolution order -- a comprehension target
+        # between the read and a declaring function is the nearer
+        # binding and wins over the function's nonlocal declaration.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _outer():\n'
+                   '    _caps = {}\n'
+                   '    def _helper():\n'
+                   '        nonlocal _caps\n'
+                   '        _seen = [_caps.clear() for _caps in '
+                   'DEFAULT_LIMITS.values()]\n'
+                   '    _helper()\n')
+        head = self.commit("comp-beats-nonlocal")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)

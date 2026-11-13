@@ -563,24 +563,26 @@ def ghg_binding_census(tree):
                                   set()).add(name)
 
     def is_watched(name_node):
-        # A declaration in the read's own function scope governs the
-        # read before the ordinary shadow-aware chain applies.
+        # One shadow-aware walk outward. At each scope: a function
+        # scope's global/nonlocal declaration for the name redirects
+        # the read (to module scope / to the scope that actually
+        # binds the name); otherwise a binding in the scope decides.
+        # Nearer bindings win -- a comprehension target between the
+        # read and the declaring function shadows the declaration.
         scope = scope_of[id(name_node)]
-        fn = scope
-        while fn is not None and id(fn) in comp_ids:
-            fn = scope_parent.get(id(fn))
-        if fn is not None and not isinstance(fn, ast.ClassDef):
-            kind = declared.get(id(fn), {}).get(name_node.id)
-            if kind == "global":
-                return (None, name_node.id) in watched
-            if kind == "nonlocal":
-                tgt = nonlocal_target(fn, name_node.id)
-                if tgt == "MODULE":
-                    return (None, name_node.id) in watched
-                if tgt is not None:
-                    return (id(tgt), name_node.id) in watched
         while True:
             key = id(scope) if scope is not None else None
+            if scope is not None \
+                    and not isinstance(scope, ast.ClassDef):
+                kind = declared.get(key, {}).get(name_node.id)
+                if kind == "global":
+                    return (None, name_node.id) in watched
+                if kind == "nonlocal":
+                    tgt = nonlocal_target(scope, name_node.id)
+                    if tgt == "MODULE":
+                        return (None, name_node.id) in watched
+                    if tgt is not None:
+                        return (id(tgt), name_node.id) in watched
             if name_node.id in bound_in_scope.get(key, ()):
                 return (key, name_node.id) in watched
             if scope is None:
