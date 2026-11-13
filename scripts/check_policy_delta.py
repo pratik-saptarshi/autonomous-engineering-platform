@@ -947,6 +947,11 @@ def ghg_binding_census(tree):
             return _may_wrap(v.value)
         return False
 
+    def _core_of(v):
+        while isinstance(v, (ast.Subscript, ast.Attribute)):
+            v = v.value
+        return v
+
     wrapper_names = set()
     _taint = True
     while _taint:
@@ -962,8 +967,8 @@ def ghg_binding_census(tree):
             else:
                 continue
             if _may_wrap(value) \
-                    or (isinstance(value, ast.Name)
-                        and value.id in wrapper_names):
+                    or (isinstance(_core_of(value), ast.Name)
+                        and _core_of(value).id in wrapper_names):
                 for t in targets:
                     for n in _bound_names(t):
                         # The protected tables are themselves
@@ -1234,8 +1239,8 @@ def ghg_binding_census(tree):
             core = value
             while isinstance(core, (ast.Subscript, ast.Attribute)):
                 core = core.value
-            if isinstance(value, ast.Name) \
-                    and value.id in wrapper_names:
+            if isinstance(core, ast.Name) \
+                    and core.id in wrapper_names:
                 tainted = True
             elif isinstance(core, ast.Call):
                 f = core.func
@@ -1439,14 +1444,29 @@ def ghg_binding_census(tree):
                      for sub in n.body
                      if isinstance(sub, (ast.FunctionDef,
                                          ast.AsyncFunctionDef))}
-    # Locally defined classes implementing __call__: their
-    # instances are locally defined callees too.
-    callable_classes = {n.name for n in ast.walk(tree)
-                        if isinstance(n, ast.ClassDef)
-                        and any(isinstance(sub, (ast.FunctionDef,
-                                                 ast.AsyncFunctionDef))
-                                and sub.name == "__call__"
-                                for sub in n.body)}
+    # Locally defined classes implementing __call__ (directly or
+    # through a locally defined base): their instances are
+    # locally defined callees too.
+    _class_bases = {}
+    _class_has_call = {}
+    for n in ast.walk(tree):
+        if isinstance(n, ast.ClassDef):
+            _class_has_call[n.name] = any(
+                isinstance(sub, (ast.FunctionDef,
+                                 ast.AsyncFunctionDef))
+                and sub.name == "__call__" for sub in n.body)
+            _class_bases[n.name] = [b.id for b in n.bases
+                                    if isinstance(b, ast.Name)]
+    callable_classes = {name for name, has in _class_has_call.items()
+                        if has}
+    _cc = True
+    while _cc:
+        _cc = False
+        for _name, _bases in _class_bases.items():
+            if _name not in callable_classes \
+                    and any(b in callable_classes for b in _bases):
+                callable_classes.add(_name)
+                _cc = True
     # Aliases of locally defined callees (`_run = _uncap`,
     # `_run = _Uncap.run`): invoking through the alias reaches
     # local code exactly as invoking the definition does.

@@ -1569,6 +1569,61 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head2)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_inherited_call_is_a_local_definition(self):
+        # Codex PR #148: callable_classes checked only the
+        # class's own body, so a subclass inheriting __call__
+        # was omitted and its instances escaped the census.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Base:\n'
+                   '    def __call__(self, caps):\n'
+                   '        caps.clear()\n'
+                   '\nclass _Sub(_Base):\n'
+                   '    pass\n'
+                   '\n_run = _Sub()\n_run(DEFAULT_LIMITS)\n')
+        head = self.commit("inherited-call")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: an instance of a non-callable subclass is
+        # ordinary data.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Cfg:\n'
+                   '    def __init__(self):\n'
+                   '        self.x = {}\n'
+                   '\nclass _Sub(_Cfg):\n'
+                   '    pass\n'
+                   '\n_s = _Sub()\n_n = _s.x\n')
+        head2 = self.commit("non-callable-subclass")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_ghg_wrapper_taint_through_named_subscripts(self):
+        # Codex PR #148: subscripting an already wrapper-tainted
+        # name lost the taint -- the passes tested the value's
+        # outer form, not its stripped core name.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\n_container = [[("caps", DEFAULT_LIMITS)]]\n'
+                   '_wrapped = _container[0]\n'
+                   'for _key, _value in _wrapped:\n'
+                   '    _uncap(_value)\n')
+        head = self.commit("wrapper-named-subscript")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: subscripts through containers holding no
+        # table are ordinary data flow.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Ledger:\n'
+                   '    def spend(self, value):\n'
+                   '        return value\n'
+                   '\n_led = _Ledger()\n'
+                   '_container = [[("caps", 1)]]\n'
+                   '_wrapped = _container[0]\n'
+                   'for _key, _value in _wrapped:\n'
+                   '    _led.spend(_value)\n')
+        head2 = self.commit("scalar-container-subscript")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)
