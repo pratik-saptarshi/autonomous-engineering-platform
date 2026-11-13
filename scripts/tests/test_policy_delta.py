@@ -1316,6 +1316,59 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head2)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_init_reinitialization_is_a_mutator(self):
+        # Codex PR #148: list.__init__() explicitly invoked on an
+        # existing list clears it in place; the mutator census
+        # held only the named methods and item dunders.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nDEFAULT_LIMITS["core"].__init__()\n')
+        head = self.commit("init-reinit")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: ordinary construction is not reinitialization.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Cfg:\n'
+                   '    def __init__(self):\n'
+                   '        self.x = {}\n'
+                   '\n_c = _Cfg()\n')
+        head2 = self.commit("plain-construction")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_ghg_property_return_value_is_tracked(self):
+        # Codex PR #148: a locally defined property returning a
+        # protected table was invisible -- stripping the attribute
+        # layer discarded the getter's provenance.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Ctx:\n'
+                   '    @property\n'
+                   '    def caps(self):\n'
+                   '        return DEFAULT_LIMITS\n'
+                   '\n_Ctx().caps.clear()\n')
+        head = self.commit("property-receiver")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Ctx:\n'
+                   '    @property\n'
+                   '    def caps(self):\n'
+                   '        return DEFAULT_LIMITS\n'
+                   '\n_t = _Ctx().caps\n_t.clear()\n')
+        head2 = self.commit("property-value")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: a property returning an unrelated value is
+        # not a table source.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Ctx:\n'
+                   '    @property\n'
+                   '    def caps(self):\n'
+                   '        return {}\n'
+                   '\n_Ctx().caps.clear()\n')
+        head3 = self.commit("property-unrelated")
+        r = self.run_tool("diff", self.base, head3)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)

@@ -250,10 +250,12 @@ _MUTATOR_METHODS = {"add", "append", "clear", "difference_update",
                     "pop", "popitem", "remove", "reverse", "setdefault",
                     "sort", "symmetric_difference_update", "update",
                     # Explicit special-method spellings of the same
-                    # in-place mutations (dict/list/set).
+                    # in-place mutations (dict/list/set), plus
+                    # __init__: explicitly re-invoking a container's
+                    # initializer replaces its contents in place.
                     "__setitem__", "__delitem__", "__iadd__",
                     "__isub__", "__imul__", "__iand__", "__ior__",
-                    "__ixor__"}
+                    "__ixor__", "__init__"}
 
 # Read-only lookup methods whose RESULTS are references into the
 # container (a bucket's cap list, a view): capturing one is safe,
@@ -822,6 +824,38 @@ def ghg_binding_census(tree):
     returning = set()
     returning_aliases = set()
     lookup_aliases = set()
+
+    # Locally defined properties: property name -> getter node,
+    # from @property decorators and `name = property(fget)`
+    # assignments in class bodies. property_returns (filled by
+    # the fixpoint) holds the names whose getters hand over a
+    # table -- an attribute access with such a name yields the
+    # table itself.
+    property_getters = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            funcs = {sub.name: sub for sub in node.body
+                     if isinstance(sub, (ast.FunctionDef,
+                                         ast.AsyncFunctionDef))}
+            for sub in node.body:
+                if isinstance(sub, (ast.FunctionDef,
+                                    ast.AsyncFunctionDef)):
+                    for dec in sub.decorator_list:
+                        if isinstance(dec, ast.Name) \
+                                and dec.id == "property":
+                            property_getters[sub.name] = sub
+                elif isinstance(sub, ast.Assign) \
+                        and isinstance(sub.value, ast.Call) \
+                        and isinstance(sub.value.func, ast.Name) \
+                        and sub.value.func.id == "property" \
+                        and sub.value.args \
+                        and isinstance(sub.value.args[0], ast.Name) \
+                        and sub.value.args[0].id in funcs:
+                    for t in sub.targets:
+                        for n in _bound_names(t):
+                            property_getters[n] = \
+                                funcs[sub.value.args[0].id]
+    property_returns = set()
     # The direct subset of returning: the return/yield expressions
     # denote the table or a sub-table THEMSELVES (structural
     # shape), not a fresh container holding one. Only direct
@@ -966,6 +1000,12 @@ def ghg_binding_census(tree):
         are NOT transparent: they produce new objects."""
         expr = value
         while True:
+            if isinstance(expr, ast.Attribute) \
+                    and expr.attr in property_returns:
+                # A locally defined property whose getter hands
+                # over a table: the attribute access itself IS
+                # the table, whatever the receiver.
+                return True
             if isinstance(expr, (ast.Subscript, ast.Attribute)):
                 expr = expr.value
             elif isinstance(expr, ast.Call) \
@@ -1193,6 +1233,15 @@ def ghg_binding_census(tree):
                                 and n not in protected:
                             wrapper_names.add(n)
                             changed = True
+        for prop, getter in property_getters.items():
+            if prop not in property_returns:
+                for sub in ast.walk(getter):
+                    if isinstance(sub, ast.Return) \
+                            and sub.value is not None \
+                            and hands_over(sub.value):
+                        property_returns.add(prop)
+                        changed = True
+                        break
         for node in ast.walk(tree):
             if isinstance(node, ast.Assign) \
                     and isinstance(node.value, ast.Call) \
