@@ -197,6 +197,34 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head)
         self.assertEqual(r.returncode, 2)
 
+    def test_ghg_indirect_mutation_is_refused_exit_2(self):
+        # Mutation through a plain alias of a modelled table.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_L = DEFAULT_LIMITS\n_L["core"] = [(3600, 999999)]\n')
+        head = self.commit("alias-mut")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2)
+        # Mutation through a chained lookup (.get().append()).
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nDEFAULT_LIMITS.get("core").append((60, 999999))\n')
+        head2 = self.commit("chain-mut")
+        r = self.run_tool("diff", head, head2)
+        self.assertEqual(r.returncode, 2)
+        # Mutator call through an alias of a classification set.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_S = _MUTATING_SUBCOMMANDS\n_S.discard("merge")\n')
+        head3 = self.commit("alias-discard")
+        r = self.run_tool("diff", head2, head3)
+        self.assertEqual(r.returncode, 2)
+
+    def test_ghg_readonly_alias_is_not_refused(self):
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_L = DEFAULT_LIMITS\nCORE = _L["core"]\n')
+        head = self.commit("alias-read")
+        r, d = self.diff(self.base, head)
+        self.assertEqual(r.returncode, 0)
+        self.assertTrue(any("modelled power" in n for n in d["notes"]))
+
     def test_ghg_runtime_mutation_is_refused_exit_2(self):
         # Item assignment rewriting a cap at import time.
         self.write("tools/ghg/ghg.py",
@@ -333,6 +361,32 @@ class SkillsTierTests(SyntheticRepo):
         self.assertEqual(r.returncode, 1)
         self.assertTrue(any("run.sh" in x and "executable bit" in x
                             for x in d["newly_allowed_executable"]))
+
+    def test_typechange_symlink_to_executable_file_is_grant(self):
+        link = self.repo / "skills/alpha/link"
+        link.symlink_to("scripts/run.sh")
+        git(self.repo, "add", "skills/alpha/link")
+        with_link = self.commit("add symlink")
+        link.unlink()
+        link.write_text("#!/bin/sh\necho hi\n")
+        link.chmod(0o755)
+        head = self.commit("materialise")
+        r, d = self.diff(with_link, head)
+        self.assertEqual(r.returncode, 1)
+        self.assertTrue(any("link" in x
+                            for x in d["newly_allowed_executable"]))
+
+    def test_typechange_file_to_symlink_is_contraction(self):
+        p = self.repo / "skills/alpha/doc.md"
+        p.write_text("doc\n")
+        with_file = self.commit("add doc")
+        p.unlink()
+        p.symlink_to("/etc/passwd")
+        head = self.commit("to symlink")
+        r, d = self.diff(with_file, head)
+        self.assertEqual(r.returncode, 0)
+        self.assertTrue(any("doc.md" in x and "symlink" in x
+                            for x in d["newly_denied"]))
 
     def test_mode_loss_on_surviving_file_is_contraction(self):
         p = self.repo / "skills/alpha/tool"

@@ -49,17 +49,21 @@ Model scope (what the differ sees):
     replay's one real missed delta, PR #58, was exactly this: skills
     silently acquiring runnable servers and executable scripts). A
     surviving file that gains the executable bit is newly allowed
-    executable surface; losing it is a contraction. SKILL.md content
+    executable surface; losing it is a contraction. A typechange is
+    never silent: a symlink replaced by a regular file is surface
+    expansion (executable-classified as above); a regular file
+    replaced by a symlink is a contraction. SKILL.md content
     changes in surviving skills are counted in a note as not
     mechanically classifiable.
 
 Not modelled (stated, per the plan): reachability through allowed
 hosts, data-level effects of changed skill *content*, content changes
-to non-SKILL.md files in surviving skills (mode changes ARE modelled),
-renames within the skills tree (the new path is reported as an
-addition; the old path is not reported as a removal), indirect
-mutation of ghg's modelled tables via getattr/setattr/eval, and
-anything outside the four artefacts above.
+to non-SKILL.md files in surviving skills (mode and type changes ARE
+modelled), renames within the skills tree (the new path is reported as
+an addition; the old path is not reported as a removal), symlink
+retargets in the skills tree, indirect mutation of ghg's modelled
+tables via dynamic indirection (getattr/setattr/eval/globals()/vars()),
+and anything outside the four artefacts above.
 
 Usage:
 
@@ -106,9 +110,10 @@ MODEL_SCOPE = [
 NOT_MODELLED = [
     "reachability through allowed hosts",
     "data-level effects of changed skill content",
-    "content changes to non-SKILL.md files in surviving skills (mode changes are modelled)",
+    "content changes to non-SKILL.md files in surviving skills (mode and type changes are modelled)",
     "renames within the skills tree (new path reported as an addition only)",
-    "indirect mutation of ghg's modelled tables via getattr/setattr/eval",
+    "symlink retargets in the skills tree",
+    "indirect mutation of ghg's modelled tables via dynamic indirection (getattr/setattr/eval/globals()/vars())",
     "anything outside the four modelled artefacts",
 ]
 
@@ -220,32 +225,59 @@ _MUTATOR_METHODS = {"add", "discard", "remove", "update", "pop", "clear",
 
 
 def _root_name(node):
-    while isinstance(node, (ast.Subscript, ast.Attribute)):
-        node = node.value
+    """Root Name of a lookup chain: subscripts, attributes, and method
+    calls on the chain (``DEFAULT_LIMITS.get("core")`` roots at
+    DEFAULT_LIMITS)."""
+    while True:
+        if isinstance(node, (ast.Subscript, ast.Attribute)):
+            node = node.value
+        elif isinstance(node, ast.Call) \
+                and isinstance(node.func, ast.Attribute):
+            node = node.func.value
+        else:
+            break
     return node.id if isinstance(node, ast.Name) else None
 
 
 def ghg_mutation_sites(tree):
-    """[(lineno, description)] for runtime mutations of watched tables."""
+    """[(lineno, description)] for runtime mutations of watched tables.
+
+    Watched names are the modelled tables plus plain aliases of them
+    (``_L = DEFAULT_LIMITS``): a mutation through an alias or through a
+    chained lookup (``.get(...)``) is the same runtime rewrite as a
+    direct one. Read-only aliasing is not a site.
+    """
+    watched = set(GHG_WATCH_NAMES)
+    changed = True
+    while changed:  # alias fixpoint: _L = DEFAULT_LIMITS; _M = _L
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and len(node.targets) == 1 \
+                    and isinstance(node.targets[0], ast.Name) \
+                    and isinstance(node.value, ast.Name) \
+                    and node.value.id in watched \
+                    and node.targets[0].id not in watched:
+                watched.add(node.targets[0].id)
+                changed = True
     sites = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Store) \
-                and _root_name(node.value) in GHG_WATCH_NAMES:
+                and _root_name(node.value) in watched:
             sites.append((node.lineno, "item assignment"))
         elif isinstance(node, ast.AugAssign) \
                 and isinstance(node.target, ast.Name) \
-                and node.target.id in GHG_WATCH_NAMES:
+                and node.target.id in watched:
             sites.append((node.lineno, "augmented assignment"))
         elif isinstance(node, ast.Delete):
             for t in node.targets:
-                if (isinstance(t, ast.Name) and t.id in GHG_WATCH_NAMES) or \
+                if (isinstance(t, ast.Name) and t.id in watched) or \
                         (isinstance(t, ast.Subscript)
-                         and _root_name(t.value) in GHG_WATCH_NAMES):
+                         and _root_name(t.value) in watched):
                     sites.append((node.lineno, "deletion"))
         elif isinstance(node, ast.Call) \
                 and isinstance(node.func, ast.Attribute) \
                 and node.func.attr in _MUTATOR_METHODS \
-                and _root_name(node.func.value) in GHG_WATCH_NAMES:
+                and _root_name(node.func.value) in watched:
             sites.append((node.lineno, f".{node.func.attr}() call"))
     return sites
 
@@ -492,6 +524,25 @@ def diff_skills(repo, base_sha, head_sha):
             newly_denied.append(
                 f"skills: file removed from existing skill '{skill}': "
                 f"{path} -> surface contraction")
+        elif status.startswith("T"):
+            # Typechange (symlink <-> regular file): never silent -- a
+            # materialised regular file is new in-tree surface, and a
+            # file replaced by a symlink removes in-tree content.
+            head_mode = head_files.get(path, "100644")
+            if head_mode == "120000":
+                newly_denied.append(
+                    f"skills: file replaced by symlink in skill "
+                    f"'{skill}': {path} -> surface contraction "
+                    "(in-tree content removed)")
+            else:
+                item = (f"skills: symlink replaced by regular file in "
+                        f"skill '{skill}': {path} -> surface expansion")
+                reasons = executable_reasons(path, head_mode)
+                if reasons:
+                    item += (f" [executable surface: "
+                             f"{'; '.join(reasons)}]")
+                    executable.append(item)
+                newly_allowed.append(item)
         elif status.startswith("M") and path.endswith("SKILL.md"):
             modified_skillmd += 1
     # Executable-bit changes on surviving files are grants/contractions
