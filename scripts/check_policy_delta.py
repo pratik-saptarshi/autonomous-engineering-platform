@@ -467,7 +467,26 @@ def ghg_binding_census(tree):
     # redirect them to their semantic scope (final map below).
     raw_bound = {}
     raw_bindings = []  # [(raw scope node or None, name)]
-    class_first_bind = {}  # (class scope id, name) -> earliest pos
+    class_first_bind = {}  # (class scope id, name) -> earliest
+    # position at which a binding of the name TAKES EFFECT in the
+    # class body (the END of the binding statement: its RHS,
+    # decorators, and defaults all evaluate before the store).
+
+    def _effect_pos(node):
+        """(lineno, col) at which a binding statement takes effect,
+        or None if unlocatable. ast.withitem carries no position of
+        its own; use its target (or context expression) instead."""
+        if hasattr(node, "end_lineno"):
+            return (node.end_lineno, node.end_col_offset)
+        if hasattr(node, "lineno"):
+            return (node.lineno, node.col_offset)
+        if isinstance(node, ast.withitem):
+            for part in (node.optional_vars, node.context_expr):
+                if part is not None:
+                    pos = _effect_pos(part)
+                    if pos is not None:
+                        return pos
+        return None
 
     def note_raw(scope, names, node=None):
         if names:
@@ -477,15 +496,16 @@ def ghg_binding_census(tree):
             raw_bindings.extend((scope, n) for n in names)
             if isinstance(scope, ast.ClassDef) and node is not None:
                 # Class bodies execute imperatively: a read of a
-                # name BEFORE the class's first binding of it falls
-                # back to enclosing/global scopes, unlike function
-                # scopes' static shadowing. Track earliest positions.
-                pos = (node.lineno, node.col_offset)
-                for n in names:
-                    k = (id(scope), n)
-                    if k not in class_first_bind \
-                            or pos < class_first_bind[k]:
-                        class_first_bind[k] = pos
+                # name BEFORE the class's first binding of it takes
+                # effect falls back to enclosing/global scopes,
+                # unlike function scopes' static shadowing.
+                pos = _effect_pos(node)
+                if pos is not None:
+                    for n in names:
+                        k = (id(scope), n)
+                        if k not in class_first_bind \
+                                or pos < class_first_bind[k]:
+                            class_first_bind[k] = pos
 
     def params_of(node):
         args = node.args

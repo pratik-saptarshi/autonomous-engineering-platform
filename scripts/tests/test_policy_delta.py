@@ -600,6 +600,28 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head2)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_class_rhs_read_and_withitem_positions(self):
+        # Codex PR #148: (a) a class binding takes effect at the
+        # END of its statement -- `_caps = _caps` reads the RHS from
+        # the enclosing binding; (b) ast.withitem has no position of
+        # its own and must not crash position tracking.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_caps = DEFAULT_LIMITS\n'
+                   '\nclass _Uncap:\n'
+                   '    _caps = _caps\n'
+                   '    _caps.clear()\n')
+        head = self.commit("class-rhs-read")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nfrom contextlib import nullcontext\n'
+                   '\nclass _Cfg:\n'
+                   '    with nullcontext({}) as _unrelated:\n'
+                   '        pass\n')
+        head2 = self.commit("class-withitem")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)
