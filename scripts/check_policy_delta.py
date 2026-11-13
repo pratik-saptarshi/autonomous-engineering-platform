@@ -1225,24 +1225,39 @@ def ghg_binding_census(tree):
                        if e is not None)
         return False
 
-    def _view_kind_of(v):
-        """The view kind an expression yields, if known: a direct
-        view call, a name carrying a view kind, or a call to a
-        view-returning callee."""
+    def _view_kinds_of(v):
+        """The set of view kinds an expression may yield: a
+        direct view call, a name carrying a view kind, a call to
+        a view-returning callee, or the union over conditional /
+        boolean branches. Empty = no view provenance; more than
+        one = conflicting provenance."""
         if isinstance(v, ast.Call) \
                 and isinstance(v.func, ast.Attribute) \
                 and v.func.attr in ("items", "keys", "values"):
-            return v.func.attr
+            return {v.func.attr}
         if isinstance(v, ast.Name):
-            return view_kinds.get(v.id) \
-                or lookup_kinds.get(v.id)
+            k = view_kinds.get(v.id) or lookup_kinds.get(v.id)
+            return {k} if k else set()
         if isinstance(v, ast.Call):
             if isinstance(v.func, ast.Name):
-                return returning_views.get(v.func.id) \
+                k = returning_views.get(v.func.id) \
                     or lookup_kinds.get(v.func.id)
+                return {k} if k else set()
             if isinstance(v.func, ast.Attribute):
-                return returning_views.get(v.func.attr)
-        return None
+                k = returning_views.get(v.func.attr)
+                return {k} if k else set()
+            return set()
+        if isinstance(v, ast.IfExp):
+            return _view_kinds_of(v.body) \
+                | _view_kinds_of(v.orelse)
+        if isinstance(v, ast.BoolOp):
+            out = set()
+            for x in v.values:
+                out |= _view_kinds_of(x)
+            return out
+        if isinstance(v, ast.NamedExpr):
+            return _view_kinds_of(v.value)
+        return set()
 
     def _value_taints(v):
         """A binding to this value is wrapper-tainted: some
@@ -1308,7 +1323,13 @@ def ghg_binding_census(tree):
                             returning.add(node.name)
                             changed = True
                         if isinstance(sub, ast.Return):
-                            kind = _view_kind_of(sub.value)
+                            _kinds = _view_kinds_of(sub.value)
+                            if len(_kinds) > 1:
+                                returning_view_conflicts.add(
+                                    node.name)
+                                returning_views.pop(node.name, None)
+                                _kinds = set()
+                            kind = next(iter(_kinds), None)
                             if kind is not None \
                                     and node.name \
                                     not in \
@@ -1571,8 +1592,16 @@ def ghg_binding_census(tree):
                 value, targets = node.value, [node.target]
             else:
                 continue
-            kind = _view_kind_of(value)
-            if kind is not None:
+            _kinds = _view_kinds_of(value)
+            if len(_kinds) > 1:
+                for t in targets:
+                    for n in _bound_names(t):
+                        if n not in _view_conflicts:
+                            _view_conflicts.add(n)
+                            view_kinds.pop(n, None)
+                            changed = True
+            elif _kinds:
+                kind = next(iter(_kinds))
                 for t in targets:
                     for n in _bound_names(t):
                         if n in _view_conflicts:
@@ -1834,13 +1863,13 @@ def ghg_binding_census(tree):
                             _alias = True
     return definitions, is_watched, hands_over, local_defs, \
         local_methods, is_strong, callee_aliases, callable_classes, \
-        returning_callables
+        returning_callables, _is_callee_form
 
 
 def ghg_mutation_sites(tree, is_watched, hands_over, local_defs,
                        local_methods=(), is_strong=None,
                        callee_aliases=(), callable_classes=(),
-                       returning_callables=()):
+                       returning_callables=(), is_callee_form=None):
     """[(lineno, description)] for runtime mutations of watched tables:
     item/augmented assignment, deletion, and mutator calls on a
     watched table or any alias of one (aliases resolve per scope;
@@ -1969,7 +1998,10 @@ def ghg_mutation_sites(tree, is_watched, hands_over, local_defs,
                              and (node.func.func.id
                                   in callable_classes
                                   or node.func.func.id
-                                  in returning_callables))):
+                                  in returning_callables))
+                         or (isinstance(node.func, ast.Subscript)
+                             and is_callee_form is not None
+                             and is_callee_form(node.func))):
                 if any(hands_over_strong(a) for a in args):
                     desc = "modelled table passed as a call argument"
             if desc is not None:
@@ -1986,12 +2018,12 @@ def model_ghg(text):
         raise DifferError(f"{GHG_PY}: unparsable Python ({e})") from e
     definitions, is_watched, hands_over, local_defs, \
         local_methods, is_strong, callee_aliases, \
-        callable_classes, returning_callables = \
+        callable_classes, returning_callables, is_callee_form = \
         ghg_binding_census(tree)
     sites = ghg_mutation_sites(tree, is_watched, hands_over,
                                local_defs, local_methods, is_strong,
                                callee_aliases, callable_classes,
-                               returning_callables)
+                               returning_callables, is_callee_form)
     if sites:
         detail = "; ".join(f"line {ln}: {desc}" for ln, desc in sites[:5])
         raise DifferError(

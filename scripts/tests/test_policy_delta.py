@@ -2175,6 +2175,64 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_direct_subscripted_callee_call_is_local(self):
+        # Codex PR #148: invoking a subscript-selected callee
+        # directly (`[_uncap][0](DEFAULT_LIMITS)`) bypassed the
+        # argument check -- node.func is a Subscript, which no
+        # callee branch recognized.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\n[_uncap][0](DEFAULT_LIMITS)\n')
+        head = self.commit("direct-subscripted-callee")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: a directly subscripted imported callable is
+        # not a local callee.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nimport json\n_s = [json.dumps][0](DEFAULT_LIMITS)\n')
+        head2 = self.commit("direct-subscripted-imported")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_ghg_view_kind_through_conditionals(self):
+        # Codex PR #148: a conditional selecting a view lost the
+        # view kind entirely (no kind, no conflict), so its
+        # destructured components took the scalar exemption by
+        # default.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(pairs):\n    pairs.clear()\n'
+                   '\n_view = DEFAULT_LIMITS.items() if True '
+                   'else DEFAULT_LIMITS.items()\n'
+                   'for _k, _pairs in _view:\n'
+                   '    _uncap(_pairs)\n')
+        head = self.commit("view-conditional-same-kind")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Mixed kinds record a conflict (no scalar exemption).
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(pairs):\n    pairs.clear()\n'
+                   '\n_view = DEFAULT_LIMITS.items() if True '
+                   'else DEFAULT_LIMITS.values()\n'
+                   'for _k, _pairs in _view:\n'
+                   '    _uncap(_pairs)\n')
+        head2 = self.commit("view-conditional-mixed")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: the key target of a same-kind conditional
+        # items view is still a scalar.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Ledger:\n'
+                   '    def spend(self, bucket):\n'
+                   '        return bucket\n'
+                   '\n_view = DEFAULT_LIMITS.items() if True '
+                   'else DEFAULT_LIMITS.items()\n'
+                   '_led = _Ledger()\n'
+                   'for _bucket, _pairs in _view:\n'
+                   '    _led.spend(_bucket)\n')
+        head3 = self.commit("view-conditional-key")
+        r = self.run_tool("diff", self.base, head3)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)
