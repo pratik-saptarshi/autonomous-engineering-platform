@@ -515,6 +515,37 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head)
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
 
+    def test_ghg_nonlocal_target_and_global_reads(self):
+        # Codex PR #148: (a) `nonlocal` binds in the enclosing scope
+        # that ACTUALLY binds the name, skipping intermediate scopes
+        # that do not; (b) a `global` declaration governs READS too --
+        # an enclosing function's local shadow must not hide a
+        # nested function's explicitly global reference.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _outer():\n'
+                   '    _caps = {}\n'
+                   '    def _mid():\n'
+                   '        def _inner():\n'
+                   '            nonlocal _caps\n'
+                   '            _caps = DEFAULT_LIMITS\n'
+                   '        _inner()\n'
+                   '    _mid()\n'
+                   '    _caps.clear()\n')
+        head = self.commit("nonlocal-target")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_caps = DEFAULT_LIMITS\n'
+                   '\ndef _outer():\n'
+                   '    _caps = {}\n'
+                   '    def _inner():\n'
+                   '        global _caps\n'
+                   '        _caps.clear()\n'
+                   '    _inner()\n')
+        head2 = self.commit("global-read")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)

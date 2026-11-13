@@ -453,83 +453,132 @@ def ghg_binding_census(tree):
                 for name in node.names:
                     declared.setdefault(id(s), {})[name] = kind
 
-    def binding_key(node, name):
-        """Scope key a binding of `name` lands in. A walrus target
-        inside a comprehension binds in the nearest enclosing
-        NON-comprehension scope (PEP 572); a `global` declaration
-        redirects the binding to module scope; a `nonlocal` one to
-        the nearest enclosing non-comprehension function scope."""
+    def raw_scope(node):
+        """The syntactic scope a binding sits in (a walrus target
+        inside a comprehension climbs to the nearest enclosing
+        non-comprehension scope, PEP 572)."""
         scope = scope_of[id(node)]
         if isinstance(node, ast.NamedExpr):
             while scope is not None and id(scope) in comp_ids:
                 scope = scope_parent.get(id(scope))
+        return scope
+
+    # Raw bindings first, keyed syntactically; declarations then
+    # redirect them to their semantic scope (final map below).
+    raw_bound = {}
+    raw_bindings = []  # [(raw scope node or None, name)]
+
+    def note_raw(scope, names):
+        if names:
+            raw_bound.setdefault(
+                id(scope) if scope is not None else None,
+                set()).update(names)
+            raw_bindings.extend((scope, n) for n in names)
+
+    def params_of(node):
+        args = node.args
+        params = [a.arg for a in (list(args.posonlyargs)
+                                  + list(args.args)
+                                  + list(args.kwonlyargs))]
+        if args.vararg:
+            params.append(args.vararg.arg)
+        if args.kwarg:
+            params.append(args.kwarg.arg)
+        return params
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            note_raw(raw_scope(node),
+                     [n for t in node.targets
+                      for n in _bound_names(t)])
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign,
+                               ast.For, ast.AsyncFor)):
+            note_raw(raw_scope(node), _bound_names(node.target))
+        elif isinstance(node, ast.comprehension):
+            note_raw(raw_scope(node), _bound_names(node.target))
+        elif isinstance(node, ast.NamedExpr):
+            note_raw(raw_scope(node), _bound_names(node.target))
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                               ast.ClassDef)):
+            note_raw(raw_scope(node), [node.name])
+            if not isinstance(node, ast.ClassDef):
+                note_raw(node, params_of(node))
+        elif isinstance(node, ast.Lambda):
+            note_raw(node, params_of(node))
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            note_raw(raw_scope(node),
+                     [a.asname or a.name.split(".")[0]
+                      for a in node.names])
+        elif isinstance(node, ast.ExceptHandler):
+            if node.name:
+                note_raw(raw_scope(node), [node.name])
+        elif isinstance(node, ast.withitem):
+            if node.optional_vars is not None:
+                note_raw(raw_scope(node),
+                         _bound_names(node.optional_vars))
+
+    def nonlocal_target(from_scope, name):
+        """The enclosing function scope a `nonlocal name` actually
+        binds in: walk outward past comprehension and class scopes
+        to the first function scope binding the name, following
+        further nonlocal redirections transitively; "MODULE" if a
+        global redirection intervenes, None if no scope binds it."""
+        s = scope_parent.get(id(from_scope)) \
+            if from_scope is not None else None
+        while s is not None:
+            if not isinstance(s, ast.ClassDef) \
+                    and name in raw_bound.get(id(s), ()):
+                kind = declared.get(id(s), {}).get(name)
+                if kind == "nonlocal":
+                    s = scope_parent.get(id(s))
+                    continue
+                if kind == "global":
+                    return "MODULE"
+                return s
+            s = scope_parent.get(id(s))
+        return None
+
+    def final_key_of(scope, name):
+        """Semantic scope key for a binding sitting in `scope`:
+        declarations redirect it (global -> module, nonlocal -> the
+        scope that actually binds the name)."""
         if scope is not None:
             kind = declared.get(id(scope), {}).get(name)
             if kind == "global":
                 return None
             if kind == "nonlocal":
-                scope = scope_parent.get(id(scope))
-                while scope is not None and id(scope) in comp_ids:
-                    scope = scope_parent.get(id(scope))
+                tgt = nonlocal_target(scope, name)
+                if tgt == "MODULE":
+                    return None
+                if tgt is not None:
+                    return id(tgt)
         return id(scope) if scope is not None else None
 
+    def binding_key(node, name):
+        return final_key_of(raw_scope(node), name)
+
     bound_in_scope = {}
-
-    def note_bound(scope_key, names):
-        bound_in_scope.setdefault(scope_key, set()).update(names)
-
-    for node in ast.walk(tree):
-
-        def note_each(names):
-            for n in names:
-                note_bound(binding_key(node, n), [n])
-
-        if isinstance(node, ast.Assign):
-            note_each([n for t in node.targets
-                       for n in _bound_names(t)])
-        elif isinstance(node, (ast.AnnAssign, ast.AugAssign,
-                               ast.For, ast.AsyncFor)):
-            note_each(_bound_names(node.target))
-        elif isinstance(node, ast.comprehension):
-            note_each(_bound_names(node.target))
-        elif isinstance(node, ast.NamedExpr):
-            note_each(_bound_names(node.target))
-        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
-                               ast.ClassDef)):
-            note_each([node.name])
-            args = node.args if not isinstance(node, ast.ClassDef) \
-                else None
-            if args is not None:
-                params = [a.arg for a in (list(args.posonlyargs)
-                                          + list(args.args)
-                                          + list(args.kwonlyargs))]
-                if args.vararg:
-                    params.append(args.vararg.arg)
-                if args.kwarg:
-                    params.append(args.kwarg.arg)
-                note_bound(id(node), params)
-        elif isinstance(node, ast.Lambda):
-            args = node.args
-            params = [a.arg for a in (list(args.posonlyargs)
-                                      + list(args.args)
-                                      + list(args.kwonlyargs))]
-            if args.vararg:
-                params.append(args.vararg.arg)
-            if args.kwarg:
-                params.append(args.kwarg.arg)
-            note_bound(id(node), params)
-        elif isinstance(node, (ast.Import, ast.ImportFrom)):
-            note_each([a.asname or a.name.split(".")[0]
-                       for a in node.names])
-        elif isinstance(node, ast.ExceptHandler):
-            if node.name:
-                note_each([node.name])
-        elif isinstance(node, ast.withitem):
-            if node.optional_vars is not None:
-                note_each(_bound_names(node.optional_vars))
+    for scope, name in raw_bindings:
+        bound_in_scope.setdefault(final_key_of(scope, name),
+                                  set()).add(name)
 
     def is_watched(name_node):
+        # A declaration in the read's own function scope governs the
+        # read before the ordinary shadow-aware chain applies.
         scope = scope_of[id(name_node)]
+        fn = scope
+        while fn is not None and id(fn) in comp_ids:
+            fn = scope_parent.get(id(fn))
+        if fn is not None and not isinstance(fn, ast.ClassDef):
+            kind = declared.get(id(fn), {}).get(name_node.id)
+            if kind == "global":
+                return (None, name_node.id) in watched
+            if kind == "nonlocal":
+                tgt = nonlocal_target(fn, name_node.id)
+                if tgt == "MODULE":
+                    return (None, name_node.id) in watched
+                if tgt is not None:
+                    return (id(tgt), name_node.id) in watched
         while True:
             key = id(scope) if scope is not None else None
             if name_node.id in bound_in_scope.get(key, ()):
