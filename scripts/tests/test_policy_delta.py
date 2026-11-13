@@ -1270,6 +1270,52 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head)
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
 
+    def test_ghg_lookup_alias_chains_propagate(self):
+        # Codex PR #148: lookup provenance stopped at the first
+        # capture; assigning the capture to another name lost it.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_get = DEFAULT_LIMITS.get\n'
+                   '_get_again = _get\n'
+                   '_get_again("core").clear()\n')
+        head = self.commit("lookup-alias-chain")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: a chained COPY capture still returns copies.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_copy = DEFAULT_LIMITS.copy\n'
+                   '_copy_again = _copy\n'
+                   '_c = _copy_again()\n_c.clear()\n')
+        head2 = self.commit("copy-alias-chain")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_ghg_wrapper_provenance_through_subscripts(self):
+        # Codex PR #148: obtaining a wrapper through a subscript
+        # (`[[("caps", T)]][0]`) marked the destination neither as
+        # a fresh container nor as a call result, so its elements
+        # wrongly took the structural shape.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\n_wrapped = [[("caps", DEFAULT_LIMITS)]][0]\n'
+                   'for _key, _value in _wrapped:\n'
+                   '    _uncap(_value)\n')
+        head = self.commit("wrapper-subscript")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: a subscript of the table itself is the
+        # modelled sub-table -- structural, its elements scalar.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Ledger:\n'
+                   '    def spend(self, bucket):\n'
+                   '        return bucket\n'
+                   '\n_led = _Ledger()\n'
+                   '_pairs = DEFAULT_LIMITS["core"]\n'
+                   'for _w, _c in _pairs:\n'
+                   '    _led.spend(_w)\n')
+        head2 = self.commit("table-subscript")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)

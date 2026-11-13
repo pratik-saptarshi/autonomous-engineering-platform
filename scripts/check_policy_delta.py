@@ -891,6 +891,18 @@ def ghg_binding_census(tree):
             return _fresh_container(v.value)
         return False
 
+    def _may_wrap(v):
+        """The value may yield a fresh container: a fresh
+        container itself, or one obtained through subscript /
+        attribute layers over a fresh container."""
+        if _fresh_container(v):
+            return True
+        if isinstance(v, (ast.Subscript, ast.Attribute)):
+            return _may_wrap(v.value)
+        if isinstance(v, ast.Starred):
+            return _may_wrap(v.value)
+        return False
+
     wrapper_names = set()
     _taint = True
     while _taint:
@@ -905,7 +917,7 @@ def ghg_binding_census(tree):
                 value, targets = node.value, [node.target]
             else:
                 continue
-            if _fresh_container(value) \
+            if _may_wrap(value) \
                     or (isinstance(value, ast.Name)
                         and value.id in wrapper_names):
                 for t in targets:
@@ -1130,9 +1142,11 @@ def ghg_binding_census(tree):
                 value, targets = node.value, [node.target]
             else:
                 continue
-            if isinstance(value, ast.Attribute) \
-                    and value.attr in _LOOKUP_METHODS \
-                    and hands_over(value.value):
+            if (isinstance(value, ast.Attribute)
+                    and value.attr in _LOOKUP_METHODS
+                    and hands_over(value.value)) \
+                    or (isinstance(value, ast.Name)
+                        and value.id in lookup_aliases):
                 for t in targets:
                     for n in _bound_names(t):
                         if n not in lookup_aliases:
@@ -1154,11 +1168,14 @@ def ghg_binding_census(tree):
             else:
                 continue
             tainted = False
+            core = value
+            while isinstance(core, (ast.Subscript, ast.Attribute)):
+                core = core.value
             if isinstance(value, ast.Name) \
                     and value.id in wrapper_names:
                 tainted = True
-            elif isinstance(value, ast.Call):
-                f = value.func
+            elif isinstance(core, ast.Call):
+                f = core.func
                 if isinstance(f, ast.Name):
                     if (f.id in returning
                             or f.id in returning_aliases) \
