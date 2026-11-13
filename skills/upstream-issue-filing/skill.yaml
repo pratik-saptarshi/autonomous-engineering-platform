@@ -1,0 +1,5 @@
+name: "upstream-issue-filing"
+title: "Upstream Issue Filing"
+description: "File a defect issue in an upstream or fork repository only after the defect has been reproduced with controls, the correct target repo identified, and duplicates ruled out. Use when a verified bug belongs to another repo — a library binding vs its engine, a fork vs its upstream — and must be reported there with severity, priority, and a minimal reproduction."
+category: "Work and knowledge"
+include_in_prompt: true

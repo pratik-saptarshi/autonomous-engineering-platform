@@ -1,0 +1,5 @@
+name: "superseded-pr-closure"
+title: "Superseded PR Closure"
+description: "Close a PR that another PR has superseded, without losing its record: post a signed comment preserving the verification chain — what was reviewed, at which head, what landed instead and where, and why this branch must never merge — state the branch-retention decision, then close unmerged and verify it. Use when a replacement PR carries the same intent further and the original needs a clean, auditable end."
+category: "Work and knowledge"
+include_in_prompt: true

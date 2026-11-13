@@ -1,0 +1,5 @@
+name: "outgoing-text-gate"
+title: "Outgoing-Text Gate"
+description: "Composite publication gate for every text destined to be published — issue and PR descriptions, PR and issue comments, review comments. Orchestrates humanizer, factchk, and a conciseness pass under an independent validator, then checks mechanical rules before posting and verifies the live text after. Use before posting any material text to GitHub or another public surface, and for retro-pass audits of texts already published."
+category: "Work and knowledge"
+include_in_prompt: true

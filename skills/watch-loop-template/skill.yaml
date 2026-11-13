@@ -1,0 +1,5 @@
+name: "watch-loop-template"
+title: "Watch-Loop Template"
+description: "Template for periodic watch loops that monitor an external surface and report only on change: seen-state watermark file, silent first-run baseline, flag-on-change only, silent-when-clean, report-only authority by default, dark-window support, and delivered-advances / suppressed-holds marker discipline. Use when creating or revising a recurring watch such as pr-watch, aep-pr-comment-watch, fork-sync-check, or ops-watchdog-drift-check."
+category: "Work and knowledge"
+include_in_prompt: false
