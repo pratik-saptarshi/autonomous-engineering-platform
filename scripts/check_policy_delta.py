@@ -1367,12 +1367,16 @@ def ghg_binding_census(tree):
                         if n not in returning_aliases:
                             returning_aliases.add(n)
                             changed = True
-            if any((isinstance(l, ast.Name)
-                    and (l.id in returning_direct
-                         or l.id in returning_direct_aliases))
-                   or (isinstance(l, ast.Attribute)
-                       and l.attr in returning_direct)
-                   for l in _leaves):
+            # Directness is stricter than returning status: the
+            # alias is direct only if EVERY leaf is direct (it
+            # may resolve to any of them).
+            if _leaves and all(
+                    (isinstance(l, ast.Name)
+                     and (l.id in returning_direct
+                          or l.id in returning_direct_aliases))
+                    or (isinstance(l, ast.Attribute)
+                        and l.attr in returning_direct)
+                    for l in _leaves):
                 for t in targets:
                     for n in _bound_names(t):
                         if n not in returning_direct_aliases:
@@ -1683,10 +1687,19 @@ def ghg_binding_census(tree):
             # views of different kinds) has no provably scalar
             # component: every candidate kind has a table-grade
             # position, so no component takes the exemption.
-            _conflicted = isinstance(value, ast.Name) and (
-                value.id in _view_conflicts
-                or value.id in returning_view_conflicts
-                or value.id in lookup_kind_conflicts)
+            _conflicted = False
+            if isinstance(value, ast.Name):
+                _conflicted = (
+                    value.id in _view_conflicts
+                    or value.id in returning_view_conflicts
+                    or value.id in lookup_kind_conflicts)
+            elif isinstance(value, ast.Call):
+                if isinstance(value.func, ast.Name):
+                    _conflicted = value.func.id \
+                        in returning_view_conflicts
+                elif isinstance(value.func, ast.Attribute):
+                    _conflicted = value.func.attr \
+                        in returning_view_conflicts
             if isinstance(node, (ast.For, ast.AsyncFor,
                                  ast.comprehension)) \
                     and structural_source(value) \

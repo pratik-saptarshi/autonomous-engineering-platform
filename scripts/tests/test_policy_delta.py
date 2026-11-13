@@ -2085,6 +2085,68 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head2)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_conditional_alias_directness_requires_all_leaves(self):
+        # Codex PR #148: a conditional alias joining
+        # returning_direct_aliases when ANY leaf was direct is
+        # wrong -- the alias may be the wrapper-returning leaf,
+        # so directness requires every leaf to be direct.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\ndef _direct():\n    return DEFAULT_LIMITS\n'
+                   '\ndef _wrapper():\n'
+                   '    return [("caps", DEFAULT_LIMITS)]\n'
+                   '\n_t = _direct if True else _wrapper\n'
+                   'for _key, _value in _t():\n'
+                   '    _uncap(_value)\n')
+        head = self.commit("conditional-alias-mixed-direct")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: a conditional between two direct functions
+        # stays a structural source.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Ledger:\n'
+                   '    def spend(self, bucket):\n'
+                   '        return bucket\n'
+                   '\ndef _a():\n    return DEFAULT_LIMITS\n'
+                   '\ndef _b():\n    return DEFAULT_LIMITS\n'
+                   '\n_t = _a if True else _b\n'
+                   '_led = _Ledger()\n'
+                   'for _bucket, _pairs in _t().items():\n'
+                   '    _led.spend(_bucket)\n')
+        head2 = self.commit("conditional-alias-all-direct")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_ghg_view_conflict_on_call_sources(self):
+        # Codex PR #148: the view-conflict guard consulted only
+        # Name sources; iterating a conflicted view-returning
+        # call directly bypassed it.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(pairs):\n    pairs.clear()\n'
+                   '\ndef _entries(flag):\n'
+                   '    if flag:\n'
+                   '        return DEFAULT_LIMITS.values()\n'
+                   '    return DEFAULT_LIMITS.items()\n'
+                   '\nfor _k, _pairs in _entries(True):\n'
+                   '    _uncap(_pairs)\n')
+        head = self.commit("view-conflict-call-source")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: a single-kind view return through a call is
+        # still graded by its kind.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Ledger:\n'
+                   '    def spend(self, bucket):\n'
+                   '        return bucket\n'
+                   '\ndef _entries():\n'
+                   '    return DEFAULT_LIMITS.items()\n'
+                   '\n_led = _Ledger()\n'
+                   'for _bucket, _pairs in _entries():\n'
+                   '    _led.spend(_bucket)\n')
+        head2 = self.commit("view-single-kind-call")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)
