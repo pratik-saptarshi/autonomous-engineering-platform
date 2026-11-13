@@ -1,0 +1,1 @@
+{"conditions":{"exclude":[],"include":["~DEFAULT_BRANCH"]},"enforcement":"active","id":26571395,"name":"aep-default-branch-guard","rules":["deletion","non_fast_forward"],"target":"branch"}

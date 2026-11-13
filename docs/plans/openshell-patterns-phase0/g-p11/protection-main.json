@@ -1,0 +1,1 @@
+{"branch":"main","conversation_resolution":true,"deletions":false,"enforce_admins":false,"force_pushes":false,"required_checks":["docs-lint","shell-lint","script-tests","go-checks","security","vendor-integrity","skills-freshness","skills-routing-check"],"reviews":null}
