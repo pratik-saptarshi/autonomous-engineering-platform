@@ -50,6 +50,9 @@ completeness leg, which the plan's OR-criterion makes sufficient.
    is absent). Whether the change was deliberate or a promotion-election
    side effect is out of scope here; the index's value is that it reads
    the current surface instead of the remembered one.
+   Correction (2026-11-13): the owner has since ruled the absence
+   DELIBERATE — it is not drift and is not to be restored; the 8 status
+   checks and develop linear history remain in force.
 3. **SkillSpector baselines.** 13 per-skill security-scan disposition
    files (`skillspector-baselines/`) gate skill changes; the unaided
    list did not name them. (Also surfaced: CODEOWNERS is a single
