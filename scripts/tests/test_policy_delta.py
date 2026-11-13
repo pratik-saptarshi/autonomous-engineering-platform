@@ -648,6 +648,20 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head)
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
 
+    def test_ghg_conditional_class_binding_keeps_outer_fallback(self):
+        # Codex PR #148: a class binding nested in a conditional
+        # may never execute, so it cannot decide a later class-body
+        # read -- the outer (watched) possibility is retained.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_caps = DEFAULT_LIMITS\n'
+                   '\nclass _Uncap:\n'
+                   '    if False:\n'
+                   '        _caps = {}\n'
+                   '    _caps.clear()\n')
+        head = self.commit("conditional-class-binding")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)

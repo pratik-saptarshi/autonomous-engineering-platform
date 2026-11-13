@@ -467,10 +467,21 @@ def ghg_binding_census(tree):
     # redirect them to their semantic scope (final map below).
     raw_bound = {}
     raw_bindings = []  # [(raw scope node or None, name)]
-    class_first_bind = {}  # (class scope id, name) -> earliest
-    # position at which a binding of the name TAKES EFFECT in the
-    # class body (the END of the binding statement: its RHS,
-    # decorators, and defaults all evaluate before the store).
+    # (class scope id, name) -> [(effect pos, stmt start, stmt end,
+    # guaranteed)] for every binding of the name in the class body.
+    # "Guaranteed" = a direct-child simple statement of the class
+    # body (assign / annotated assign / import / def / class), which
+    # certainly executes; bindings nested in if/try/for/with may
+    # never execute, so they can decide reads only inside their own
+    # statement, never a later class-body read.
+    class_bindings = {}
+    _simple_forms = (ast.Assign, ast.AnnAssign, ast.Import,
+                     ast.ImportFrom, ast.FunctionDef,
+                     ast.AsyncFunctionDef, ast.ClassDef)
+    direct_simple = {id(stmt) for n in ast.walk(tree)
+                     if isinstance(n, ast.ClassDef)
+                     for stmt in n.body
+                     if isinstance(stmt, _simple_forms)}
 
     def _end_pos(node):
         if node is None:
@@ -515,13 +526,17 @@ def ghg_binding_census(tree):
                 # name BEFORE the class's first binding of it takes
                 # effect falls back to enclosing/global scopes,
                 # unlike function scopes' static shadowing.
-                pos = _effect_pos(node)
-                if pos is not None:
+                eff = _effect_pos(node)
+                start = (node.lineno, node.col_offset) \
+                    if hasattr(node, "lineno") else None
+                end = _end_pos(node)
+                if eff is not None and start is not None \
+                        and end is not None:
+                    entry = (eff, start, end,
+                             id(node) in direct_simple)
                     for n in names:
-                        k = (id(scope), n)
-                        if k not in class_first_bind \
-                                or pos < class_first_bind[k]:
-                            class_first_bind[k] = pos
+                        class_bindings.setdefault(
+                            (id(scope), n), []).append(entry)
 
     def params_of(node):
         args = node.args
@@ -648,10 +663,11 @@ def ghg_binding_census(tree):
             # imperatively; an earlier read falls back outward).
             decides = first or not isinstance(scope, ast.ClassDef)
             if decides and isinstance(scope, ast.ClassDef):
-                fb = class_first_bind.get((key, name_node.id))
-                if fb is not None and (name_node.lineno,
-                                       name_node.col_offset) < fb:
-                    decides = False
+                rp = (name_node.lineno, name_node.col_offset)
+                decides = any(
+                    eff <= rp and (rp <= en or guar)
+                    for eff, st, en, guar in class_bindings.get(
+                        (key, name_node.id), ()))
             if decides \
                     and name_node.id in bound_in_scope.get(key, ()):
                 return (key, name_node.id) in watched
