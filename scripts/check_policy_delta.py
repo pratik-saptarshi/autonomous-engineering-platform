@@ -443,15 +443,34 @@ def ghg_binding_census(tree):
                 if isinstance(n, (ast.ListComp, ast.SetComp, ast.DictComp,
                                   ast.GeneratorExp))}
 
-    def binding_key(node):
-        """Scope key a binding lands in. A walrus target inside a
-        comprehension binds in the nearest enclosing
-        NON-comprehension scope (PEP 572); every other binding form
-        lands in its own scope."""
+    declared = {}  # scope id -> {name: "global" | "nonlocal"}
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Global, ast.Nonlocal)):
+            s = scope_of[id(node)]
+            if s is not None:
+                kind = "global" if isinstance(node, ast.Global) \
+                    else "nonlocal"
+                for name in node.names:
+                    declared.setdefault(id(s), {})[name] = kind
+
+    def binding_key(node, name):
+        """Scope key a binding of `name` lands in. A walrus target
+        inside a comprehension binds in the nearest enclosing
+        NON-comprehension scope (PEP 572); a `global` declaration
+        redirects the binding to module scope; a `nonlocal` one to
+        the nearest enclosing non-comprehension function scope."""
         scope = scope_of[id(node)]
         if isinstance(node, ast.NamedExpr):
             while scope is not None and id(scope) in comp_ids:
                 scope = scope_parent.get(id(scope))
+        if scope is not None:
+            kind = declared.get(id(scope), {}).get(name)
+            if kind == "global":
+                return None
+            if kind == "nonlocal":
+                scope = scope_parent.get(id(scope))
+                while scope is not None and id(scope) in comp_ids:
+                    scope = scope_parent.get(id(scope))
         return id(scope) if scope is not None else None
 
     bound_in_scope = {}
@@ -460,21 +479,24 @@ def ghg_binding_census(tree):
         bound_in_scope.setdefault(scope_key, set()).update(names)
 
     for node in ast.walk(tree):
-        scope = scope_of[id(node)]
-        key = id(scope) if scope is not None else None
+
+        def note_each(names):
+            for n in names:
+                note_bound(binding_key(node, n), [n])
+
         if isinstance(node, ast.Assign):
-            note_bound(key, [n for t in node.targets
-                             for n in _bound_names(t)])
+            note_each([n for t in node.targets
+                       for n in _bound_names(t)])
         elif isinstance(node, (ast.AnnAssign, ast.AugAssign,
                                ast.For, ast.AsyncFor)):
-            note_bound(key, _bound_names(node.target))
+            note_each(_bound_names(node.target))
         elif isinstance(node, ast.comprehension):
-            note_bound(key, _bound_names(node.target))
+            note_each(_bound_names(node.target))
         elif isinstance(node, ast.NamedExpr):
-            note_bound(binding_key(node), _bound_names(node.target))
+            note_each(_bound_names(node.target))
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
                                ast.ClassDef)):
-            note_bound(key, [node.name])
+            note_each([node.name])
             args = node.args if not isinstance(node, ast.ClassDef) \
                 else None
             if args is not None:
@@ -497,14 +519,14 @@ def ghg_binding_census(tree):
                 params.append(args.kwarg.arg)
             note_bound(id(node), params)
         elif isinstance(node, (ast.Import, ast.ImportFrom)):
-            note_bound(key, [a.asname or a.name.split(".")[0]
-                             for a in node.names])
+            note_each([a.asname or a.name.split(".")[0]
+                       for a in node.names])
         elif isinstance(node, ast.ExceptHandler):
             if node.name:
-                note_bound(key, [node.name])
+                note_each([node.name])
         elif isinstance(node, ast.withitem):
             if node.optional_vars is not None:
-                note_bound(key, _bound_names(node.optional_vars))
+                note_each(_bound_names(node.optional_vars))
 
     def is_watched(name_node):
         scope = scope_of[id(name_node)]
@@ -622,9 +644,9 @@ def ghg_binding_census(tree):
             else:
                 continue
             if hands_over(value):
-                key = binding_key(node)
                 for t in targets:
                     for n in _bound_names(t):
+                        key = binding_key(node, n)
                         if (key, n) not in watched:
                             watched.add((key, n))
                             changed = True

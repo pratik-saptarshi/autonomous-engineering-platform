@@ -502,6 +502,19 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head)
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
 
+    def test_ghg_global_declaration_redirects_walrus_binding(self):
+        # Codex PR #148: `global _caps` inside a helper redirects a
+        # comprehension walrus binding to module scope, where the
+        # later mutation lands. Declaration-aware binding keys.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _helper():\n'
+                   '    global _caps\n'
+                   '    _seen = [(_caps := DEFAULT_LIMITS) for _ in (0,)]\n'
+                   '\n_helper()\n_caps.clear()\n')
+        head = self.commit("global-walrus")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)
