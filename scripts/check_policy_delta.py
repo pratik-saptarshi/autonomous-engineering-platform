@@ -36,7 +36,8 @@ Model scope (what the differ sees):
     runtime is refused with an error instead: the differ cannot model
     runtime mutation, and reporting a literal-only delta for it would
     be a false statement, not a gap. The refusal census covers item /
-    augmented assignment, deletion, and mutator calls on the tables
+    augmented assignment, deletion, mutator calls, and rebinding
+    outside the top-level literal declarations, on the tables
     (DEFAULT_LIMITS, the classification sets, the derived LIMITS),
     the same through aliases (names bound to a table, to a lookup
     rooted at one, to a container holding one, or to a local function
@@ -348,6 +349,27 @@ def model_ghg(text):
             f"{GHG_PY}: modelled power is mutated at runtime ({detail}) — "
             "the differ cannot model runtime mutation and refuses rather "
             "than reporting a literal-only delta")
+    # Rebinding census: the extractor below reads top-level literal
+    # assignments (last one wins, matching Python). A binding of a
+    # modelled name anywhere else -- inside an if/try/loop/with block,
+    # a function body, or a walrus -- executes conditionally or on
+    # call and is invisible to that read, so it is refused rather
+    # than silently modelled from the shadowed literal.
+    body_ids = {id(n) for n in tree.body}
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
+            targets = node.targets if isinstance(node, ast.Assign) \
+                else [node.target]
+            for t in targets:
+                if isinstance(t, ast.Name) \
+                        and t.id in MODELLED_GHG_NAMES \
+                        and id(node) not in body_ids:
+                    raise DifferError(
+                        f"{GHG_PY}: modelled table {t.id} is rebound "
+                        f"outside its top-level literal declaration "
+                        f"(line {node.lineno}) — the differ models only "
+                        "the top-level literals and refuses conditional "
+                        "or nested rebinding")
     found = {}
     for node in tree.body:  # module level only: the artefact contract
         if isinstance(node, ast.Assign) and len(node.targets) == 1:

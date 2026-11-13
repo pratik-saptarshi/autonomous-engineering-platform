@@ -280,6 +280,27 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", head3, head4)
         self.assertEqual(r.returncode, 2)
 
+    def test_ghg_conditional_rebinding_is_refused_exit_2(self):
+        # Codex PR #148: `if True: DEFAULT_LIMITS = {}` after the
+        # literal leaves the differ reporting the shadowed literal.
+        self.write("tools/ghg/ghg.py",
+                   GHG_PY + "\nif True:\n    DEFAULT_LIMITS = {}\n")
+        head = self.commit("cond-rebind")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("rebound", r.stderr)
+
+    def test_ghg_second_top_level_assignment_still_modelled(self):
+        # Straight-line rebinding at top level IS Python's semantics:
+        # the last literal wins and the differ models exactly that.
+        self.write("tools/ghg/ghg.py", GHG_PY.replace(
+            '"search": [(60, 20)]', '"search": [(60, 99)]'))
+        head = self.commit("rebind")
+        r, d = self.diff(self.base, head)
+        self.assertEqual(r.returncode, 1)
+        self.assertTrue(any("search" in x and "99" in x
+                            for x in d["newly_allowed"]))
+
     def test_ghg_complete_mutator_census_is_refused(self):
         # dict.popitem and list.insert were the census gaps Codex found
         # on PR #148; the refusal list is the full union of built-in
