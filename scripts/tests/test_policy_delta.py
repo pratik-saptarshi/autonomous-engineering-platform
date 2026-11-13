@@ -758,6 +758,60 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head4)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_container_operators_propagate_aliasing(self):
+        # Codex PR #148: [DEFAULT_LIMITS] + [] builds a NEW
+        # container holding the SAME table object as an element --
+        # unlike a constructor copy, concatenation / repetition /
+        # dict-merge preserve element references, so aliasing must
+        # propagate through them.
+        cases = {
+            "concat": '\n_caps = [DEFAULT_LIMITS] + []\n'
+                      '_caps[0].clear()\n',
+            "repeat": '\n_caps = [DEFAULT_LIMITS] * 1\n'
+                      '_caps[0].clear()\n',
+            "merge": '\n_m = DEFAULT_LIMITS | {}\n'
+                     '_m["core"].clear()\n',
+        }
+        prev = self.base
+        for label, snippet in cases.items():
+            with self.subTest(form=label):
+                self.write("tools/ghg/ghg.py", GHG_PY + snippet)
+                head = self.commit(label)
+                r = self.run_tool("diff", prev, head)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                prev = head
+                self.write("tools/ghg/ghg.py", GHG_PY)
+        # Precision: container operators over unrelated values
+        # are not aliases.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_caps = [1] + [2]\n_caps.append(3)\n')
+        head = self.commit("container-unrelated")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_ghg_method_call_argument_is_a_mutation_site(self):
+        # Codex PR #148: a watched table passed to a locally
+        # defined METHOD (an attribute callee) escaped the
+        # local-definition argument check, which only recognized
+        # bare-name callees.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Uncap:\n'
+                   '    @staticmethod\n'
+                   '    def run(caps):\n'
+                   '        caps.clear()\n'
+                   '\n_Uncap.run(DEFAULT_LIMITS)\n')
+        head = self.commit("method-call-arg")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: an attribute callee that is NOT defined in
+        # this file (imported callable) stays in the named
+        # boundary, not a mutation site.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nimport json\n_s = json.dumps(DEFAULT_LIMITS)\n')
+        head2 = self.commit("imported-call-arg")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)

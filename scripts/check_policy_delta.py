@@ -349,13 +349,15 @@ def _scope_maps(tree):
 def ghg_binding_census(tree):
     """Whitelist census of every binding touching the ghg tables.
 
-    Returns (definitions, is_watched, hands_over, local_defs):
-    definitions maps each modelled name to its accepted top-level
-    literal Assign node; is_watched resolves a Name occurrence (per
-    scope, shadow-aware) to whether it denotes a protected table or
-    an alias of one; hands_over is the unified value/receiver
-    predicate; local_defs names the functions/classes defined in
-    the file.
+    Returns (definitions, is_watched, hands_over, local_defs,
+    local_methods, is_strong): definitions maps each modelled name
+    to its accepted top-level literal Assign node; is_watched
+    resolves a Name occurrence (per scope, shadow-aware) to whether
+    it denotes a protected table or an alias of one; hands_over is
+    the unified value/receiver predicate; local_defs names the
+    functions/classes defined in the file and local_methods the
+    methods of classes defined in the file; is_strong is is_watched
+    restricted to table-grade bindings (see the strong set below).
 
     Posture (the class-level closure for the mutation/rebinding
     escape family): a binding of a protected name -- the modelled
@@ -689,7 +691,18 @@ def ghg_binding_census(tree):
         bound_in_scope.setdefault(final_key_of(scope, name),
                                   set()).add(name)
 
-    def is_watched(name_node):
+    # `strong` is the table-grade subset of `watched`: names bound
+    # to a whole table or a mutable sub-table (direct aliases,
+    # .values() elements, .items() value positions, parameters,
+    # captures). Names bound ONLY by destructuring an iterated
+    # element or by iterating .keys() are element-grade -- the
+    # modelled structures make those scalars (bucket names, window
+    # seconds, caps) that cannot alias a table. Mutation checks use
+    # the full watched set; the call-argument check uses strong,
+    # since passing a scalar to local code hands over nothing.
+    strong = {(None, name) for name in protected}
+
+    def resolve_in(name_node, table):
         # One shadow-aware walk outward. At each function scope, a
         # global/nonlocal declaration for the name redirects the
         # read (to module scope / to the scope that actually binds
@@ -704,24 +717,24 @@ def ghg_binding_census(tree):
         # binding leaves BOTH resolutions possible -- the read is
         # watched if either the class binding or the outward
         # resolution is watched.
-        def resolve(scope, first):
+        def resolve(scope, first, table):
             while True:
                 if scope is None:
                     return name_node.id in bound_in_scope.get(
-                        None, ()) and (None, name_node.id) in watched
+                        None, ()) and (None, name_node.id) in table
                 key = id(scope)
                 if not isinstance(scope, ast.ClassDef):
                     kind = declared.get(key, {}).get(name_node.id)
                     if kind == "global":
-                        return (None, name_node.id) in watched
+                        return (None, name_node.id) in table
                     if kind == "nonlocal":
                         tgt = nonlocal_target(scope, name_node.id)
                         if tgt == "MODULE":
-                            return (None, name_node.id) in watched
+                            return (None, name_node.id) in table
                         if tgt is not None:
-                            return (id(tgt), name_node.id) in watched
+                            return (id(tgt), name_node.id) in table
                     if name_node.id in bound_in_scope.get(key, ()):
-                        return (key, name_node.id) in watched
+                        return (key, name_node.id) in table
                 elif first \
                         and name_node.id in bound_in_scope.get(
                             key, ()):
@@ -752,24 +765,30 @@ def ghg_binding_census(tree):
                         if any(e[0] > latest[0] and e[0] <= rp
                                for e in events
                                if e not in decisive):
-                            return (key, name_node.id) in watched \
+                            return (key, name_node.id) in table \
                                 or resolve(scope_parent.get(key),
-                                           False)
+                                           False, table)
                         if latest[4]:
-                            return (key, name_node.id) in watched
+                            return (key, name_node.id) in table
                         if latest[3]:
                             return resolve(scope_parent.get(key),
-                                           False)
-                        return (key, name_node.id) in watched or \
-                            resolve(scope_parent.get(key), False)
+                                           False, table)
+                        return (key, name_node.id) in table or \
+                            resolve(scope_parent.get(key), False, table)
                     if events:
-                        return (key, name_node.id) in watched or \
-                            resolve(scope_parent.get(key), False)
-                    return (key, name_node.id) in watched
+                        return (key, name_node.id) in table or \
+                            resolve(scope_parent.get(key), False, table)
+                    return (key, name_node.id) in table
                 scope = scope_parent.get(key)
                 first = False
 
-        return resolve(scope_of[id(name_node)], True)
+        return resolve(scope_of[id(name_node)], True, table)
+
+    def is_watched(name_node):
+        return resolve_in(name_node, watched)
+
+    def is_strong(name_node):
+        return resolve_in(name_node, strong)
 
     def param_defaults(node):
         """[(param name, default expr)] for a def/lambda node."""
@@ -832,6 +851,14 @@ def ghg_binding_census(tree):
             return any(hands_over(v) for v in expr.values)
         if isinstance(expr, ast.Starred):
             return hands_over(expr.value)
+        if isinstance(expr, ast.BinOp) \
+                and isinstance(expr.op, (ast.Add, ast.Mult,
+                                         ast.BitOr)):
+            # Container concatenation, repetition, and dict merge
+            # build a new container holding the SAME element
+            # objects -- references survive, unlike a constructor
+            # copy (dict()/list()), so aliasing propagates.
+            return hands_over(expr.left) or hands_over(expr.right)
         if isinstance(expr, ast.Await):
             return hands_over(expr.value)
         if isinstance(expr, (ast.List, ast.Tuple, ast.Set)):
@@ -862,6 +889,7 @@ def ghg_binding_census(tree):
                     if hands_over(default) \
                             and (id(node), param) not in watched:
                         watched.add((id(node), param))
+                        strong.add((id(node), param))
                         changed = True
         for node in ast.walk(tree):
             if isinstance(node, ast.Assign):
@@ -885,16 +913,40 @@ def ghg_binding_census(tree):
                             key = binding_key(node, n)
                             if (key, n) not in watched:
                                 watched.add((key, n))
+                                strong.add((key, n))
                                 changed = True
                 continue
             else:
                 continue
+            # Element-grade (weak) names for this binding: targets
+            # destructured out of an iterated element, and targets
+            # iterating .keys() -- both bind scalars of the modelled
+            # structures, never a table or sub-table.
+            weak = set()
+            if isinstance(node, (ast.For, ast.AsyncFor,
+                                 ast.comprehension)):
+                src_attr = None
+                if isinstance(value, ast.Call) \
+                        and isinstance(value.func, ast.Attribute):
+                    src_attr = value.func.attr
+                for t in targets:
+                    if isinstance(t, (ast.Tuple, ast.List)):
+                        if src_attr == "items" and len(t.elts) >= 2:
+                            weak.update(_bound_names(t.elts[0]))
+                        else:
+                            weak.update(_bound_names(t))
+                    elif src_attr == "keys":
+                        weak.update(_bound_names(t))
             if hands_over(value):
                 for t in targets:
                     for n in _bound_names(t):
                         key = binding_key(node, n)
                         if (key, n) not in watched:
                             watched.add((key, n))
+                            changed = True
+                        if n not in weak \
+                                and (key, n) not in strong:
+                            strong.add((key, n))
                             changed = True
     # Two capture channels are refused outright rather than tracked:
     # a lambda returning a watched table (an anonymous callable the
@@ -925,10 +977,20 @@ def ghg_binding_census(tree):
     local_defs = {n.name for n in ast.walk(tree)
                   if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef,
                                     ast.ClassDef))}
-    return definitions, is_watched, hands_over, local_defs
+    # Method names of classes defined in this file: a call through
+    # an attribute (`_Uncap.run(table)`) reaches code defined here
+    # just as a bare-name call does.
+    local_methods = {sub.name for n in ast.walk(tree)
+                     if isinstance(n, ast.ClassDef)
+                     for sub in n.body
+                     if isinstance(sub, (ast.FunctionDef,
+                                         ast.AsyncFunctionDef))}
+    return definitions, is_watched, hands_over, local_defs, \
+        local_methods, is_strong
 
 
-def ghg_mutation_sites(tree, is_watched, hands_over, local_defs):
+def ghg_mutation_sites(tree, is_watched, hands_over, local_defs,
+                       local_methods=(), is_strong=None):
     """[(lineno, description)] for runtime mutations of watched tables:
     item/augmented assignment, deletion, and mutator calls on a
     watched table or any alias of one (aliases resolve per scope;
@@ -963,10 +1025,21 @@ def ghg_mutation_sites(tree, is_watched, hands_over, local_defs):
             if hands_over(node.func.value):
                 sites.append((node.lineno, f".{node.func.attr}() call"))
         elif isinstance(node, ast.Call) \
-                and isinstance(node.func, ast.Name) \
-                and node.func.id in local_defs:
+                and ((isinstance(node.func, ast.Name)
+                      and node.func.id in local_defs)
+                     or (isinstance(node.func, ast.Attribute)
+                         and node.func.attr in local_methods)):
             args = list(node.args) + [kw.value for kw in node.keywords]
-            if any(hands_over(a) for a in args):
+
+            def arg_hands_over(a):
+                # A bare name hands over a table only if it is
+                # table-grade; element-grade names (iterated keys /
+                # destructured scalars) hand over nothing.
+                if isinstance(a, ast.Name) and is_strong is not None:
+                    return is_strong(a)
+                return hands_over(a)
+
+            if any(arg_hands_over(a) for a in args):
                 sites.append((node.lineno,
                               "modelled table passed as a call argument"))
     return sites
@@ -979,10 +1052,10 @@ def model_ghg(text):
         tree = ast.parse(text)
     except SyntaxError as e:
         raise DifferError(f"{GHG_PY}: unparsable Python ({e})") from e
-    definitions, is_watched, hands_over, local_defs = \
-        ghg_binding_census(tree)
+    definitions, is_watched, hands_over, local_defs, \
+        local_methods, is_strong = ghg_binding_census(tree)
     sites = ghg_mutation_sites(tree, is_watched, hands_over,
-                               local_defs)
+                               local_defs, local_methods, is_strong)
     if sites:
         detail = "; ".join(f"line {ln}: {desc}" for ln, desc in sites[:5])
         raise DifferError(
