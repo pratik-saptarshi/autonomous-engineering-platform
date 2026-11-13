@@ -1,6 +1,6 @@
 ---
 name: feature-pr-pipeline
-version: 1.1.0
+version: 1.1.1
 author: pratik-saptarshi
 description: >
   Standardized feature-to-PR workflow — plan, implement with subagent-driven
@@ -86,6 +86,7 @@ Stage 7: Merge      → auto-merge (`gh pr merge --squash --auto`) on repos unde
 ### Stage 6 — Gate
 
 - Monitor CI to completion. Read every review comment and inline thread. Fix real findings; adjudicate non-findings explicitly. Route every fix back through the applicable gates (independent review for logic/prose changes, hygiene for any new content) before pushing the update. Repeat until CI is green and all threads resolved.
+- CI verdicts follow `ci_gate_polling`: pin the head SHA and the expected check set before trusting any poll, and take its verdict vocabulary as-is — in particular a HELD run (for example a first-time-contributor `action_required` hold) is reported with its release action named, never waited on as ordinary pending CI. Fix validation for review findings follows `fix-validation-protocol`.
 - **Codex final-head gate.** Where the repo's Codex review is active, Stage 6 is not complete until Codex has reviewed the PR's FINAL head (the summary comment's `commit_sha` equals the current head) — unless the class-recurrence trigger below has fired and its census + cap-and-file are recorded, in which case the census's own commits may postdate Codex's last review by design. This gate is a staleness check: it establishes that Codex has reviewed the current tree, and nothing more. Codex silence is not evidence of correctness, and high-risk surfaces still require independent panel or human review per this pipeline. **Class-recurrence trigger:** when a second finding lands in the same defect class or mechanism (classes per the pattern analysis's taxonomy) after that class was claimed fixed, stop point-fixing that class. The next step is a generalization pass — a full census of the component across its mechanism families (grammar, state, identity, provenance, surfaces) — before any further point fix in that class. The default continuation after the census is cap-and-file: the census's remaining findings in that class are filed as issues and the PR may proceed, with the user notified asynchronously. Autonomous lanes never park waiting for a user decision on this trigger.
 - **Gate:** CI green; every review comment and thread resolved; Codex (where the repo's Codex review is active) has reviewed the final head, or the class-recurrence trigger fired and its census + cap-and-file are recorded.
 

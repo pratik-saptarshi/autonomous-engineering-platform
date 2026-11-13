@@ -71,7 +71,7 @@ async function waitFor<T>(
     if (result) return result;
 
     if (Date.now() - startTime > timeoutMs) {
-      throw new Error(`Timeout waiting for ${description} after ${timeoutMs}ms`);
+      throw new Error('Timeout waiting for ' + description + ' after ' + timeoutMs + 'ms');
     }
 
     await new Promise(r => setTimeout(r, 10)); // Poll every 10ms
@@ -86,7 +86,7 @@ See `condition-based-waiting-example.ts` in this directory for complete implemen
 **❌ Polling too fast:** `setTimeout(check, 1)` - wastes CPU
 **✅ Fix:** Poll every 10ms
 
-**❌ No timeout:** Loop forever if condition never met
+**❌ No timeout:** The wait never ends if the condition is never met
 **✅ Fix:** Always include timeout with clear error
 
 **❌ Stale data:** Cache state before loop

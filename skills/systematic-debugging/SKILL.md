@@ -66,6 +66,7 @@ You MUST complete each phase before proceeding to the next.
    - Git diff, recent commits
    - New dependencies, config changes
    - Environmental differences
+   - If the failure arrived with a dependency bump, do not bisect your own commits — switch to **Dependency Bisect and Upstream Attribution** (below) and bisect the dependency instead
 
 4. **Gather Evidence in Multi-Component Systems**
 
@@ -95,9 +96,9 @@ You MUST complete each phase before proceeding to the next.
    printenv IDENTITY >/dev/null 2>&1 && echo "IDENTITY in environment" || echo "IDENTITY not in environment"
 
    # Layer 3: Signing script
-   echo "=== Keychain state: ==="
-   security list-keychains
-   security find-identity -v
+   echo "=== Signing identity state: ==="
+   # (enumerate the signing identities visible to this layer with the platform's
+   # identity-listing tool — is the expected identity among them?)
 
    # Layer 4: Actual signing
    codesign --sign "$IDENTITY" --verbose=4 "$APP"
@@ -273,6 +274,26 @@ If systematic investigation reveals issue is truly environmental, timing-depende
 4. Add monitoring/logging for future investigation
 
 **But:** 95% of "no root cause" cases are incomplete investigation.
+
+## Dependency Bisect and Upstream Attribution
+
+When a failure appears after a dependency bump, the suspect is the dependency, not your code. Bisect the dependency's versions with the failing test as the oracle: resolve the last-known-good and first-known-bad versions, halve the range between them, and change exactly one version at a time. A codebase bisect answers the wrong question here — it will happily convict whichever of your commits rode along with the bump.
+
+**Prove lock-diff confinement before attributing anything.** Diff the lockfile (`Cargo.lock`, `package-lock.json`, …) between the working and failing resolutions. Attribution is valid only if the locked dependency set is otherwise identical — the suspect package, plus any transitive changes it forces, may differ; nothing else may. If the bump dragged unrelated packages along, confine further (pin the bystanders back) or the verdict is void: you may have bisected a different package's change.
+
+**Attribute in three directions — they demand opposite responses:**
+
+1. **True upstream regression.** The new version broke behaviour it still promises. File it upstream with the bisect range and the oracle test; pin below the bad version as the fix for now.
+2. **Your code relied on accidental behaviour the new version deliberately changed.** The change is maintainer-reviewed and changelog-listed; the dependency is correct and your assumption is the defect. Adapt your code or fixtures to the promised behaviour. A pin is only a bridge while you adapt, never the resolution. (Case: tokio 1.54.0's accepted-socket change broke federation fixtures that had silently depended on the old socket behaviour — the fixtures were adapted; the pin was the bridge, not the answer.)
+3. **A defect in a layer below the dependency.** The bumped package is the messenger: the failure lives in an engine or library underneath it, and the new version merely reaches the broken path. Attribute to that lower layer and file there. (Case: FIX18 — a relink-rollback crash in the lbug engine surfaced through the binding after a bump; no binding version was at fault.)
+
+**Yanked versions.** If the bisect lands on a yanked version, treat the yank itself as evidence — the maintainers withdrew it for a reason, stated or not. You cannot resolve a yanked version in a fresh lockfile, so test the nearest non-yanked neighbours on each side instead, and never commit a lockfile that only resolves because the yanked crate still sits in a local cache: CI will not have it.
+
+**Encode the outcome, don't just pin.** Once attribution settles, record it where the next engineer will trip over it:
+
+- A bounded version range with a ceiling (e.g. `>=1.53.3, <1.54`), not an unbounded requirement quietly resolving into the bad version later.
+- A comment at the bound naming the attributed cause and its case (regression / deliberate change / defect below).
+- Tracked exit triggers: the conditions that lift the ceiling — the upstream release containing the fix, the fixture adaptation landing, the engine issue closing. A ceiling with no exit trigger is a silent permanent fork of the dependency's future.
 
 ## Supporting Techniques
 
