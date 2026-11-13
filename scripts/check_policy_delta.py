@@ -264,6 +264,25 @@ def _bound_names(target):
     return []
 
 
+def _pattern_captures(pattern):
+    """Names a match-case pattern binds: capture patterns
+    (MatchAs), starred captures (MatchStar), and a mapping
+    pattern's rest name (MatchMapping). Value/singleton patterns
+    and class-pattern attribute names bind nothing."""
+    names = []
+    for sub in ast.walk(pattern):
+        name = None
+        if isinstance(sub, getattr(ast, "MatchAs", ())):
+            name = sub.name
+        elif isinstance(sub, getattr(ast, "MatchStar", ())):
+            name = sub.name
+        elif isinstance(sub, getattr(ast, "MatchMapping", ())):
+            name = sub.rest
+        if name:
+            names.append(name)
+    return names
+
+
 _SCOPE_NODES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda,
                 ast.ClassDef)
 
@@ -349,9 +368,12 @@ def ghg_binding_census(tree):
     walrus target, def/class name, import, except/with binding,
     global/nonlocal declaration, deletion -- raises DifferError.
     Bindings of OTHER names to watched values (assignments, loop and
-    comprehension targets over watched iterables, walrus) are tracked
+    comprehension targets over watched iterables, walrus, and
+    match-pattern captures of a watched subject) are tracked
     as per-scope aliases, so mutations through them refuse in
-    ghg_mutation_sites. Two capture channels are refused outright: a
+    ghg_mutation_sites. A `del name` in a class body removes the
+    class-local binding and restores the outward resolution for
+    later class-body reads. Two capture channels are refused outright: a
     lambda returning a watched table, and a bound mutator method of
     a watched table captured as a value. What remains outside is
     dynamic indirection
@@ -429,6 +451,11 @@ def ghg_binding_census(tree):
                 for name in _bound_names(node.optional_vars):
                     if name in protected:
                         refuse(name, node, "a with binding")
+        elif isinstance(node, getattr(ast, "Match", ())):
+            for case in node.cases:
+                for name in _pattern_captures(case.pattern):
+                    if name in protected:
+                        refuse(name, node, "a match-pattern capture")
 
     # Aliases are tracked per scope: a name means a different object
     # in every function, and name-only tracking collapses them (the
@@ -482,6 +509,15 @@ def ghg_binding_census(tree):
                      if isinstance(n, ast.ClassDef)
                      for stmt in n.body
                      if isinstance(stmt, _simple_forms)}
+    # (class scope id, name) -> [(effect pos, stmt start, stmt end,
+    # guaranteed)] for every `del name` in the class body. A
+    # deletion REMOVES the class-local binding: later reads fall
+    # back to the enclosing scopes again, so a deletion is an event
+    # in the same order-aware sequence as the bindings.
+    class_deletions = {}
+    direct_child = {id(stmt) for n in ast.walk(tree)
+                    if isinstance(n, ast.ClassDef)
+                    for stmt in n.body}
 
     def _end_pos(node):
         if node is None:
@@ -587,6 +623,26 @@ def ghg_binding_census(tree):
             if node.optional_vars is not None:
                 note_raw(raw_scope(node),
                          _bound_names(node.optional_vars), node)
+        elif isinstance(node, getattr(ast, "Match", ())):
+            note_raw(raw_scope(node),
+                     [n for case in node.cases
+                      for n in _pattern_captures(case.pattern)], node)
+        elif isinstance(node, ast.Delete):
+            scope = raw_scope(node)
+            if isinstance(scope, ast.ClassDef):
+                names = [n for t in node.targets
+                         for n in _bound_names(t)]
+                eff = _effect_pos(node)
+                start = (node.lineno, node.col_offset) \
+                    if hasattr(node, "lineno") else None
+                end = _end_pos(node)
+                if names and eff is not None and start is not None \
+                        and end is not None:
+                    entry = (eff, start, end,
+                             id(node) in direct_child)
+                    for n in names:
+                        class_deletions.setdefault(
+                            (id(scope), n), []).append(entry)
 
     def nonlocal_target(from_scope, name):
         """The enclosing function scope a `nonlocal name` actually
@@ -672,10 +728,41 @@ def ghg_binding_census(tree):
                     rp = (name_node.lineno, name_node.col_offset)
                     entries = class_bindings.get((key, name_node.id),
                                                   ())
-                    if any(eff <= rp and (rp <= en or guar)
-                           for eff, st, en, guar in entries):
-                        return (key, name_node.id) in watched
-                    if entries:
+                    # Bindings and deletions form one event
+                    # sequence: the LATEST event that certainly
+                    # took effect before the read decides. A
+                    # guaranteed deletion removes the class
+                    # binding, so the read resolves outward alone;
+                    # a merely conditional deletion leaves both
+                    # resolutions possible (disjunctive).
+                    events = [(eff, st, en, guar, True)
+                              for eff, st, en, guar in entries]
+                    events += [(eff, st, en, guar, False)
+                               for eff, st, en, guar in
+                               class_deletions.get(
+                                   (key, name_node.id), ())]
+                    decisive = [e for e in events
+                                if e[0] <= rp and (rp <= e[2] or e[3])]
+                    if decisive:
+                        latest = max(decisive, key=lambda e: e[0])
+                        # A conditional event AFTER the latest
+                        # decisive one may or may not have executed,
+                        # so the state at the read is uncertain
+                        # again -- both resolutions stay possible.
+                        if any(e[0] > latest[0] and e[0] <= rp
+                               for e in events
+                               if e not in decisive):
+                            return (key, name_node.id) in watched \
+                                or resolve(scope_parent.get(key),
+                                           False)
+                        if latest[4]:
+                            return (key, name_node.id) in watched
+                        if latest[3]:
+                            return resolve(scope_parent.get(key),
+                                           False)
+                        return (key, name_node.id) in watched or \
+                            resolve(scope_parent.get(key), False)
+                    if events:
                         return (key, name_node.id) in watched or \
                             resolve(scope_parent.get(key), False)
                     return (key, name_node.id) in watched
@@ -787,6 +874,19 @@ def ghg_binding_census(tree):
                 value, targets = node.iter, [node.target]
             elif isinstance(node, ast.NamedExpr):
                 value, targets = node.value, [node.target]
+            elif isinstance(node, getattr(ast, "Match", ())):
+                # A case capture binds the matched subject (or a
+                # sub-value of it -- a bucket's cap list is itself
+                # mutable), so every capture name in every case is
+                # an alias when the subject hands over a table.
+                if hands_over(node.subject):
+                    for case in node.cases:
+                        for n in _pattern_captures(case.pattern):
+                            key = binding_key(node, n)
+                            if (key, n) not in watched:
+                                watched.add((key, n))
+                                changed = True
+                continue
             else:
                 continue
             if hands_over(value):

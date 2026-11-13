@@ -677,6 +677,87 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head)
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
 
+    def test_ghg_class_deletion_restores_outer_fallback(self):
+        # Codex PR #148: `del _caps` in a class body removes the
+        # class-local binding, so a later class-body read falls
+        # back to the outer watched alias -- the earlier class
+        # assignment no longer decides the read.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_caps = DEFAULT_LIMITS\n'
+                   '\nclass _Uncap:\n'
+                   '    _caps = {}\n'
+                   '    del _caps\n'
+                   '    _caps.clear()\n')
+        head = self.commit("class-deletion-fallback")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # A conditional deletion may not execute, so both
+        # resolutions stay possible (disjunctive, like conditional
+        # bindings).
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_caps = DEFAULT_LIMITS\n'
+                   '\nclass _Uncap:\n'
+                   '    _caps = {}\n'
+                   '    if True:\n'
+                   '        del _caps\n'
+                   '    _caps.clear()\n')
+        head2 = self.commit("class-conditional-deletion")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: bind -> delete -> rebind decides again -- the
+        # last event before the read wins, and a plain dict is not
+        # a table.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_caps = DEFAULT_LIMITS\n'
+                   '\nclass _Cfg:\n'
+                   '    _caps = {}\n'
+                   '    del _caps\n'
+                   '    _caps = {}\n'
+                   '    _caps.clear()\n')
+        head3 = self.commit("class-delete-rebind")
+        r = self.run_tool("diff", self.base, head3)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_ghg_match_pattern_capture_is_tracked(self):
+        # Codex PR #148: a match-case capture binds the matched
+        # subject (ordinary local aliasing) but never entered the
+        # binding census, so mutations through the capture name
+        # escaped.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nmatch DEFAULT_LIMITS:\n'
+                   '    case _caps:\n'
+                   '        _caps.clear()\n')
+        head = self.commit("match-capture")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Captures nested in a pattern bind sub-values of the
+        # subject (here a bucket's mutable cap list).
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nmatch DEFAULT_LIMITS:\n'
+                   '    case {"core": _caps}:\n'
+                   '        _caps.clear()\n')
+        head2 = self.commit("match-nested-capture")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Capturing a protected name itself is a refused binding
+        # form, like every other non-declaration binding.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nmatch {}:\n'
+                   '    case DEFAULT_LIMITS:\n'
+                   '        pass\n')
+        head3 = self.commit("match-protected-capture")
+        r = self.run_tool("diff", self.base, head3)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("rebound", r.stderr)
+        # Precision: capturing an unrelated subject is no alias.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nmatch {"core": []}:\n'
+                   '    case _caps:\n'
+                   '        _caps.clear()\n')
+        head4 = self.commit("match-unrelated")
+        r = self.run_tool("diff", self.base, head4)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)
