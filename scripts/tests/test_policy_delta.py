@@ -379,6 +379,42 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head2)
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
 
+    def test_ghg_duplicate_window_uses_minimum_cap(self):
+        # Codex PR #148: ghg enforces EVERY pair conjunctively, so a
+        # duplicated duration's binding cap is the minimum. Dropping
+        # the strict duplicate is a real loosening (1 -> 40), not a
+        # no-op; dict() last-wins collapsing reported nothing.
+        dup = GHG_PY.replace('"search": [(60, 20)]',
+                             '"search": [(60, 1), (60, 20)]')
+        self.assertNotEqual(dup, GHG_PY)
+        self.write("tools/ghg/ghg.py", dup)
+        base = self.commit("dup-window")
+        self.write("tools/ghg/ghg.py", GHG_PY)
+        head = self.commit("drop-strict-dup")
+        r, d = self.diff(base, head)
+        self.assertEqual(r.returncode, 1)
+        self.assertTrue(any("search" in x and "60s" in x and "20" in x
+                            for x in d["newly_allowed"]), d)
+        r, d = self.diff(head, base)
+        self.assertTrue(any("search" in x and "60s" in x
+                            for x in d["newly_denied"]), d)
+
+    def test_ghg_lambda_return_and_mutator_capture_refused(self):
+        # Codex PR #148, capture round: a lambda returning a table is
+        # an anonymous callable the returning set cannot see, and a
+        # captured bound mutator (_c = T.clear) is later invoked as a
+        # bare name. Both are refused at the capture point.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_table = lambda: DEFAULT_LIMITS\n_table().clear()\n')
+        head = self.commit("lambda-return")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_clear = DEFAULT_LIMITS.clear\n_clear()\n')
+        head2 = self.commit("mutator-capture")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)

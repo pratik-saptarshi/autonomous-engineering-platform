@@ -328,7 +328,10 @@ def ghg_binding_census(tree):
     Bindings of OTHER names to watched values (assignments, loop and
     comprehension targets over watched iterables, walrus) are tracked
     as per-scope aliases, so mutations through them refuse in
-    ghg_mutation_sites. What remains outside is dynamic indirection
+    ghg_mutation_sites. Two capture channels are refused outright: a
+    lambda returning a watched table, and a bound mutator method of
+    a watched table captured as a value. What remains outside is
+    dynamic indirection
     (getattr/setattr/eval/globals()/vars()), imported/builtin
     callables, and builtin-constructor copies -- named in the
     boundary every report carries.
@@ -572,6 +575,32 @@ def ghg_binding_census(tree):
                         if (key, n) not in watched:
                             watched.add((key, n))
                             changed = True
+    # Two capture channels are refused outright rather than tracked:
+    # a lambda returning a watched table (an anonymous callable the
+    # name-based returning set cannot see), and a bound mutator
+    # method captured as a value (`_clear = DEFAULT_LIMITS.clear`),
+    # whose later invocation is an unrecognizable bare-name call.
+    # Refusing at the capture point closes both channels; read-only
+    # method captures (.get/.items) and lambdas returning copies or
+    # unrelated values are unaffected.
+    call_funcs = {id(n.func) for n in ast.walk(tree)
+                  if isinstance(n, ast.Call)
+                  and isinstance(n.func, ast.Attribute)}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Lambda) and hands_over(node.body):
+            raise DifferError(
+                f"{GHG_PY}: a lambda returns a modelled table "
+                f"(line {node.lineno}) — anonymous callables are "
+                "outside the census and are refused")
+        if isinstance(node, ast.Attribute) \
+                and node.attr in _MUTATOR_METHODS \
+                and id(node) not in call_funcs \
+                and denotes_watched(node.value):
+            raise DifferError(
+                f"{GHG_PY}: mutator method .{node.attr} of a modelled "
+                f"table is captured as a value (line {node.lineno}) — "
+                "bound-method aliases are outside the census and are "
+                "refused")
     local_defs = {n.name for n in ast.walk(tree)
                   if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef,
                                     ast.ClassDef))}
@@ -714,6 +743,18 @@ def diff_policy(base, head):
     return newly_allowed, newly_denied, []
 
 
+def _effective_caps(pairs):
+    """window -> effective cap. ghg enforces EVERY (window, cap)
+    pair conjunctively (Ledger.fits / reserve_all iterate the whole
+    list), so when a duration appears more than once the MINIMUM
+    cap is the binding constraint. Collapsing pairs with dict()
+    (last wins) would silently drop the strictest cap."""
+    out = {}
+    for w, c in pairs:
+        out[w] = min(out[w], c) if w in out else c
+    return out
+
+
 def diff_ghg(base, head, base_text, head_text):
     newly_allowed, newly_denied, notes = [], [], []
     if base is None and head is None:
@@ -742,7 +783,8 @@ def diff_ghg(base, head, base_text, head_text):
                 f"ghg caps: bucket '{bucket}' removed -> calls in it "
                 "are now uncapped -> newly allowed (constraint removed)")
             continue
-        bmap, hmap = dict(bl[bucket]), dict(hl[bucket])
+        bmap, hmap = _effective_caps(bl[bucket]), \
+            _effective_caps(hl[bucket])
         for w in sorted(set(bmap) | set(hmap)):
             # Windows are a conjunction of constraints (Ledger.fits /
             # reserve_all iterate the window list; a missing window
