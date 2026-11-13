@@ -26,9 +26,19 @@ Model scope (what the differ sees):
     means those calls escape mutating classification (newly allowed);
     an entry ADDED is newly denied. Any other change to ghg.py is
     reported as an explicit note ("changed, modelled power unchanged")
-    -- never as silence.
-  * .github/skills-sync-scope.txt -- the governed skill set; a skill
-    entering scope is newly allowed surface, leaving is newly denied.
+    -- never as silence. A ghg.py that *mutates* the modelled tables at
+    runtime (item assignment, augmented assignment, deletion, or a
+    mutator call on DEFAULT_LIMITS / the classification sets / the
+    derived LIMITS table) is refused with an error instead: the differ
+    cannot model runtime mutation, and reporting a literal-only delta
+    for it would be a false statement, not a gap.
+  * .github/skills-sync-scope.txt -- the governed skill set, in the
+    file's own three-section grammar: [skills] entries are grants (a
+    skill entering scope is newly allowed surface, leaving is newly
+    denied); [exclude-paths] and [exclude-content] entries are
+    exclusions, which are denials -- an exclusion REMOVED widens what
+    syncs (newly allowed), an exclusion ADDED narrows it (newly
+    denied).
   * skills/** -- the skill tree. A new skill directory is newly allowed
     capability surface; a removed one is newly denied; a file added to a
     surviving skill is surface expansion; a file removed is contraction.
@@ -37,16 +47,19 @@ Model scope (what the differ sees):
     with the executable bit, and code files -- are additionally listed
     in newly_allowed_executable (this tier exists because the Phase 0
     replay's one real missed delta, PR #58, was exactly this: skills
-    silently acquiring runnable servers and executable scripts).
-    SKILL.md content changes in surviving skills are counted in a note
-    as not mechanically classifiable.
+    silently acquiring runnable servers and executable scripts). A
+    surviving file that gains the executable bit is newly allowed
+    executable surface; losing it is a contraction. SKILL.md content
+    changes in surviving skills are counted in a note as not
+    mechanically classifiable.
 
 Not modelled (stated, per the plan): reachability through allowed
-hosts, data-level effects of changed skill *content*, effects of
-modified non-SKILL.md files in surviving skills, renames within the
-skills tree (the new path is reported as an addition; the old path is
-not reported as a removal), and anything outside the four artefacts
-above.
+hosts, data-level effects of changed skill *content*, content changes
+to non-SKILL.md files in surviving skills (mode changes ARE modelled),
+renames within the skills tree (the new path is reported as an
+addition; the old path is not reported as a removal), indirect
+mutation of ghg's modelled tables via getattr/setattr/eval, and
+anything outside the four artefacts above.
 
 Usage:
 
@@ -86,15 +99,16 @@ SKILLS_ROOT = "skills"
 
 MODEL_SCOPE = [
     "scripts/policy.data deny-sets (pattern removed = newly allowed, added = newly denied)",
-    "tools/ghg/ghg.py DEFAULT_LIMITS caps and mutating-classification sets",
-    ".github/skills-sync-scope.txt governed skill set",
-    "skills/** tree grants, with newly added executable surface classified separately",
+    "tools/ghg/ghg.py DEFAULT_LIMITS caps and mutating-classification sets (runtime mutation of the modelled tables is refused, not diffed)",
+    ".github/skills-sync-scope.txt sections: [skills] grants; [exclude-paths]/[exclude-content] exclusions (removal widens = newly allowed)",
+    "skills/** tree grants, newly added executable surface classified separately, executable-bit changes on surviving files",
 ]
 NOT_MODELLED = [
     "reachability through allowed hosts",
     "data-level effects of changed skill content",
-    "content changes to non-SKILL.md files in surviving skills",
+    "content changes to non-SKILL.md files in surviving skills (mode changes are modelled)",
     "renames within the skills tree (new path reported as an addition only)",
+    "indirect mutation of ghg's modelled tables via getattr/setattr/eval",
     "anything outside the four modelled artefacts",
 ]
 
@@ -191,6 +205,51 @@ def model_policy_data(text):
     return sections
 
 
+MODELLED_GHG_NAMES = ("DEFAULT_LIMITS", "_MUTATING_SUBCOMMANDS",
+                      "_MUTATING_METHODS")
+# Runtime-mutation watch: the three modelled tables plus LIMITS, the
+# effective table ghg derives from DEFAULT_LIMITS at import time. The
+# differ reads literals; a statement that rewrites any of these at
+# runtime changes real power invisibly to a literal diff, so it is
+# refused (exit 2), never silently diffed.
+GHG_WATCH_NAMES = MODELLED_GHG_NAMES + ("LIMITS",)
+_MUTATOR_METHODS = {"add", "discard", "remove", "update", "pop", "clear",
+                    "setdefault", "extend", "append",
+                    "intersection_update", "difference_update",
+                    "symmetric_difference_update"}
+
+
+def _root_name(node):
+    while isinstance(node, (ast.Subscript, ast.Attribute)):
+        node = node.value
+    return node.id if isinstance(node, ast.Name) else None
+
+
+def ghg_mutation_sites(tree):
+    """[(lineno, description)] for runtime mutations of watched tables."""
+    sites = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Store) \
+                and _root_name(node.value) in GHG_WATCH_NAMES:
+            sites.append((node.lineno, "item assignment"))
+        elif isinstance(node, ast.AugAssign) \
+                and isinstance(node.target, ast.Name) \
+                and node.target.id in GHG_WATCH_NAMES:
+            sites.append((node.lineno, "augmented assignment"))
+        elif isinstance(node, ast.Delete):
+            for t in node.targets:
+                if (isinstance(t, ast.Name) and t.id in GHG_WATCH_NAMES) or \
+                        (isinstance(t, ast.Subscript)
+                         and _root_name(t.value) in GHG_WATCH_NAMES):
+                    sites.append((node.lineno, "deletion"))
+        elif isinstance(node, ast.Call) \
+                and isinstance(node.func, ast.Attribute) \
+                and node.func.attr in _MUTATOR_METHODS \
+                and _root_name(node.func.value) in GHG_WATCH_NAMES:
+            sites.append((node.lineno, f".{node.func.attr}() call"))
+    return sites
+
+
 def model_ghg(text):
     if text is None:
         return None
@@ -198,19 +257,24 @@ def model_ghg(text):
         tree = ast.parse(text)
     except SyntaxError as e:
         raise DifferError(f"{GHG_PY}: unparsable Python ({e})") from e
+    sites = ghg_mutation_sites(tree)
+    if sites:
+        detail = "; ".join(f"line {ln}: {desc}" for ln, desc in sites[:5])
+        raise DifferError(
+            f"{GHG_PY}: modelled power is mutated at runtime ({detail}) — "
+            "the differ cannot model runtime mutation and refuses rather "
+            "than reporting a literal-only delta")
     found = {}
     for node in tree.body:  # module level only: the artefact contract
         if isinstance(node, ast.Assign) and len(node.targets) == 1:
             name = getattr(node.targets[0], "id", None)
-            if name in ("DEFAULT_LIMITS", "_MUTATING_SUBCOMMANDS",
-                        "_MUTATING_METHODS"):
+            if name in MODELLED_GHG_NAMES:
                 try:
                     found[name] = ast.literal_eval(node.value)
                 except (ValueError, SyntaxError) as e:
                     raise DifferError(
                         f"{GHG_PY}: {name} is not a literal ({e})") from e
-    missing = {"DEFAULT_LIMITS", "_MUTATING_SUBCOMMANDS",
-               "_MUTATING_METHODS"} - set(found)
+    missing = set(MODELLED_GHG_NAMES) - set(found)
     if missing:
         raise DifferError(
             f"{GHG_PY}: modelled names missing at this ref: "
@@ -223,11 +287,31 @@ def model_ghg(text):
     }
 
 
+SCOPE_SECTIONS = ("skills", "exclude-paths", "exclude-content")
+
+
 def model_scope(text):
+    """Section -> entry set, in the scope file's own grammar (or None)."""
     if text is None:
         return None
-    return {ln.strip() for ln in text.splitlines()
-            if ln.strip() and not ln.strip().startswith("#")}
+    sections, cur = {}, None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            cur = line[1:-1].strip()
+            if cur not in SCOPE_SECTIONS:
+                raise DifferError(
+                    f"{SCOPE_TXT}: unknown section [{cur}] "
+                    f"(grammar is: {', '.join(SCOPE_SECTIONS)})")
+            sections.setdefault(cur, set())
+        elif cur is None:
+            raise DifferError(
+                f"{SCOPE_TXT}: entry outside any [section]: {line!r}")
+        else:
+            sections[cur].add(line)
+    return sections
 
 
 # ------------------------------------------------------------------- diffing
@@ -320,10 +404,23 @@ def diff_scope(base, head):
     if head is None:
         raise DifferError(f"{SCOPE_TXT}: present at base but deleted at "
                           "head; scope removal is outside the differ's model")
-    newly_allowed = [f"skills scope: '{s}' enters sync scope "
-                     "-> newly allowed surface" for s in sorted(head - base)]
-    newly_denied = [f"skills scope: '{s}' leaves sync scope "
-                    "-> newly denied surface" for s in sorted(base - head)]
+    newly_allowed, newly_denied = [], []
+    b, h = base.get("skills", set()), head.get("skills", set())
+    newly_allowed += [f"skills scope: '{s}' enters sync scope "
+                      "-> newly allowed surface" for s in sorted(h - b)]
+    newly_denied += [f"skills scope: '{s}' leaves sync scope "
+                     "-> newly denied surface" for s in sorted(b - h)]
+    # Exclusion sections are denials: removing one widens what syncs.
+    for sec in ("exclude-paths", "exclude-content"):
+        b, h = base.get(sec, set()), head.get(sec, set())
+        newly_allowed += [
+            f"skills scope: [{sec}] exclusion removed: '{e}' "
+            "-> newly allowed (more content becomes sync-eligible)"
+            for e in sorted(b - h)]
+        newly_denied += [
+            f"skills scope: [{sec}] exclusion added: '{e}' "
+            "-> newly denied (content excluded from sync)"
+            for e in sorted(h - b)]
     return newly_allowed, newly_denied, []
 
 
@@ -397,6 +494,27 @@ def diff_skills(repo, base_sha, head_sha):
                 f"{path} -> surface contraction")
         elif status.startswith("M") and path.endswith("SKILL.md"):
             modified_skillmd += 1
+    # Executable-bit changes on surviving files are grants/contractions
+    # in their own right (a chmod +x has no content change to catch).
+    for path in sorted(set(base_files) & set(head_files)):
+        bm, hm = base_files[path], head_files[path]
+        if bm == hm or "120000" in (bm, hm):
+            continue
+        parts = path.split("/")
+        if len(parts) < 2:
+            continue
+        skill = parts[1]
+        if skill not in base_skills or skill not in head_skills:
+            continue
+        if bm == "100644" and hm == "100755":
+            item = (f"skills: file gains executable bit in skill "
+                    f"'{skill}': {path} -> newly allowed executable surface")
+            newly_allowed.append(item)
+            executable.append(item)
+        elif bm == "100755" and hm == "100644":
+            newly_denied.append(
+                f"skills: file loses executable bit in skill '{skill}': "
+                f"{path} -> surface contraction")
     if modified_skillmd:
         notes.append(f"{modified_skillmd} SKILL.md content change(s) in "
                      "surviving skills — not mechanically classifiable "
