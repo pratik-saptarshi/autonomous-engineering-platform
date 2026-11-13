@@ -931,6 +931,57 @@ def ghg_binding_census(tree):
                 and sub.name == "__call__" for sub in n.body)
             _class_bases[n.name] = [b.id for b in n.bases
                                     if isinstance(b, ast.Name)]
+    # Classes implementing __call__ directly or through a locally
+    # defined base: their instances are locally defined callees.
+    callable_classes = {name for name, has in _class_has_call.items()
+                        if has}
+    _cc = True
+    while _cc:
+        _cc = False
+        for _name, _bases in _class_bases.items():
+            if _name not in callable_classes \
+                    and any(b in callable_classes for b in _bases):
+                callable_classes.add(_name)
+                _cc = True
+    # Name inventories for the factory census: definitions,
+    # methods, and lambda-bound names in this file.
+    def_names = {n.name for n in ast.walk(tree)
+                 if isinstance(n, (ast.FunctionDef,
+                                   ast.AsyncFunctionDef, ast.ClassDef))}
+    method_names = {sub.name for n in ast.walk(tree)
+                    if isinstance(n, ast.ClassDef)
+                    for sub in n.body
+                    if isinstance(sub, (ast.FunctionDef,
+                                        ast.AsyncFunctionDef))}
+    lambda_names = set()
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Assign):
+            _v, _ts = n.value, n.targets
+        elif isinstance(n, ast.AnnAssign) and n.value is not None:
+            _v, _ts = n.value, [n.target]
+        elif isinstance(n, ast.NamedExpr):
+            _v, _ts = n.value, [n.target]
+        else:
+            continue
+        if isinstance(_v, ast.Lambda):
+            for t in _ts:
+                lambda_names.update(_bound_names(t))
+    # Functions returning a locally defined callee (factories),
+    # filled by the fixpoint.
+    returning_callables = set()
+
+    def _callee_value(v):
+        if isinstance(v, ast.Name):
+            return v.id in def_names or v.id in lambda_names \
+                or v.id in returning_callables
+        if isinstance(v, ast.Attribute):
+            return v.attr in method_names
+        if isinstance(v, ast.Lambda):
+            return True
+        if isinstance(v, ast.Call):
+            return isinstance(v.func, ast.Name) \
+                and v.func.id in callable_classes
+        return False
 
     # Names bound (anywhere) to a fresh container -- a literal, a
     # comprehension, or a container BinOp -- or to another such
@@ -958,6 +1009,10 @@ def ghg_binding_census(tree):
         if isinstance(v, (ast.Subscript, ast.Attribute)):
             return _may_wrap(v.value)
         if isinstance(v, ast.Starred):
+            return _may_wrap(v.value)
+        if isinstance(v, ast.BoolOp):
+            return any(_may_wrap(x) for x in v.values)
+        if isinstance(v, ast.Await):
             return _may_wrap(v.value)
         return False
 
@@ -1112,6 +1167,43 @@ def ghg_binding_census(tree):
                        if e is not None)
         return False
 
+    def _value_taints(v):
+        """A binding to this value is wrapper-tainted: some
+        value-transparent path through it reaches a wrapper (a
+        tainted attribute layer, a tainted core name, or a
+        returning-but-not-direct callee)."""
+        if _layers_tainted(
+                v, wrapper_names
+                | (property_returns - property_direct)):
+            return True
+        core = _core_of(v)
+        if isinstance(core, ast.Name):
+            return core.id in wrapper_names
+        if isinstance(core, ast.Call):
+            f = core.func
+            if isinstance(f, ast.Name):
+                return (f.id in returning
+                        or f.id in returning_aliases) \
+                    and f.id not in returning_direct \
+                    and f.id not in returning_direct_aliases
+            if isinstance(f, ast.Attribute):
+                return f.attr in returning \
+                    and f.attr not in returning_direct
+            return False
+        for w in (v, core):
+            if isinstance(w, ast.BoolOp):
+                if any(_value_taints(x) for x in w.values):
+                    return True
+            elif isinstance(w, ast.IfExp):
+                if _value_taints(w.body) \
+                        or _value_taints(w.orelse):
+                    return True
+            elif isinstance(w, (ast.Starred, ast.Await,
+                                ast.NamedExpr)):
+                if _value_taints(w.value):
+                    return True
+        return False
+
     changed = True
     _guard = 0
     while changed:
@@ -1261,31 +1353,7 @@ def ghg_binding_census(tree):
                 value, targets = node.value, [node.target]
             else:
                 continue
-            tainted = False
-            core = value
-            while isinstance(core, (ast.Subscript, ast.Attribute)):
-                core = core.value
-            if _layers_tainted(
-                    value,
-                    wrapper_names
-                    | (property_returns - property_direct)):
-                tainted = True
-            elif isinstance(core, ast.Name) \
-                    and core.id in wrapper_names:
-                tainted = True
-            elif isinstance(core, ast.Call):
-                f = core.func
-                if isinstance(f, ast.Name):
-                    if (f.id in returning
-                            or f.id in returning_aliases) \
-                            and f.id not in returning_direct \
-                            and f.id not in returning_direct_aliases:
-                        tainted = True
-                elif isinstance(f, ast.Attribute):
-                    if f.attr in returning \
-                            and f.attr not in returning_direct:
-                        tainted = True
-            if tainted:
+            if _value_taints(value):
                 for t in targets:
                     for n in _bound_names(t):
                         if n not in wrapper_names \
@@ -1337,6 +1405,17 @@ def ghg_binding_census(tree):
                 elif prop in property_direct:
                     property_direct.discard(prop)
                     changed = True
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef,
+                                 ast.AsyncFunctionDef)) \
+                    and node.name not in returning_callables:
+                for sub in ast.walk(node):
+                    if isinstance(sub, ast.Return) \
+                            and sub.value is not None \
+                            and _callee_value(sub.value):
+                        returning_callables.add(node.name)
+                        changed = True
+                        break
         # Enter provenance closes over locally defined bases: a
         # subclass of a table-returning context manager is one.
         for _name, _bases in _class_bases.items():
@@ -1482,20 +1561,7 @@ def ghg_binding_census(tree):
                      for sub in n.body
                      if isinstance(sub, (ast.FunctionDef,
                                          ast.AsyncFunctionDef))}
-    # Locally defined classes implementing __call__ (directly or
-    # through a locally defined base): their instances are
-    # locally defined callees too. (_class_bases/_class_has_call
-    # are computed before the fixpoint, above.)
-    callable_classes = {name for name, has in _class_has_call.items()
-                        if has}
-    _cc = True
-    while _cc:
-        _cc = False
-        for _name, _bases in _class_bases.items():
-            if _name not in callable_classes \
-                    and any(b in callable_classes for b in _bases):
-                callable_classes.add(_name)
-                _cc = True
+    # (callable_classes is computed before the fixpoint, above.)
     # Aliases of locally defined callees (`_run = _uncap`,
     # `_run = _Uncap.run`): invoking through the alias reaches
     # local code exactly as invoking the definition does.
@@ -1520,20 +1586,27 @@ def ghg_binding_census(tree):
                     or (isinstance(value, ast.Attribute)
                         and value.attr in local_methods) \
                     or (isinstance(value, ast.Call)
-                        and isinstance(value.func, ast.Name)
-                        and value.func.id in callable_classes):
+                        and ((isinstance(value.func, ast.Name)
+                              and (value.func.id in callable_classes
+                                   or value.func.id
+                                   in returning_callables))
+                             or (isinstance(value.func, ast.Attribute)
+                                 and value.func.attr
+                                 in returning_callables))):
                 for t in targets:
                     for n in _bound_names(t):
                         if n not in callee_aliases:
                             callee_aliases.add(n)
                             _alias = True
     return definitions, is_watched, hands_over, local_defs, \
-        local_methods, is_strong, callee_aliases, callable_classes
+        local_methods, is_strong, callee_aliases, callable_classes, \
+        returning_callables
 
 
 def ghg_mutation_sites(tree, is_watched, hands_over, local_defs,
                        local_methods=(), is_strong=None,
-                       callee_aliases=(), callable_classes=()):
+                       callee_aliases=(), callable_classes=(),
+                       returning_callables=()):
     """[(lineno, description)] for runtime mutations of watched tables:
     item/augmented assignment, deletion, and mutator calls on a
     watched table or any alias of one (aliases resolve per scope;
@@ -1659,8 +1732,10 @@ def ghg_mutation_sites(tree, is_watched, hands_over, local_defs,
                          or isinstance(node.func, ast.Lambda)
                          or (isinstance(node.func, ast.Call)
                              and isinstance(node.func.func, ast.Name)
-                             and node.func.func.id
-                             in callable_classes)):
+                             and (node.func.func.id
+                                  in callable_classes
+                                  or node.func.func.id
+                                  in returning_callables))):
                 if any(hands_over_strong(a) for a in args):
                     desc = "modelled table passed as a call argument"
             if desc is not None:
@@ -1677,10 +1752,12 @@ def model_ghg(text):
         raise DifferError(f"{GHG_PY}: unparsable Python ({e})") from e
     definitions, is_watched, hands_over, local_defs, \
         local_methods, is_strong, callee_aliases, \
-        callable_classes = ghg_binding_census(tree)
+        callable_classes, returning_callables = \
+        ghg_binding_census(tree)
     sites = ghg_mutation_sites(tree, is_watched, hands_over,
                                local_defs, local_methods, is_strong,
-                               callee_aliases, callable_classes)
+                               callee_aliases, callable_classes,
+                               returning_callables)
     if sites:
         detail = "; ".join(f"line {ln}: {desc}" for ln, desc in sites[:5])
         raise DifferError(

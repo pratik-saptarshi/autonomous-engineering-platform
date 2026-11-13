@@ -1703,6 +1703,58 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head2)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_wrapper_provenance_through_boolops(self):
+        # Codex PR #148: a boolean expression can yield the
+        # wrapper operand, but the fresh-container test missed
+        # BoolOp even though hands_over propagates through it.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\n_wrapped = DEFAULT_LIMITS and '
+                   '[("caps", DEFAULT_LIMITS)]\n'
+                   'for _key, _value in _wrapped:\n'
+                   '    _uncap(_value)\n')
+        head = self.commit("wrapper-boolop")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: boolean expressions over table-free values
+        # are ordinary data flow.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_flag = True and [("caps", 1)]\n'
+                   'for _k, _v in _flag:\n'
+                   '    pass\n')
+        head2 = self.commit("boolop-scalars")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_ghg_factory_returned_callee_is_local(self):
+        # Codex PR #148: a local function returning another local
+        # function makes its call result a local callee, but the
+        # callee census only recognized constructions of callable
+        # classes.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\ndef _factory():\n    return _uncap\n'
+                   '\n_run = _factory()\n_run(DEFAULT_LIMITS)\n')
+        head = self.commit("factory-alias")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\ndef _factory():\n    return _uncap\n'
+                   '\n_factory()(DEFAULT_LIMITS)\n')
+        head2 = self.commit("factory-direct")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: a factory returning an imported callable
+        # produces no local callee.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nimport json\n'
+                   '\ndef _factory():\n    return json.dumps\n'
+                   '\n_run = _factory()\n_s = _run(DEFAULT_LIMITS)\n')
+        head3 = self.commit("factory-imported")
+        r = self.run_tool("diff", self.base, head3)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)
