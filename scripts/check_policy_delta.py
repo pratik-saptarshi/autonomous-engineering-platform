@@ -1777,7 +1777,26 @@ def ghg_binding_census(tree):
     # `_run = _Uncap.run`): invoking through the alias reaches
     # local code exactly as invoking the definition does.
     callee_aliases = set()
+    def _container_has_callee(v):
+        """A literal container holds a local callee among its
+        elements/values (through nested literal layers)."""
+        if isinstance(v, (ast.List, ast.Tuple, ast.Set)):
+            return any(_is_callee_form(e) for e in v.elts)
+        if isinstance(v, ast.Dict):
+            return any(_is_callee_form(e) for e in v.values
+                       if e is not None)
+        if isinstance(v, ast.Subscript):
+            return _container_has_callee(v.value)
+        if isinstance(v, ast.IfExp):
+            return _container_has_callee(v.body) \
+                or _container_has_callee(v.orelse)
+        return False
+
     def _is_callee_form(value):
+        if isinstance(value, ast.Subscript):
+            # Selecting from a literal container of callees
+            # yields a callee.
+            return _container_has_callee(value.value)
         return isinstance(value, ast.Lambda) \
             or (isinstance(value, ast.Name)
                 and (value.id in local_defs

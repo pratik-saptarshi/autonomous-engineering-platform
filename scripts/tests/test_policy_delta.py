@@ -2147,6 +2147,34 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head2)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_callee_through_subscript_is_local(self):
+        # Codex PR #148: selecting a local callable from a
+        # literal container (`[_uncap][0]`) was not a recognized
+        # callee form, so the destination escaped callee_aliases.
+        cases = {
+            "list-subscript": '\n_run = [_uncap][0]\n',
+            "dict-subscript": '\n_run = {"u": _uncap}["u"]\n',
+        }
+        prev = self.base
+        for label, snippet in cases.items():
+            with self.subTest(form=label):
+                self.write("tools/ghg/ghg.py", GHG_PY +
+                           '\ndef _uncap(caps):\n    caps.clear()\n' +
+                           snippet + '_run(DEFAULT_LIMITS)\n')
+                head = self.commit(label)
+                r = self.run_tool("diff", prev, head)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                prev = head
+                self.write("tools/ghg/ghg.py", GHG_PY)
+        # Precision: a subscript selecting an imported callable
+        # is no local callee.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nimport json\n_run = [json.dumps][0]\n'
+                   '_s = _run(DEFAULT_LIMITS)\n')
+        head = self.commit("subscript-imported")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)
