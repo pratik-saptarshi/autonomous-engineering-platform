@@ -1,0 +1,52 @@
+name: Dependabot Reference Guard
+
+# Routes Dependabot PRs that touch reference/** to the re-vendor lane:
+# label `vendor-refresh-needed`, post the routing comment, close the PR.
+#
+# Trigger is pull_request_target, not pull_request: workflows triggered
+# by Dependabot on pull_request receive a read-only GITHUB_TOKEN and no
+# secrets, so they cannot label, comment, or close. pull_request_target
+# runs in the base branch's context with the permissions below. This
+# workflow never checks out or executes PR code — it reads PR metadata
+# through the API and runs scripts/dependabot_reference_guard.py from
+# the base branch only.
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  pull-requests: write
+  issues: write
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Collect PR metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh api "repos/${{ github.repository }}/pulls/${PR_NUMBER}/files" \
+            --paginate --jq '.[].filename' > /tmp/changed-files.txt
+      - name: Ensure routing label exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh label create vendor-refresh-needed \
+            --description "Bot PR touched reference/**; route to the re-vendor lane" \
+            --color D93F0B --force
+      - name: Decide and apply
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          python3 scripts/dependabot_reference_guard.py \
+            --pr "${PR_NUMBER}" \
+            --author "${PR_AUTHOR}" \
+            --files /tmp/changed-files.txt \
+            --apply
