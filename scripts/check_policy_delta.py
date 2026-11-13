@@ -491,16 +491,48 @@ def ghg_binding_census(tree):
                 return False
             scope = scope_parent.get(id(scope))
 
+    def param_defaults(node):
+        """[(param name, default expr)] for a def/lambda node."""
+        args = node.args
+        positional = list(args.posonlyargs) + list(args.args)
+        pairs = [(a.arg, d) for a, d in
+                 zip(positional[len(positional) - len(args.defaults):],
+                     args.defaults)]
+        pairs += [(a.arg, d) for a, d in zip(args.kwonlyargs,
+                                             args.kw_defaults)
+                  if d is not None]
+        return pairs
+
+    # One fixpoint over ALL propagation channels at once -- bindings,
+    # function returns, and parameter defaults. Computing any channel
+    # in a separate earlier pass misses chains that cross channels
+    # (a function returning an assignment alias; a default capturing
+    # a table the parameter then shadows).
     returning = set()
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            for sub in ast.walk(node):
-                if isinstance(sub, ast.Return) and sub.value is not None \
-                        and _touches_watched(sub.value, is_watched):
-                    returning.add(node.name)
     changed = True
-    while changed:  # alias fixpoint over every binding form
+    while changed:
         changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                    and node.name not in returning:
+                for sub in ast.walk(node):
+                    if isinstance(sub, ast.Return) \
+                            and sub.value is not None \
+                            and _touches_watched(sub.value, is_watched):
+                        returning.add(node.name)
+                        changed = True
+                        break
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                 ast.Lambda)):
+                for param, default in param_defaults(node):
+                    hit = _touches_watched(default, is_watched) or (
+                        isinstance(default, ast.Call)
+                        and isinstance(default.func, ast.Name)
+                        and default.func.id in returning)
+                    if hit and (id(node), param) not in watched:
+                        watched.add((id(node), param))
+                        changed = True
         for node in ast.walk(tree):
             if isinstance(node, ast.Assign):
                 value, targets = node.value, node.targets

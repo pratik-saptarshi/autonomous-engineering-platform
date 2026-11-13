@@ -314,6 +314,32 @@ class CoreDeltaTests(SyntheticRepo):
                 prev = head
                 self.write("tools/ghg/ghg.py", GHG_PY)
 
+    def test_ghg_alias_propagation_crosses_returns_and_defaults(self):
+        # Codex PR #148, fixpoint-completeness round: (a) a function
+        # returning an assignment alias was invisible because the
+        # returning set was computed before aliases stabilized;
+        # (b) a parameter default capturing a table was recorded as
+        # a shadow but never marked watched. Both must refuse.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_alias = DEFAULT_LIMITS\n'
+                   '\ndef _table():\n    return _alias\n'
+                   '\n_t = _table()\n_t.clear()\n')
+        head = self.commit("return-alias-chain")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(_limits=DEFAULT_LIMITS):\n'
+                   '    _limits.clear()\n\n_uncap()\n')
+        head2 = self.commit("default-capture")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Keyword-only and lambda defaults are the same channel.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_f = lambda *, _m=_MUTATING_METHODS: _m.clear()\n')
+        head3 = self.commit("lambda-default")
+        r = self.run_tool("diff", self.base, head3)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)
