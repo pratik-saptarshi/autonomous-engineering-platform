@@ -824,6 +824,10 @@ def ghg_binding_census(tree):
     returning = set()
     returning_aliases = set()
     lookup_aliases = set()
+    # View kinds for lookup captures of view methods
+    # (name -> "items"/"keys"/"values"); conflicts drop out.
+    lookup_kinds = {}
+    lookup_kind_conflicts = set()
 
     # Locally defined properties: property name -> getter node,
     # from @property decorators and `name = property(fget)`
@@ -1382,6 +1386,29 @@ def ghg_binding_census(tree):
                         if n not in lookup_aliases:
                             lookup_aliases.add(n)
                             changed = True
+            # View-kind bookkeeping for view-method captures
+            # and their alias chains.
+            _kind = None
+            if isinstance(value, ast.Attribute) \
+                    and value.attr in ("items", "keys", "values") \
+                    and hands_over(value.value):
+                _kind = value.attr
+            elif isinstance(value, ast.Name) \
+                    and value.id in lookup_kinds:
+                _kind = lookup_kinds[value.id]
+            if _kind is not None:
+                for t in targets:
+                    for n in _bound_names(t):
+                        if n in lookup_kind_conflicts:
+                            continue
+                        if n in lookup_kinds \
+                                and lookup_kinds[n] != _kind:
+                            lookup_kind_conflicts.add(n)
+                            lookup_kinds.pop(n, None)
+                            changed = True
+                        elif n not in lookup_kinds:
+                            lookup_kinds[n] = _kind
+                            changed = True
         for node in ast.walk(tree):
             # Wrapper provenance through call results: a name
             # bound to the result of a returning-but-not-direct
@@ -1469,9 +1496,11 @@ def ghg_binding_census(tree):
                 value, targets = node.value, [node.target]
             else:
                 continue
-            if isinstance(value, ast.Call) \
-                    and isinstance(value.func, ast.Name) \
-                    and value.func.id in call_returning_classes:
+            if (isinstance(value, ast.Call)
+                    and isinstance(value.func, ast.Name)
+                    and value.func.id in call_returning_classes) \
+                    or (isinstance(value, ast.Name)
+                        and value.id in instance_returning_names):
                 for t in targets:
                     for n in _bound_names(t):
                         if n not in instance_returning_names:
@@ -1493,7 +1522,8 @@ def ghg_binding_census(tree):
             if isinstance(value, ast.Call):
                 kind = None
                 if isinstance(value.func, ast.Name):
-                    kind = returning_views.get(value.func.id)
+                    kind = returning_views.get(value.func.id) \
+                        or lookup_kinds.get(value.func.id)
                 elif isinstance(value.func, ast.Attribute):
                     kind = returning_views.get(value.func.attr)
                 if kind is not None:

@@ -1838,6 +1838,59 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head2)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_instance_returning_status_follows_aliases(self):
+        # Codex PR #148: table-returning instance status did not
+        # propagate when the instance was assigned to another
+        # name, so calls through the alias lost provenance.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Table:\n'
+                   '    def __call__(self):\n'
+                   '        return DEFAULT_LIMITS\n'
+                   '\n_t = _Table()\n_t2 = _t\n_t2().clear()\n')
+        head = self.commit("instance-returning-alias")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: an alias of a non-returning instance is not
+        # a returning callee.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Table:\n'
+                   '    def __call__(self):\n'
+                   '        return {}\n'
+                   '\n_t = _Table()\n_t2 = _t\n'
+                   '_x = _t2()\n_x.clear()\n')
+        head2 = self.commit("instance-nonreturning-alias")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_ghg_view_kind_follows_captured_lookup_calls(self):
+        # Codex PR #148: calling a captured .items method and
+        # assigning the result preserved the watched reference
+        # (lookup alias) but not the view kind, so the value
+        # target of later iteration was marked scalar.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(pairs):\n    pairs.clear()\n'
+                   '\n_items = DEFAULT_LIMITS.items\n'
+                   '_view = _items()\n'
+                   'for _k, _pairs in _view:\n'
+                   '    _uncap(_pairs)\n')
+        head = self.commit("captured-view-binding")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: the key target of the same captured view is
+        # still a scalar.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Ledger:\n'
+                   '    def spend(self, bucket):\n'
+                   '        return bucket\n'
+                   '\n_items = DEFAULT_LIMITS.items\n'
+                   '_view = _items()\n'
+                   '_led = _Ledger()\n'
+                   'for _bucket, _pairs in _view:\n'
+                   '    _led.spend(_bucket)\n')
+        head2 = self.commit("captured-view-key")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)
