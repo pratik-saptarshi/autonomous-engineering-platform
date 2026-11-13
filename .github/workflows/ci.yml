@@ -186,6 +186,40 @@ jobs:
         with:
           persist-credentials: false
       - run: python3 scripts/check_skills_phantom_capability.py --root skills
+
+  # Bounded claim: this job computes the mechanical power delta of a PR
+  # over the modelled policy artefacts (scripts/policy.data deny-sets,
+  # ghg caps + mutating classification, the skills sync scope, and the
+  # skills tree incl. newly added executable surface) and fails closed
+  # while the delta newly allows power the PR body does not acknowledge
+  # (see scripts/check_policy_delta.py). The report goes to the job
+  # summary; the acknowledgement token in the PR body is a recorded
+  # human act, never an approval substitute. It informs the human gate
+  # that already exists; it does not replace it.
+  policy-delta:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Compute policy delta report
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python3 scripts/check_policy_delta.py diff "$BASE_SHA" "$HEAD_SHA" --format markdown > policy-delta.md || true
+          cat policy-delta.md
+          cat policy-delta.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Acknowledgement check (fail-closed)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          printf '%s' "$PR_BODY" > pr-body.txt
+          python3 scripts/check_policy_delta.py check "$BASE_SHA" "$HEAD_SHA" --body-file pr-body.txt
       # EGM drift: skill.yaml descriptions verbatim vs frontmatter, the
       # review-loop normalization table vs bundle agent frontmatter,
       # and egm-review call-site standards coverage (panel J8/J10/J16).
