@@ -520,17 +520,28 @@ def ghg_binding_census(tree):
     def hands_over(value):
         """The value hands over a watched table: it denotes one
         (directly, through a lookup chain, or through a call to a
-        returning function), or it is a container literal holding a
-        watched name or a returning call."""
+        returning function), or it reaches one through a
+        value-transparent wrapper -- a conditional expression's
+        branches, a boolean operand, a starred element, an await, or
+        a container literal's elements. Calls and comprehensions are
+        NOT transparent: they produce new objects (a comprehension
+        over a table is a copy -- load_limits() depends on that)."""
         if denotes_watched(value):
             return True
-        if isinstance(value, (ast.List, ast.Tuple, ast.Set, ast.Dict)):
-            return any(
-                (isinstance(n, ast.Name) and is_watched(n))
-                or (isinstance(n, ast.Call)
-                    and isinstance(n.func, ast.Name)
-                    and n.func.id in returning)
-                for n in ast.walk(value))
+        if isinstance(value, ast.IfExp):
+            return hands_over(value.body) or hands_over(value.orelse)
+        if isinstance(value, ast.BoolOp):
+            return any(hands_over(v) for v in value.values)
+        if isinstance(value, ast.Starred):
+            return hands_over(value.value)
+        if isinstance(value, ast.Await):
+            return hands_over(value.value)
+        if isinstance(value, (ast.List, ast.Tuple, ast.Set)):
+            return any(hands_over(e) for e in value.elts)
+        if isinstance(value, ast.Dict):
+            return any(hands_over(e) for e in
+                       list(value.keys) + list(value.values)
+                       if e is not None)
         return False
 
     changed = True

@@ -415,6 +415,17 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head2)
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
 
+    def test_ghg_conditional_expression_alias_is_tracked(self):
+        # Codex PR #148: `_caps = T if c else {}` -- a branch of a
+        # conditional expression hands the table over just as a
+        # direct assignment does; the alias must be watched.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_caps = DEFAULT_LIMITS if True else {}\n'
+                   '_caps.clear()\n')
+        head = self.commit("ifexp-alias")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)
