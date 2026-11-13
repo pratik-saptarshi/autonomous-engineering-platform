@@ -1970,6 +1970,70 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head2)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_named_view_return_keeps_view_kind(self):
+        # Codex PR #148: returning_views recognized only direct
+        # view-call returns; returning a NAME bound to a view
+        # lost the kind, so callers' destructured value targets
+        # were marked scalar.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(pairs):\n    pairs.clear()\n'
+                   '\ndef _entries():\n'
+                   '    _view = DEFAULT_LIMITS.items()\n'
+                   '    return _view\n'
+                   '\nfor _k, _pairs in _entries():\n'
+                   '    _uncap(_pairs)\n')
+        head = self.commit("named-view-return")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: the key target of the same returned view is
+        # still a scalar.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Ledger:\n'
+                   '    def spend(self, bucket):\n'
+                   '        return bucket\n'
+                   '\ndef _entries():\n'
+                   '    _view = DEFAULT_LIMITS.items()\n'
+                   '    return _view\n'
+                   '\n_led = _Ledger()\n'
+                   'for _bucket, _pairs in _entries():\n'
+                   '    _led.spend(_bucket)\n')
+        head2 = self.commit("named-view-return-key")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_ghg_same_named_properties_are_all_retained(self):
+        # Codex PR #148: property_getters keyed by name kept only
+        # the last class's getter; an earlier table-returning
+        # property of the same name lost its provenance.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Holder:\n'
+                   '    @property\n'
+                   '    def caps(self):\n'
+                   '        return DEFAULT_LIMITS\n'
+                   '\nclass _Other:\n'
+                   '    @property\n'
+                   '    def caps(self):\n'
+                   '        return {}\n'
+                   '\n_Holder().caps.clear()\n')
+        head = self.commit("same-named-properties")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: when every same-named getter returns an
+        # unrelated value, the attribute is not a table source.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _A:\n'
+                   '    @property\n'
+                   '    def caps(self):\n'
+                   '        return {}\n'
+                   '\nclass _B:\n'
+                   '    @property\n'
+                   '    def caps(self):\n'
+                   '        return {}\n'
+                   '\n_A().caps.clear()\n')
+        head2 = self.commit("same-named-properties-unrelated")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)

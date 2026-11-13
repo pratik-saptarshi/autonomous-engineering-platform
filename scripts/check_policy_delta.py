@@ -829,12 +829,14 @@ def ghg_binding_census(tree):
     lookup_kinds = {}
     lookup_kind_conflicts = set()
 
-    # Locally defined properties: property name -> getter node,
-    # from @property decorators and `name = property(fget)`
-    # assignments in class bodies. property_returns (filled by
-    # the fixpoint) holds the names whose getters hand over a
-    # table -- an attribute access with such a name yields the
-    # table itself.
+    # Locally defined properties: property name -> ALL getter
+    # nodes with that name across local classes (same-named
+    # properties in different classes are distinct getters; an
+    # attribute access may reach any of them), from @property
+    # decorators and `name = property(fget)` assignments in
+    # class bodies. property_returns (filled by the fixpoint)
+    # holds the names with a table-handing-over getter -- an
+    # attribute access with such a name may yield the table.
     property_getters = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.ClassDef):
@@ -847,7 +849,8 @@ def ghg_binding_census(tree):
                     for dec in sub.decorator_list:
                         if isinstance(dec, ast.Name) \
                                 and dec.id == "property":
-                            property_getters[sub.name] = sub
+                            property_getters.setdefault(
+                                sub.name, []).append(sub)
                 elif isinstance(sub, ast.Assign) \
                         and isinstance(sub.value, ast.Call) \
                         and isinstance(sub.value.func, ast.Name) \
@@ -857,8 +860,9 @@ def ghg_binding_census(tree):
                         and sub.value.args[0].id in funcs:
                     for t in sub.targets:
                         for n in _bound_names(t):
-                            property_getters[n] = \
-                                funcs[sub.value.args[0].id]
+                            property_getters.setdefault(
+                                n, []).append(
+                                    funcs[sub.value.args[0].id])
     property_returns = set()
     # The direct subset of property_returns: every table-carrying
     # return of the getter preserves the structural shape. Only
@@ -1206,6 +1210,24 @@ def ghg_binding_census(tree):
                        if e is not None)
         return False
 
+    def _view_kind_of(v):
+        """The view kind an expression yields, if known: a direct
+        view call, a name carrying a view kind, or a call to a
+        view-returning callee."""
+        if isinstance(v, ast.Call) \
+                and isinstance(v.func, ast.Attribute) \
+                and v.func.attr in ("items", "keys", "values"):
+            return v.func.attr
+        if isinstance(v, ast.Name):
+            return view_kinds.get(v.id) \
+                or lookup_kinds.get(v.id)
+        if isinstance(v, ast.Call):
+            if isinstance(v.func, ast.Name):
+                return returning_views.get(v.func.id)
+            if isinstance(v.func, ast.Attribute):
+                return returning_views.get(v.func.attr)
+        return None
+
     def _value_taints(v):
         """A binding to this value is wrapper-tainted: some
         value-transparent path through it reaches a wrapper (a
@@ -1270,17 +1292,11 @@ def ghg_binding_census(tree):
                             returning.add(node.name)
                             changed = True
                         if isinstance(sub, ast.Return):
-                            if isinstance(sub.value, ast.Call) \
-                                    and isinstance(
-                                        sub.value.func,
-                                        ast.Attribute) \
-                                    and sub.value.func.attr in (
-                                            "items", "keys",
-                                            "values") \
+                            kind = _view_kind_of(sub.value)
+                            if kind is not None \
                                     and node.name \
                                     not in \
                                     returning_view_conflicts:
-                                kind = sub.value.func.attr
                                 if node.name in returning_views \
                                         and returning_views[
                                                 node.name] != kind:
@@ -1460,16 +1476,27 @@ def ghg_binding_census(tree):
                                 if n not in class_table_attrs:
                                     class_table_attrs.add(n)
                                     changed = True
-        for prop, getter in property_getters.items():
-            hits = [sub.value for sub in ast.walk(getter)
-                    if isinstance(sub, ast.Return)
-                    and sub.value is not None
-                    and hands_over(sub.value)]
-            if hits:
+        for prop, getters in property_getters.items():
+            # An access may reach ANY same-named getter: the
+            # property hands over a table if any getter does,
+            # and it is direct only if every table-carrying
+            # getter is structural.
+            any_hits = False
+            direct_ok = True
+            for getter in getters:
+                hits = [sub.value for sub in ast.walk(getter)
+                        if isinstance(sub, ast.Return)
+                        and sub.value is not None
+                        and hands_over(sub.value)]
+                if hits:
+                    any_hits = True
+                    if not all(structural_source(v) for v in hits):
+                        direct_ok = False
+            if any_hits:
                 if prop not in property_returns:
                     property_returns.add(prop)
                     changed = True
-                if all(structural_source(v) for v in hits):
+                if direct_ok:
                     if prop not in property_direct:
                         property_direct.add(prop)
                         changed = True
