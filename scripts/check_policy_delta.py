@@ -248,7 +248,12 @@ GHG_WATCH_NAMES = MODELLED_GHG_NAMES + ("LIMITS",)
 _MUTATOR_METHODS = {"add", "append", "clear", "difference_update",
                     "discard", "extend", "insert", "intersection_update",
                     "pop", "popitem", "remove", "reverse", "setdefault",
-                    "sort", "symmetric_difference_update", "update"}
+                    "sort", "symmetric_difference_update", "update",
+                    # Explicit special-method spellings of the same
+                    # in-place mutations (dict/list/set).
+                    "__setitem__", "__delitem__", "__iadd__",
+                    "__isub__", "__imul__", "__iand__", "__ior__",
+                    "__ixor__"}
 
 
 def _bound_names(target):
@@ -817,6 +822,11 @@ def ghg_binding_census(tree):
     # callees are structural sources for callers.
     returning_direct = set()
     returning_direct_aliases = set()
+    # View provenance for callees: function name -> the view kind
+    # ("items"/"keys"/"values") when its returns are views of that
+    # kind (conflicting returns drop the record).
+    returning_views = {}
+    returning_view_conflicts = set()
 
     # View provenance for names: a name bound to a table's
     # .items()/.keys()/.values() view keeps the view's kind when
@@ -1005,6 +1015,23 @@ def ghg_binding_census(tree):
                     if isinstance(sub, ast.Return) \
                             and sub.value is not None \
                             and hands_over(sub.value):
+                        if isinstance(sub.value, ast.Call) \
+                                and isinstance(sub.value.func,
+                                               ast.Attribute) \
+                                and sub.value.func.attr in (
+                                        "items", "keys", "values") \
+                                and node.name \
+                                not in returning_view_conflicts:
+                            kind = sub.value.func.attr
+                            if node.name in returning_views \
+                                    and returning_views[node.name] \
+                                    != kind:
+                                returning_view_conflicts.add(
+                                    node.name)
+                                returning_views.pop(node.name, None)
+                            elif node.name not in returning_views:
+                                returning_views[node.name] = kind
+                                changed = True
                         if node.name not in returning:
                             returning.add(node.name)
                             changed = True
@@ -1059,6 +1086,20 @@ def ghg_binding_census(tree):
                         if n not in returning_direct_aliases:
                             returning_direct_aliases.add(n)
                             changed = True
+            _src_names = []
+            if isinstance(value, ast.Name):
+                _src_names = [value.id]
+            elif isinstance(value, ast.Attribute):
+                _src_names = [value.attr]
+            for _sn in _src_names:
+                if _sn in returning_views \
+                        and _sn not in returning_view_conflicts:
+                    for t in targets:
+                        for n in _bound_names(t):
+                            if n not in returning_views:
+                                returning_views[n] = \
+                                    returning_views[_sn]
+                                changed = True
         for node in ast.walk(tree):
             # Wrapper provenance through call results: a name
             # bound to the result of a returning-but-not-direct
@@ -1170,7 +1211,13 @@ def ghg_binding_census(tree):
                 src_attr = None
                 if isinstance(value, ast.Call) \
                         and isinstance(value.func, ast.Attribute):
-                    src_attr = value.func.attr
+                    src_attr = value.func.attr \
+                        if value.func.attr in ("items", "keys",
+                                               "values") \
+                        else returning_views.get(value.func.attr)
+                elif isinstance(value, ast.Call) \
+                        and isinstance(value.func, ast.Name):
+                    src_attr = returning_views.get(value.func.id)
                 elif isinstance(value, ast.Name):
                     src_attr = view_kinds.get(value.id)
                 for t in targets:

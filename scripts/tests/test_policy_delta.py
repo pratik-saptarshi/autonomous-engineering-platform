@@ -1173,6 +1173,60 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head2)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_dunder_mutator_calls_are_sites(self):
+        # Codex PR #148: an explicit special-method call
+        # (DEFAULT_LIMITS.__delitem__("core")) mutates the table
+        # directly but bypassed the mutator whitelist, which only
+        # held the named methods.
+        cases = {
+            "delitem": '\nDEFAULT_LIMITS.__delitem__("core")\n',
+            "setitem": '\nDEFAULT_LIMITS.__setitem__("core", [])\n',
+        }
+        prev = self.base
+        for label, snippet in cases.items():
+            with self.subTest(form=label):
+                self.write("tools/ghg/ghg.py", GHG_PY + snippet)
+                head = self.commit(label)
+                r = self.run_tool("diff", prev, head)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                prev = head
+                self.write("tools/ghg/ghg.py", GHG_PY)
+        # Precision: read-only dunders are not mutators.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_n = DEFAULT_LIMITS.__len__()\n')
+        head = self.commit("dunder-readonly")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_ghg_view_provenance_through_returns(self):
+        # Codex PR #148: when a function returns an .items() view,
+        # iterating its call result lost the view kind, so both
+        # destructured targets were marked element-grade -- but
+        # the value target retains the mutable cap list.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(pairs):\n    pairs.clear()\n'
+                   '\ndef _entries():\n'
+                   '    return DEFAULT_LIMITS.items()\n'
+                   '\nfor _bucket, _pairs in _entries():\n'
+                   '    _uncap(_pairs)\n')
+        head = self.commit("view-through-return")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: the key target of the same returned view is
+        # still a scalar.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Ledger:\n'
+                   '    def spend(self, bucket):\n'
+                   '        return bucket\n'
+                   '\ndef _entries():\n'
+                   '    return DEFAULT_LIMITS.items()\n'
+                   '\n_led = _Ledger()\n'
+                   'for _bucket, _pairs in _entries():\n'
+                   '    _led.spend(_bucket)\n')
+        head2 = self.commit("view-through-return-key")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)
