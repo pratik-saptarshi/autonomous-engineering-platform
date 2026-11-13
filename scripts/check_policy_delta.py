@@ -35,15 +35,21 @@ Model scope (what the differ sees):
     -- never as silence. A ghg.py that *mutates* the modelled tables at
     runtime is refused with an error instead: the differ cannot model
     runtime mutation, and reporting a literal-only delta for it would
-    be a false statement, not a gap. The refusal census covers item /
-    augmented assignment, deletion, mutator calls, and rebinding
-    outside the top-level literal declarations, on the tables
-    (DEFAULT_LIMITS, the classification sets, the derived LIMITS),
-    the same through aliases (names bound to a table, to a lookup
-    rooted at one, to a container holding one, or to a local function
-    returning one), and a modelled table passed as a call argument.
-    Mutation via dynamic indirection (getattr/setattr/eval/globals())
-    remains outside the model and is named as such in every report.
+    be a false statement, not a gap. The ghg tier is therefore a
+    whitelist census: the tables (DEFAULT_LIMITS, the classification
+    sets, the derived LIMITS) may be bound ONLY by their top-level
+    literal/derivation declarations -- every other binding form
+    (annotated, chained, nested, conditional, loop/comprehension/
+    walrus targets, def/class names, imports) is refused -- and
+    runtime mutation (item/augmented assignment, deletion, mutator
+    calls) is refused on the tables and on their aliases, tracked
+    per scope with shadow-aware resolution (names bound to a table,
+    to a lookup rooted at one, to a container holding one, or to a
+    local function returning one), as is passing a table to a
+    function or class defined in the same file. Mutation via dynamic
+    indirection (getattr/setattr/eval/globals()), via imported or
+    builtin callables, or through builtin-constructor copies remains
+    outside the model and is named as such in every report.
   * .github/skills-sync-scope.txt -- the governed skill set, in the
     file's own three-section grammar: [skills] entries are grants (a
     skill entering scope is newly allowed surface, leaving is newly
@@ -75,7 +81,9 @@ modelled), renames within the skills tree (the new path is reported as
 an addition; the old path is not reported as a removal), symlink
 retargets in the skills tree, indirect mutation of ghg's modelled
 tables via dynamic indirection (getattr/setattr/eval/globals()/vars()),
-and anything outside the four artefacts above.
+via imported/builtin callables the tables are passed to, or through
+builtin-constructor copies (dict()/list()), and anything outside the
+four artefacts above.
 
 Usage:
 
@@ -125,7 +133,7 @@ NOT_MODELLED = [
     "content changes to non-SKILL.md files in surviving skills (mode and type changes are modelled)",
     "renames within the skills tree (new path reported as an addition only)",
     "symlink retargets in the skills tree",
-    "indirect mutation of ghg's modelled tables via dynamic indirection (getattr/setattr/eval/globals()/vars())",
+    "indirect mutation of ghg's modelled tables via dynamic indirection (getattr/setattr/eval/globals()/vars()), via imported/builtin callables the tables are passed to, or through builtin-constructor copies (dict()/list())",
     "anything outside the four modelled artefacts",
 ]
 
@@ -243,10 +251,10 @@ _MUTATOR_METHODS = {"add", "append", "clear", "difference_update",
                     "sort", "symmetric_difference_update", "update"}
 
 
-def _root_name(node):
-    """Root Name of a lookup chain: subscripts, attributes, and method
-    calls on the chain (``DEFAULT_LIMITS.get("core")`` roots at
-    DEFAULT_LIMITS)."""
+def _root_node(node):
+    """Root Name node of a lookup chain: subscripts, attributes, and
+    method calls on the chain (``DEFAULT_LIMITS.get("core")`` roots
+    at the DEFAULT_LIMITS node). None if the chain roots elsewhere."""
     while True:
         if isinstance(node, (ast.Subscript, ast.Attribute)):
             node = node.value
@@ -255,81 +263,314 @@ def _root_name(node):
             node = node.func.value
         else:
             break
-    return node.id if isinstance(node, ast.Name) else None
+    return node if isinstance(node, ast.Name) else None
 
 
-def _value_touches_watched(value, watched):
-    """True if an assigned value hands over a watched table (or part of
-    it): a bare name, a lookup rooted at one (subscript / method chain),
-    or a container literal holding one."""
-    if _root_name(value) in watched:
-        return True
+def _root_name(node):
+    root = _root_node(node)
+    return root.id if root is not None else None
+
+
+def _touches_watched(value, is_watched):
+    """True if a value expression hands over a watched table (or part
+    of it): a bare watched name, a lookup rooted at one (subscript /
+    method chain), or a container literal holding one. `is_watched`
+    resolves a Name node in its own scope."""
+    root = _root_node(value)
+    if root is not None:
+        return is_watched(root)
     if isinstance(value, (ast.List, ast.Tuple, ast.Set, ast.Dict)):
-        return any(isinstance(n, ast.Name) and n.id in watched
+        return any(isinstance(n, ast.Name) and is_watched(n)
                    for n in ast.walk(value))
     return False
 
 
-def ghg_mutation_sites(tree):
-    """[(lineno, description)] for runtime mutations of watched tables.
+def _bound_names(target):
+    """Names a binding target actually binds: plain names and
+    destructured elements. Attribute/subscript targets mutate an
+    object; they bind nothing."""
+    if isinstance(target, ast.Name):
+        return [target.id]
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return [n for elt in target.elts for n in _bound_names(elt)]
+    if isinstance(target, ast.Starred):
+        return _bound_names(target.value)
+    return []
 
-    Census of the escape family (this list is the class-level closure;
-    anything outside it is named in the tool's not-modelled boundary):
-    direct item/augmented assignment, deletion, and mutator calls on a
-    watched table; the same through aliases -- names bound to a watched
-    table, to a lookup rooted at one (``_caps = DEFAULT_LIMITS["x"]``),
-    to a container holding one, or to the result of a local function
-    that returns one; and a watched table passed as a call argument
-    (the callee can mutate it; the differ cannot rule it out, so it
-    refuses). Read-only aliasing and read-only method calls on the
-    tables (.get/.items/iteration) are not sites.
+
+_SCOPE_NODES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda,
+                ast.ClassDef)
+
+
+def _scope_maps(tree):
+    """(scope_of, scope_parent): every node's enclosing scope (the
+    nearest def/class/lambda node, None for module level) and each
+    scope node's own parent scope."""
+    scope_of, scope_parent = {}, {}
+
+    def rec(node, scope):
+        scope_of[id(node)] = scope
+        inner = scope
+        if isinstance(node, _SCOPE_NODES):
+            scope_parent[id(node)] = scope
+            inner = node
+        for ch in ast.iter_child_nodes(node):
+            rec(ch, inner)
+
+    rec(tree, None)
+    return scope_of, scope_parent
+
+
+def ghg_binding_census(tree):
+    """Whitelist census of every binding touching the ghg tables.
+
+    Returns (definitions, is_watched, local_defs): definitions maps
+    each modelled name to its accepted top-level literal Assign
+    node; is_watched resolves a Name occurrence (per scope,
+    shadow-aware) to whether it denotes a protected table or an
+    alias of one; local_defs names the functions/classes defined in
+    the file.
+
+    Posture (the class-level closure for the mutation/rebinding
+    escape family): a binding of a protected name -- the modelled
+    tables or the derived LIMITS -- is accepted ONLY as its
+    declaration form: a top-level Assign whose sole target is the
+    name itself (for LIMITS, the value must be the derivation
+    DictComp over DEFAULT_LIMITS). A later accepted assignment wins,
+    as in Python. Every other binding form of a protected name --
+    annotated, chained, nested, conditional, loop / comprehension /
+    walrus target, def/class name, import, except/with binding,
+    global/nonlocal declaration, deletion -- raises DifferError.
+    Bindings of OTHER names to watched values (assignments, loop and
+    comprehension targets over watched iterables, walrus) are tracked
+    as per-scope aliases, so mutations through them refuse in
+    ghg_mutation_sites. What remains outside is dynamic indirection
+    (getattr/setattr/eval/globals()/vars()), imported/builtin
+    callables, and builtin-constructor copies -- named in the
+    boundary every report carries.
     """
-    watched = set(GHG_WATCH_NAMES)
-    # Local functions that return a watched table hand it to callers.
+    protected = set(GHG_WATCH_NAMES)
+    body_ids = {id(n) for n in tree.body}
+    definitions = {}
+
+    def refuse(name, node, form):
+        raise DifferError(
+            f"{GHG_PY}: table {name} is rebound by {form} "
+            f"(line {node.lineno}) — the differ accepts only the "
+            "top-level literal/derivation declarations of the ghg "
+            "tables and refuses every other binding form")
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for name in (n for t in node.targets
+                         for n in _bound_names(t)):
+                if name not in protected:
+                    continue
+                accepted = (
+                    id(node) in body_ids and len(node.targets) == 1
+                    and isinstance(node.targets[0], ast.Name)
+                    and node.targets[0].id == name
+                    and (name in MODELLED_GHG_NAMES
+                         or isinstance(node.value, ast.DictComp)))
+                if accepted:
+                    if name in MODELLED_GHG_NAMES:
+                        definitions[name] = node  # last wins
+                else:
+                    refuse(name, node, "an assignment")
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+            for name in _bound_names(node.target):
+                if name in protected:
+                    refuse(name, node, "an annotated/augmented assignment")
+        elif isinstance(node, (ast.For, ast.AsyncFor)):
+            for name in _bound_names(node.target):
+                if name in protected:
+                    refuse(name, node, "a loop target")
+        elif isinstance(node, ast.comprehension):
+            for name in _bound_names(node.target):
+                if name in protected:
+                    refuse(name, node, "a comprehension target")
+        elif isinstance(node, ast.NamedExpr):
+            if isinstance(node.target, ast.Name) \
+                    and node.target.id in protected:
+                refuse(node.target.id, node, "a walrus binding")
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                              ast.ClassDef)):
+            if node.name in protected:
+                refuse(node.name, node, "a def/class name")
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for a in node.names:
+                bound = a.asname or a.name.split(".")[0]
+                if bound in protected:
+                    refuse(bound, node, "an import")
+        elif isinstance(node, ast.ExceptHandler):
+            if node.name and node.name in protected:
+                refuse(node.name, node, "an except binding")
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            for name in node.names:
+                if name in protected:
+                    refuse(name, node, "a global/nonlocal declaration")
+        elif isinstance(node, ast.Delete):
+            for t in node.targets:
+                for name in _bound_names(t):
+                    if name in protected:
+                        refuse(name, node, "a deletion")
+        elif isinstance(node, ast.withitem):
+            if node.optional_vars is not None:
+                for name in _bound_names(node.optional_vars):
+                    if name in protected:
+                        refuse(name, node, "a with binding")
+
+    # Aliases are tracked per scope: a name means a different object
+    # in every function, and name-only tracking collapses them (the
+    # real ghg.py reuses `bucket`/`pairs` as unrelated locals in many
+    # functions). watched holds (scope id or None for module, name).
+    # Resolution is shadow-aware: a Name occurrence resolves to the
+    # nearest scope that BINDS the name (any binding form, parameters
+    # included), and is watched only if that binding is watched.
+    scope_of, scope_parent = _scope_maps(tree)
+    watched = {(None, name) for name in protected}
+    bound_in_scope = {}
+
+    def note_bound(scope_key, names):
+        bound_in_scope.setdefault(scope_key, set()).update(names)
+
+    for node in ast.walk(tree):
+        scope = scope_of[id(node)]
+        key = id(scope) if scope is not None else None
+        if isinstance(node, ast.Assign):
+            note_bound(key, [n for t in node.targets
+                             for n in _bound_names(t)])
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign,
+                               ast.For, ast.AsyncFor)):
+            note_bound(key, _bound_names(node.target))
+        elif isinstance(node, ast.comprehension):
+            note_bound(key, _bound_names(node.target))
+        elif isinstance(node, ast.NamedExpr):
+            note_bound(key, _bound_names(node.target))
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                               ast.ClassDef)):
+            note_bound(key, [node.name])
+            args = node.args if not isinstance(node, ast.ClassDef) \
+                else None
+            if args is not None:
+                params = [a.arg for a in (list(args.posonlyargs)
+                                          + list(args.args)
+                                          + list(args.kwonlyargs))]
+                if args.vararg:
+                    params.append(args.vararg.arg)
+                if args.kwarg:
+                    params.append(args.kwarg.arg)
+                note_bound(id(node), params)
+        elif isinstance(node, ast.Lambda):
+            args = node.args
+            params = [a.arg for a in (list(args.posonlyargs)
+                                      + list(args.args)
+                                      + list(args.kwonlyargs))]
+            if args.vararg:
+                params.append(args.vararg.arg)
+            if args.kwarg:
+                params.append(args.kwarg.arg)
+            note_bound(id(node), params)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            note_bound(key, [a.asname or a.name.split(".")[0]
+                             for a in node.names])
+        elif isinstance(node, ast.ExceptHandler):
+            if node.name:
+                note_bound(key, [node.name])
+        elif isinstance(node, ast.withitem):
+            if node.optional_vars is not None:
+                note_bound(key, _bound_names(node.optional_vars))
+
+    def is_watched(name_node):
+        scope = scope_of[id(name_node)]
+        while True:
+            key = id(scope) if scope is not None else None
+            if name_node.id in bound_in_scope.get(key, ()):
+                return (key, name_node.id) in watched
+            if scope is None:
+                return False
+            scope = scope_parent.get(id(scope))
+
     returning = set()
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             for sub in ast.walk(node):
                 if isinstance(sub, ast.Return) and sub.value is not None \
-                        and _value_touches_watched(sub.value, watched):
+                        and _touches_watched(sub.value, is_watched):
                     returning.add(node.name)
     changed = True
-    while changed:  # alias fixpoint: _L = DEFAULT_LIMITS; _M = _L
+    while changed:  # alias fixpoint over every binding form
         changed = False
         for node in ast.walk(tree):
-            if isinstance(node, ast.Assign) and len(node.targets) == 1 \
-                    and isinstance(node.targets[0], ast.Name) \
-                    and node.targets[0].id not in watched:
-                value = node.value
-                if _value_touches_watched(value, watched) or (
-                        isinstance(value, ast.Call)
-                        and isinstance(value.func, ast.Name)
-                        and value.func.id in returning):
-                    watched.add(node.targets[0].id)
-                    changed = True
+            if isinstance(node, ast.Assign):
+                value, targets = node.value, node.targets
+            elif isinstance(node, ast.AnnAssign) and node.value is not None:
+                value, targets = node.value, [node.target]
+            elif isinstance(node, (ast.For, ast.AsyncFor)):
+                value, targets = node.iter, [node.target]
+            elif isinstance(node, ast.comprehension):
+                value, targets = node.iter, [node.target]
+            elif isinstance(node, ast.NamedExpr):
+                value, targets = node.value, [node.target]
+            else:
+                continue
+            hit = _touches_watched(value, is_watched) or (
+                isinstance(value, ast.Call)
+                and isinstance(value.func, ast.Name)
+                and value.func.id in returning)
+            if hit:
+                scope = scope_of[id(node)]
+                key = id(scope) if scope is not None else None
+                for t in targets:
+                    for n in _bound_names(t):
+                        if (key, n) not in watched:
+                            watched.add((key, n))
+                            changed = True
+    local_defs = {n.name for n in ast.walk(tree)
+                  if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                    ast.ClassDef))}
+    return definitions, is_watched, local_defs
+
+
+def ghg_mutation_sites(tree, is_watched, local_defs):
+    """[(lineno, description)] for runtime mutations of watched tables:
+    item/augmented assignment, deletion, and mutator calls on a
+    watched table or any alias of one (aliases resolve per scope),
+    and a watched table passed to a function or class defined IN
+    this file (the callee can mutate it; the differ cannot rule it
+    out, so it refuses). Passing a table to an imported or builtin
+    callable (list(), json.dumps(), sorted(), ...) is ordinary
+    read/copy use in this file's style and is named in the boundary
+    instead. Read-only aliasing and read-only method calls on the
+    tables (.get/.items/iteration) are not sites."""
     sites = []
     for node in ast.walk(tree):
-        if isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Store) \
-                and _root_name(node.value) in watched:
-            sites.append((node.lineno, "item assignment"))
+        if isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Store):
+            root = _root_node(node.value)
+            if root is not None and is_watched(root):
+                sites.append((node.lineno, "item assignment"))
         elif isinstance(node, ast.AugAssign) \
                 and isinstance(node.target, ast.Name) \
-                and node.target.id in watched:
+                and is_watched(node.target):
             sites.append((node.lineno, "augmented assignment"))
         elif isinstance(node, ast.Delete):
             for t in node.targets:
-                if (isinstance(t, ast.Name) and t.id in watched) or \
+                if (isinstance(t, ast.Name) and is_watched(t)) or \
                         (isinstance(t, ast.Subscript)
-                         and _root_name(t.value) in watched):
+                         and _root_node(t.value) is not None
+                         and is_watched(_root_node(t.value))):
                     sites.append((node.lineno, "deletion"))
         elif isinstance(node, ast.Call) \
                 and isinstance(node.func, ast.Attribute) \
-                and node.func.attr in _MUTATOR_METHODS \
-                and _root_name(node.func.value) in watched:
-            sites.append((node.lineno, f".{node.func.attr}() call"))
-        elif isinstance(node, ast.Call):
+                and node.func.attr in _MUTATOR_METHODS:
+            root = _root_node(node.func.value)
+            if root is not None and is_watched(root):
+                sites.append((node.lineno, f".{node.func.attr}() call"))
+        elif isinstance(node, ast.Call) \
+                and isinstance(node.func, ast.Name) \
+                and node.func.id in local_defs:
             args = list(node.args) + [kw.value for kw in node.keywords]
-            if any(_value_touches_watched(a, watched) for a in args):
+            if any(_touches_watched(a, is_watched) for a in args):
                 sites.append((node.lineno,
                               "modelled table passed as a call argument"))
     return sites
@@ -342,44 +583,21 @@ def model_ghg(text):
         tree = ast.parse(text)
     except SyntaxError as e:
         raise DifferError(f"{GHG_PY}: unparsable Python ({e})") from e
-    sites = ghg_mutation_sites(tree)
+    definitions, is_watched, local_defs = ghg_binding_census(tree)
+    sites = ghg_mutation_sites(tree, is_watched, local_defs)
     if sites:
         detail = "; ".join(f"line {ln}: {desc}" for ln, desc in sites[:5])
         raise DifferError(
             f"{GHG_PY}: modelled power is mutated at runtime ({detail}) — "
             "the differ cannot model runtime mutation and refuses rather "
             "than reporting a literal-only delta")
-    # Rebinding census: the extractor below reads top-level literal
-    # assignments (last one wins, matching Python). A binding of a
-    # modelled name anywhere else -- inside an if/try/loop/with block,
-    # a function body, or a walrus -- executes conditionally or on
-    # call and is invisible to that read, so it is refused rather
-    # than silently modelled from the shadowed literal.
-    body_ids = {id(n) for n in tree.body}
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
-            targets = node.targets if isinstance(node, ast.Assign) \
-                else [node.target]
-            for t in targets:
-                if isinstance(t, ast.Name) \
-                        and t.id in MODELLED_GHG_NAMES \
-                        and id(node) not in body_ids:
-                    raise DifferError(
-                        f"{GHG_PY}: modelled table {t.id} is rebound "
-                        f"outside its top-level literal declaration "
-                        f"(line {node.lineno}) — the differ models only "
-                        "the top-level literals and refuses conditional "
-                        "or nested rebinding")
     found = {}
-    for node in tree.body:  # module level only: the artefact contract
-        if isinstance(node, ast.Assign) and len(node.targets) == 1:
-            name = getattr(node.targets[0], "id", None)
-            if name in MODELLED_GHG_NAMES:
-                try:
-                    found[name] = ast.literal_eval(node.value)
-                except (ValueError, SyntaxError) as e:
-                    raise DifferError(
-                        f"{GHG_PY}: {name} is not a literal ({e})") from e
+    for name, node in definitions.items():
+        try:
+            found[name] = ast.literal_eval(node.value)
+        except (ValueError, SyntaxError) as e:
+            raise DifferError(
+                f"{GHG_PY}: {name} is not a literal ({e})") from e
     missing = set(MODELLED_GHG_NAMES) - set(found)
     if missing:
         raise DifferError(

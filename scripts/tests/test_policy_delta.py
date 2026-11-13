@@ -290,6 +290,44 @@ class CoreDeltaTests(SyntheticRepo):
         self.assertEqual(r.returncode, 2)
         self.assertIn("rebound", r.stderr)
 
+    def test_ghg_binding_census_refuses_unmodelled_binding_forms(self):
+        # Codex PR #148, binding-form round: loop-bound aliases,
+        # annotated and chained top-level rebindings, and a literal
+        # LIMITS rebinding all bypassed the literal extractor. The
+        # differ's posture is a whitelist: protected tables may be
+        # bound ONLY by their top-level literal/derivation forms.
+        cases = {
+            "loop-alias": '\nfor _caps in DEFAULT_LIMITS.values():\n'
+                          '    _caps.clear()\n',
+            "annassign": '\nDEFAULT_LIMITS: dict = {}\n',
+            "chained": '\nDEFAULT_LIMITS = _empty = {}\n',
+            "limits-literal": '\nLIMITS = {}\n',
+            "walrus": '\nif (DEFAULT_LIMITS := {}):\n    pass\n',
+        }
+        prev = self.base
+        for label, snippet in cases.items():
+            with self.subTest(form=label):
+                self.write("tools/ghg/ghg.py", GHG_PY + snippet)
+                head = self.commit(label)
+                r = self.run_tool("diff", prev, head)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                prev = head
+                self.write("tools/ghg/ghg.py", GHG_PY)
+
+    def test_ghg_scope_shadowing_does_not_refuse(self):
+        # Precision guard for scope-aware aliasing: unrelated locals
+        # that merely reuse watched-adjacent names (bucket/pairs/core)
+        # in their own functions are not aliases and must not refuse.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _tally():\n'
+                   '    bucket, pairs = "core", [(60, 5)]\n'
+                   '    charges = [(bucket, 1)]\n'
+                   '    charges.append(("content", 1))\n'
+                   '    return charges\n')
+        head = self.commit("shadowing")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_second_top_level_assignment_still_modelled(self):
         # Straight-line rebinding at top level IS Python's semantics:
         # the last literal wins and the differ models exactly that.
