@@ -2233,6 +2233,53 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head3)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_direct_conditional_callee_call_is_local(self):
+        # Codex PR #148: invoking a conditional callee directly
+        # bypassed the argument check -- node.func is an IfExp,
+        # which no callee branch recognized.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\ndef _plain(caps):\n    return caps\n'
+                   '\n(_uncap if True else _plain)(DEFAULT_LIMITS)\n')
+        head = self.commit("direct-conditional-callee")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: a conditional between imported callables is
+        # no local callee.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nimport json\n'
+                   '_s = (json.dumps if True else json.loads)("x")\n')
+        head2 = self.commit("direct-conditional-imported")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_ghg_view_conflict_follows_aliases(self):
+        # Codex PR #148: a conflicted view name's kind is dropped
+        # from view_kinds, so aliasing it produced a destination
+        # with neither kind nor conflict -- and the use-site
+        # guard never fired for the alias.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(pairs):\n    pairs.clear()\n'
+                   '\n_v1 = DEFAULT_LIMITS.values()\n'
+                   '_v1 = DEFAULT_LIMITS.items()\n'
+                   '_v2 = _v1\n'
+                   'for _k, _pairs in _v2:\n'
+                   '    _uncap(_pairs)\n')
+        head = self.commit("view-conflict-alias")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: merely iterating a conflicted alias without
+        # handing components to local code is not a site.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_v1 = DEFAULT_LIMITS.values()\n'
+                   '_v1 = DEFAULT_LIMITS.items()\n'
+                   '_v2 = _v1\n'
+                   'for _k, _pairs in _v2:\n'
+                   '    pass\n')
+        head2 = self.commit("view-conflict-alias-readonly")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)

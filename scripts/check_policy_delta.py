@@ -1592,6 +1592,30 @@ def ghg_binding_census(tree):
                 value, targets = node.value, [node.target]
             else:
                 continue
+            # Conflict markers propagate through bindings: a
+            # name bound to a conflicted source is itself
+            # conflicted (its kind is already dropped there).
+            _src_conflict = False
+            if isinstance(value, ast.Name):
+                _src_conflict = (
+                    value.id in _view_conflicts
+                    or value.id in returning_view_conflicts
+                    or value.id in lookup_kind_conflicts)
+            elif isinstance(value, ast.Call):
+                if isinstance(value.func, ast.Name):
+                    _src_conflict = value.func.id \
+                        in returning_view_conflicts
+                elif isinstance(value.func, ast.Attribute):
+                    _src_conflict = value.func.attr \
+                        in returning_view_conflicts
+            if _src_conflict:
+                for t in targets:
+                    for n in _bound_names(t):
+                        if n not in _view_conflicts:
+                            _view_conflicts.add(n)
+                            view_kinds.pop(n, None)
+                            changed = True
+                continue
             _kinds = _view_kinds_of(value)
             if len(_kinds) > 1:
                 for t in targets:
@@ -1861,9 +1885,16 @@ def ghg_binding_census(tree):
                         if n not in callee_aliases:
                             callee_aliases.add(n)
                             _alias = True
+    def _callee_form_any(v):
+        """The leaf-aware callee predicate handed to the
+        mutation-site check: a value is a local callee form if
+        any leaf through the value-transparent wrappers is."""
+        return any(_is_callee_form(leaf)
+                   for leaf in _value_leaves(v))
+
     return definitions, is_watched, hands_over, local_defs, \
         local_methods, is_strong, callee_aliases, callable_classes, \
-        returning_callables, _is_callee_form
+        returning_callables, _callee_form_any
 
 
 def ghg_mutation_sites(tree, is_watched, hands_over, local_defs,
@@ -2000,6 +2031,10 @@ def ghg_mutation_sites(tree, is_watched, hands_over, local_defs,
                                   or node.func.func.id
                                   in returning_callables))
                          or (isinstance(node.func, ast.Subscript)
+                             and is_callee_form is not None
+                             and is_callee_form(node.func))
+                         or (isinstance(node.func, (ast.IfExp,
+                                                   ast.BoolOp))
                              and is_callee_form is not None
                              and is_callee_form(node.func))):
                 if any(hands_over_strong(a) for a in args):
