@@ -577,6 +577,29 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head)
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
 
+    def test_ghg_class_body_read_before_binding_falls_back(self):
+        # Codex PR #148: class bodies execute imperatively -- a
+        # class-body read of a name before the class's own first
+        # binding of it falls back to the enclosing/global binding,
+        # unlike function-scope static shadowing.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_caps = DEFAULT_LIMITS\n'
+                   '\nclass _Uncap:\n'
+                   '    _caps.clear()\n'
+                   '    _caps = {}\n')
+        head = self.commit("class-read-before-bind")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # And the reverse order resolves to the class attribute.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_caps = DEFAULT_LIMITS\n'
+                   '\nclass _Cfg:\n'
+                   '    _caps = {}\n'
+                   '    _caps.clear()\n')
+        head2 = self.commit("class-read-after-bind")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)

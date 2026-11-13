@@ -467,13 +467,25 @@ def ghg_binding_census(tree):
     # redirect them to their semantic scope (final map below).
     raw_bound = {}
     raw_bindings = []  # [(raw scope node or None, name)]
+    class_first_bind = {}  # (class scope id, name) -> earliest pos
 
-    def note_raw(scope, names):
+    def note_raw(scope, names, node=None):
         if names:
             raw_bound.setdefault(
                 id(scope) if scope is not None else None,
                 set()).update(names)
             raw_bindings.extend((scope, n) for n in names)
+            if isinstance(scope, ast.ClassDef) and node is not None:
+                # Class bodies execute imperatively: a read of a
+                # name BEFORE the class's first binding of it falls
+                # back to enclosing/global scopes, unlike function
+                # scopes' static shadowing. Track earliest positions.
+                pos = (node.lineno, node.col_offset)
+                for n in names:
+                    k = (id(scope), n)
+                    if k not in class_first_bind \
+                            or pos < class_first_bind[k]:
+                        class_first_bind[k] = pos
 
     def params_of(node):
         args = node.args
@@ -490,32 +502,32 @@ def ghg_binding_census(tree):
         if isinstance(node, ast.Assign):
             note_raw(raw_scope(node),
                      [n for t in node.targets
-                      for n in _bound_names(t)])
+                      for n in _bound_names(t)], node)
         elif isinstance(node, (ast.AnnAssign, ast.AugAssign,
                                ast.For, ast.AsyncFor)):
-            note_raw(raw_scope(node), _bound_names(node.target))
+            note_raw(raw_scope(node), _bound_names(node.target), node)
         elif isinstance(node, ast.comprehension):
-            note_raw(raw_scope(node), _bound_names(node.target))
+            note_raw(raw_scope(node), _bound_names(node.target), node)
         elif isinstance(node, ast.NamedExpr):
-            note_raw(raw_scope(node), _bound_names(node.target))
+            note_raw(raw_scope(node), _bound_names(node.target), node)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
                                ast.ClassDef)):
-            note_raw(raw_scope(node), [node.name])
+            note_raw(raw_scope(node), [node.name], node)
             if not isinstance(node, ast.ClassDef):
-                note_raw(node, params_of(node))
+                note_raw(node, params_of(node), node)
         elif isinstance(node, ast.Lambda):
-            note_raw(node, params_of(node))
+            note_raw(node, params_of(node), node)
         elif isinstance(node, (ast.Import, ast.ImportFrom)):
             note_raw(raw_scope(node),
                      [a.asname or a.name.split(".")[0]
-                      for a in node.names])
+                      for a in node.names], node)
         elif isinstance(node, ast.ExceptHandler):
             if node.name:
-                note_raw(raw_scope(node), [node.name])
+                note_raw(raw_scope(node), [node.name], node)
         elif isinstance(node, ast.withitem):
             if node.optional_vars is not None:
                 note_raw(raw_scope(node),
-                         _bound_names(node.optional_vars))
+                         _bound_names(node.optional_vars), node)
 
     def nonlocal_target(from_scope, name):
         """The enclosing function scope a `nonlocal name` actually
@@ -586,9 +598,17 @@ def ghg_binding_census(tree):
                         return (id(tgt), name_node.id) in watched
             # Class namespaces are not lexical scopes for enclosed
             # code: a method's read skips an enclosing class's
-            # bindings entirely. Only a read whose own scope IS the
-            # class body sees them.
-            if (first or not isinstance(scope, ast.ClassDef)) \
+            # bindings entirely. A read whose own scope IS the class
+            # body sees them -- but only from the class's first
+            # binding of the name onward (class bodies execute
+            # imperatively; an earlier read falls back outward).
+            decides = first or not isinstance(scope, ast.ClassDef)
+            if decides and isinstance(scope, ast.ClassDef):
+                fb = class_first_bind.get((key, name_node.id))
+                if fb is not None and (name_node.lineno,
+                                       name_node.col_offset) < fb:
+                    decides = False
+            if decides \
                     and name_node.id in bound_in_scope.get(key, ()):
                 return (key, name_node.id) in watched
             if scope is None:
