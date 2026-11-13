@@ -562,6 +562,21 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head)
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
 
+    def test_ghg_class_scope_skipped_for_method_reads(self):
+        # Codex PR #148: class namespaces are not lexical scopes
+        # for methods -- a class attribute reusing a watched module
+        # alias's name does not shadow it inside methods, while a
+        # class-body read of a class attribute still resolves there.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_caps = DEFAULT_LIMITS\n'
+                   '\nclass _Uncap:\n'
+                   '    _caps = {}\n'
+                   '    def run(self):\n'
+                   '        _caps.clear()\n')
+        head = self.commit("class-scope-skip")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)

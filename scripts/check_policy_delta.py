@@ -570,6 +570,7 @@ def ghg_binding_census(tree):
         # Nearer bindings win -- a comprehension target between the
         # read and the declaring function shadows the declaration.
         scope = scope_of[id(name_node)]
+        first = True
         while True:
             key = id(scope) if scope is not None else None
             if scope is not None \
@@ -583,10 +584,16 @@ def ghg_binding_census(tree):
                         return (None, name_node.id) in watched
                     if tgt is not None:
                         return (id(tgt), name_node.id) in watched
-            if name_node.id in bound_in_scope.get(key, ()):
+            # Class namespaces are not lexical scopes for enclosed
+            # code: a method's read skips an enclosing class's
+            # bindings entirely. Only a read whose own scope IS the
+            # class body sees them.
+            if (first or not isinstance(scope, ast.ClassDef)) \
+                    and name_node.id in bound_in_scope.get(key, ()):
                 return (key, name_node.id) in watched
             if scope is None:
                 return False
+            first = False
             scope = scope_parent.get(id(scope))
 
     def param_defaults(node):
