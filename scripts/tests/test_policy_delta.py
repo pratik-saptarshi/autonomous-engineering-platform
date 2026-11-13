@@ -1624,6 +1624,85 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head2)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_wrapper_provenance_through_attribute_assignment(self):
+        # Codex PR #148: assigning a wrapper-valued attribute
+        # (property or class attribute) to a name lost the
+        # wrapper provenance -- the taint passes tested only the
+        # value's core name/call.
+        cases = {
+            "property-assign": '\nclass _Ctx:\n'
+                               '    @property\n'
+                               '    def wrapped(self):\n'
+                               '        return [("caps", DEFAULT_LIMITS)]\n'
+                               '\n_w = _Ctx().wrapped\n',
+            "class-attr-assign": '\nclass _Holder:\n'
+                                 '    wrapped = [("caps", DEFAULT_LIMITS)]\n'
+                                 '\n_w = _Holder.wrapped\n',
+        }
+        prev = self.base
+        for label, snippet in cases.items():
+            with self.subTest(form=label):
+                self.write("tools/ghg/ghg.py", GHG_PY +
+                           '\ndef _uncap(caps):\n    caps.clear()\n' +
+                           snippet +
+                           'for _key, _value in _w:\n'
+                           '    _uncap(_value)\n')
+                head = self.commit(label)
+                r = self.run_tool("diff", prev, head)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                prev = head
+                self.write("tools/ghg/ghg.py", GHG_PY)
+        # Precision: a direct property assigned to a name keeps
+        # structural provenance.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Ledger:\n'
+                   '    def spend(self, bucket):\n'
+                   '        return bucket\n'
+                   '\nclass _Ctx:\n'
+                   '    @property\n'
+                   '    def table(self):\n'
+                   '        return DEFAULT_LIMITS\n'
+                   '\n_led = _Ledger()\n'
+                   '_t = _Ctx().table\n'
+                   'for _bucket, _pairs in _t.items():\n'
+                   '    _led.spend(_bucket)\n')
+        head = self.commit("direct-property-assign")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_ghg_inherited_enter_is_a_context_source(self):
+        # Codex PR #148: enter provenance recorded only classes
+        # whose own body defines __enter__; a subclass inheriting
+        # a table-returning __enter__ was omitted.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Base:\n'
+                   '    def __enter__(self):\n'
+                   '        return DEFAULT_LIMITS\n'
+                   '    def __exit__(self, *a):\n'
+                   '        return False\n'
+                   '\nclass _Sub(_Base):\n'
+                   '    pass\n'
+                   '\nwith _Sub() as _t:\n'
+                   '    _t.clear()\n')
+        head = self.commit("inherited-enter")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: a subclass inheriting an unrelated
+        # __enter__ is not a table source.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Base:\n'
+                   '    def __enter__(self):\n'
+                   '        return {}\n'
+                   '    def __exit__(self, *a):\n'
+                   '        return False\n'
+                   '\nclass _Sub(_Base):\n'
+                   '    pass\n'
+                   '\nwith _Sub() as _t:\n'
+                   '    _t.clear()\n')
+        head2 = self.commit("inherited-enter-unrelated")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)

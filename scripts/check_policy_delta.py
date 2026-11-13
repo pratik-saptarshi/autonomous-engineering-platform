@@ -918,6 +918,20 @@ def ghg_binding_census(tree):
     enter_returning = set()
     instance_names = set()
 
+    # Locally defined class inventory (name-resolved bases and
+    # direct __call__ presence), shared by the enter closure in
+    # the fixpoint and the callable-class census after it.
+    _class_bases = {}
+    _class_has_call = {}
+    for n in ast.walk(tree):
+        if isinstance(n, ast.ClassDef):
+            _class_has_call[n.name] = any(
+                isinstance(sub, (ast.FunctionDef,
+                                 ast.AsyncFunctionDef))
+                and sub.name == "__call__" for sub in n.body)
+            _class_bases[n.name] = [b.id for b in n.bases
+                                    if isinstance(b, ast.Name)]
+
     # Names bound (anywhere) to a fresh container -- a literal, a
     # comprehension, or a container BinOp -- or to another such
     # name. A fresh container can wrap the table itself as an
@@ -952,6 +966,17 @@ def ghg_binding_census(tree):
             v = v.value
         return v
 
+    def _layers_tainted(v, tainted_attrs):
+        """Any attribute layer of the value carries a tainted
+        name (a wrapper class attribute, or a non-direct
+        table-carrying property)."""
+        while isinstance(v, (ast.Subscript, ast.Attribute)):
+            if isinstance(v, ast.Attribute) \
+                    and v.attr in tainted_attrs:
+                return True
+            v = v.value
+        return False
+
     wrapper_names = set()
     _taint = True
     while _taint:
@@ -967,6 +992,7 @@ def ghg_binding_census(tree):
             else:
                 continue
             if _may_wrap(value) \
+                    or _layers_tainted(value, wrapper_names) \
                     or (isinstance(_core_of(value), ast.Name)
                         and _core_of(value).id in wrapper_names):
                 for t in targets:
@@ -1239,7 +1265,12 @@ def ghg_binding_census(tree):
             core = value
             while isinstance(core, (ast.Subscript, ast.Attribute)):
                 core = core.value
-            if isinstance(core, ast.Name) \
+            if _layers_tainted(
+                    value,
+                    wrapper_names
+                    | (property_returns - property_direct)):
+                tainted = True
+            elif isinstance(core, ast.Name) \
                     and core.id in wrapper_names:
                 tainted = True
             elif isinstance(core, ast.Call):
@@ -1306,6 +1337,13 @@ def ghg_binding_census(tree):
                 elif prop in property_direct:
                     property_direct.discard(prop)
                     changed = True
+        # Enter provenance closes over locally defined bases: a
+        # subclass of a table-returning context manager is one.
+        for _name, _bases in _class_bases.items():
+            if _name not in enter_returning \
+                    and any(b in enter_returning for b in _bases):
+                enter_returning.add(_name)
+                changed = True
         for node in ast.walk(tree):
             if isinstance(node, ast.Assign) \
                     and isinstance(node.value, ast.Call) \
@@ -1446,17 +1484,8 @@ def ghg_binding_census(tree):
                                          ast.AsyncFunctionDef))}
     # Locally defined classes implementing __call__ (directly or
     # through a locally defined base): their instances are
-    # locally defined callees too.
-    _class_bases = {}
-    _class_has_call = {}
-    for n in ast.walk(tree):
-        if isinstance(n, ast.ClassDef):
-            _class_has_call[n.name] = any(
-                isinstance(sub, (ast.FunctionDef,
-                                 ast.AsyncFunctionDef))
-                and sub.name == "__call__" for sub in n.body)
-            _class_bases[n.name] = [b.id for b in n.bases
-                                    if isinstance(b, ast.Name)]
+    # locally defined callees too. (_class_bases/_class_has_call
+    # are computed before the fixpoint, above.)
     callable_classes = {name for name, has in _class_has_call.items()
                         if has}
     _cc = True
