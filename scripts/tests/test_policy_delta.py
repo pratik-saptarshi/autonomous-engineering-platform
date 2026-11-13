@@ -362,6 +362,23 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head2)
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
 
+    def test_ghg_mutation_on_returned_table_is_refused(self):
+        # Codex PR #148, receiver round: mutating a returning call's
+        # result directly (_table().clear(), _table()["x"] = ...)
+        # has no name root; receivers resolve through returning calls.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _table():\n    return DEFAULT_LIMITS\n'
+                   '\n_table().clear()\n')
+        head = self.commit("mutate-return-value")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _table():\n    return DEFAULT_LIMITS\n'
+                   '\n_table()["search"] = [(1, 1)]\n')
+        head2 = self.commit("store-into-return-value")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)

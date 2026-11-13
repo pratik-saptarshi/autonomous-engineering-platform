@@ -251,40 +251,6 @@ _MUTATOR_METHODS = {"add", "append", "clear", "difference_update",
                     "sort", "symmetric_difference_update", "update"}
 
 
-def _root_node(node):
-    """Root Name node of a lookup chain: subscripts, attributes, and
-    method calls on the chain (``DEFAULT_LIMITS.get("core")`` roots
-    at the DEFAULT_LIMITS node). None if the chain roots elsewhere."""
-    while True:
-        if isinstance(node, (ast.Subscript, ast.Attribute)):
-            node = node.value
-        elif isinstance(node, ast.Call) \
-                and isinstance(node.func, ast.Attribute):
-            node = node.func.value
-        else:
-            break
-    return node if isinstance(node, ast.Name) else None
-
-
-def _root_name(node):
-    root = _root_node(node)
-    return root.id if root is not None else None
-
-
-def _touches_watched(value, is_watched):
-    """True if a value expression hands over a watched table (or part
-    of it): a bare watched name, a lookup rooted at one (subscript /
-    method chain), or a container literal holding one. `is_watched`
-    resolves a Name node in its own scope."""
-    root = _root_node(value)
-    if root is not None:
-        return is_watched(root)
-    if isinstance(value, (ast.List, ast.Tuple, ast.Set, ast.Dict)):
-        return any(isinstance(n, ast.Name) and is_watched(n)
-                   for n in ast.walk(value))
-    return False
-
-
 def _bound_names(target):
     """Names a binding target actually binds: plain names and
     destructured elements. Attribute/subscript targets mutate an
@@ -528,14 +494,41 @@ def ghg_binding_census(tree):
     # a table the parameter then shadows).
     returning = set()
 
+    def denotes_watched(expr):
+        """The expression denotes a watched table: strip lookup
+        layers (subscripts, attributes, method calls on the chain);
+        what remains is a watched name or a call to a local function
+        known to return one. Covers receivers like `_table().clear()`
+        and `_table()["core"]` as well as plain rooted chains."""
+        while True:
+            if isinstance(expr, (ast.Subscript, ast.Attribute)):
+                expr = expr.value
+            elif isinstance(expr, ast.Call) \
+                    and isinstance(expr.func, ast.Attribute):
+                expr = expr.func.value
+            else:
+                break
+        if isinstance(expr, ast.Name):
+            return is_watched(expr)
+        return isinstance(expr, ast.Call) \
+            and isinstance(expr.func, ast.Name) \
+            and expr.func.id in returning
+
     def hands_over(value):
-        """The value hands over a watched table: it touches one
-        directly, or it is a call to a local function known to
-        return one (forwarding chains included)."""
-        return _touches_watched(value, is_watched) or (
-            isinstance(value, ast.Call)
-            and isinstance(value.func, ast.Name)
-            and value.func.id in returning)
+        """The value hands over a watched table: it denotes one
+        (directly, through a lookup chain, or through a call to a
+        returning function), or it is a container literal holding a
+        watched name or a returning call."""
+        if denotes_watched(value):
+            return True
+        if isinstance(value, (ast.List, ast.Tuple, ast.Set, ast.Dict)):
+            return any(
+                (isinstance(n, ast.Name) and is_watched(n))
+                or (isinstance(n, ast.Call)
+                    and isinstance(n.func, ast.Name)
+                    and n.func.id in returning)
+                for n in ast.walk(value))
+        return False
 
     changed = True
     while changed:
@@ -582,16 +575,19 @@ def ghg_binding_census(tree):
     local_defs = {n.name for n in ast.walk(tree)
                   if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef,
                                     ast.ClassDef))}
-    return definitions, is_watched, local_defs
+    return definitions, is_watched, denotes_watched, hands_over, \
+        local_defs
 
 
-def ghg_mutation_sites(tree, is_watched, local_defs):
+def ghg_mutation_sites(tree, is_watched, denotes_watched, hands_over,
+                       local_defs):
     """[(lineno, description)] for runtime mutations of watched tables:
     item/augmented assignment, deletion, and mutator calls on a
-    watched table or any alias of one (aliases resolve per scope),
-    and a watched table passed to a function or class defined IN
-    this file (the callee can mutate it; the differ cannot rule it
-    out, so it refuses). Passing a table to an imported or builtin
+    watched table or any alias of one (aliases resolve per scope;
+    receivers may also be calls to functions returning a table), and
+    a watched table passed to a function or class defined IN this
+    file (the callee can mutate it; the differ cannot rule it out,
+    so it refuses). Passing a table to an imported or builtin
     callable (list(), json.dumps(), sorted(), ...) is ordinary
     read/copy use in this file's style and is named in the boundary
     instead. Read-only aliasing and read-only method calls on the
@@ -599,31 +595,30 @@ def ghg_mutation_sites(tree, is_watched, local_defs):
     sites = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Store):
-            root = _root_node(node.value)
-            if root is not None and is_watched(root):
+            if denotes_watched(node.value):
                 sites.append((node.lineno, "item assignment"))
-        elif isinstance(node, ast.AugAssign) \
-                and isinstance(node.target, ast.Name) \
-                and is_watched(node.target):
-            sites.append((node.lineno, "augmented assignment"))
+        elif isinstance(node, ast.AugAssign):
+            target = node.target
+            if (isinstance(target, ast.Name) and is_watched(target)) \
+                    or (isinstance(target, ast.Subscript)
+                        and denotes_watched(target.value)):
+                sites.append((node.lineno, "augmented assignment"))
         elif isinstance(node, ast.Delete):
             for t in node.targets:
                 if (isinstance(t, ast.Name) and is_watched(t)) or \
                         (isinstance(t, ast.Subscript)
-                         and _root_node(t.value) is not None
-                         and is_watched(_root_node(t.value))):
+                         and denotes_watched(t.value)):
                     sites.append((node.lineno, "deletion"))
         elif isinstance(node, ast.Call) \
                 and isinstance(node.func, ast.Attribute) \
                 and node.func.attr in _MUTATOR_METHODS:
-            root = _root_node(node.func.value)
-            if root is not None and is_watched(root):
+            if denotes_watched(node.func.value):
                 sites.append((node.lineno, f".{node.func.attr}() call"))
         elif isinstance(node, ast.Call) \
                 and isinstance(node.func, ast.Name) \
                 and node.func.id in local_defs:
             args = list(node.args) + [kw.value for kw in node.keywords]
-            if any(_touches_watched(a, is_watched) for a in args):
+            if any(hands_over(a) for a in args):
                 sites.append((node.lineno,
                               "modelled table passed as a call argument"))
     return sites
@@ -636,8 +631,10 @@ def model_ghg(text):
         tree = ast.parse(text)
     except SyntaxError as e:
         raise DifferError(f"{GHG_PY}: unparsable Python ({e})") from e
-    definitions, is_watched, local_defs = ghg_binding_census(tree)
-    sites = ghg_mutation_sites(tree, is_watched, local_defs)
+    definitions, is_watched, denotes_watched, hands_over, \
+        local_defs = ghg_binding_census(tree)
+    sites = ghg_mutation_sites(tree, is_watched, denotes_watched,
+                               hands_over, local_defs)
     if sites:
         detail = "; ".join(f"line {ln}: {desc}" for ln, desc in sites[:5])
         raise DifferError(
