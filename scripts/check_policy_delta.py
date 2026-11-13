@@ -1462,8 +1462,13 @@ def ghg_mutation_sites(tree, is_watched, hands_over, local_defs,
         if isinstance(expr, ast.Name):
             return is_strong(expr) if is_strong is not None \
                 else hands_over(expr)
-        if isinstance(expr, (ast.Subscript, ast.Attribute)):
+        if isinstance(expr, ast.Subscript):
             return hands_over_strong(expr.value)
+        if isinstance(expr, ast.Attribute):
+            # An attribute access is table-grade when the access
+            # itself yields a table (property / class-attribute
+            # provenance, inside hands_over) or its root is one.
+            return hands_over(expr)
         if isinstance(expr, ast.Call):
             return hands_over(expr)
         if isinstance(expr, (ast.List, ast.Tuple, ast.Set)):

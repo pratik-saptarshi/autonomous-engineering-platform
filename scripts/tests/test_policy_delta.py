@@ -1397,6 +1397,46 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head3)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_attribute_provenance_in_argument_checks(self):
+        # Codex PR #148: the table-grade argument predicate
+        # stripped class-attribute / property layers and tested
+        # the unrelated receiver, so a table exposed through an
+        # attribute could be passed to local code unchecked.
+        cases = {
+            "class-attr-arg": '\nclass _Holder:\n'
+                              '    caps = DEFAULT_LIMITS\n'
+                              '\ndef _uncap(caps):\n'
+                              '    caps.clear()\n'
+                              '\n_uncap(_Holder.caps)\n',
+            "property-arg": '\nclass _Ctx:\n'
+                            '    @property\n'
+                            '    def caps(self):\n'
+                            '        return DEFAULT_LIMITS\n'
+                            '\ndef _uncap(caps):\n'
+                            '    caps.clear()\n'
+                            '\n_uncap(_Ctx().caps)\n',
+        }
+        prev = self.base
+        for label, snippet in cases.items():
+            with self.subTest(form=label):
+                self.write("tools/ghg/ghg.py", GHG_PY + snippet)
+                head = self.commit(label)
+                r = self.run_tool("diff", prev, head)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                prev = head
+                self.write("tools/ghg/ghg.py", GHG_PY)
+        # Precision: an attribute carrying an unrelated value is
+        # not a table-grade argument.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Cfg:\n'
+                   '    caps = {}\n'
+                   '\ndef _tally(caps):\n'
+                   '    return len(caps)\n'
+                   '\n_t = _tally(_Cfg.caps)\n')
+        head = self.commit("attr-arg-unrelated")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)
