@@ -1506,6 +1506,69 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head2)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_callable_instance_is_a_local_definition(self):
+        # Codex PR #148: an instance of a locally defined class
+        # implementing __call__ is locally defined code, but a
+        # name holding the instance was in no callee census.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Uncap:\n'
+                   '    def __call__(self, caps):\n'
+                   '        caps.clear()\n'
+                   '\n_run = _Uncap()\n_run(DEFAULT_LIMITS)\n')
+        head = self.commit("callable-instance")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Uncap:\n'
+                   '    def __call__(self, caps):\n'
+                   '        caps.clear()\n'
+                   '\n_Uncap()(DEFAULT_LIMITS)\n')
+        head2 = self.commit("callable-instance-direct")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: a callable instance invoked with an
+        # unrelated value is ordinary code.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Uncap:\n'
+                   '    def __call__(self, caps):\n'
+                   '        caps.clear()\n'
+                   '\n_run = _Uncap()\n_run({})\n')
+        head3 = self.commit("callable-instance-unrelated")
+        r = self.run_tool("diff", self.base, head3)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_ghg_wrapper_provenance_through_properties(self):
+        # Codex PR #148: a property returning a wrapper was a
+        # structural source by default -- stripping the attribute
+        # never consulted the getter's return shape.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\nclass _Ctx:\n'
+                   '    @property\n'
+                   '    def wrapped(self):\n'
+                   '        return [("caps", DEFAULT_LIMITS)]\n'
+                   '\nfor _key, _value in _Ctx().wrapped:\n'
+                   '    _uncap(_value)\n')
+        head = self.commit("wrapper-property")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: a property returning the table itself is a
+        # structural source -- its .items() keys stay exempt.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Ledger:\n'
+                   '    def spend(self, bucket):\n'
+                   '        return bucket\n'
+                   '\nclass _Ctx:\n'
+                   '    @property\n'
+                   '    def table(self):\n'
+                   '        return DEFAULT_LIMITS\n'
+                   '\n_led = _Ledger()\n'
+                   'for _bucket, _pairs in _Ctx().table.items():\n'
+                   '    _led.spend(_bucket)\n')
+        head2 = self.commit("table-property")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)

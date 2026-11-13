@@ -856,6 +856,10 @@ def ghg_binding_census(tree):
                             property_getters[n] = \
                                 funcs[sub.value.args[0].id]
     property_returns = set()
+    # The direct subset of property_returns: every table-carrying
+    # return of the getter preserves the structural shape. Only
+    # direct properties are structural sources.
+    property_direct = set()
 
     # Attribute names bound to watched values in a locally
     # defined class body: the class (and its instances) expose
@@ -984,6 +988,11 @@ def ghg_binding_census(tree):
                 # binding (a class attribute holding a wrapper),
                 # whatever the receiver's provenance.
                 return False
+            if isinstance(v, ast.Attribute) \
+                    and v.attr in property_returns:
+                # A property access's shape is its getter's:
+                # structural only when the getter is direct.
+                return v.attr in property_direct
             v = v.value
         if isinstance(v, ast.Name):
             return v.id not in wrapper_names
@@ -1277,14 +1286,21 @@ def ghg_binding_census(tree):
                                     class_table_attrs.add(n)
                                     changed = True
         for prop, getter in property_getters.items():
-            if prop not in property_returns:
-                for sub in ast.walk(getter):
-                    if isinstance(sub, ast.Return) \
-                            and sub.value is not None \
-                            and hands_over(sub.value):
-                        property_returns.add(prop)
+            hits = [sub.value for sub in ast.walk(getter)
+                    if isinstance(sub, ast.Return)
+                    and sub.value is not None
+                    and hands_over(sub.value)]
+            if hits:
+                if prop not in property_returns:
+                    property_returns.add(prop)
+                    changed = True
+                if all(structural_source(v) for v in hits):
+                    if prop not in property_direct:
+                        property_direct.add(prop)
                         changed = True
-                        break
+                elif prop in property_direct:
+                    property_direct.discard(prop)
+                    changed = True
         for node in ast.walk(tree):
             if isinstance(node, ast.Assign) \
                     and isinstance(node.value, ast.Call) \
@@ -1423,6 +1439,14 @@ def ghg_binding_census(tree):
                      for sub in n.body
                      if isinstance(sub, (ast.FunctionDef,
                                          ast.AsyncFunctionDef))}
+    # Locally defined classes implementing __call__: their
+    # instances are locally defined callees too.
+    callable_classes = {n.name for n in ast.walk(tree)
+                        if isinstance(n, ast.ClassDef)
+                        and any(isinstance(sub, (ast.FunctionDef,
+                                                 ast.AsyncFunctionDef))
+                                and sub.name == "__call__"
+                                for sub in n.body)}
     # Aliases of locally defined callees (`_run = _uncap`,
     # `_run = _Uncap.run`): invoking through the alias reaches
     # local code exactly as invoking the definition does.
@@ -1445,19 +1469,22 @@ def ghg_binding_census(tree):
                         and (value.id in local_defs
                              or value.id in callee_aliases)) \
                     or (isinstance(value, ast.Attribute)
-                        and value.attr in local_methods):
+                        and value.attr in local_methods) \
+                    or (isinstance(value, ast.Call)
+                        and isinstance(value.func, ast.Name)
+                        and value.func.id in callable_classes):
                 for t in targets:
                     for n in _bound_names(t):
                         if n not in callee_aliases:
                             callee_aliases.add(n)
                             _alias = True
     return definitions, is_watched, hands_over, local_defs, \
-        local_methods, is_strong, callee_aliases
+        local_methods, is_strong, callee_aliases, callable_classes
 
 
 def ghg_mutation_sites(tree, is_watched, hands_over, local_defs,
                        local_methods=(), is_strong=None,
-                       callee_aliases=()):
+                       callee_aliases=(), callable_classes=()):
     """[(lineno, description)] for runtime mutations of watched tables:
     item/augmented assignment, deletion, and mutator calls on a
     watched table or any alias of one (aliases resolve per scope;
@@ -1580,7 +1607,11 @@ def ghg_mutation_sites(tree, is_watched, hands_over, local_defs,
                                or node.func.id in callee_aliases))
                          or (isinstance(node.func, ast.Attribute)
                              and node.func.attr in local_methods)
-                         or isinstance(node.func, ast.Lambda)):
+                         or isinstance(node.func, ast.Lambda)
+                         or (isinstance(node.func, ast.Call)
+                             and isinstance(node.func.func, ast.Name)
+                             and node.func.func.id
+                             in callable_classes)):
                 if any(hands_over_strong(a) for a in args):
                     desc = "modelled table passed as a call argument"
             if desc is not None:
@@ -1596,11 +1627,11 @@ def model_ghg(text):
     except SyntaxError as e:
         raise DifferError(f"{GHG_PY}: unparsable Python ({e})") from e
     definitions, is_watched, hands_over, local_defs, \
-        local_methods, is_strong, callee_aliases = \
-        ghg_binding_census(tree)
+        local_methods, is_strong, callee_aliases, \
+        callable_classes = ghg_binding_census(tree)
     sites = ghg_mutation_sites(tree, is_watched, hands_over,
                                local_defs, local_methods, is_strong,
-                               callee_aliases)
+                               callee_aliases, callable_classes)
     if sites:
         detail = "; ".join(f"line {ln}: {desc}" for ln, desc in sites[:5])
         raise DifferError(
