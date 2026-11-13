@@ -1891,6 +1891,85 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head2)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_conflicting_view_kinds_stay_table_grade(self):
+        # Codex PR #148: conflicting view bindings dropped the
+        # view_kinds entry, and the fallback marked every
+        # destructured component scalar-grade -- but each
+        # candidate kind (values/items) has a table-grade
+        # component, so no component is provably scalar.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(pairs):\n    pairs.clear()\n'
+                   '\n_view = DEFAULT_LIMITS.values()\n'
+                   '_view = DEFAULT_LIMITS.items()\n'
+                   'for _k, _pairs in _view:\n'
+                   '    _uncap(_pairs)\n')
+        head = self.commit("conflicting-view-kinds")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: merely iterating a conflicted view without
+        # handing components to local code is not a site.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_view = DEFAULT_LIMITS.values()\n'
+                   '_view = DEFAULT_LIMITS.items()\n'
+                   'for _k, _pairs in _view:\n'
+                   '    pass\n')
+        head2 = self.commit("conflicting-view-readonly")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_ghg_enter_instance_alias_propagates(self):
+        # Codex PR #148: context-manager instance provenance
+        # stopped at the constructor binding; assigning the
+        # instance to another name lost it.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Ctx:\n'
+                   '    def __enter__(self):\n'
+                   '        return DEFAULT_LIMITS\n'
+                   '    def __exit__(self, *a):\n'
+                   '        return False\n'
+                   '\n_ctx = _Ctx()\n_ctx2 = _ctx\n'
+                   'with _ctx2 as _t:\n'
+                   '    _t.clear()\n')
+        head = self.commit("enter-instance-alias")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: an alias of a non-table context manager is
+        # not a table source.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Ctx:\n'
+                   '    def __enter__(self):\n'
+                   '        return {}\n'
+                   '    def __exit__(self, *a):\n'
+                   '        return False\n'
+                   '\n_ctx = _Ctx()\n_ctx2 = _ctx\n'
+                   'with _ctx2 as _t:\n'
+                   '    _t.clear()\n')
+        head2 = self.commit("enter-instance-alias-unrelated")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_ghg_conditional_callee_alias_is_local(self):
+        # Codex PR #148: a callee selected by a conditional
+        # expression never entered callee_aliases, because the
+        # alias census tested only direct value forms.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\ndef _plain(caps):\n    return caps\n'
+                   '\n_run = _uncap if True else _plain\n'
+                   '_run(DEFAULT_LIMITS)\n')
+        head = self.commit("conditional-callee-alias")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: a conditional between imported callables is
+        # no local callee.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nimport json\n'
+                   '_run = json.dumps if True else json.loads\n'
+                   '_s = _run(DEFAULT_LIMITS)\n')
+        head2 = self.commit("conditional-imported-alias")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)

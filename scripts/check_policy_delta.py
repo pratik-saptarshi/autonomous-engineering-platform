@@ -1558,12 +1558,25 @@ def ghg_binding_census(tree):
                 enter_returning.add(_name)
                 changed = True
         for node in ast.walk(tree):
-            if isinstance(node, ast.Assign) \
-                    and isinstance(node.value, ast.Call) \
-                    and isinstance(node.value.func, ast.Name) \
-                    and node.value.func.id in enter_returning:
-                for t in node.targets:
-                    instance_names.update(_bound_names(t))
+            _v, _ts = None, ()
+            if isinstance(node, ast.Assign):
+                _v, _ts = node.value, node.targets
+            elif isinstance(node, ast.AnnAssign) \
+                    and node.value is not None:
+                _v, _ts = node.value, [node.target]
+            elif isinstance(node, ast.NamedExpr):
+                _v, _ts = node.value, [node.target]
+            if _v is not None \
+                    and ((isinstance(_v, ast.Call)
+                          and isinstance(_v.func, ast.Name)
+                          and _v.func.id in enter_returning)
+                         or (isinstance(_v, ast.Name)
+                             and _v.id in instance_names)):
+                for t in _ts:
+                    for n in _bound_names(t):
+                        if n not in instance_names:
+                            instance_names.add(n)
+                            changed = True
             if isinstance(node, ast.withitem) \
                     and node.optional_vars is not None:
                 ctx = node.context_expr
@@ -1624,9 +1637,18 @@ def ghg_binding_census(tree):
             # can yield the table itself as an element, so its
             # destructured components stay table-grade.
             weak = set()
+            # A source whose view kind is conflicted (bound to
+            # views of different kinds) has no provably scalar
+            # component: every candidate kind has a table-grade
+            # position, so no component takes the exemption.
+            _conflicted = isinstance(value, ast.Name) and (
+                value.id in _view_conflicts
+                or value.id in returning_view_conflicts
+                or value.id in lookup_kind_conflicts)
             if isinstance(node, (ast.For, ast.AsyncFor,
                                  ast.comprehension)) \
-                    and structural_source(value):
+                    and structural_source(value) \
+                    and not _conflicted:
                 src_attr = None
                 if isinstance(value, ast.Call) \
                         and isinstance(value.func, ast.Attribute):
@@ -1700,6 +1722,38 @@ def ghg_binding_census(tree):
     # `_run = _Uncap.run`): invoking through the alias reaches
     # local code exactly as invoking the definition does.
     callee_aliases = set()
+    def _value_leaves(v):
+        """Leaf values of a binding value through the
+        value-transparent wrappers (conditional branches, boolean
+        operands, walrus): an alias is a local callee if ANY leaf
+        is one."""
+        if isinstance(v, ast.IfExp):
+            yield from _value_leaves(v.body)
+            yield from _value_leaves(v.orelse)
+        elif isinstance(v, ast.BoolOp):
+            for x in v.values:
+                yield from _value_leaves(x)
+        elif isinstance(v, ast.NamedExpr):
+            yield from _value_leaves(v.value)
+        else:
+            yield v
+
+    def _is_callee_form(value):
+        return isinstance(value, ast.Lambda) \
+            or (isinstance(value, ast.Name)
+                and (value.id in local_defs
+                     or value.id in callee_aliases)) \
+            or (isinstance(value, ast.Attribute)
+                and value.attr in local_methods) \
+            or (isinstance(value, ast.Call)
+                and ((isinstance(value.func, ast.Name)
+                      and (value.func.id in callable_classes
+                           or value.func.id
+                           in returning_callables))
+                     or (isinstance(value.func, ast.Attribute)
+                         and value.func.attr
+                         in returning_callables)))
+
     _alias = True
     while _alias:
         _alias = False
@@ -1713,20 +1767,8 @@ def ghg_binding_census(tree):
                 value, targets = node.value, [node.target]
             else:
                 continue
-            if isinstance(value, ast.Lambda) \
-                    or (isinstance(value, ast.Name)
-                        and (value.id in local_defs
-                             or value.id in callee_aliases)) \
-                    or (isinstance(value, ast.Attribute)
-                        and value.attr in local_methods) \
-                    or (isinstance(value, ast.Call)
-                        and ((isinstance(value.func, ast.Name)
-                              and (value.func.id in callable_classes
-                                   or value.func.id
-                                   in returning_callables))
-                             or (isinstance(value.func, ast.Attribute)
-                                 and value.func.attr
-                                 in returning_callables))):
+            if any(_is_callee_form(leaf)
+                   for leaf in _value_leaves(value)):
                 for t in targets:
                     for n in _bound_names(t):
                         if n not in callee_aliases:
