@@ -1693,6 +1693,40 @@ def ghg_binding_census(tree):
                         in returning_view_conflicts
             _src_returning = isinstance(value, ast.Name) \
                 and value.id in returning_view_conflicts
+            if isinstance(value, (ast.IfExp, ast.BoolOp,
+                                  ast.NamedExpr)):
+                # A source selected through a conditional /
+                # boolean / walrus wrapper: generalise both
+                # tests over the wrapper's leaves, each leaf
+                # getting its direct form's answer above (a
+                # Name leaf tests the three conflict sets; a
+                # Call leaf tests its callee; an Attribute
+                # leaf has no source case, as a plain
+                # Attribute source does not).
+                # _src_returning stays the narrower test,
+                # computed independently of _src_conflict:
+                # only a Name leaf in
+                # returning_view_conflicts -- a Call leaf
+                # binds a result, not a callable alias, and
+                # gains no returning marker.
+                _leaves = list(_value_leaves(value))
+                _src_conflict = _src_conflict or any(
+                    (isinstance(leaf, ast.Name) and (
+                        leaf.id in _view_conflicts
+                        or leaf.id in returning_view_conflicts
+                        or leaf.id in lookup_kind_conflicts))
+                    or (isinstance(leaf, ast.Call) and (
+                        (isinstance(leaf.func, ast.Name)
+                         and leaf.func.id
+                         in returning_view_conflicts)
+                        or (isinstance(leaf.func, ast.Attribute)
+                            and leaf.func.attr
+                            in returning_view_conflicts)))
+                    for leaf in _leaves)
+                _src_returning = _src_returning or any(
+                    isinstance(leaf, ast.Name)
+                    and leaf.id in returning_view_conflicts
+                    for leaf in _leaves)
             if _src_conflict:
                 for t in targets:
                     for n in _bound_names(t):
