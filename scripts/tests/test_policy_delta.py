@@ -3341,6 +3341,49 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head5)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_factory_call_through_conditional_callee(self):
+        # Codex PR #148 (round 4 census, C9): a factory invoked
+        # through a conditionally selected callee had its result
+        # bound as a callee alias only if the invoking Call was
+        # recognised as callee form -- _is_callee_form's Call
+        # arm required a raw Name or Attribute func, so a Call
+        # whose func was wrapped in a conditional matched no
+        # arm and the bound result was never a callee alias.
+        # (The immediate-invocation form breaks at a different
+        # site and is not asserted here.)
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n'
+                   '    caps.clear()\n'
+                   '\ndef _factory():\n'
+                   '    return _uncap\n'
+                   '\n_run = (_factory if True else _factory)()\n'
+                   '_run(DEFAULT_LIMITS)\n')
+        head = self.commit("factory-call-conditional-callee")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Control: the plain bound form is refused, as before.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n'
+                   '    caps.clear()\n'
+                   '\ndef _factory():\n'
+                   '    return _uncap\n'
+                   '\n_run = _factory()\n'
+                   '_run(DEFAULT_LIMITS)\n')
+        head2 = self.commit("factory-call-plain-callee")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: a conditionally selected factory returning
+        # an imported callable yields no local callee.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nimport json\n'
+                   '\ndef _factory():\n'
+                   '    return json.dumps\n'
+                   '\n_run = (_factory if True else _factory)()\n'
+                   '_s = _run(DEFAULT_LIMITS)\n')
+        head3 = self.commit("factory-call-imported-result")
+        r = self.run_tool("diff", self.base, head3)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)

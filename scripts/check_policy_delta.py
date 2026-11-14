@@ -2048,7 +2048,14 @@ def ghg_binding_census(tree):
                            in returning_callables))
                      or (isinstance(value.func, ast.Attribute)
                          and value.func.attr
-                         in returning_callables)))
+                         in returning_callables))) \
+            or (isinstance(value, ast.Call)
+                and isinstance(value.func, (ast.IfExp, ast.BoolOp,
+                                            ast.NamedExpr))
+                and any(_is_callee_form(
+                            ast.Call(func=leaf, args=[],
+                                     keywords=[]))
+                        for leaf in _value_leaves(value.func)))
 
     _alias = True
     while _alias:
