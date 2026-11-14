@@ -86,6 +86,17 @@ skills/<tool>-<role>/        the thin wrapper skills (step 5)
   `plannotator/ADOPTION.md`; wrapper skills: `skills/plannotator-gate`,
   `skills/plannotator-inbox`. Status: adopted on the origin VM, pilot
   posture (see the record).
+- **Isolation stack** — confinement boundaries for the
+  untrusted-evaluation lane type: the rank-1 composite + `sandbox-gate`
+  (Landlock, seccomp, uid drop) as the default, gVisor/`runsc`
+  release-20261109.0 as the opt-in boundary, and an nsjail 3.6 profile;
+  Incus is a documented negative case (adopted-in-pattern, blocked on
+  this runtime class). Installer: `isolation/install.sh`; record:
+  `isolation/ADOPTION.md`; wrapper skills: none. Status: adopted on
+  the origin VM. **Standing warning: on a runtime that delegates no
+  cgroup controllers the stack is a confinement boundary, not a
+  resource-capped one — see the record's criterion-2 section before
+  describing it anywhere.**
 
 ## Fresh-VM checklist
 
