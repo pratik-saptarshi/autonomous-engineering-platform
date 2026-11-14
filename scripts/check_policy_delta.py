@@ -1031,6 +1031,9 @@ def ghg_binding_census(tree):
     returning_callables = set()
 
     def _callee_value(v):
+        if isinstance(v, (ast.IfExp, ast.BoolOp, ast.NamedExpr)):
+            return any(_callee_value(leaf)
+                       for leaf in _value_leaves(v))
         if isinstance(v, ast.Name):
             return v.id in def_names or v.id in lambda_names \
                 or v.id in returning_callables

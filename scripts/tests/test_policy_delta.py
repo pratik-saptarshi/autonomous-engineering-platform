@@ -2863,6 +2863,103 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head3)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_returned_callee_through_conditional(self):
+        # Codex PR #148 (round 4 census, C5): a factory whose
+        # return value was a conditional wrapper escaped
+        # _callee_value -- it dispatched on the top node only,
+        # so an IfExp return answered False for every leaf
+        # type (Name, Lambda, and method Attribute alike) and
+        # the factory never entered returning_callables.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\ndef _factory():\n'
+                   '    return (_uncap if True else _uncap)\n'
+                   '\n_run = _factory()\n'
+                   '_run(DEFAULT_LIMITS)\n')
+        head = self.commit("returned-callee-conditional-name")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Control: the plain returned callee is refused, as
+        # before.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\ndef _factory():\n    return _uncap\n'
+                   '\n_run = _factory()\n'
+                   '_run(DEFAULT_LIMITS)\n')
+        head2 = self.commit("returned-callee-plain-name")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # A conditional of Lambda returns is a returned
+        # callee too.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _factory():\n'
+                   '    return ((lambda caps: caps.clear()) if True else (lambda caps: None))\n'
+                   '\n_run = _factory()\n'
+                   '_run(DEFAULT_LIMITS)\n')
+        head3 = self.commit("returned-callee-conditional-lambdas")
+        r = self.run_tool("diff", self.base, head3)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Control: the plain Lambda return is refused, as
+        # before.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _factory():\n'
+                   '    return lambda caps: caps.clear()\n'
+                   '\n_run = _factory()\n'
+                   '_run(DEFAULT_LIMITS)\n')
+        head4 = self.commit("returned-callee-plain-lambda")
+        r = self.run_tool("diff", self.base, head4)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # A conditional of method Attribute returns is a
+        # returned callee too, via the direct Attribute arm.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Svc:\n'
+                   '    def run(self, caps):\n'
+                   '        caps.clear()\n'
+                   '\n_svc = _Svc()\n'
+                   '\ndef _factory():\n'
+                   '    return (_svc.run if True else _svc.run)\n'
+                   '\n_run = _factory()\n'
+                   '_run(DEFAULT_LIMITS)\n')
+        head5 = self.commit("returned-callee-conditional-attribute")
+        r = self.run_tool("diff", self.base, head5)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Control: the plain method Attribute return is
+        # refused, as before.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Svc:\n'
+                   '    def run(self, caps):\n'
+                   '        caps.clear()\n'
+                   '\n_svc = _Svc()\n'
+                   '\ndef _factory():\n'
+                   '    return _svc.run\n'
+                   '\n_run = _factory()\n'
+                   '_run(DEFAULT_LIMITS)\n')
+        head6 = self.commit("returned-callee-plain-attribute")
+        r = self.run_tool("diff", self.base, head6)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: a conditional of imported callables is
+        # not a locally defined callee.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nfrom json import dumps\n'
+                   '\ndef _factory():\n'
+                   '    return (dumps if True else dumps)\n'
+                   '\n_run = _factory()\n'
+                   '_s = _run(DEFAULT_LIMITS)\n')
+        head7 = self.commit("returned-callee-conditional-imported")
+        r = self.run_tool("diff", self.base, head7)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        # Precision: a conditional of imported Attributes is
+        # not a locally defined callee either.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nimport json\n'
+                   '\ndef _factory():\n'
+                   '    return (json.dumps if True else json.dumps)\n'
+                   '\n_run = _factory()\n'
+                   '_s = _run(DEFAULT_LIMITS)\n')
+        head8 = self.commit("returned-callee-cond-imported-attr")
+        r = self.run_tool("diff", self.base, head8)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)
