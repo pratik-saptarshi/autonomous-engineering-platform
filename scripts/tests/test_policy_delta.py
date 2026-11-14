@@ -2824,6 +2824,45 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head3)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_lambda_name_through_conditional_binding(self):
+        # Codex PR #148 (round 4 census, C10): a name bound to
+        # a Lambda through a conditional value escaped the
+        # lambda_names inventory -- its value test required a
+        # raw Lambda, so a factory returning that name was not
+        # recognised as returning a callable and its result
+        # invoked on the table was no mutation site.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_run = ((lambda caps: caps.clear()) if True else (lambda caps: None))\n'
+                   '\ndef _factory():\n'
+                   '    return _run\n'
+                   '\n_x = _factory()\n'
+                   '_x(DEFAULT_LIMITS)\n')
+        head = self.commit("lambda-conditional-binding")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Control: the plain Lambda binding is refused, as
+        # before.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_run = lambda caps: caps.clear()\n'
+                   '\ndef _factory():\n'
+                   '    return _run\n'
+                   '\n_x = _factory()\n'
+                   '_x(DEFAULT_LIMITS)\n')
+        head2 = self.commit("lambda-plain-binding")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: a conditional Lambda invoked on an
+        # unrelated argument is not a table mutation.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_run = ((lambda caps: caps) if True else (lambda caps: caps))\n'
+                   '\ndef _factory():\n'
+                   '    return _run\n'
+                   '\n_x = _factory()\n'
+                   '_x({})\n')
+        head3 = self.commit("lambda-conditional-unrelated-arg")
+        r = self.run_tool("diff", self.base, head3)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)

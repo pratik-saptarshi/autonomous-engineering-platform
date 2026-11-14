@@ -1022,7 +1022,8 @@ def ghg_binding_census(tree):
             _v, _ts = n.value, [n.target]
         else:
             continue
-        if isinstance(_v, ast.Lambda):
+        if any(isinstance(l, ast.Lambda)
+               for l in _value_leaves(_v)):
             for t in _ts:
                 lambda_names.update(_bound_names(t))
     # Functions returning a locally defined callee (factories),
