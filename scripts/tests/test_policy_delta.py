@@ -3071,6 +3071,64 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head9)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_lookup_capture_through_conditional(self):
+        # Codex PR #148 (round 4 census, C2): a lookup method
+        # captured through a conditional wrapper escaped the
+        # lookup census -- one raw value fed both the alias
+        # test and the view-kind bookkeeping, so a wrapped
+        # capture lost the alias and (coupled) the kind, and
+        # mutating through the captured lookup was unmodelled.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_get = (DEFAULT_LIMITS.get if True else DEFAULT_LIMITS.get)\n'
+                   '_get("core").clear()\n')
+        head = self.commit("lookup-conditional-get-capture")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Control: the plain capture is refused, as before.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_get = DEFAULT_LIMITS.get\n'
+                   '_get("core").clear()\n')
+        head2 = self.commit("lookup-plain-get-capture")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # A BoolOp capture of the lookup is a capture too.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_get = (DEFAULT_LIMITS.get or DEFAULT_LIMITS.get)\n'
+                   '_get("core").clear()\n')
+        head3 = self.commit("lookup-boolop-get-capture")
+        r = self.run_tool("diff", self.base, head3)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: .copy is in neither the lookup methods
+        # nor the view-kind attrs, in any form.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_copy = (DEFAULT_LIMITS.copy if True else DEFAULT_LIMITS.copy)\n'
+                   '_c = _copy()\n'
+                   '_c.clear()\n')
+        head4 = self.commit("lookup-conditional-copy-capture")
+        r = self.run_tool("diff", self.base, head4)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        # The kind bookkeeping moves with the alias test: a
+        # conditional capture of .items carries its kind to a
+        # bound view.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\n_items_m = (DEFAULT_LIMITS.items if True else DEFAULT_LIMITS.items)\n'
+                   '_view = _items_m()\n'
+                   'for _k, _pairs in _view:\n    _uncap(_pairs)\n')
+        head5 = self.commit("lookup-conditional-items-bound-view")
+        r = self.run_tool("diff", self.base, head5)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Control: the plain .items capture bound view is
+        # refused, as before.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\n_items_m = DEFAULT_LIMITS.items\n'
+                   '_view = _items_m()\n'
+                   'for _k, _pairs in _view:\n    _uncap(_pairs)\n')
+        head6 = self.commit("lookup-plain-items-bound-view")
+        r = self.run_tool("diff", self.base, head6)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)

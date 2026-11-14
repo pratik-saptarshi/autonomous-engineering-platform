@@ -1558,11 +1558,13 @@ def ghg_binding_census(tree):
                 value, targets = node.value, [node.target]
             else:
                 continue
-            if (isinstance(value, ast.Attribute)
-                    and value.attr in _LOOKUP_METHODS
-                    and hands_over(value.value)) \
-                    or (isinstance(value, ast.Name)
-                        and value.id in lookup_aliases):
+            _leaves = list(_value_leaves(value))
+            if any((isinstance(l, ast.Attribute)
+                    and l.attr in _LOOKUP_METHODS
+                    and hands_over(l.value))
+                   or (isinstance(l, ast.Name)
+                       and l.id in lookup_aliases)
+                   for l in _leaves):
                 for t in targets:
                     for n in _bound_names(t):
                         if n not in lookup_aliases:
@@ -1570,15 +1572,20 @@ def ghg_binding_census(tree):
                             changed = True
             # View-kind bookkeeping for view-method captures
             # and their alias chains.
-            _kind = None
-            if isinstance(value, ast.Attribute) \
-                    and value.attr in ("items", "keys", "values") \
-                    and hands_over(value.value):
-                _kind = value.attr
-            elif isinstance(value, ast.Name) \
-                    and value.id in lookup_kinds:
-                _kind = lookup_kinds[value.id]
-            if _kind is not None:
+            _leaf_kinds = []
+            for l in _leaves:
+                if isinstance(l, ast.Attribute) \
+                        and l.attr in ("items", "keys", "values") \
+                        and hands_over(l.value):
+                    _k = l.attr
+                elif isinstance(l, ast.Name) \
+                        and l.id in lookup_kinds:
+                    _k = lookup_kinds[l.id]
+                else:
+                    continue
+                if _k not in _leaf_kinds:
+                    _leaf_kinds.append(_k)
+            for _kind in _leaf_kinds:
                 for t in targets:
                     for n in _bound_names(t):
                         if n in lookup_kind_conflicts:
