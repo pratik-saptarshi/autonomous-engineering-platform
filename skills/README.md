@@ -47,6 +47,7 @@ The Source column names pratik-saptarshi forks (default branch `develop`) wherev
 | hate | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | macrothink | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | mandela | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
+| merge_integration_verification | Authored locally | MIT | Verify a merge of diverged branches tree-wide by file type and by execution, catching splice damage outside the changed directories |
 | modelchk | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | nba | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | neurogenesis_teams | pratik-saptarshi/NeuroGenesis | — | |
@@ -72,6 +73,7 @@ The Source column names pratik-saptarshi forks (default branch `develop`) wherev
 | readchk | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | receiving-review | pratik-saptarshi/superpowers | MIT | |
 | recurring-workflows | pratik-saptarshi/skills | MIT | |
+| remediation-cycle | Authored locally | MIT | Verified Remediation Cycle: the standard response to external-reviewer findings — verification round, owner ruling, remediation force, independent panel and judge, gated push |
 | reorder | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | requesting-review | pratik-saptarshi/superpowers | MIT | |
 | research | pratik-saptarshi/skills | MIT | |
