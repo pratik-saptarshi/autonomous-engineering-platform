@@ -2467,6 +2467,84 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head6)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_view_conflict_through_callable_alias(self):
+        # Codex PR #148 (round 2): a callable alias of a
+        # view-conflicted function escaped the call-source
+        # conflict check -- the binding pass deposited the alias
+        # in _view_conflicts (the name-kind set) but not in
+        # returning_view_conflicts, the only set the call-source
+        # check consults for a callee, so the alias's unpacked
+        # pairs took the scalar exemption.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(pairs):\n    pairs.clear()\n'
+                   '\ndef _entries():\n'
+                   '    _v = DEFAULT_LIMITS.values()\n'
+                   '    _v = DEFAULT_LIMITS.items()\n'
+                   '    return _v\n'
+                   '\n_reader = _entries\n'
+                   'for _key, _pairs in _reader():\n'
+                   '    _uncap(_pairs)\n')
+        head = self.commit("view-conflict-callable-alias")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # The conflict also reaches a result bound from the
+        # alias call and then iterated.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(pairs):\n    pairs.clear()\n'
+                   '\ndef _entries():\n'
+                   '    _v = DEFAULT_LIMITS.values()\n'
+                   '    _v = DEFAULT_LIMITS.items()\n'
+                   '    return _v\n'
+                   '\n_reader = _entries\n'
+                   '_result = _reader()\n'
+                   'for _key, _pairs in _result:\n'
+                   '    _uncap(_pairs)\n')
+        head2 = self.commit("view-conflict-alias-result")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Control: the direct call of the conflicted function
+        # is refused, as before.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(pairs):\n    pairs.clear()\n'
+                   '\ndef _entries():\n'
+                   '    _v = DEFAULT_LIMITS.values()\n'
+                   '    _v = DEFAULT_LIMITS.items()\n'
+                   '    return _v\n'
+                   '\nfor _key, _pairs in _entries():\n'
+                   '    _uncap(_pairs)\n')
+        head3 = self.commit("view-conflict-direct-call")
+        r = self.run_tool("diff", self.base, head3)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: an alias of a single-kind items function
+        # is not conflicted -- spending its key component
+        # through the alias is still scalar use.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Ledger:\n'
+                   '    def spend(self, bucket):\n'
+                   '        return bucket\n'
+                   '\ndef _entries():\n'
+                   '    return DEFAULT_LIMITS.items()\n'
+                   '\n_reader = _entries\n'
+                   '_led = _Ledger()\n'
+                   'for _key, _pairs in _reader():\n'
+                   '    _led.spend(_key)\n')
+        head4 = self.commit("alias-single-kind-key-spend")
+        r = self.run_tool("diff", self.base, head4)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        # Precision: passing the single-kind alias's key
+        # component to a clearing local function is still
+        # scalar use of the key, not of the pairs.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\ndef _entries():\n'
+                   '    return DEFAULT_LIMITS.items()\n'
+                   '\n_reader = _entries\n'
+                   'for _key, _pairs in _reader():\n'
+                   '    _uncap(_key)\n')
+        head5 = self.commit("alias-single-kind-key-clear")
+        r = self.run_tool("diff", self.base, head5)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)

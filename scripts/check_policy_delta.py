@@ -1675,12 +1675,29 @@ def ghg_binding_census(tree):
                 elif isinstance(value.func, ast.Attribute):
                     _src_conflict = value.func.attr \
                         in returning_view_conflicts
+            _src_returning = isinstance(value, ast.Name) \
+                and value.id in returning_view_conflicts
             if _src_conflict:
                 for t in targets:
                     for n in _bound_names(t):
                         if n not in _view_conflicts:
                             _view_conflicts.add(n)
                             view_kinds.pop(n, None)
+                            changed = True
+                        if _src_returning \
+                                and n not in \
+                                returning_view_conflicts:
+                            # A callable alias of a
+                            # view-conflicted function carries
+                            # the conflict in callee position
+                            # too: the call-source check
+                            # consults only
+                            # returning_view_conflicts for a
+                            # callee name, never
+                            # _view_conflicts. The
+                            # _view_conflicts deposit above
+                            # (name position) is unchanged.
+                            returning_view_conflicts.add(n)
                             changed = True
                 continue
             _kinds = _view_kinds_of(value)
