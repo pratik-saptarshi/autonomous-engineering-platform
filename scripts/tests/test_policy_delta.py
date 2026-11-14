@@ -2784,6 +2784,166 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head9)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_view_conflict_through_conditional_callee(self):
+        # Codex PR #148 (round 5, review 5902567129): a
+        # view-conflicted function invoked through a
+        # conditionally selected callee escaped the binding
+        # pass -- _src_conflict tested only Name/Attribute
+        # callees of a Call, and the round-3 wrapper
+        # generalisation fires only when the binding value
+        # itself is a wrapper, so _view = (_entries if ...)
+        # received no conflict deposit and its pairs took
+        # the scalar exemption.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(pairs):\n    pairs.clear()\n'
+                   '\ndef _entries():\n'
+                   '    _v = DEFAULT_LIMITS.values()\n'
+                   '    _v = DEFAULT_LIMITS.items()\n'
+                   '    return _v\n'
+                   '\n_view = (_entries if True else _entries)()\n'
+                   'for _key, _pairs in _view:\n'
+                   '    _uncap(_pairs)\n')
+        head = self.commit("view-conflict-conditional-callee")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Boolean selection of the conflicted callee
+        # propagates the conflict too.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(pairs):\n    pairs.clear()\n'
+                   '\ndef _entries():\n'
+                   '    _v = DEFAULT_LIMITS.values()\n'
+                   '    _v = DEFAULT_LIMITS.items()\n'
+                   '    return _v\n'
+                   '\n_view = (_entries or _entries)()\n'
+                   'for _key, _pairs in _view:\n'
+                   '    _uncap(_pairs)\n')
+        head2 = self.commit("view-conflict-boolop-callee")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # A walrus-selected conflicted callee propagates
+        # the conflict too.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(pairs):\n    pairs.clear()\n'
+                   '\ndef _entries():\n'
+                   '    _v = DEFAULT_LIMITS.values()\n'
+                   '    _v = DEFAULT_LIMITS.items()\n'
+                   '    return _v\n'
+                   '\n_view = (_f := _entries)()\n'
+                   'for _key, _pairs in _view:\n'
+                   '    _uncap(_pairs)\n')
+        head3 = self.commit("view-conflict-walrus-callee")
+        r = self.run_tool("diff", self.base, head3)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Mixed leaves: one conflicted callee leaf and one
+        # values-kind leaf -- the conflict wins and no
+        # kind-based exemption is granted. (A values leaf is
+        # used deliberately: an items leaf would mask the
+        # defect at exit level pre-fix.)
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(pairs):\n    pairs.clear()\n'
+                   '\ndef _entries():\n'
+                   '    _v = DEFAULT_LIMITS.values()\n'
+                   '    _v = DEFAULT_LIMITS.items()\n'
+                   '    return _v\n'
+                   '\ndef _values_fn():\n'
+                   '    return DEFAULT_LIMITS.values()\n'
+                   '\n_view = (_entries if True else _values_fn)()\n'
+                   'for _key, _pairs in _view:\n'
+                   '    _uncap(_pairs)\n')
+        head4 = self.commit("view-conflict-mixed-callee")
+        r = self.run_tool("diff", self.base, head4)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Control: the direct callee is refused, as before.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(pairs):\n    pairs.clear()\n'
+                   '\ndef _entries():\n'
+                   '    _v = DEFAULT_LIMITS.values()\n'
+                   '    _v = DEFAULT_LIMITS.items()\n'
+                   '    return _v\n'
+                   '\n_view = _entries()\n'
+                   'for _key, _pairs in _view:\n'
+                   '    _uncap(_pairs)\n')
+        head5 = self.commit("view-conflict-direct-callee-r5")
+        r = self.run_tool("diff", self.base, head5)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Control: the plain alias is refused, as before.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(pairs):\n    pairs.clear()\n'
+                   '\ndef _entries():\n'
+                   '    _v = DEFAULT_LIMITS.values()\n'
+                   '    _v = DEFAULT_LIMITS.items()\n'
+                   '    return _v\n'
+                   '\n_reader = _entries\n'
+                   'for _key, _pairs in _reader():\n'
+                   '    _uncap(_pairs)\n')
+        head6 = self.commit("view-conflict-plain-alias-r5")
+        r = self.run_tool("diff", self.base, head6)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: a conditional callee of a single-kind
+        # items function is not conflicted -- spending its
+        # key component is still scalar use.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Ledger:\n'
+                   '    def spend(self, bucket):\n'
+                   '        return bucket\n'
+                   '\ndef _entries():\n'
+                   '    return DEFAULT_LIMITS.items()\n'
+                   '\n_view = (_entries if True else _entries)()\n'
+                   '_led = _Ledger()\n'
+                   'for _key, _pairs in _view:\n'
+                   '    _led.spend(_key)\n')
+        head7 = self.commit("cond-callee-single-kind-key-spend")
+        r = self.run_tool("diff", self.base, head7)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        # Precision: a conditional callee returning a
+        # non-view list is not conflicted -- clearing the
+        # plain dict component is still scalar use.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(pairs):\n    pairs.clear()\n'
+                   '\ndef _rows():\n'
+                   '    return [("k", {})]\n'
+                   '\n_view = (_rows if True else _rows)()\n'
+                   'for _key, _pairs in _view:\n'
+                   '    _uncap(_pairs)\n')
+        head8 = self.commit("cond-callee-non-view-list")
+        r = self.run_tool("diff", self.base, head8)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        # Attribute callee, direct control: a method whose
+        # binding is view-conflicted, called directly, is
+        # refused (observed at exit 2 on pre-fix code --
+        # the parity premise for the conditional form).
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(pairs):\n    pairs.clear()\n'
+                   '\nclass _Svc:\n'
+                   '    def entries(self):\n'
+                   '        _v = DEFAULT_LIMITS.values()\n'
+                   '        _v = DEFAULT_LIMITS.items()\n'
+                   '        return _v\n'
+                   '\n_svc = _Svc()\n'
+                   '_view = _svc.entries()\n'
+                   'for _key, _pairs in _view:\n'
+                   '    _uncap(_pairs)\n')
+        head9 = self.commit("view-conflict-attr-direct-callee")
+        r = self.run_tool("diff", self.base, head9)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Attribute callee, conditional form: the same
+        # method selected through a conditional callee
+        # propagates the conflict too.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(pairs):\n    pairs.clear()\n'
+                   '\nclass _Svc:\n'
+                   '    def entries(self):\n'
+                   '        _v = DEFAULT_LIMITS.values()\n'
+                   '        _v = DEFAULT_LIMITS.items()\n'
+                   '        return _v\n'
+                   '\n_svc = _Svc()\n'
+                   '_view = (_svc.entries if True else _svc.entries)()\n'
+                   'for _key, _pairs in _view:\n'
+                   '    _uncap(_pairs)\n')
+        head10 = self.commit("view-conflict-attr-cond-callee")
+        r = self.run_tool("diff", self.base, head10)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+
     def test_ghg_property_getter_through_conditional_registration(self):
         # Codex PR #148 (round 4 census, C11): a getter
         # registered through a conditional property() call in a

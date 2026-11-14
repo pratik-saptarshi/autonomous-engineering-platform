@@ -1773,6 +1773,32 @@ def ghg_binding_census(tree):
                     isinstance(leaf, ast.Name)
                     and leaf.id in returning_view_conflicts
                     for leaf in _leaves)
+            if isinstance(value, ast.Call) \
+                    and isinstance(value.func, (ast.IfExp,
+                                                ast.BoolOp,
+                                                ast.NamedExpr)):
+                # A callee selected through a conditional /
+                # boolean / walrus wrapper, invoked in place:
+                # the binding value is the Call, so the raw
+                # Call test above (Name/Attribute funcs only)
+                # does not fire and the R3-2 wrapper block
+                # (gated on the value itself) cannot fire.
+                # Generalise the raw Call test over the
+                # func's leaves: each leaf callee gets its
+                # direct form's answer -- a Name leaf tests
+                # returning_view_conflicts, as a Name func
+                # does at 1734-1736; an Attribute leaf tests
+                # its attr, as an Attribute func does at
+                # 1737-1739. _src_returning is NOT extended:
+                # this value binds a call result, not a
+                # callable alias (Fork (c)).
+                _src_conflict = _src_conflict or any(
+                    (isinstance(leaf, ast.Name)
+                     and leaf.id in returning_view_conflicts)
+                    or (isinstance(leaf, ast.Attribute)
+                        and leaf.attr
+                        in returning_view_conflicts)
+                    for leaf in _value_leaves(value.func))
             if _src_conflict:
                 for t in targets:
                     for n in _bound_names(t):
