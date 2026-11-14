@@ -3,17 +3,24 @@
 ## Prerequisites
 
 - A static skill scanner is installed in your environment, and a gate script
-  can reach it. The bundled `scripts/scan-gate.sh` is the reference runner:
-  it exits 0 only when the score is 50 or below with no HIGH or CRITICAL
-  findings, and fails closed on any scan error. If your scanner lives
-  somewhere other than where the gate script looks, point the script at it
-  first.
+  can reach it. The reference runner is bundled with this skill at
+  `scripts/scan-gate.sh` inside the skill's own directory; in a full
+  checkout of the autonomous-engineering-platform repository, the same
+  runner also lives at the repo-root `scripts/scan-gate.sh`. It exits 0
+  only when the score is 50 or below with no HIGH or CRITICAL findings,
+  and fails closed on any scan error. The bundled runner finds the scanner
+  via `$SKILLSPECTOR_BIN` if set, else `skillspector` on your `PATH`, else
+  the `$HOME/workspace/skillspector/venv/bin/skillspector` fallback. If
+  your scanner lives somewhere else, set `SKILLSPECTOR_BIN` to it first.
 - Know your agent's skills directory (where installed skills live).
 
 ## Run the pre-ingestion gate
 
 - Scan the candidate skill with the gate script before copying it into your
-  skills directory: `scripts/scan-gate.sh /path/to/skill/`.
+  skills directory: `scripts/scan-gate.sh /path/to/skill/`, with the script
+  path resolved relative to this skill's own directory (the folder
+  containing this SKILL.md), so it works wherever the skill folder was
+  installed.
 
 - Treat the gate as fail closed: a score above 50 or any HIGH or CRITICAL
   finding blocks the install, and a scan error blocks it too.
@@ -22,10 +29,26 @@
   scan passes. A score of 0 is LOW and SAFE, 21 to 50 is MEDIUM and CAUTION
   with findings to review.
 
+- You may substitute your own gate command for the bundled runner only if
+  it honours the same contract: it takes one positional argument (the
+  skill path), exits 0 only when the score is 50 or below AND there are no
+  HIGH or CRITICAL findings, exits nonzero on any scanner error or on an
+  empty or unparseable report, and prints the score, severity, and
+  recommendation.
+
+- If no compliant gate command exists in your environment — no bundled
+  runner, no scanner it can reach, and no substitute honouring the contract
+  above — stop and report that to the user. Do not improvise a runner, and
+  do not install ungated: a missing runner counts as a scan error under the
+  fail-closed rule.
+
 ## Read the full findings on a block
 
-- Re-run the scan with `--format json` and read the `issues` list. Each entry
-  carries an id, a severity, a confidence, and a file plus line location.
+- Re-run the scanner itself with `--format json` and read the `issues`
+  list. (The gate wrapper takes exactly one positional argument — the skill
+  path — and already requests JSON internally; the direct scanner re-run is
+  how you read the full report.) Each entry carries an id, a severity, a
+  confidence, and a file plus line location.
 
 - Open every flagged location in context and quote the flagged text before
   deciding anything. Markdown prose is the usual attack surface, so a pattern
