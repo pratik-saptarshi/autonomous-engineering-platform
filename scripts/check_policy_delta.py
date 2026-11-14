@@ -2016,10 +2016,13 @@ def ghg_binding_census(tree):
         """A literal container holds a local callee among its
         elements/values (through nested literal layers)."""
         if isinstance(v, (ast.List, ast.Tuple, ast.Set)):
-            return any(_is_callee_form(e) for e in v.elts)
+            return any(_is_callee_form(leaf)
+                       for e in v.elts
+                       for leaf in _value_leaves(e))
         if isinstance(v, ast.Dict):
-            return any(_is_callee_form(e) for e in v.values
-                       if e is not None)
+            return any(_is_callee_form(leaf)
+                       for e in v.values if e is not None
+                       for leaf in _value_leaves(e))
         if isinstance(v, ast.Subscript):
             return _container_has_callee(v.value)
         if isinstance(v, ast.IfExp):

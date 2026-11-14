@@ -3286,6 +3286,61 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head7)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_callee_container_conditional_element(self):
+        # Codex PR #148 (round 4 census, C8): a callee selected
+        # from an inline literal container escaped when the
+        # container's element was wrapped in a conditional --
+        # _container_has_callee passed each element to
+        # _is_callee_form raw, so an IfExp element tested False
+        # even though its leaves are local callees. (Selection
+        # through a container held in a Name escapes in plain
+        # form too; that wrapper-independent bound is not this
+        # finding and is not asserted here.)
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n'
+                   '    caps.clear()\n'
+                   '\n_run = [(_uncap if True else _uncap)][0]\n'
+                   '_run(DEFAULT_LIMITS)\n')
+        head = self.commit("callee-container-conditional-element")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Control: the plain element is refused, as before.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n'
+                   '    caps.clear()\n'
+                   '\n_run = [_uncap][0]\n'
+                   '_run(DEFAULT_LIMITS)\n')
+        head2 = self.commit("callee-container-plain-element")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Direct form: the inline subscript call itself is a
+        # mutation site when the element is conditional.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n'
+                   '    caps.clear()\n'
+                   '\n[(_uncap if True else _uncap)][0](DEFAULT_LIMITS)\n')
+        head3 = self.commit("callee-container-conditional-direct")
+        r = self.run_tool("diff", self.base, head3)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Control: the plain-element direct call is refused,
+        # as before.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n'
+                   '    caps.clear()\n'
+                   '\n[_uncap][0](DEFAULT_LIMITS)\n')
+        head4 = self.commit("callee-container-plain-direct")
+        r = self.run_tool("diff", self.base, head4)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: a conditional element naming an imported
+        # callable is not a local callee in any form.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nimport json\n'
+                   '\n_run = [(json.dumps if True else json.dumps)][0]\n'
+                   '_s = _run(DEFAULT_LIMITS)\n')
+        head5 = self.commit("callee-container-imported-element")
+        r = self.run_tool("diff", self.base, head5)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)
