@@ -1191,6 +1191,19 @@ def ghg_binding_census(tree):
                 # A fresh instance of a class whose __call__
                 # hands over a table, invoked immediately.
                 return expr.func.func.id in call_returning_classes
+            if isinstance(expr.func, (ast.IfExp, ast.BoolOp,
+                                      ast.NamedExpr)):
+                # A callee selected through a conditional /
+                # boolean / walrus wrapper: the call hands over
+                # a table if ANY alternative callee would --
+                # re-ask the same question with each leaf as
+                # the callee, so Name, Attribute, and
+                # constructor alternatives all get the direct
+                # forms' answer (a None alternative answers
+                # False, as its direct form does).
+                return any(hands_over(ast.Call(func=leaf, args=[],
+                                               keywords=[]))
+                           for leaf in _value_leaves(expr.func))
             return False
         if isinstance(expr, (ast.ListComp, ast.SetComp,
                              ast.GeneratorExp)):

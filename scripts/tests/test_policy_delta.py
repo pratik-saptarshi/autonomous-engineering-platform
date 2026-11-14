@@ -2280,6 +2280,51 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head2)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_table_return_through_conditional_callee(self):
+        # Codex PR #148: a table-returning function invoked through
+        # a conditional callee escaped hands_over -- the terminal
+        # Call handling recognized only Name and Call callees, so
+        # the selected callee was never asked whether it returns
+        # a table.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _tables():\n    return DEFAULT_LIMITS\n'
+                   '\n(_tables if True else None)().clear()\n')
+        head = self.commit("conditional-callee-table")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Boolean selection between the table-returning function
+        # and a non-returning one hands over the table too.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _tables():\n    return DEFAULT_LIMITS\n'
+                   '\ndef _other():\n    return {}\n'
+                   '\n(_tables or _other)().clear()\n')
+        head2 = self.commit("boolop-callee-table")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Nested conditionals flatten to the same alternatives.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _tables():\n    return DEFAULT_LIMITS\n'
+                   '\n((_tables if True else None) if True else '
+                   'None)().clear()\n')
+        head3 = self.commit("nested-conditional-callee-table")
+        r = self.run_tool("diff", self.base, head3)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Control: the direct callee is refused, as before.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _tables():\n    return DEFAULT_LIMITS\n'
+                   '\n_tables().clear()\n')
+        head4 = self.commit("direct-callee-table")
+        r = self.run_tool("diff", self.base, head4)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: a conditional callee whose alternatives
+        # return no table is not a site.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _other():\n    return {}\n'
+                   '\n(_other if True else None)().clear()\n')
+        head5 = self.commit("conditional-callee-nonreturning")
+        r = self.run_tool("diff", self.base, head5)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)
