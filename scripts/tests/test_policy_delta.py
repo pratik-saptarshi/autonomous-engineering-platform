@@ -2960,6 +2960,117 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head8)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_returning_view_kind_through_conditional_alias(self):
+        # Codex PR #148 (round 4 census, C1): an alias of a
+        # view-returning function bound through a conditional
+        # wrapper escaped the returning_views transfer -- the
+        # source names were built from the raw binding value
+        # only, so an IfExp/BoolOp source transferred no view
+        # kind and the iterated pairs took the scalar
+        # exemption.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\ndef _items():\n    return DEFAULT_LIMITS.items()\n'
+                   '\n_reader = _items if True else _items\n'
+                   'for _key, _pairs in _reader():\n    _uncap(_pairs)\n')
+        head = self.commit("returning-view-conditional-direct-iter")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Control: the plain alias direct iteration is refused,
+        # as before.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\ndef _items():\n    return DEFAULT_LIMITS.items()\n'
+                   '\n_reader = _items\n'
+                   'for _key, _pairs in _reader():\n    _uncap(_pairs)\n')
+        head2 = self.commit("returning-view-plain-direct-iter")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # The conditional alias also transfers the kind to a
+        # bound view.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\ndef _items():\n    return DEFAULT_LIMITS.items()\n'
+                   '\n_reader = _items if True else _items\n'
+                   '_view = _reader()\n'
+                   'for _key, _pairs in _view:\n    _uncap(_pairs)\n')
+        head3 = self.commit("returning-view-conditional-bound-view")
+        r = self.run_tool("diff", self.base, head3)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Control: the plain alias bound view is refused, as
+        # before.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\ndef _items():\n    return DEFAULT_LIMITS.items()\n'
+                   '\n_reader = _items\n'
+                   '_view = _reader()\n'
+                   'for _key, _pairs in _view:\n    _uncap(_pairs)\n')
+        head4 = self.commit("returning-view-plain-bound-view")
+        r = self.run_tool("diff", self.base, head4)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # A BoolOp alias transfers the kind too.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\ndef _items():\n    return DEFAULT_LIMITS.items()\n'
+                   '\n_reader = _items or _items\n'
+                   'for _key, _pairs in _reader():\n    _uncap(_pairs)\n')
+        head5 = self.commit("returning-view-boolop-direct-iter")
+        r = self.run_tool("diff", self.base, head5)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: spending only the iterated key through a
+        # conditional alias is not a table mutation.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Ledger:\n    def spend(self, bucket):\n'
+                   '        return bucket\n'
+                   '\ndef _items():\n    return DEFAULT_LIMITS.items()\n'
+                   '\n_reader = _items if True else _items\n'
+                   '_led = _Ledger()\n'
+                   'for _key, _pairs in _reader():\n    _led.spend(_key)\n')
+        head6 = self.commit("returning-view-conditional-key-spend")
+        r = self.run_tool("diff", self.base, head6)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        # An Attribute leaf contributes through the plain
+        # Attribute arm: a conditional alias of a view method.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\nclass _Svc:\n'
+                   '    def view(self):\n'
+                   '        return DEFAULT_LIMITS.items()\n'
+                   '\n_svc = _Svc()\n'
+                   '\n_reader = _svc.view if True else _svc.view\n'
+                   'for _key, _pairs in _reader():\n    _uncap(_pairs)\n')
+        head7 = self.commit("returning-view-conditional-attribute")
+        r = self.run_tool("diff", self.base, head7)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Control: the plain Attribute alias is refused, as
+        # before.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\nclass _Svc:\n'
+                   '    def view(self):\n'
+                   '        return DEFAULT_LIMITS.items()\n'
+                   '\n_svc = _Svc()\n'
+                   '\n_reader = _svc.view\n'
+                   'for _key, _pairs in _reader():\n    _uncap(_pairs)\n')
+        head8 = self.commit("returning-view-plain-attribute")
+        r = self.run_tool("diff", self.base, head8)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: the Attribute form's key spend is not a
+        # table mutation either.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Ledger:\n    def spend(self, bucket):\n'
+                   '        return bucket\n'
+                   '\nclass _Svc:\n'
+                   '    def view(self):\n'
+                   '        return DEFAULT_LIMITS.items()\n'
+                   '\n_svc = _Svc()\n'
+                   '\n_reader = _svc.view if True else _svc.view\n'
+                   '_led = _Ledger()\n'
+                   'for _key, _pairs in _reader():\n    _led.spend(_key)\n')
+        head9 = self.commit("returning-view-cond-attribute-key-spend")
+        r = self.run_tool("diff", self.base, head9)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)

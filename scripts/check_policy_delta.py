@@ -1522,6 +1522,32 @@ def ghg_binding_census(tree):
                                 returning_views[n] = \
                                     returning_views[_sn]
                                 changed = True
+            if isinstance(value, (ast.IfExp, ast.BoolOp,
+                                  ast.NamedExpr)):
+                _src_names = []
+                for leaf in _value_leaves(value):
+                    if isinstance(leaf, ast.Name):
+                        _src_names.append(leaf.id)
+                    elif isinstance(leaf, ast.Attribute):
+                        _src_names.append(leaf.attr)
+                _kinds = {returning_views[_sn] for _sn in _src_names
+                          if _sn in returning_views
+                          and _sn not in returning_view_conflicts}
+                _conflicted = any(_sn in returning_view_conflicts
+                                  for _sn in _src_names)
+                if _conflicted or len(_kinds) > 1:
+                    for t in targets:
+                        for n in _bound_names(t):
+                            if n not in returning_view_conflicts:
+                                returning_view_conflicts.add(n)
+                                changed = True
+                elif _kinds:
+                    _kind = next(iter(_kinds))
+                    for t in targets:
+                        for n in _bound_names(t):
+                            if n not in returning_views:
+                                returning_views[n] = _kind
+                                changed = True
         for node in ast.walk(tree):
             if isinstance(node, ast.Assign):
                 value, targets = node.value, node.targets
