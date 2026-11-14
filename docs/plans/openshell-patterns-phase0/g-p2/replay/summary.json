@@ -1,0 +1,163 @@
+[
+ {
+  "pr": 141,
+  "commit": "4e0bb62",
+  "allowed": 8,
+  "denied": 0,
+  "notes": []
+ },
+ {
+  "pr": 136,
+  "commit": "c932258",
+  "allowed": 0,
+  "denied": 0,
+  "notes": [
+   "ghg.py changed but modelled power (caps + classification) unchanged"
+  ]
+ },
+ {
+  "pr": 132,
+  "commit": "0b5357c",
+  "allowed": 2,
+  "denied": 0,
+  "notes": []
+ },
+ {
+  "pr": 131,
+  "commit": "0f5b652",
+  "allowed": 32,
+  "denied": 0,
+  "notes": [
+   "6 SKILL.md content change(s) in surviving skills \u2014 not mechanically classifiable as grant/denial by this model"
+  ]
+ },
+ {
+  "pr": 84,
+  "commit": "8509b26",
+  "allowed": 36,
+  "denied": 0,
+  "notes": []
+ },
+ {
+  "pr": 85,
+  "commit": "7860da6",
+  "allowed": 0,
+  "denied": 2,
+  "notes": []
+ },
+ {
+  "pr": 83,
+  "commit": "c14d931",
+  "allowed": 0,
+  "denied": 0,
+  "notes": [
+   "skills-sync-scope.txt created (whole scope set is new)"
+  ]
+ },
+ {
+  "pr": 80,
+  "commit": "9142ae2",
+  "allowed": 0,
+  "denied": 0,
+  "notes": []
+ },
+ {
+  "pr": 76,
+  "commit": "2ef45b5",
+  "allowed": 0,
+  "denied": 0,
+  "notes": [
+   "2 SKILL.md content change(s) in surviving skills \u2014 not mechanically classifiable as grant/denial by this model"
+  ]
+ },
+ {
+  "pr": 67,
+  "commit": "4d172ef",
+  "allowed": 0,
+  "denied": 0,
+  "notes": [
+   "1 SKILL.md content change(s) in surviving skills \u2014 not mechanically classifiable as grant/denial by this model"
+  ]
+ },
+ {
+  "pr": 58,
+  "commit": "a649e60",
+  "allowed": 40,
+  "denied": 0,
+  "notes": [
+   "16 SKILL.md content change(s) in surviving skills \u2014 not mechanically classifiable as grant/denial by this model"
+  ]
+ },
+ {
+  "pr": 42,
+  "commit": "5c58c64",
+  "allowed": 0,
+  "denied": 0,
+  "notes": [
+   "1 SKILL.md content change(s) in surviving skills \u2014 not mechanically classifiable as grant/denial by this model"
+  ]
+ },
+ {
+  "pr": 43,
+  "commit": "bcee15f",
+  "allowed": 0,
+  "denied": 0,
+  "notes": [
+   "ghg.py created (whole gateway is new; no prior power baseline)"
+  ]
+ },
+ {
+  "pr": 49,
+  "commit": "f207969",
+  "allowed": 0,
+  "denied": 0,
+  "notes": []
+ },
+ {
+  "pr": 46,
+  "commit": "0941d95",
+  "allowed": 0,
+  "denied": 0,
+  "notes": []
+ },
+ {
+  "pr": 40,
+  "commit": "37f0406",
+  "allowed": 0,
+  "denied": 0,
+  "notes": [
+   "policy.data created (whole deny-set is new; no prior power baseline)",
+   "2 SKILL.md content change(s) in surviving skills \u2014 not mechanically classifiable as grant/denial by this model"
+  ]
+ },
+ {
+  "pr": 32,
+  "commit": "7a15219",
+  "allowed": 0,
+  "denied": 5,
+  "notes": [
+   "1 SKILL.md content change(s) in surviving skills \u2014 not mechanically classifiable as grant/denial by this model"
+  ]
+ },
+ {
+  "pr": 27,
+  "commit": "8e2006d",
+  "allowed": 1,
+  "denied": 0,
+  "notes": []
+ },
+ {
+  "pr": 23,
+  "commit": "071c5f6",
+  "allowed": 5,
+  "denied": 0,
+  "notes": []
+ },
+ {
+  "pr": 9,
+  "commit": "7354d9e",
+  "allowed": 29,
+  "denied": 0,
+  "notes": []
+ }
+]

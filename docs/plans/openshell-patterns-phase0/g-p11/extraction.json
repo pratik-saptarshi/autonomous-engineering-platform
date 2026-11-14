@@ -1,0 +1,81 @@
+{
+ "ghg_default_limits": {
+  "core": [
+   [
+    3600,
+    3500
+   ]
+  ],
+  "graphql": [
+   [
+    3600,
+    3500
+   ]
+  ],
+  "search": [
+   [
+    60,
+    20
+   ]
+  ],
+  "code_search": [
+   [
+    60,
+    9
+   ]
+  ],
+  "content": [
+   [
+    60,
+    40
+   ],
+   [
+    3600,
+    300
+   ]
+  ]
+ },
+ "policy_data_sections": {
+  "sensitive-paths": 25,
+  "env-scrub": 6
+ },
+ "skills_scope_count": 98,
+ "skills_manifest_entries": 385,
+ "skills_in_tree": 95,
+ "vendor_manifests": [
+  "vendor-craft-anything.sha256",
+  "vendor-docs-mcp-server.sha256",
+  "vendor-elephant-goldfish-model.sha256",
+  "vendor-esf.sha256",
+  "vendor-grim-prompter.sha256",
+  "vendor-harness2.sha256",
+  "vendor-homebrew-install.sha256",
+  "vendor-humanizer.sha256",
+  "vendor-neurostrata-ops.sha256",
+  "vendor-neurostrata.sha256",
+  "vendor-security-audit-skill.sha256",
+  "vendor-ub-mode.sha256"
+ ],
+ "workflows": [
+  "actionlint.yml",
+  "ci.yml",
+  "dependency-review.yml",
+  "secret-scan.yml"
+ ],
+ "codeowners_lines": 1,
+ "skillspector_baselines": [
+  "archify-disposition.md",
+  "archify.json",
+  "archify.skillspector-baseline.json",
+  "code_explorer.json",
+  "dispatching-parallel-agents.json",
+  "grilling.json",
+  "plan_review_integrator.json",
+  "ralph_loop.json",
+  "recurring-workflows.json",
+  "reverse_engineering.json",
+  "roundtable_review.json",
+  "to-questionnaire.json",
+  "verification-before-completion.json"
+ ]
+}

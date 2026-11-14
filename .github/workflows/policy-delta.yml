@@ -1,0 +1,63 @@
+name: Policy Delta
+
+# Bounded claim: this workflow computes the mechanical power delta of a
+# PR over the modelled policy artefacts (scripts/policy.data deny-sets,
+# ghg caps + mutating classification, the skills sync scope sections,
+# and the skills tree incl. newly added executable surface) and fails
+# closed while the delta newly allows power the PR body does not
+# acknowledge (see scripts/check_policy_delta.py). The report goes to
+# the job summary; the acknowledgement token in the PR body is a
+# recorded human act, never an approval substitute. It informs the
+# human gate that already exists; it does not replace it.
+#
+# This lives in its own workflow because the acknowledgement loop needs
+# the `edited` activity type (a human pastes the token into the PR body
+# after reading the report) -- ci.yml deliberately keeps the default
+# pull_request types so body edits do not re-run the full CI suite.
+# The differ's own test suite runs here, in this full-history checkout,
+# so the Phase 0 replay corpus (which needs the historical commits)
+# actually executes in CI instead of skipping on a shallow checkout.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  policy-delta:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Differ test suite (incl. Phase 0 replay corpus)
+        run: python3 -m unittest discover -s scripts/tests -p "test_policy_delta.py" -v
+      - name: Compute policy delta report
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set +e
+          python3 scripts/check_policy_delta.py diff "$BASE_SHA" "$HEAD_SHA" --format markdown > policy-delta.md 2>&1
+          rc=$?
+          set -e
+          if [ "$rc" -eq 2 ]; then
+            printf '\n**The differ errored (exit 2); the acknowledgement check below fails closed.**\n' >> policy-delta.md
+          fi
+          cat policy-delta.md
+          cat policy-delta.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Acknowledgement check (fail-closed)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          printf '%s' "$PR_BODY" > pr-body.txt
+          python3 scripts/check_policy_delta.py check "$BASE_SHA" "$HEAD_SHA" --body-file pr-body.txt

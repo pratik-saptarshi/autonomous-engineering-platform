@@ -1,0 +1,12 @@
+{
+ "base": "25a6d6bbbfc9932ecd4951f60f43c42b2f9a0a59",
+ "head": "37f0406",
+ "newly_allowed": [],
+ "newly_denied": [],
+ "notes": [
+  "policy.data created (whole deny-set is new; no prior power baseline)",
+  "2 SKILL.md content change(s) in surviving skills \u2014 not mechanically classifiable as grant/denial by this model"
+ ],
+ "pr": 40,
+ "commit": "37f0406"
+}

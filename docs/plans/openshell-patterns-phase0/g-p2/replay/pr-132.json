@@ -1,0 +1,12 @@
+{
+ "base": "0f5b652e1c0a04e8cf8c20781b89c98e106f4331",
+ "head": "0b5357c",
+ "newly_allowed": [
+  "skills scope: 'filing-upstream-prs' enters sync scope -> newly allowed surface",
+  "skills: NEW skill 'filing-upstream-prs' (1 files) -> newly allowed capability surface"
+ ],
+ "newly_denied": [],
+ "notes": [],
+ "pr": 132,
+ "commit": "0b5357c"
+}
