@@ -829,6 +829,21 @@ def ghg_binding_census(tree):
     lookup_kinds = {}
     lookup_kind_conflicts = set()
 
+    def _value_leaves(v):
+        """Leaf values of a binding value through the
+        value-transparent wrappers (conditional branches, boolean
+        operands, walrus)."""
+        if isinstance(v, ast.IfExp):
+            yield from _value_leaves(v.body)
+            yield from _value_leaves(v.orelse)
+        elif isinstance(v, ast.BoolOp):
+            for x in v.values:
+                yield from _value_leaves(x)
+        elif isinstance(v, ast.NamedExpr):
+            yield from _value_leaves(v.value)
+        else:
+            yield v
+
     # Locally defined properties: property name -> ALL getter
     # nodes with that name across local classes (same-named
     # properties in different classes are distinct getters; an
@@ -851,18 +866,26 @@ def ghg_binding_census(tree):
                                 and dec.id == "property":
                             property_getters.setdefault(
                                 sub.name, []).append(sub)
-                elif isinstance(sub, ast.Assign) \
-                        and isinstance(sub.value, ast.Call) \
-                        and isinstance(sub.value.func, ast.Name) \
-                        and sub.value.func.id == "property" \
-                        and sub.value.args \
-                        and isinstance(sub.value.args[0], ast.Name) \
-                        and sub.value.args[0].id in funcs:
+                elif isinstance(sub, ast.Assign) and any(
+                        isinstance(l, ast.Call)
+                        and isinstance(l.func, ast.Name)
+                        and l.func.id == "property"
+                        and l.args
+                        and isinstance(l.args[0], ast.Name)
+                        and l.args[0].id in funcs
+                        for l in _value_leaves(sub.value)):
                     for t in sub.targets:
                         for n in _bound_names(t):
-                            property_getters.setdefault(
-                                n, []).append(
-                                    funcs[sub.value.args[0].id])
+                            for l in _value_leaves(sub.value):
+                                if isinstance(l, ast.Call) \
+                                        and isinstance(l.func, ast.Name) \
+                                        and l.func.id == "property" \
+                                        and l.args \
+                                        and isinstance(l.args[0], ast.Name) \
+                                        and l.args[0].id in funcs:
+                                    property_getters.setdefault(
+                                        n, []).append(
+                                            funcs[l.args[0].id])
     property_returns = set()
     # The direct subset of property_returns: every table-carrying
     # return of the getter preserves the structural shape. Only
@@ -1005,21 +1028,6 @@ def ghg_binding_census(tree):
     # Functions returning a locally defined callee (factories),
     # filled by the fixpoint.
     returning_callables = set()
-
-    def _value_leaves(v):
-        """Leaf values of a binding value through the
-        value-transparent wrappers (conditional branches, boolean
-        operands, walrus)."""
-        if isinstance(v, ast.IfExp):
-            yield from _value_leaves(v.body)
-            yield from _value_leaves(v.orelse)
-        elif isinstance(v, ast.BoolOp):
-            for x in v.values:
-                yield from _value_leaves(x)
-        elif isinstance(v, ast.NamedExpr):
-            yield from _value_leaves(v.value)
-        else:
-            yield v
 
     def _callee_value(v):
         if isinstance(v, ast.Name):

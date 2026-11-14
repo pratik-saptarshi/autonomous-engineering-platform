@@ -2784,6 +2784,46 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head9)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_property_getter_through_conditional_registration(self):
+        # Codex PR #148 (round 4 census, C11): a getter
+        # registered through a conditional property() call in a
+        # class body escaped the property_getters pre-pass --
+        # its Assign arm required the raw class-body value to
+        # be a property(...) Call, so an IfExp value registered
+        # nothing and _Ctx().caps.clear() was an access through
+        # an unmodelled attribute.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Ctx:\n'
+                   '    def _get(self):\n'
+                   '        return DEFAULT_LIMITS\n'
+                   '    caps = (property(_get) if True else property(_get))\n'
+                   '\n_Ctx().caps.clear()\n')
+        head = self.commit("property-conditional-registration")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Control: the plain property() registration is
+        # refused, as before.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Ctx:\n'
+                   '    def _get(self):\n'
+                   '        return DEFAULT_LIMITS\n'
+                   '    caps = property(_get)\n'
+                   '\n_Ctx().caps.clear()\n')
+        head2 = self.commit("property-plain-registration")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: a conditional property() whose getter
+        # returns a fresh dict hands over no table.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Ctx:\n'
+                   '    def _get(self):\n'
+                   '        return {}\n'
+                   '    caps = (property(_get) if True else property(_get))\n'
+                   '\n_Ctx().caps.clear()\n')
+        head3 = self.commit("property-conditional-fresh-getter")
+        r = self.run_tool("diff", self.base, head3)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)
