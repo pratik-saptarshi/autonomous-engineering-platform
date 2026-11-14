@@ -3384,6 +3384,39 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head3)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_walrus_selected_callee_call_is_local(self):
+        # Codex PR #148 (round 4 census, C7): a walrus-selected
+        # callee call escaped the mutation-site local-call check
+        # -- ghg_mutation_sites' wrapper arm admitted a Call func
+        # only if it was an IfExp or BoolOp, omitting NamedExpr,
+        # although the leaf-aware is_callee_form delegate would
+        # have resolved a walrus func correctly if asked.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n'
+                   '    caps.clear()\n'
+                   '\n(_f := _uncap)(DEFAULT_LIMITS)\n')
+        head = self.commit("walrus-selected-callee")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Control: an IfExp-selected callee call is refused, as
+        # before.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n'
+                   '    caps.clear()\n'
+                   '\n(_uncap if True else _uncap)(DEFAULT_LIMITS)\n')
+        head2 = self.commit("ifexp-selected-callee")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: a walrus-selected plain function passed an
+        # unrelated argument is no mutation site.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _plain(caps):\n'
+                   '    return caps\n'
+                   '\n(_f := _plain)({})\n')
+        head3 = self.commit("walrus-selected-plain-unrelated")
+        r = self.run_tool("diff", self.base, head3)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)

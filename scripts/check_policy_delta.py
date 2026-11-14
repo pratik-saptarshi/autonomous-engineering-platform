@@ -2226,7 +2226,8 @@ def ghg_mutation_sites(tree, is_watched, hands_over, local_defs,
                              and is_callee_form is not None
                              and is_callee_form(node.func))
                          or (isinstance(node.func, (ast.IfExp,
-                                                   ast.BoolOp))
+                                                   ast.BoolOp,
+                                                   ast.NamedExpr))
                              and is_callee_form is not None
                              and is_callee_form(node.func))):
                 if any(hands_over_strong(a) for a in args):
