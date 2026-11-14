@@ -3182,6 +3182,110 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head4)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_enter_instance_through_conditional(self):
+        # Codex PR #148 (round 4 census, C4): a context-manager
+        # instance bound through a conditional wrapper escaped
+        # the enter / instance_names block at both of its raw
+        # tests -- the binding test and the with-item context-
+        # expression test each required a raw Call or a raw
+        # Name, so a wrapped instance was recognised at neither
+        # position and _t.clear() inside the with was
+        # unmodelled.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Ctx:\n'
+                   '    def __enter__(self):\n'
+                   '        return DEFAULT_LIMITS\n'
+                   '    def __exit__(self, *a):\n'
+                   '        return False\n'
+                   '\n_ctx = _Ctx()\n'
+                   '_ctx2 = _ctx if True else _ctx\n'
+                   'with _ctx2 as _t:\n    _t.clear()\n')
+        head = self.commit("enter-conditional-alias")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Control: the plain alias is refused, as before.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Ctx:\n'
+                   '    def __enter__(self):\n'
+                   '        return DEFAULT_LIMITS\n'
+                   '    def __exit__(self, *a):\n'
+                   '        return False\n'
+                   '\n_ctx = _Ctx()\n'
+                   '_ctx2 = _ctx\n'
+                   'with _ctx2 as _t:\n    _t.clear()\n')
+        head2 = self.commit("enter-plain-alias")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # A conditional of constructor calls carries the
+        # provenance too.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Ctx:\n'
+                   '    def __enter__(self):\n'
+                   '        return DEFAULT_LIMITS\n'
+                   '    def __exit__(self, *a):\n'
+                   '        return False\n'
+                   '\n_ctx = (_Ctx() if True else _Ctx())\n'
+                   'with _ctx as _t:\n    _t.clear()\n')
+        head3 = self.commit("enter-conditional-constructors")
+        r = self.run_tool("diff", self.base, head3)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # With-item position: a conditional context expression
+        # is recognised directly in the with statement.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Ctx:\n'
+                   '    def __enter__(self):\n'
+                   '        return DEFAULT_LIMITS\n'
+                   '    def __exit__(self, *a):\n'
+                   '        return False\n'
+                   '\n_ctx = _Ctx()\n'
+                   'with (_ctx if True else _ctx) as _t:\n'
+                   '    _t.clear()\n')
+        head4 = self.commit("enter-conditional-ctx-expression")
+        r = self.run_tool("diff", self.base, head4)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Control: the plain Name context expression is
+        # refused, as before.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Ctx:\n'
+                   '    def __enter__(self):\n'
+                   '        return DEFAULT_LIMITS\n'
+                   '    def __exit__(self, *a):\n'
+                   '        return False\n'
+                   '\n_ctx = _Ctx()\n'
+                   'with _ctx as _t:\n    _t.clear()\n')
+        head5 = self.commit("enter-plain-ctx-expression")
+        r = self.run_tool("diff", self.base, head5)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: a conditional alias of a manager whose
+        # __enter__ returns a fresh dict hands over no table.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Ctx:\n'
+                   '    def __enter__(self):\n'
+                   '        return {}\n'
+                   '    def __exit__(self, *a):\n'
+                   '        return False\n'
+                   '\n_ctx = _Ctx()\n'
+                   '_ctx2 = _ctx if True else _ctx\n'
+                   'with _ctx2 as _t:\n    _t.clear()\n')
+        head6 = self.commit("enter-conditional-non-table-binding")
+        r = self.run_tool("diff", self.base, head6)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        # Precision, with-item position: a conditional context
+        # expression naming a non-table manager hands over no
+        # table either.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Ctx:\n'
+                   '    def __enter__(self):\n'
+                   '        return {}\n'
+                   '    def __exit__(self, *a):\n'
+                   '        return False\n'
+                   '\n_ctx = _Ctx()\n'
+                   'with (_ctx if True else _ctx) as _t:\n'
+                   '    _t.clear()\n')
+        head7 = self.commit("enter-conditional-non-table-ctx")
+        r = self.run_tool("diff", self.base, head7)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)

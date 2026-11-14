@@ -1846,11 +1846,12 @@ def ghg_binding_census(tree):
             elif isinstance(node, ast.NamedExpr):
                 _v, _ts = node.value, [node.target]
             if _v is not None \
-                    and ((isinstance(_v, ast.Call)
-                          and isinstance(_v.func, ast.Name)
-                          and _v.func.id in enter_returning)
-                         or (isinstance(_v, ast.Name)
-                             and _v.id in instance_names)):
+                    and any((isinstance(l, ast.Call)
+                             and isinstance(l.func, ast.Name)
+                             and l.func.id in enter_returning)
+                            or (isinstance(l, ast.Name)
+                                and l.id in instance_names)
+                            for l in _value_leaves(_v)):
                 for t in _ts:
                     for n in _bound_names(t):
                         if n not in instance_names:
@@ -1859,11 +1860,12 @@ def ghg_binding_census(tree):
             if isinstance(node, ast.withitem) \
                     and node.optional_vars is not None:
                 ctx = node.context_expr
-                hit = (isinstance(ctx, ast.Call)
-                       and isinstance(ctx.func, ast.Name)
-                       and ctx.func.id in enter_returning) \
-                    or (isinstance(ctx, ast.Name)
-                        and ctx.id in instance_names)
+                hit = any((isinstance(l, ast.Call)
+                           and isinstance(l.func, ast.Name)
+                           and l.func.id in enter_returning)
+                          or (isinstance(l, ast.Name)
+                              and l.id in instance_names)
+                          for l in _value_leaves(ctx))
                 if hit:
                     for n in _bound_names(node.optional_vars):
                         key = binding_key(node, n)
