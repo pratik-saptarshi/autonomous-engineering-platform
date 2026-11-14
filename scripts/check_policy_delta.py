@@ -1336,7 +1336,48 @@ def ghg_binding_census(tree):
                             returning.add(node.name)
                             changed = True
                         if isinstance(sub, ast.Return):
+                            # Conflict markers follow returns, as
+                            # they follow bindings (the binding
+                            # pass below): a returned leaf whose
+                            # view kind already conflicted -- a
+                            # name with a dropped kind, or a call
+                            # to a conflicted callee -- marks this
+                            # function conflicted, since
+                            # _view_kinds_of yields no kind for it.
+                            _leaf_conflict = False
+                            for _leaf in _value_leaves(sub.value):
+                                if isinstance(_leaf, ast.Name):
+                                    _leaf_conflict = (
+                                        _leaf.id in _view_conflicts
+                                        or _leaf.id
+                                        in returning_view_conflicts
+                                        or _leaf.id
+                                        in lookup_kind_conflicts)
+                                elif isinstance(_leaf, ast.Call):
+                                    if isinstance(_leaf.func,
+                                                  ast.Name):
+                                        _leaf_conflict = \
+                                            _leaf.func.id \
+                                            in \
+                                            returning_view_conflicts
+                                    elif isinstance(_leaf.func,
+                                                    ast.Attribute):
+                                        _leaf_conflict = \
+                                            _leaf.func.attr \
+                                            in \
+                                            returning_view_conflicts
+                                if _leaf_conflict:
+                                    break
                             _kinds = _view_kinds_of(sub.value)
+                            if _leaf_conflict:
+                                if node.name not in \
+                                        returning_view_conflicts:
+                                    returning_view_conflicts.add(
+                                        node.name)
+                                    changed = True
+                                returning_views.pop(node.name,
+                                                    None)
+                                _kinds = set()
                             if len(_kinds) > 1:
                                 returning_view_conflicts.add(
                                     node.name)

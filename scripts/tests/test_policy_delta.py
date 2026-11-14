@@ -2325,6 +2325,65 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head5)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_view_conflict_through_function_return(self):
+        # Codex PR #148: a function returning a name whose view
+        # kind already conflicted was never marked conflicted
+        # itself -- _view_kinds_of yields the empty set for such
+        # a name, so its callers took the scalar exemption for
+        # components that are table-grade in some view kind.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(pairs):\n    pairs.clear()\n'
+                   '\ndef _entries():\n'
+                   '    _v = DEFAULT_LIMITS.values()\n'
+                   '    _v = DEFAULT_LIMITS.items()\n'
+                   '    return _v\n'
+                   '\nfor _key, _pairs in _entries():\n'
+                   '    _uncap(_pairs)\n')
+        head = self.commit("view-conflict-through-return")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # The conflict also travels through a call return: a
+        # function returning a conflicted function's result is
+        # marked when the fixpoint reaches it.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(pairs):\n    pairs.clear()\n'
+                   '\ndef _inner():\n'
+                   '    _v = DEFAULT_LIMITS.values()\n'
+                   '    _v = DEFAULT_LIMITS.items()\n'
+                   '    return _v\n'
+                   '\ndef _entries():\n'
+                   '    return _inner()\n'
+                   '\nfor _key, _pairs in _entries():\n'
+                   '    _uncap(_pairs)\n')
+        head2 = self.commit("view-conflict-chained-return")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Control: the conflicted alias iterated directly is
+        # refused, as before.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(pairs):\n    pairs.clear()\n'
+                   '\n_v = DEFAULT_LIMITS.values()\n'
+                   '_v = DEFAULT_LIMITS.items()\n'
+                   'for _key, _pairs in _v:\n'
+                   '    _uncap(_pairs)\n')
+        head3 = self.commit("view-conflict-alias-direct")
+        r = self.run_tool("diff", self.base, head3)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: a single-kind return is not conflicted --
+        # spending its key component is still scalar use.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Ledger:\n'
+                   '    def spend(self, bucket):\n'
+                   '        return bucket\n'
+                   '\ndef _entries():\n'
+                   '    return DEFAULT_LIMITS.items()\n'
+                   '\n_led = _Ledger()\n'
+                   'for _key, _pairs in _entries():\n'
+                   '    _led.spend(_key)\n')
+        head4 = self.commit("single-kind-return-key")
+        r = self.run_tool("diff", self.base, head4)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)
