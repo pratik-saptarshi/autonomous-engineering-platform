@@ -3129,6 +3129,59 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head6)
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
 
+    def test_ghg_instance_returning_through_conditional_alias(self):
+        # Codex PR #148 (round 4 census, C3): an alias of a
+        # table-returning instance bound through a conditional
+        # wrapper escaped the instance-returning block -- its
+        # test required a raw Call or a raw Name, so an IfExp
+        # alias never entered instance_returning_names and
+        # _t2().clear() was unmodelled.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Table:\n'
+                   '    def __call__(self):\n'
+                   '        return DEFAULT_LIMITS\n'
+                   '\n_t = _Table()\n'
+                   '_t2 = _t if True else _t\n'
+                   '_t2().clear()\n')
+        head = self.commit("instance-conditional-alias")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Control: the plain alias is refused, as before.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Table:\n'
+                   '    def __call__(self):\n'
+                   '        return DEFAULT_LIMITS\n'
+                   '\n_t = _Table()\n'
+                   '_t2 = _t\n'
+                   '_t2().clear()\n')
+        head2 = self.commit("instance-plain-alias")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # A conditional of constructor calls carries the
+        # provenance too.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Table:\n'
+                   '    def __call__(self):\n'
+                   '        return DEFAULT_LIMITS\n'
+                   '\n_t = (_Table() if True else _Table())\n'
+                   '_t().clear()\n')
+        head3 = self.commit("instance-conditional-constructors")
+        r = self.run_tool("diff", self.base, head3)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: a conditional alias of an instance whose
+        # __call__ returns a fresh dict hands over no table.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Table:\n'
+                   '    def __call__(self):\n'
+                   '        return {}\n'
+                   '\n_t = _Table()\n'
+                   '_t2 = _t if True else _t\n'
+                   '_x = _t2()\n'
+                   '_x.clear()\n')
+        head4 = self.commit("instance-conditional-non-returning")
+        r = self.run_tool("diff", self.base, head4)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)

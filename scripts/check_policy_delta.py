@@ -1696,11 +1696,12 @@ def ghg_binding_census(tree):
                 value, targets = node.value, [node.target]
             else:
                 continue
-            if (isinstance(value, ast.Call)
-                    and isinstance(value.func, ast.Name)
-                    and value.func.id in call_returning_classes) \
-                    or (isinstance(value, ast.Name)
-                        and value.id in instance_returning_names):
+            if any((isinstance(l, ast.Call)
+                    and isinstance(l.func, ast.Name)
+                    and l.func.id in call_returning_classes)
+                   or (isinstance(l, ast.Name)
+                       and l.id in instance_returning_names)
+                   for l in _value_leaves(value)):
                 for t in targets:
                     for n in _bound_names(t):
                         if n not in instance_returning_names:
