@@ -1294,6 +1294,19 @@ def ghg_binding_census(tree):
             if isinstance(f, ast.Attribute):
                 return f.attr in returning \
                     and f.attr not in returning_direct
+            if isinstance(f, (ast.IfExp, ast.BoolOp,
+                              ast.NamedExpr)):
+                # A callee selected through a conditional /
+                # boolean / walrus wrapper: the binding is
+                # tainted if ANY alternative callee's result
+                # would taint it -- re-ask the same question
+                # with each leaf as the callee, so Name,
+                # Attribute, and other alternatives all get
+                # the direct forms' answer (a None alternative
+                # answers False, as its direct form does).
+                return any(_value_taints(
+                    ast.Call(func=leaf, args=[], keywords=[]))
+                    for leaf in _value_leaves(f))
             return False
         for w in (v, core):
             if isinstance(w, ast.BoolOp):

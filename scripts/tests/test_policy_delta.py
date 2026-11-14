@@ -2384,6 +2384,89 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head4)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_wrapper_taint_through_conditional_callee(self):
+        # Codex PR #148 (round 2): a wrapper-returning function
+        # invoked through a conditional callee escaped
+        # _value_taints -- its Call branch recognized only Name
+        # and Attribute callees, so the bound result was never
+        # wrapper-tainted, counted as a structural source, and
+        # its unpacked value took the scalar exemption even
+        # though hands_over (round 1) made the binding watched.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\ndef _wrapper():\n'
+                   '    return [("caps", DEFAULT_LIMITS)]\n'
+                   '\n_wrapped = (_wrapper if True else None)()\n'
+                   'for _key, _value in _wrapped:\n'
+                   '    _uncap(_value)\n')
+        head = self.commit("wrapper-taint-conditional-callee")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Boolean selection of the wrapper-returning function
+        # taints the bound result too.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\ndef _wrapper():\n'
+                   '    return [("caps", DEFAULT_LIMITS)]\n'
+                   '\ndef _other():\n    return []\n'
+                   '\n_wrapped = (_wrapper or _other)()\n'
+                   'for _key, _value in _wrapped:\n'
+                   '    _uncap(_value)\n')
+        head2 = self.commit("wrapper-taint-boolop-callee")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # A walrus-selected wrapper-returning callee taints too.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\ndef _wrapper():\n'
+                   '    return [("caps", DEFAULT_LIMITS)]\n'
+                   '\n_wrapped = (_f := _wrapper)()\n'
+                   'for _key, _value in _wrapped:\n'
+                   '    _uncap(_value)\n')
+        head3 = self.commit("wrapper-taint-walrus-callee")
+        r = self.run_tool("diff", self.base, head3)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Control: the direct callee is refused, as before.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\ndef _wrapper():\n'
+                   '    return [("caps", DEFAULT_LIMITS)]\n'
+                   '\n_wrapped = _wrapper()\n'
+                   'for _key, _value in _wrapped:\n'
+                   '    _uncap(_value)\n')
+        head4 = self.commit("wrapper-taint-direct-callee")
+        r = self.run_tool("diff", self.base, head4)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: a conditional callee returning a plain
+        # scalar wrapper is not tainted -- its unpacked value
+        # is not a table.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\ndef _plain():\n'
+                   '    return [("caps", 42)]\n'
+                   '\n_wrapped = (_plain if True else None)()\n'
+                   'for _key, _value in _wrapped:\n'
+                   '    _uncap(_value)\n')
+        head5 = self.commit("wrapper-taint-scalar-wrapper")
+        r = self.run_tool("diff", self.base, head5)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        # Precision: a conditional callee returning a direct
+        # items view stays direct -- spending its key component
+        # is still scalar use.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Ledger:\n'
+                   '    def spend(self, bucket):\n'
+                   '        return bucket\n'
+                   '\ndef _items():\n'
+                   '    return DEFAULT_LIMITS.items()\n'
+                   '\n_wrapped = (_items if True else None)()\n'
+                   '_led = _Ledger()\n'
+                   'for _key, _pairs in _wrapped:\n'
+                   '    _led.spend(_key)\n')
+        head6 = self.commit("wrapper-taint-direct-items")
+        r = self.run_tool("diff", self.base, head6)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)
