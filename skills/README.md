@@ -49,6 +49,8 @@ The Source column names pratik-saptarshi forks (default branch `develop`) wherev
 | neurostrata_memory | Distilled locally from NeuroStrata docs | MIT | Custom wiring: retrieval before / inscription after loop iterations |
 | overnight-parallel-lanes | Authored locally | MIT | Unattended parallel-run setup: isolated worktree per lane, parallel workers, independent reviewers, explicit stop conditions |
 | plan_review_integrator | pratik-saptarshi/opencode-rountable-review | MIT | |
+| plannotator-gate | Authored locally | MIT | Mechanical plan-approval gate over the pinned Plannotator tool: owner reviews and annotates plans, decision archive preserved; pattern in ops/tool-adoption/ |
+| plannotator-inbox | Authored locally | MIT | Asynchronous owner decision queue over the Plannotator Inbox: batched rulings routed back to the asking session; pattern in ops/tool-adoption/ |
 | prism | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | product-refinement-loop | Created locally | MIT | Distilled from 2026-10-18 profile-decisions refinement |
 | prototype | pratik-saptarshi/skills | MIT | |
