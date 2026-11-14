@@ -1,0 +1,352 @@
+#!/usr/bin/env bash
+# sandbox-run — hardened launcher for the isolation pilot, Stage 1.
+# The ONLY entry point for the piloted lane's exec work.
+# Record: ~/workspace/isolation-pilot/ADOPTION.md
+#
+# Subcommands:
+#   fetch   <run-id> <https-url>   fresh clone into a new run dir (host net;
+#                                  executes no target code; see ADOPTION.md)
+#   exec    <run-id> <cmd-string>  run a command in the sandbox:
+#                                  systemd-run scope (MemoryMax/CPUQuota/
+#                                  TasksMax — RECORDED BUT NOT ENFORCEABLE
+#                                  on this runtime: no cgroup controllers
+#                                  are delegated; see ADOPTION-ADDENDUM.md)
+#                                  + unshare mount/pid/net ns + chroot root
+#                                  with only the declared binds + 2a gate
+#                                  (Landlock ruleset + seccomp denylist +
+#                                  payload dropped to uid/gid 65534)
+#   probe   <run-id>               criterion-1 read-confinement probe suite
+#   layers  <run-id>               2a-layer probe suite (Landlock/seccomp/uid)
+#   exec-runsc <run-id> <cmd>      OPTIONAL boundary mode (DEFAULT OFF): the
+#                                  payload runs under gVisor runsc (systrap
+#                                  platform, user-space kernel) instead of
+#                                  the namespace composite — the boundary for
+#                                  the highest-risk lane type. Pinned runsc
+#                                  (release-20261109.0, checksum-verified):
+#                                  ~/workspace/gvisor/ADOPTION.md. runsc is
+#                                  invoked with --ignore-cgroups (mandatory
+#                                  here: no cgroup controllers are delegated
+#                                  on this runtime, so runsc's own cgroup
+#                                  setup hard-fails) — gVisor enforces no
+#                                  memory cap either; see the record.
+#   hogtest <run-id>               criterion-2 memory-cap test with host sentinel
+#   cleanup <run-id>               teardown + orphan verification
+#
+# Fail-closed: if the sandbox cannot be established, nothing runs.
+set -u
+
+PILOT=$HOME/workspace/isolation-pilot
+RUNS=$PILOT/runs
+SKILLS_TREE=$HOME/workspace/custom-skills
+PROBES_DIR=$PILOT/probes
+GATE_BIN=$HOME/workspace/bin/sandbox-gate
+RUNSC_BIN=$HOME/workspace/gvisor/bin/runsc
+RUNSC_PIN="release-20261109.0"
+PAYLOAD_UID=65534
+PAYLOAD_GID=65534
+MEMORY_MAX=512M
+MEMORY_SWAP_MAX=0
+CPU_QUOTA=100%
+TASKS_MAX=256
+WALL_DEFAULT=600
+
+die() { echo "sandbox-run: REFUSED: $*" >&2; exit 64; }
+
+run_dir_for() { echo "$RUNS/$1"; }
+
+check_tools() {
+  command -v unshare >/dev/null || die "unshare not available"
+  command -v systemd-run >/dev/null || die "systemd-run not available"
+  command -v git >/dev/null || die "git not available"
+  [ -d "$SKILLS_TREE" ] || die "skill tree missing: $SKILLS_TREE"
+  [ -f "$PILOT/inner.sh" ] || die "inner.sh missing"
+  [ -x "$GATE_BIN" ] || die "2a gate binary missing/not executable: $GATE_BIN (fail-closed)"
+}
+
+# Build the scrubbed child environment. Allowlist only — host credentials
+# (GH_TOKEN, API keys, anything TOKEN/SECRET/KEY-shaped) cannot pass.
+# NOTE: "$@" is load-bearing — without it `env -i` prints the environment
+# and runs nothing (caught in pilot run 1: a vacuous exit-0 "probe").
+scrubbed_env() {
+  env -i \
+    PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    HOME=/tmp \
+    LANG=C.UTF-8 \
+    TERM="${TERM:-xterm}" \
+    GIT_CONFIG_NOSYSTEM=1 \
+    GIT_TERMINAL_PROMPT=0 \
+    GIT_CONFIG_COUNT=1 \
+    GIT_CONFIG_KEY_0=safe.directory \
+    GIT_CONFIG_VALUE_0='*' \
+    SANDBOX_WALL="${SANDBOX_WALL:-$WALL_DEFAULT}" \
+    "$@"
+}
+
+assert_no_credentials() {
+  # Defence in depth: scan the environment we are about to hand down.
+  local leaked
+  leaked=$(scrubbed_env | grep -E '^(GH_TOKEN|GITHUB_TOKEN|ANTHROPIC_API_KEY|OPENAI_API_KEY)=|[A-Z_]*(TOKEN|SECRET|PASSWORD)=' || true)
+  [ -z "$leaked" ] || die "credential-shaped variables would leak into sandbox: $leaked"
+}
+
+cmd_fetch() {
+  local run_id=$1 url=$2 rd
+  rd=$(run_dir_for "$run_id")
+  check_tools
+  [ ! -e "$rd" ] || die "run dir already exists: $rd"
+  case "$url" in https://*) ;; *) die "only https:// clone URLs are permitted";; esac
+  mkdir -p "$rd/out" "$rd/logs"
+  echo "[fetch] $(date -Is) cloning $url -> $rd/worktree" | tee "$rd/logs/fetch.log"
+  # Egress on this runtime is proxy-mediated (direct egress fails TLS).
+  # The proxy variables are infrastructure config, not lane credentials;
+  # they are passed BY NAME here, host-side only, and never enter the
+  # sandbox (which has no network namespace route to anything anyway).
+  # Their values are never written to any pilot log.
+  local -a fenv=(PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+                 HOME="$rd" GIT_TERMINAL_PROMPT=0)
+  local v
+  for v in http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY no_proxy NO_PROXY; do
+    [ -n "${!v:-}" ] && fenv+=("$v=${!v}")
+  done
+  if ! env -i "${fenv[@]}" \
+      git -c protocol.allow=never -c protocol.https.allow=always \
+          clone --no-recurse-submodules "$url" "$rd/worktree" >> "$rd/logs/fetch.log" 2>&1; then
+    cat "$rd/logs/fetch.log" >&2
+    die "clone failed (see $rd/logs/fetch.log); run dir left in place for inspection"
+  fi
+  git -C "$rd/worktree" config core.hooksPath /dev/null
+  {
+    echo "url: $url"
+    echo "head: $(git -C "$rd/worktree" log -1 --format='%H %cs %s')"
+    echo "size: $(du -sh "$rd/worktree" | cut -f1)  files: $(find "$rd/worktree" -type f | wc -l)"
+    echo "fetched: $(date -Is)"
+  } | tee -a "$rd/logs/fetch.log"
+}
+
+run_sandboxed() {
+  # $1 = run dir; stdin payload already written to $1/payload.sh
+  local rd=$1 unit
+  unit="isolation-pilot-$(basename "$rd")-$(date +%s)"
+  scrubbed_env systemd-run --scope --unit="$unit" \
+    -p MemoryMax=$MEMORY_MAX -p MemorySwapMax=$MEMORY_SWAP_MAX \
+    -p CPUQuota=$CPU_QUOTA -p TasksMax=$TASKS_MAX \
+    unshare --mount --pid --net --fork \
+      /bin/bash --noprofile --norc "$PILOT/inner.sh" "$rd" "$SKILLS_TREE" "$PROBES_DIR" "$GATE_BIN"
+}
+
+cmd_exec() {
+  local run_id=$1 cmdstr=$2 rd
+  rd=$(run_dir_for "$run_id")
+  check_tools
+  assert_no_credentials
+  [ -d "$rd/worktree" ] || die "no fetched worktree for run $run_id (fetch first)"
+  mkdir -p "$rd/out" "$rd/logs"
+  # Namespace smoke test: if unshare cannot create the namespaces, refuse
+  # BEFORE the payload exists anywhere near execution.
+  unshare --mount --pid --net --fork /bin/true 2>/dev/null \
+    || die "namespace creation failed — sandbox unavailable, payload NOT run"
+  # The 2a gate drops the payload to uid/gid 65534 (nobody), so the
+  # per-run worktree/out must be writable by that uid. Ownership
+  # transfer is IMPOSSIBLE here: the workspace is a btrfs subvolume
+  # behind an overlay (nouserxattr) and chown returns EPERM from this
+  # user-namespace context even with CAP_CHOWN (verified 2026-11-14;
+  # chown works on /tmp tmpfs, fails on every workspace path). The
+  # fallback is mode widening on the per-run scratch dirs ONLY
+  # (a+rwX), paired with the git safe.directory config in
+  # scrubbed_env so the payload's git accepts the ns-root-owned repo.
+  # Files the payload creates are owned by 65534 outright. Host-side
+  # harvest/cleanup run as ns-root and are unaffected. See
+  # ADOPTION-ADDENDUM.md, "uid-drop file-access deviation".
+  chmod -R a+rwX "$rd/worktree" "$rd/out" \
+    || die "chmod of worktree/out for payload uid failed"
+  {
+    printf '#!/bin/bash\ncd /work || exit 97\n'
+    printf 'timeout -k 10s %ss /bin/bash --noprofile --norc -c ' "${SANDBOX_WALL:-$WALL_DEFAULT}"
+    printf "'%s'\n" "$(printf '%s' "$cmdstr" | sed "s/'/'\\\\''/g")"
+  } > "$rd/payload.sh"
+  echo "[exec] $(date -Is) run=$run_id cmd: $cmdstr" | tee -a "$rd/logs/exec.log"
+  run_sandboxed "$rd" 2>&1 | tee -a "$rd/logs/exec.log"
+  return "${PIPESTATUS[0]}"
+}
+
+check_runsc() {
+  [ -x "$RUNSC_BIN" ] || die "runsc missing/not executable: $RUNSC_BIN (fail-closed; see ~/workspace/gvisor/ADOPTION.md)"
+  local v
+  v=$("$RUNSC_BIN" --version 2>/dev/null | awk '/^runsc version/{print $3}')
+  [ "$v" = "$RUNSC_PIN" ] || die "runsc version '$v' != pinned '$RUNSC_PIN' — refusing to run (re-verify per ~/workspace/gvisor/ADOPTION.md)"
+}
+
+cmd_exec_runsc() {
+  local run_id=$1 cmdstr=$2 rd bundle cid rc
+  rd=$(run_dir_for "$run_id")
+  check_runsc
+  assert_no_credentials
+  [ -d "$rd/worktree" ] || die "no fetched worktree for run $run_id (fetch first)"
+  [ -d "$SKILLS_TREE" ] || die "skill tree missing: $SKILLS_TREE"
+  mkdir -p "$rd/out" "$rd/logs"
+  # The gofer's uid mapping presents host root-owned files as unmapped
+  # inside the sandbox, so writes to a 2770 root-owned tree fail EPERM
+  # (gVisor smoke test, 2026-11-14). Same fallback as the composite's
+  # uid-drop: widen modes on the per-run scratch dirs ONLY.
+  chmod -R a+rwX "$rd/worktree" "$rd/out" \
+    || die "chmod of worktree/out for runsc mode failed"
+  bundle="$rd/runsc-bundle"
+  mkdir -p "$bundle/rootfs"/{usr,tmp,work,skills,probes,out,etc,dev,proc,sys}
+  ln -sfn usr/bin "$bundle/rootfs/bin"
+  ln -sfn usr/lib "$bundle/rootfs/lib"
+  ln -sfn usr/lib64 "$bundle/rootfs/lib64"
+  rm -f "$bundle/config.json"
+  ( cd "$bundle" && scrubbed_env "$RUNSC_BIN" spec >/dev/null 2>&1 ) \
+    || die "runsc spec failed — payload NOT run"
+  python3 - "$bundle" "$rd" "$cmdstr" "${SANDBOX_WALL:-$WALL_DEFAULT}" <<'PY' \
+    || die "runsc config generation failed — payload NOT run"
+import json, os, sys
+bundle, rd, cmdstr, wall = sys.argv[1:5]
+p = os.path.join(bundle, "config.json")
+cfg = json.load(open(p))
+cfg["process"]["args"] = ["/usr/bin/timeout", "-k", "10s", f"{wall}s",
+                          "/bin/bash", "--noprofile", "--norc", "-c", cmdstr]
+cfg["process"]["terminal"] = False
+cfg["process"]["cwd"] = "/work"
+cfg["process"]["env"] = [
+    "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    "HOME=/tmp", "LANG=C.UTF-8", "TERM=xterm",
+    "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0",
+    "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=safe.directory",
+    "GIT_CONFIG_VALUE_0=*",
+    f"SANDBOX_WALL={wall}",
+]
+home = os.path.expanduser("~")
+binds = [
+    {"destination": "/usr", "type": "bind", "source": "/usr",
+     "options": ["rbind", "ro"]},
+    {"destination": "/tmp", "type": "tmpfs", "source": "tmpfs",
+     "options": ["mode=1777"]},
+    {"destination": "/work", "type": "bind",
+     "source": os.path.join(rd, "worktree"), "options": ["rbind"]},
+    {"destination": "/skills", "type": "bind",
+     "source": os.path.join(home, "workspace", "custom-skills"),
+     "options": ["rbind", "ro"]},
+    {"destination": "/probes", "type": "bind",
+     "source": os.path.join(home, "workspace", "isolation-pilot", "probes"),
+     "options": ["rbind", "ro"]},
+    {"destination": "/out", "type": "bind",
+     "source": os.path.join(rd, "out"), "options": ["rbind"]},
+]
+base = [m for m in cfg.get("mounts", []) if m["destination"] in ("/proc", "/dev", "/sys")]
+cfg["mounts"] = base + binds
+# No resource limits: host cgroups are unenforceable on this runtime and
+# gVisor's in-sandbox cgroups are accounting-only. Nothing here claims a cap.
+cfg.get("linux", {}).pop("resources", None)
+json.dump(cfg, open(p, "w"), indent=2)
+PY
+  cid="runsc-$run_id-$(date +%s)"
+  echo "[exec-runsc] $(date -Is) run=$run_id boundary=gvisor/$RUNSC_PIN (systrap) cmd: $cmdstr" | tee -a "$rd/logs/exec-runsc.log"
+  # Retry ONLY the pre-start gofer-creation failure ("cannot create gofer
+  # process": the gofer's netns setns intermittently returns EPERM on this
+  # runtime — observed 2/~11 starts in the smoke test). Creation failed
+  # before the payload existed, so a retry cannot double-execute anything.
+  # Any other outcome (including any payload exit code) is final.
+  local attempt out
+  rc=128
+  for attempt in 1 2 3; do
+    out=$(mktemp)
+    scrubbed_env "$RUNSC_BIN" --root="$rd/runsc-root" \
+      --platform=systrap --network=none --ignore-cgroups \
+      run --bundle "$bundle" "$cid-$attempt" > "$out" 2>&1
+    rc=$?
+    cat "$out" | tee -a "$rd/logs/exec-runsc.log"
+    if [ "$rc" -eq 128 ] && grep -q 'cannot create gofer process' "$out"; then
+      echo "[exec-runsc] attempt $attempt: gofer creation failed pre-start (transient); retrying" | tee -a "$rd/logs/exec-runsc.log"
+      "$RUNSC_BIN" --root="$rd/runsc-root" delete --force "$cid-$attempt" >/dev/null 2>&1 || true
+      rm -f "$out"
+      sleep 1
+      continue
+    fi
+    rm -f "$out"
+    break
+  done
+  "$RUNSC_BIN" --root="$rd/runsc-root" delete --force "$cid-$attempt" >/dev/null 2>&1 || true
+  return "$rc"
+}
+
+cmd_probe() {
+  cmd_exec "$1" "python3 /probes/probe_reads.py"
+}
+
+cmd_layers() {
+  cmd_exec "$1" "python3 /probes/probe_layers.py"
+}
+
+cmd_hogtest() {
+  local run_id=$1 rd slog mlog start end hog_rc
+  rd=$(run_dir_for "$run_id")
+  check_tools
+  [ -d "$rd/worktree" ] || die "no fetched worktree for run $run_id"
+  slog="$PILOT/logs/sentinel-$run_id.log"; mlog="$PILOT/logs/memwatch-$run_id.log"
+  : > "$slog"; : > "$mlog"
+  # Host sentinel: holds 64 MiB, heartbeats every 0.25 s.
+  python3 - "$slog" <<'PY' &
+import sys, time
+path = sys.argv[1]
+hold = bytearray(64 * 1024 * 1024)
+for i in range(0, len(hold), 4096): hold[i] = 1
+t0 = time.time()
+while time.time() - t0 < 120:
+    with open(path, "a") as f:
+        f.write(f"sentinel alive t={time.time()-t0:.2f}\n")
+    time.sleep(0.25)
+PY
+  local sentinel_pid=$!
+  ( while kill -0 "$sentinel_pid" 2>/dev/null; do
+      awk '/MemAvailable/{print strftime("%H:%M:%S"), $2}' /proc/meminfo >> "$mlog"
+      sleep 0.5
+    done ) &
+  local watch_pid=$!
+  start=$(date +%s)
+  cmd_exec "$run_id" "python3 /probes/hog.py" > "$PILOT/logs/hog-$run_id.log" 2>&1
+  hog_rc=$?
+  end=$(date +%s)
+  sleep 2  # let the sentinel prove it is still alive after the kill
+  kill "$sentinel_pid" 2>/dev/null; wait "$sentinel_pid" 2>/dev/null
+  kill "$watch_pid" 2>/dev/null; wait "$watch_pid" 2>/dev/null
+  {
+    echo "hog exit code: $hog_rc (wall: $((end-start))s)"
+    echo "sentinel heartbeats: $(wc -l < "$slog")"
+    echo "sentinel last heartbeat: $(tail -1 "$slog")"
+    echo "host MemAvailable min during test (kB): $(awk '{print $2}' "$mlog" | sort -n | head -1)"
+    echo "global OOM events in dmesg (count): $(dmesg 2>/dev/null | grep -c 'Out of memory' || echo 'dmesg unreadable')"
+    echo "cgroup OOM events in dmesg: $(dmesg 2>/dev/null | grep -c 'Memory cgroup out of memory' || echo 0)"
+  } | tee "$PILOT/logs/hog-summary-$run_id.txt"
+}
+
+cmd_cleanup() {
+  local run_id=$1 rd
+  rd=$(run_dir_for "$run_id")
+  [ -d "$rd" ] || die "no such run: $run_id"
+  echo "[cleanup] verifying teardown for $run_id"
+  local procs units mounts
+  # Match on the sandbox machinery + run dir, and exclude this launcher's
+  # own process tree (a bare run-id match self-matches the cleanup shell —
+  # false positive caught in pilot run 1).
+  procs=$(pgrep -f "inner.sh $rd" | grep -vx -e "$$" -e "$PPID" || true)
+  [ -z "$procs" ] && echo "OK  no surviving sandbox processes for $run_id" || echo "FAIL processes alive: $procs"
+  units=$(systemctl list-units --all --no-legend "isolation-pilot-$run_id-*" 2>/dev/null | wc -l)
+  [ "$units" -eq 0 ] && echo "OK  no systemd scopes remain for $run_id" || echo "FAIL $units scope units linger"
+  mounts=$(grep -c "$rd" /proc/mounts || true)
+  [ "$mounts" -eq 0 ] && echo "OK  no mounts reference the run dir in the host mount table" || echo "FAIL $mounts mounts reference run dir"
+  rm -rf "$rd"
+  [ ! -e "$rd" ] && echo "OK  run dir removed: $rd" || echo "FAIL run dir still exists"
+}
+
+case "${1:-}" in
+  fetch)   [ $# -eq 3 ] || die "usage: sandbox-run fetch <run-id> <https-url>"; cmd_fetch "$2" "$3" ;;
+  exec)    [ $# -eq 3 ] || die "usage: sandbox-run exec <run-id> '<command string>'"; cmd_exec "$2" "$3" ;;
+  probe)   [ $# -eq 2 ] || die "usage: sandbox-run probe <run-id>"; cmd_probe "$2" ;;
+  exec-runsc) [ $# -eq 3 ] || die "usage: sandbox-run exec-runsc <run-id> '<command string>'"; cmd_exec_runsc "$2" "$3" ;;
+  probe-runsc) [ $# -eq 2 ] || die "usage: sandbox-run probe-runsc <run-id>"; cmd_exec_runsc "$2" "python3 /probes/probe_reads.py" ;;
+  layers)  [ $# -eq 2 ] || die "usage: sandbox-run layers <run-id>"; cmd_layers "$2" ;;
+  hogtest) [ $# -eq 2 ] || die "usage: sandbox-run hogtest <run-id>"; cmd_hogtest "$2" ;;
+  cleanup) [ $# -eq 2 ] || die "usage: sandbox-run cleanup <run-id>"; cmd_cleanup "$2" ;;
+  *) echo "usage: sandbox-run {fetch|exec|probe|layers|exec-runsc|probe-runsc|hogtest|cleanup} ..." >&2; exit 64 ;;
+esac
