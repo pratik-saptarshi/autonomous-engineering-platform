@@ -1259,6 +1259,22 @@ def ghg_binding_census(tree):
             if isinstance(v.func, ast.Attribute):
                 k = returning_views.get(v.func.attr)
                 return {k} if k else set()
+            if isinstance(v.func, (ast.IfExp, ast.BoolOp,
+                                   ast.NamedExpr)):
+                # A callee selected through a conditional /
+                # boolean / walrus wrapper: the result's view
+                # kinds are the union over the alternative
+                # callees -- re-ask the same question with each
+                # leaf as the callee, so Name, Attribute, and
+                # other alternatives all get the direct forms'
+                # answer (a None alternative contributes no
+                # kind, as its direct form does; differing
+                # kinds union to a conflict for the consumers).
+                out = set()
+                for leaf in _value_leaves(v.func):
+                    out |= _view_kinds_of(
+                        ast.Call(func=leaf, args=[], keywords=[]))
+                return out
             return set()
         if isinstance(v, ast.IfExp):
             return _view_kinds_of(v.body) \

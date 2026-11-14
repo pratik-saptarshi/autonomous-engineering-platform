@@ -2545,6 +2545,106 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head5)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_view_kind_through_conditional_callee(self):
+        # Codex PR #148 (round 3): an items-returning function
+        # invoked through a conditional callee escaped
+        # _view_kinds_of -- its Call branch recognized only Name
+        # and Attribute callees, so the result binding lost its
+        # items kind, counted as structural with kind unknown,
+        # and its unpacked pairs took the scalar exemption even
+        # though hands_over (round 1) and _value_taints
+        # (round 2) both see through the conditional callee.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\ndef _items():\n'
+                   '    return DEFAULT_LIMITS.items()\n'
+                   '\n_view = (_items if True else None)()\n'
+                   'for _key, _pairs in _view:\n'
+                   '    _uncap(_pairs)\n')
+        head = self.commit("view-kind-conditional-callee")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Boolean selection of the items-returning function
+        # keeps the items kind too.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\ndef _items():\n'
+                   '    return DEFAULT_LIMITS.items()\n'
+                   '\ndef _other():\n    return []\n'
+                   '\n_view = (_items or _other)()\n'
+                   'for _key, _pairs in _view:\n'
+                   '    _uncap(_pairs)\n')
+        head2 = self.commit("view-kind-boolop-callee")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # A walrus-selected items-returning callee keeps the
+        # items kind too.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\ndef _items():\n'
+                   '    return DEFAULT_LIMITS.items()\n'
+                   '\n_view = (_f := _items)()\n'
+                   'for _key, _pairs in _view:\n'
+                   '    _uncap(_pairs)\n')
+        head3 = self.commit("view-kind-walrus-callee")
+        r = self.run_tool("diff", self.base, head3)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # A conditional callee whose alternatives return
+        # differing view kinds unions to a conflict: no
+        # kind-based exemption is granted.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\ndef _items():\n'
+                   '    return DEFAULT_LIMITS.items()\n'
+                   '\ndef _values():\n'
+                   '    return DEFAULT_LIMITS.values()\n'
+                   '\n_view = (_items if True else _values)()\n'
+                   'for _key, _pairs in _view:\n'
+                   '    _uncap(_pairs)\n')
+        head4 = self.commit("view-kind-differing-callees")
+        r = self.run_tool("diff", self.base, head4)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Control: the direct callee is refused, as before.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\ndef _items():\n'
+                   '    return DEFAULT_LIMITS.items()\n'
+                   '\n_view = _items()\n'
+                   'for _key, _pairs in _view:\n'
+                   '    _uncap(_pairs)\n')
+        head5 = self.commit("view-kind-direct-callee")
+        r = self.run_tool("diff", self.base, head5)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: a conditional callee returning a direct
+        # items view keeps the key scalar -- spending its key
+        # component is still scalar use.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Ledger:\n'
+                   '    def spend(self, bucket):\n'
+                   '        return bucket\n'
+                   '\ndef _items():\n'
+                   '    return DEFAULT_LIMITS.items()\n'
+                   '\n_view = (_items if True else None)()\n'
+                   '_led = _Ledger()\n'
+                   'for _key, _pairs in _view:\n'
+                   '    _led.spend(_key)\n')
+        head6 = self.commit("view-kind-conditional-key-spend")
+        r = self.run_tool("diff", self.base, head6)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        # Precision: passing the conditional items view's key
+        # component to a clearing local function is still
+        # scalar use of the key, not of the pairs.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\ndef _items():\n'
+                   '    return DEFAULT_LIMITS.items()\n'
+                   '\n_view = (_items if True else None)()\n'
+                   'for _key, _pairs in _view:\n'
+                   '    _uncap(_key)\n')
+        head7 = self.commit("view-kind-conditional-key-clear")
+        r = self.run_tool("diff", self.base, head7)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_scope_shadowing_does_not_refuse(self):
         # Precision guard for scope-aware aliasing: unrelated locals
         # that merely reuse watched-adjacent names (bucket/pairs/core)
