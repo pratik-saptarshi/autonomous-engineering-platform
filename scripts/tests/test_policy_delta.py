@@ -2660,6 +2660,227 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head3)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_direct_alias_rebinding_revokes_directness(self):
+        # Codex PR #148 round 6: the direct-alias deposit was
+        # add-only, so a name bound once as a direct alias kept
+        # direct-alias status even when another binding of the
+        # same name was a wrapper -- directness is an
+        # every-returning-binding property, and any non-direct
+        # returning binding revokes it, in either binding order.
+        # The reconciliation settles directness to its own
+        # fixpoint within the pass, so alias chains keep the
+        # directness they had before this fix.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\ndef _direct():\n    return DEFAULT_LIMITS\n'
+                   '\ndef _wrapper():\n'
+                   '    return [("caps", DEFAULT_LIMITS)]\n'
+                   '\n_reader = _direct\n'
+                   '_reader = _wrapper\n'
+                   'for _key, _value in _reader():\n'
+                   '    _uncap(_value)\n')
+        head = self.commit("direct-alias-then-wrapper")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Attack, reversed binding order.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\ndef _direct():\n    return DEFAULT_LIMITS\n'
+                   '\ndef _wrapper():\n'
+                   '    return [("caps", DEFAULT_LIMITS)]\n'
+                   '\n_reader = _wrapper\n'
+                   '_reader = _direct\n'
+                   'for _key, _value in _reader():\n'
+                   '    _uncap(_value)\n')
+        head2 = self.commit("wrapper-then-direct-alias")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Control: a wrapper-only binding was never direct.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\ndef _wrapper():\n'
+                   '    return [("caps", DEFAULT_LIMITS)]\n'
+                   '\n_reader = _wrapper\n'
+                   'for _key, _value in _reader():\n'
+                   '    _uncap(_value)\n')
+        head3 = self.commit("direct-alias-wrapper-only")
+        r = self.run_tool("diff", self.base, head3)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Control: a direct-only binding stays direct.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\ndef _direct():\n    return DEFAULT_LIMITS\n'
+                   '\n_reader = _direct\n'
+                   'for _key, _value in _reader():\n'
+                   '    _uncap(_value)\n')
+        head4 = self.commit("direct-alias-direct-only")
+        r = self.run_tool("diff", self.base, head4)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        # Precision: a wrapper of a plain (non-table) value is
+        # not a returning binding, so it does not revoke
+        # directness conferred by the direct binding.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\ndef _direct():\n    return DEFAULT_LIMITS\n'
+                   '\ndef _wrapper2():\n'
+                   '    return [("caps", {})]\n'
+                   '\n_reader = _direct\n'
+                   '_reader = _wrapper2\n'
+                   'for _key, _value in _reader():\n'
+                   '    _uncap(_value)\n')
+        head5 = self.commit("direct-alias-then-plain-wrapper")
+        r = self.run_tool("diff", self.base, head5)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        # Precision, reversed binding order.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\ndef _direct():\n    return DEFAULT_LIMITS\n'
+                   '\ndef _wrapper2():\n'
+                   '    return [("caps", {})]\n'
+                   '\n_reader = _wrapper2\n'
+                   '_reader = _direct\n'
+                   'for _key, _value in _reader():\n'
+                   '    _uncap(_value)\n')
+        head6 = self.commit("plain-wrapper-then-direct-alias")
+        r = self.run_tool("diff", self.base, head6)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        # Precision: rebinding between two direct functions
+        # keeps directness.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\ndef _a():\n    return DEFAULT_LIMITS\n'
+                   '\ndef _b():\n    return DEFAULT_LIMITS\n'
+                   '\n_reader = _a\n'
+                   '_reader = _b\n'
+                   'for _key, _value in _reader():\n'
+                   '    _uncap(_value)\n')
+        head7 = self.commit("direct-alias-then-direct")
+        r = self.run_tool("diff", self.base, head7)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        # Control: rebinding between two wrappers was never
+        # direct.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\ndef _w1():\n'
+                   '    return [("caps", DEFAULT_LIMITS)]\n'
+                   '\ndef _w2():\n'
+                   '    return [("caps", DEFAULT_LIMITS)]\n'
+                   '\n_reader = _w1\n'
+                   '_reader = _w2\n'
+                   'for _key, _value in _reader():\n'
+                   '    _uncap(_value)\n')
+        head8 = self.commit("direct-alias-wrapper-wrapper")
+        r = self.run_tool("diff", self.base, head8)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision (hard non-regression): directness propagates
+        # through an alias chain within the pass.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\ndef _direct():\n    return DEFAULT_LIMITS\n'
+                   '\n_t1 = _direct\n'
+                   '_reader = _t1\n'
+                   'for _key, _value in _reader():\n'
+                   '    _uncap(_value)\n')
+        head9 = self.commit("direct-alias-chain")
+        r = self.run_tool("diff", self.base, head9)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        # Attack: a chain-validated name is revoked by a later
+        # wrapper binding of the same name.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\ndef _direct():\n    return DEFAULT_LIMITS\n'
+                   '\ndef _wrapper():\n'
+                   '    return [("caps", DEFAULT_LIMITS)]\n'
+                   '\n_t1 = _direct\n'
+                   '_reader = _t1\n'
+                   '_reader = _wrapper\n'
+                   'for _key, _value in _reader():\n'
+                   '    _uncap(_value)\n')
+        head10 = self.commit("direct-alias-chain-then-wrapper")
+        r = self.run_tool("diff", self.base, head10)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Attack: order mirror of the chain-then-wrapper case;
+        # grouping is order-free, so the two cannot diverge.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\ndef _direct():\n    return DEFAULT_LIMITS\n'
+                   '\ndef _wrapper():\n'
+                   '    return [("caps", DEFAULT_LIMITS)]\n'
+                   '\n_reader = _wrapper\n'
+                   '_t1 = _direct\n'
+                   '_reader = _t1\n'
+                   'for _key, _value in _reader():\n'
+                   '    _uncap(_value)\n')
+        head11 = self.commit("direct-alias-wrapper-then-chain")
+        r = self.run_tool("diff", self.base, head11)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: a length-3 alias chain stays direct.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\ndef _direct():\n    return DEFAULT_LIMITS\n'
+                   '\n_t1 = _direct\n'
+                   '_t2 = _t1\n'
+                   '_reader = _t2\n'
+                   'for _key, _value in _reader():\n'
+                   '    _uncap(_value)\n')
+        head12 = self.commit("direct-alias-chain-length3")
+        r = self.run_tool("diff", self.base, head12)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        # Control: an alias of a wrapper was never direct;
+        # pruning propagates through the chain link.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\ndef _wrapper():\n'
+                   '    return [("caps", DEFAULT_LIMITS)]\n'
+                   '\n_t1 = _wrapper\n'
+                   '_reader = _t1\n'
+                   'for _key, _value in _reader():\n'
+                   '    _uncap(_value)\n')
+        head13 = self.commit("direct-alias-wrapper-middle")
+        r = self.run_tool("diff", self.base, head13)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Attack: a wrapper rebinding in the middle of a chain
+        # revokes directness beyond it.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\ndef _direct():\n    return DEFAULT_LIMITS\n'
+                   '\ndef _wrapper():\n'
+                   '    return [("caps", DEFAULT_LIMITS)]\n'
+                   '\n_t1 = _direct\n'
+                   '_t2 = _t1\n'
+                   '_t2 = _wrapper\n'
+                   '_reader = _t2\n'
+                   'for _key, _value in _reader():\n'
+                   '    _uncap(_value)\n')
+        head14 = self.commit("direct-alias-broken-middle-chain")
+        r = self.run_tool("diff", self.base, head14)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: a reversed-order alias chain stays direct;
+        # returning status itself lags an iteration.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\ndef _direct():\n    return DEFAULT_LIMITS\n'
+                   '\n_reader = _t1\n'
+                   '_t1 = _direct\n'
+                   'for _key, _value in _reader():\n'
+                   '    _uncap(_value)\n')
+        head15 = self.commit("direct-alias-chain-reversed")
+        r = self.run_tool("diff", self.base, head15)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        # Precision: a seeded alias cycle stays direct, as
+        # before this fix.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\ndef _direct():\n    return DEFAULT_LIMITS\n'
+                   '\n_a = _direct\n'
+                   '_a = _b\n'
+                   '_b = _a\n'
+                   'for _key, _value in _a():\n'
+                   '    _uncap(_value)\n')
+        head16 = self.commit("direct-alias-seeded-cycle")
+        r = self.run_tool("diff", self.base, head16)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_view_kind_through_conditional_callee(self):
         # Codex PR #148 (round 3): an items-returning function
         # invoked through a conditional callee escaped

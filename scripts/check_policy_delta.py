@@ -1516,21 +1516,10 @@ def ghg_binding_census(tree):
                         if n not in returning_aliases:
                             returning_aliases.add(n)
                             changed = True
-            # Directness is stricter than returning status: the
-            # alias is direct only if EVERY leaf is direct (it
-            # may resolve to any of them).
-            if _leaves and all(
-                    (isinstance(l, ast.Name)
-                     and (l.id in returning_direct
-                          or l.id in returning_direct_aliases))
-                    or (isinstance(l, ast.Attribute)
-                        and l.attr in returning_direct)
-                    for l in _leaves):
-                for t in targets:
-                    for n in _bound_names(t):
-                        if n not in returning_direct_aliases:
-                            returning_direct_aliases.add(n)
-                            changed = True
+            # Directness is not deposited here: it is an
+            # every-returning-binding property, reconciled after
+            # this walk -- a per-encounter deposit is
+            # walk-order-dependent and cannot revoke.
             if any((isinstance(l, ast.Name)
                     and l.id in returning_callables)
                    or (isinstance(l, ast.Attribute)
@@ -1580,6 +1569,69 @@ def ghg_binding_census(tree):
                         elif n not in returning_views:
                             returning_views[n] = _kind
                             changed = True
+        # Direct-alias reconciliation. Directness across
+        # bindings is an ALL-returning-bindings property, and
+        # the census pass at the end of this iteration reads
+        # the set as it stands, so it is settled here -- after
+        # the walk above has settled returning status for this
+        # iteration, before any consumer runs.
+        _ret_by_name = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                _avalue, _atargets = node.value, node.targets
+            elif isinstance(node, ast.AnnAssign) \
+                    and node.value is not None:
+                _avalue, _atargets = node.value, [node.target]
+            elif isinstance(node, ast.NamedExpr):
+                _avalue, _atargets = node.value, [node.target]
+            else:
+                continue
+            _aleaves = list(_value_leaves(_avalue))
+            # Only bindings that hand over a table at all take
+            # part, as only table-handing returns take part in
+            # a function's directness: a binding to a
+            # non-returning name neither confers nor revokes
+            # directness.
+            if not any((isinstance(l, ast.Name)
+                        and (l.id in returning
+                             or l.id in returning_aliases))
+                       or (isinstance(l, ast.Attribute)
+                           and l.attr in returning)
+                       for l in _aleaves):
+                continue
+            for t in _atargets:
+                for n in _bound_names(t):
+                    _ret_by_name.setdefault(n, []).append(_aleaves)
+        # The greatest fixpoint of the per-name rule "every
+        # returning binding is direct", computed by pruning
+        # from the candidate set: start from every name with a
+        # returning binding and repeatedly drop the names some
+        # returning binding of which fails the direct test.
+        # Each step evaluates against the previous step's set
+        # as a whole (never in place), so the result is
+        # walk-order independent, and a chain validates in one
+        # step while a broken chain is pruned one hop per step
+        # from the break.
+        _direct_ok = set(_ret_by_name)
+        while True:
+            _next = {n for n in _direct_ok
+                     if all(bool(_leaves) and all(
+                                (isinstance(l, ast.Name)
+                                 and (l.id in returning_direct
+                                      or l.id in _direct_ok))
+                                or (isinstance(l, ast.Attribute)
+                                    and l.attr in returning_direct)
+                                for l in _leaves)
+                            for _leaves in _ret_by_name[n])}
+            if _next == _direct_ok:
+                break
+            _direct_ok = _next
+        for n in _direct_ok - returning_direct_aliases:
+            returning_direct_aliases.add(n)
+            changed = True
+        for n in returning_direct_aliases - _direct_ok:
+            returning_direct_aliases.discard(n)
+            changed = True
         for node in ast.walk(tree):
             if isinstance(node, ast.Assign):
                 value, targets = node.value, node.targets
