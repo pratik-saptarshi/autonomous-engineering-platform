@@ -118,12 +118,14 @@ expected_for_platform() {
 }
 
 verify_attestation() {
-  # verify_attestation <file>; returns non-zero when gh is absent.
+  # verify_attestation <file>; returns 0 when the attestation is
+  # verified, 1 when gh is absent, and 2 when gh is present but
+  # verification fails.
   command -v gh >/dev/null 2>&1 || return 1
   gh attestation verify "$1" \
     --repo "$REPO" \
     --source-ref "refs/tags/${TAG}" \
-    --signer-workflow "$SIGNER_WORKFLOW"
+    --signer-workflow "$SIGNER_WORKFLOW" || return 2
 }
 
 # --- install ---------------------------------------------------------------
@@ -174,10 +176,15 @@ if [ "$need_download" -eq 1 ]; then
 
   if verify_attestation "${staging}/${ASSET}"; then
     say "attestation verified (repo ${REPO}, ref refs/tags/${TAG}, signer ${SIGNER_WORKFLOW})"
-  elif [ -n "$EXPECTED" ]; then
-    say "gh unavailable; proceeding on the pinned checksum anchor for ${PLATFORM}"
   else
-    die "gh is unavailable and no checksum is pinned for ${PLATFORM}; cannot verify provenance, aborting"
+    va_rc=$?
+    if [ "$va_rc" -eq 1 ] && [ -n "$EXPECTED" ]; then
+      say "gh unavailable; proceeding on the pinned checksum anchor for ${PLATFORM}"
+    elif [ "$va_rc" -eq 1 ]; then
+      die "gh is unavailable and no checksum is pinned for ${PLATFORM}; cannot verify provenance, aborting"
+    else
+      die "gh attestation verification failed for ${ASSET}; aborting, nothing installed"
+    fi
   fi
 
   # Retain the release SBOM as evidence (sidecar-verified) before install.
