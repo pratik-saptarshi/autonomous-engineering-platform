@@ -284,6 +284,7 @@ cmd_hogtest() {
   check_tools
   [ -d "$rd/worktree" ] || die "no fetched worktree for run $run_id"
   slog="$PILOT/logs/sentinel-$run_id.log"; mlog="$PILOT/logs/memwatch-$run_id.log"
+  mkdir -p "$PILOT/logs"
   : > "$slog"; : > "$mlog"
   # Host sentinel: holds 64 MiB, heartbeats every 0.25 s.
   python3 - "$slog" <<'PY' &

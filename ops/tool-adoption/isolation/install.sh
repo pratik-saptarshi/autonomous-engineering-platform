@@ -73,7 +73,7 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
 # --- pins (verified first-hand at adoption time, 2026-11-14) ---------------
 
-SHA_sandbox_run="3d9a128b5549a8e91bee1fd086e1cc210a8c75d0f40cae254873894f3956b48b"
+SHA_sandbox_run="ddc722afb1e615aec016027ee99aea8b8c65dbca0f5b6b119793d32125cead54"
 SHA_sandbox_run_nsjail="1387caac25e705d29eec152e63b860aa15fe3130214a35b6b63600200582d3be"
 SHA_inner_sh="66de07ba99ad6f50e71c380289ec61dadeed47f8214b746c7cc1558933f63fff"
 SHA_gate_source="d1a9bdea0480d19280c6def5ac7f2145dfc1de9d4706f5a45e37d087b9d716f1"

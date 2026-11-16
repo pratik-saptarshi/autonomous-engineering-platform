@@ -19,6 +19,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 PLANNOTATOR_INSTALL = REPO_ROOT / "ops" / "tool-adoption" / "plannotator" / "install.sh"
 ISOLATION_INSTALL = REPO_ROOT / "ops" / "tool-adoption" / "isolation" / "install.sh"
+SANDBOX_RUN = (
+    REPO_ROOT / "ops" / "tool-adoption" / "isolation" / "bin" / "sandbox-run"
+)
 
 
 def _extract_function(text, name):
@@ -325,6 +328,73 @@ class IsolationInstallDirTests(unittest.TestCase):
             "unaudited mkdir -p sites remain in isolation/install.sh: "
             + "; ".join(offenders),
         )
+
+
+class SandboxRunHogtestTests(unittest.TestCase):
+    """Finding 3: hogtest must create $PILOT/logs before redirecting into it.
+
+    cmd_hogtest() truncates, appends to, and tees files under
+    $PILOT/logs/, but on a fresh install tree nothing creates that
+    directory, so every redirection fails with "No such file or
+    directory" and the hog workload never runs. The harness runs the
+    extracted cmd_hogtest in bash against a fresh PILOT with NO logs/
+    subdirectory; a python3 PATH shim that exits 0 immediately stands
+    in for the host sentinel, so the memwatch loop's kill -0 fails
+    fast. The shim dir goes first on PATH with the rest of PATH kept
+    intact for the real coreutils the function uses.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.sandbox_text = SANDBOX_RUN.read_text()
+        cls.hogtest_text = _extract_function(cls.sandbox_text, "cmd_hogtest")
+
+    def test_hogtest_creates_pilot_logs_and_completes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            scratch = Path(tmp)
+            pilot = scratch / "pilot"
+            pilot.mkdir()
+            # Deliberately NO pilot/logs/: a fresh install tree has none.
+            run_dir = scratch / "runs" / "test1"
+            (run_dir / "worktree").mkdir(parents=True)
+
+            shim_dir = scratch / "shim"
+            shim_dir.mkdir()
+            python3_stub = shim_dir / "python3"
+            python3_stub.write_text("#!/bin/sh\nexit 0\n")
+            python3_stub.chmod(0o755)
+
+            body = (
+                "PILOT=" + shlex.quote(str(pilot)) + "\n"
+                "check_tools() { :; }\n"
+                "run_dir_for() { printf '%s\\n' "
+                + shlex.quote(str(run_dir))
+                + "; }\n"
+                'cmd_exec() { printf \'[exec] %s\\n\' "$*"; return 0; }\n'
+                'die() { printf \'%s\\n\' "DIE: $*" >&2; exit 99; }\n'
+                + self.hogtest_text
+                + "cmd_hogtest test1\n"
+            )
+            env = dict(os.environ)
+            env["PATH"] = str(shim_dir) + os.pathsep + env.get("PATH", "")
+            result = subprocess.run(
+                ["/bin/bash", "-c", body],
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=60,
+            )
+            output = result.stdout + result.stderr
+            self.assertEqual(result.returncode, 0, output)
+            self.assertNotIn("No such file or directory", result.stderr)
+            self.assertTrue(
+                (pilot / "logs" / "hog-test1.log").is_file(),
+                "hog log missing: " + output,
+            )
+            self.assertTrue(
+                (pilot / "logs" / "hog-summary-test1.txt").is_file(),
+                "hog summary missing: " + output,
+            )
 
 
 if __name__ == "__main__":
