@@ -1513,15 +1513,6 @@ def ghg_binding_census(tree):
                 _src_names = [value.id]
             elif isinstance(value, ast.Attribute):
                 _src_names = [value.attr]
-            for _sn in _src_names:
-                if _sn in returning_views \
-                        and _sn not in returning_view_conflicts:
-                    for t in targets:
-                        for n in _bound_names(t):
-                            if n not in returning_views:
-                                returning_views[n] = \
-                                    returning_views[_sn]
-                                changed = True
             if isinstance(value, (ast.IfExp, ast.BoolOp,
                                   ast.NamedExpr)):
                 _src_names = []
@@ -1530,24 +1521,32 @@ def ghg_binding_census(tree):
                         _src_names.append(leaf.id)
                     elif isinstance(leaf, ast.Attribute):
                         _src_names.append(leaf.attr)
-                _kinds = {returning_views[_sn] for _sn in _src_names
-                          if _sn in returning_views
-                          and _sn not in returning_view_conflicts}
-                _conflicted = any(_sn in returning_view_conflicts
-                                  for _sn in _src_names)
-                if _conflicted or len(_kinds) > 1:
-                    for t in targets:
-                        for n in _bound_names(t):
-                            if n not in returning_view_conflicts:
-                                returning_view_conflicts.add(n)
-                                changed = True
-                elif _kinds:
-                    _kind = next(iter(_kinds))
-                    for t in targets:
-                        for n in _bound_names(t):
-                            if n not in returning_views:
-                                returning_views[n] = _kind
-                                changed = True
+            _kinds = {returning_views[_sn] for _sn in _src_names
+                      if _sn in returning_views
+                      and _sn not in returning_view_conflicts}
+            _conflicted = any(_sn in returning_view_conflicts
+                              for _sn in _src_names)
+            if _conflicted or len(_kinds) > 1:
+                for t in targets:
+                    for n in _bound_names(t):
+                        if n not in returning_view_conflicts:
+                            returning_view_conflicts.add(n)
+                            returning_views.pop(n, None)
+                            changed = True
+            elif len(_kinds) == 1:
+                _kind = next(iter(_kinds))
+                for t in targets:
+                    for n in _bound_names(t):
+                        if n in returning_view_conflicts:
+                            continue
+                        if n in returning_views \
+                                and returning_views[n] != _kind:
+                            returning_view_conflicts.add(n)
+                            returning_views.pop(n, None)
+                            changed = True
+                        elif n not in returning_views:
+                            returning_views[n] = _kind
+                            changed = True
         for node in ast.walk(tree):
             if isinstance(node, ast.Assign):
                 value, targets = node.value, node.targets

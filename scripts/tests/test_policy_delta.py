@@ -2545,6 +2545,49 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head5)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_view_kind_repeated_conditional_alias_rebinding(self):
+        # PR #148 / #155: repeated conditional alias bindings must
+        # compare/merge view kinds across bindings (a stale first
+        # kind must not be retained on a later differing binding).
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _keys():\n    return DEFAULT_LIMITS.keys()\n'
+                   '\ndef _values():\n'
+                   '    return DEFAULT_LIMITS.values()\n'
+                   '\ndef _uncap(pairs):\n    pairs.clear()\n'
+                   '\n_reader = _keys\n'
+                   '_reader = _values if True else _values\n'
+                   'for _pairs in _reader():\n'
+                   '    _uncap(_pairs)\n')
+        head = self.commit("view-alias-rebind-plain-conditional")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Reported form: both bindings conditional to different
+        # view-returning callees.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _keys():\n    return DEFAULT_LIMITS.keys()\n'
+                   '\ndef _values():\n'
+                   '    return DEFAULT_LIMITS.values()\n'
+                   '\ndef _uncap(pairs):\n    pairs.clear()\n'
+                   '\n_reader = _keys if True else _keys\n'
+                   '_reader = _values if True else _values\n'
+                   'for _pairs in _reader():\n'
+                   '    _uncap(_pairs)\n')
+        head2 = self.commit("view-alias-rebind-both-conditional")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: conditional rebind preserving the same view
+        # kind keeps elements scalar-grade where appropriate.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _keys():\n    return DEFAULT_LIMITS.keys()\n'
+                   '\ndef _keys2():\n    return DEFAULT_LIMITS.keys()\n'
+                   '\n_reader = _keys\n'
+                   '_reader = _keys2 if True else _keys2\n'
+                   'for _key in _reader():\n'
+                   '    pass\n')
+        head3 = self.commit("view-alias-rebind-same-kind")
+        r = self.run_tool("diff", self.base, head3)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_view_kind_through_conditional_callee(self):
         # Codex PR #148 (round 3): an items-returning function
         # invoked through a conditional callee escaped

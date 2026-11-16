@@ -53,6 +53,13 @@ jobs:
           fi
           cat policy-delta.md
           cat policy-delta.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload policy delta report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: policy-delta-${{ github.event.pull_request.head.sha }}
+          path: policy-delta.md
+          if-no-files-found: warn
       - name: Acknowledgement check (fail-closed)
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
