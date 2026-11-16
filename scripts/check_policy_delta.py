@@ -1291,22 +1291,23 @@ def ghg_binding_census(tree):
                        if e is not None)
         return False
 
-    def _container_view_kinds_of(v):
-        """The view kinds a literal container's selected callee
-        may yield: any element/value leaf, re-asked as a callee,
-        contributes its kinds, unioned -- differing kinds are a
-        conflict for the consumers, exactly as differing kinds
-        across a conditional callee's alternatives are. Mirrors
-        _container_taints_callee's container walk (literal
-        layers, subscript-selected containers, conditional
-        containers) with _view_kinds_of as the leaf predicate
-        instead of _value_taints."""
+    def _container_view_kinds_of(v, _seen=None):
+        """The view kinds a literal or plain-literal-named container's
+        selected callee may yield: any element/value leaf, re-asked as
+        a callee, contributes its kinds, unioned -- differing kinds are
+        a conflict for the consumers, exactly as differing kinds across
+        a conditional callee's alternatives are. Mirrors
+        _container_taints_callee's container walk (literal layers,
+        subscript-selected containers, conditional containers, and
+        plain-literal named containers) with _view_kinds_of as the leaf
+        predicate instead of _value_taints."""
         if isinstance(v, (ast.List, ast.Tuple, ast.Set)):
             out = set()
             for e in v.elts:
                 for leaf in _value_leaves(e):
                     out |= _view_kinds_of(
-                        ast.Call(func=leaf, args=[], keywords=[]))
+                        ast.Call(func=leaf, args=[], keywords=[]),
+                        _seen)
             return out
         if isinstance(v, ast.Dict):
             out = set()
@@ -1315,16 +1316,29 @@ def ghg_binding_census(tree):
                     continue
                 for leaf in _value_leaves(e):
                     out |= _view_kinds_of(
-                        ast.Call(func=leaf, args=[], keywords=[]))
+                        ast.Call(func=leaf, args=[], keywords=[]),
+                        _seen)
             return out
         if isinstance(v, ast.Subscript):
-            return _container_view_kinds_of(v.value)
+            return _container_view_kinds_of(v.value, _seen)
         if isinstance(v, ast.IfExp):
-            return _container_view_kinds_of(v.body) \
-                | _container_view_kinds_of(v.orelse)
+            return _container_view_kinds_of(v.body, _seen) \
+                | _container_view_kinds_of(v.orelse, _seen)
+        if isinstance(v, ast.Name):
+            if _seen is not None and v.id in _seen:
+                return set()
+            containers = _ho_literal_containers.get(v.id)
+            if not containers:
+                return set()
+            next_seen = ({v.id} if _seen is None
+                         else (_seen | {v.id}))
+            out = set()
+            for c in containers:
+                out |= _container_view_kinds_of(c, next_seen)
+            return out
         return set()
 
-    def _view_kinds_of(v):
+    def _view_kinds_of(v, _seen=None):
         """The set of view kinds an expression may yield: a
         direct view call, a name carrying a view kind, a call to
         a view-returning callee, or the union over conditional /
@@ -1359,38 +1373,91 @@ def ghg_binding_census(tree):
                 out = set()
                 for leaf in _value_leaves(v.func):
                     out |= _view_kinds_of(
-                        ast.Call(func=leaf, args=[], keywords=[]))
+                        ast.Call(func=leaf, args=[], keywords=[]),
+                        _seen)
                 return out
             if isinstance(v.func, ast.Subscript):
                 # A callee selected by subscripting a literal
-                # container of callees: the result's view kinds
-                # are the union over the callees ANY element the
-                # subscript may select would yield as a direct
-                # callee -- the subscript is not evaluated, as
+                # or plain-literal-named container of callees:
+                # the result's view kinds are the union over the
+                # callees ANY element the subscript may select
+                # would yield as a direct callee -- the
+                # subscript is not evaluated, as
                 # _container_has_callee does not evaluate it for
                 # the callee census.
-                return _container_view_kinds_of(v.func.value)
+                return _container_view_kinds_of(v.func.value, _seen)
             return set()
         if isinstance(v, ast.IfExp):
-            return _view_kinds_of(v.body) \
-                | _view_kinds_of(v.orelse)
+            return _view_kinds_of(v.body, _seen) \
+                | _view_kinds_of(v.orelse, _seen)
         if isinstance(v, ast.BoolOp):
             out = set()
             for x in v.values:
-                out |= _view_kinds_of(x)
+                out |= _view_kinds_of(x, _seen)
             return out
         if isinstance(v, ast.NamedExpr):
-            return _view_kinds_of(v.value)
+            return _view_kinds_of(v.value, _seen)
         return set()
 
+    def _container_callee_view_conflicted(v, _seen=None):
+        """A literal or plain-literal-named container may yield a
+        callee already carrying a returning_view_conflicts marker."""
+        if isinstance(v, (ast.List, ast.Tuple, ast.Set)):
+            return any(
+                _call_callee_view_conflicted(
+                    ast.Call(func=leaf, args=[], keywords=[]), _seen)
+                for e in v.elts
+                for leaf in _value_leaves(e))
+        if isinstance(v, ast.Dict):
+            return any(
+                _call_callee_view_conflicted(
+                    ast.Call(func=leaf, args=[], keywords=[]), _seen)
+                for e in v.values if e is not None
+                for leaf in _value_leaves(e))
+        if isinstance(v, ast.Subscript):
+            return _container_callee_view_conflicted(v.value, _seen)
+        if isinstance(v, ast.IfExp):
+            return _container_callee_view_conflicted(v.body, _seen) \
+                or _container_callee_view_conflicted(v.orelse, _seen)
+        if isinstance(v, ast.Name):
+            if _seen is not None and v.id in _seen:
+                return False
+            containers = _ho_literal_containers.get(v.id)
+            if not containers:
+                return False
+            next_seen = ({v.id} if _seen is None
+                         else (_seen | {v.id}))
+            return any(
+                _container_callee_view_conflicted(c, next_seen)
+                for c in containers)
+        return False
+
+    def _call_callee_view_conflicted(call_node, _seen=None):
+        """Whether a Call's callee (direct Name/Attribute,
+        conditional/boolean/walrus wrapper, or subscript-selected
+        container) carries a returning_view_conflicts marker."""
+        f = call_node.func
+        if isinstance(f, ast.Name):
+            return f.id in returning_view_conflicts
+        if isinstance(f, ast.Attribute):
+            return f.attr in returning_view_conflicts
+        if isinstance(f, (ast.IfExp, ast.BoolOp, ast.NamedExpr)):
+            return any(
+                _call_callee_view_conflicted(
+                    ast.Call(func=leaf, args=[], keywords=[]), _seen)
+                for leaf in _value_leaves(f))
+        if isinstance(f, ast.Subscript):
+            return _container_callee_view_conflicted(f.value, _seen)
+        return False
+
     def _container_taints_callee(v):
-        """A literal container may yield a callee whose call
-        result is wrapper-tainted: any element/value leaf,
-        re-asked as a callee, whose call result would taint
-        a binding does. Mirrors _container_hands_over_callee's
-        container walk (literal layers, subscript-selected
-        containers, conditional containers) with
-        _value_taints as the leaf predicate instead of
+        """A literal or plain-literal-named container may yield a
+        callee whose call result is wrapper-tainted: any element/value
+        leaf, re-asked as a callee, whose call result would taint a
+        binding does. Mirrors _container_hands_over_callee's container
+        walk (literal layers, subscript-selected containers,
+        conditional containers, and plain-literal named containers)
+        with _value_taints as the leaf predicate instead of
         hands_over."""
         if isinstance(v, (ast.List, ast.Tuple, ast.Set)):
             return any(_value_taints(ast.Call(func=leaf, args=[],
@@ -1407,6 +1474,8 @@ def ghg_binding_census(tree):
         if isinstance(v, ast.IfExp):
             return _container_taints_callee(v.body) \
                 or _container_taints_callee(v.orelse)
+        if isinstance(v, ast.Name):
+            return v.id in _named_container_taints
         return False
 
     def _value_taints(v):
@@ -1514,6 +1583,7 @@ def ghg_binding_census(tree):
     for n in _ho_container_name_conflicts:
         _ho_literal_containers.pop(n, None)
     _named_container_hands_over = set()
+    _named_container_taints = set()
 
     changed = True
     _guard = 0
@@ -1576,18 +1646,9 @@ def ghg_binding_census(tree):
                                         or _leaf.id
                                         in lookup_kind_conflicts)
                                 elif isinstance(_leaf, ast.Call):
-                                    if isinstance(_leaf.func,
-                                                  ast.Name):
-                                        _leaf_conflict = \
-                                            _leaf.func.id \
-                                            in \
-                                            returning_view_conflicts
-                                    elif isinstance(_leaf.func,
-                                                    ast.Attribute):
-                                        _leaf_conflict = \
-                                            _leaf.func.attr \
-                                            in \
-                                            returning_view_conflicts
+                                    _leaf_conflict = \
+                                        _call_callee_view_conflicted(
+                                            _leaf)
                                 if _leaf_conflict:
                                     break
                             _kinds = _view_kinds_of(sub.value)
@@ -1830,6 +1891,12 @@ def ghg_binding_census(tree):
                         elif n not in lookup_kinds:
                             lookup_kinds[n] = _kind
                             changed = True
+        for n, _containers in _ho_literal_containers.items():
+            if n not in _named_container_taints \
+                    and any(_container_taints_callee(c)
+                            for c in _containers):
+                _named_container_taints.add(n)
+                changed = True
         for node in ast.walk(tree):
             # Wrapper provenance through call results: a name
             # bound to the result of a returning-but-not-direct
@@ -1963,12 +2030,7 @@ def ghg_binding_census(tree):
                     or value.id in returning_view_conflicts
                     or value.id in lookup_kind_conflicts)
             elif isinstance(value, ast.Call):
-                if isinstance(value.func, ast.Name):
-                    _src_conflict = value.func.id \
-                        in returning_view_conflicts
-                elif isinstance(value.func, ast.Attribute):
-                    _src_conflict = value.func.attr \
-                        in returning_view_conflicts
+                _src_conflict = _call_callee_view_conflicted(value)
             _src_returning = isinstance(value, ast.Name) \
                 and value.id in returning_view_conflicts
             if isinstance(value, (ast.IfExp, ast.BoolOp,
@@ -1993,44 +2055,13 @@ def ghg_binding_census(tree):
                         leaf.id in _view_conflicts
                         or leaf.id in returning_view_conflicts
                         or leaf.id in lookup_kind_conflicts))
-                    or (isinstance(leaf, ast.Call) and (
-                        (isinstance(leaf.func, ast.Name)
-                         and leaf.func.id
-                         in returning_view_conflicts)
-                        or (isinstance(leaf.func, ast.Attribute)
-                            and leaf.func.attr
-                            in returning_view_conflicts)))
+                    or (isinstance(leaf, ast.Call)
+                        and _call_callee_view_conflicted(leaf))
                     for leaf in _leaves)
                 _src_returning = _src_returning or any(
                     isinstance(leaf, ast.Name)
                     and leaf.id in returning_view_conflicts
                     for leaf in _leaves)
-            if isinstance(value, ast.Call) \
-                    and isinstance(value.func, (ast.IfExp,
-                                                ast.BoolOp,
-                                                ast.NamedExpr)):
-                # A callee selected through a conditional /
-                # boolean / walrus wrapper, invoked in place:
-                # the binding value is the Call, so the raw
-                # Call test above (Name/Attribute funcs only)
-                # does not fire and the R3-2 wrapper block
-                # (gated on the value itself) cannot fire.
-                # Generalise the raw Call test over the
-                # func's leaves: each leaf callee gets its
-                # direct form's answer -- a Name leaf tests
-                # returning_view_conflicts, as a Name func
-                # does at 1734-1736; an Attribute leaf tests
-                # its attr, as an Attribute func does at
-                # 1737-1739. _src_returning is NOT extended:
-                # this value binds a call result, not a
-                # callable alias (Fork (c)).
-                _src_conflict = _src_conflict or any(
-                    (isinstance(leaf, ast.Name)
-                     and leaf.id in returning_view_conflicts)
-                    or (isinstance(leaf, ast.Attribute)
-                        and leaf.attr
-                        in returning_view_conflicts)
-                    for leaf in _value_leaves(value.func))
             if _src_conflict:
                 for t in targets:
                     for n in _bound_names(t):
@@ -2187,12 +2218,7 @@ def ghg_binding_census(tree):
                     or value.id in returning_view_conflicts
                     or value.id in lookup_kind_conflicts)
             elif isinstance(value, ast.Call):
-                if isinstance(value.func, ast.Name):
-                    _conflicted = value.func.id \
-                        in returning_view_conflicts
-                elif isinstance(value.func, ast.Attribute):
-                    _conflicted = value.func.attr \
-                        in returning_view_conflicts
+                _conflicted = _call_callee_view_conflicted(value)
             if isinstance(node, (ast.For, ast.AsyncFor,
                                  ast.comprehension)) \
                     and structural_source(value) \

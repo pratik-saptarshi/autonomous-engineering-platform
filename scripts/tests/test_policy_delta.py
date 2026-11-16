@@ -2806,6 +2806,114 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head11)
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
 
+    def test_ghg_wrapper_taint_through_named_container_callee(self):
+        # Codex PR #148 thread PRRT_kwDOVM-V9863yJIx: a wrapper-returning
+        # function invoked through a named container escaped
+        # _container_taints_callee, granting destructured pairs the scalar
+        # exemption.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\ndef _wrapper():\n'
+                   '    return [("caps", DEFAULT_LIMITS)]\n'
+                   '\n_readers = [_wrapper]\n'
+                   '_wrapped = _readers[0]()\n'
+                   'for _key, _value in _wrapped:\n'
+                   '    _uncap(_value)\n')
+        head = self.commit("wrapper-taint-named-container-callee")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: a direct callee in a named container stays
+        # structural and does not falsely taint.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Ledger:\n'
+                   '    def spend(self, bucket):\n'
+                   '        return bucket\n'
+                   '\ndef _direct():\n'
+                   '    return DEFAULT_LIMITS\n'
+                   '\n_led = _Ledger()\n'
+                   '_readers = [_direct]\n'
+                   '_t = _readers[0]()\n'
+                   'for _bucket, _pairs in _t.items():\n'
+                   '    _led.spend(_bucket)\n')
+        head2 = self.commit("wrapper-taint-named-container-direct")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_ghg_view_kind_through_named_container_callee(self):
+        # Codex PR #148 thread PRRT_kwDOVM-V9863yJI0: a view-returning
+        # function invoked through a named container escaped
+        # _container_view_kinds_of, making destructured values scalar-grade.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\ndef _entries():\n'
+                   '    return DEFAULT_LIMITS.items()\n'
+                   '\n_readers = [_entries]\n'
+                   '_view = _readers[0]()\n'
+                   'for _key, _pairs in _view:\n'
+                   '    _uncap(_pairs)\n')
+        head = self.commit("view-kind-named-container-callee")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Parity: a keys-view through a named container restores scalar
+        # key exemption parity with direct and literal-container forms.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\ndef _keys():\n'
+                   '    return DEFAULT_LIMITS.keys()\n'
+                   '\n_readers = [_keys]\n'
+                   '_view = _readers[0]()\n'
+                   'for _key in _view:\n'
+                   '    _uncap(_key)\n')
+        head2 = self.commit("view-kind-named-container-keys-parity")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_ghg_view_conflict_through_subscript_callee(self):
+        # Codex PR #148 thread PRRT_kwDOVM-V9863yJI5: a conflicted callee
+        # selected via subscript from a literal or named container dropped
+        # returning_view_conflicts and granted scalar exemption to pairs.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(pairs):\n    pairs.clear()\n'
+                   '\ndef _entries():\n'
+                   '    _v = DEFAULT_LIMITS.values()\n'
+                   '    _v = DEFAULT_LIMITS.items()\n'
+                   '    return _v\n'
+                   '\n_view = [_entries][0]()\n'
+                   'for _key, _pairs in _view:\n'
+                   '    _uncap(_pairs)\n')
+        head = self.commit("view-conflict-literal-subscript-callee")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Attack, named container holding conflicted callee.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(pairs):\n    pairs.clear()\n'
+                   '\ndef _entries():\n'
+                   '    _v = DEFAULT_LIMITS.values()\n'
+                   '    _v = DEFAULT_LIMITS.items()\n'
+                   '    return _v\n'
+                   '\n_readers = [_entries]\n'
+                   '_view = _readers[0]()\n'
+                   'for _key, _pairs in _view:\n'
+                   '    _uncap(_pairs)\n')
+        head2 = self.commit("view-conflict-named-subscript-callee")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Attack, returned subscript-selected conflicted callee.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(pairs):\n    pairs.clear()\n'
+                   '\ndef _entries():\n'
+                   '    _v = DEFAULT_LIMITS.values()\n'
+                   '    _v = DEFAULT_LIMITS.items()\n'
+                   '    return _v\n'
+                   '\ndef _forward():\n'
+                   '    return [_entries][0]()\n'
+                   '\n_view = _forward()\n'
+                   'for _key, _pairs in _view:\n'
+                   '    _uncap(_pairs)\n')
+        head3 = self.commit("view-conflict-returned-subscript-callee")
+        r = self.run_tool("diff", self.base, head3)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+
     def test_ghg_table_return_through_named_container(self):
         # Codex PR #148 round 8, thread PRRT_kwDOVM-V9863xnti:
         # a table-returning function invoked through a named
