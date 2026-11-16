@@ -7,5 +7,6 @@ Operating guide for agents working in this repository.
 - Use Conventional Commit subjects for every commit (`type(scope): imperative summary`, e.g. `fix(scripts): signal all daemon PIDs when stopping for backup`).
 - Name branches `type/scope-short-description` (e.g. `fix/scripts-watchdog-signal-all-daemon-pids`), matching the Conventional Commit type and scope of the change.
 - Use Conventional Commit subjects for PR titles as well.
-- Commit as `Musebot-Astro <6238157+pratik-saptarshi@users.noreply.github.com>` unless instructed otherwise.
+- Commit with your own identity; bots use their configured user.name/user.email (no hardcoded address).
 - Keep changes focused; do not rewrite shared history. Require conversation resolution before merge. Never bypass branch protection.
+- Plans that change autonomous-loop guards (iterations, strikes, leases) must change code + tests, not prompts alone.
