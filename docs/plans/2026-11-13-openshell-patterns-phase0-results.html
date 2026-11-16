@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OpenShell Patterns — Phase 0 Results</title>
+<style>
+  body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;max-width:880px;margin:2rem auto;padding:0 1.2rem;line-height:1.55;color:#1a1a2e;background:#fdfdfd}
+  h1{font-size:1.55rem;margin-bottom:.2rem} h2{font-size:1.2rem;margin-top:2rem;border-bottom:2px solid #4a6fa5;padding-bottom:.25rem}
+  h3{font-size:1.02rem;margin-top:1.3rem}
+  .meta{color:#666;font-size:.9rem}
+  table{border-collapse:collapse;width:100%;margin:.8rem 0;font-size:.92rem}
+  th,td{border:1px solid #c9d2e0;padding:.4rem .55rem;text-align:left;vertical-align:top}
+  th{background:#eef2f8}
+  .pass{color:#1e7d32;font-weight:600}.kill{color:#b00020;font-weight:600}.cne{color:#b26a00;font-weight:600}
+  .callout{background:#eef2f8;border-left:4px solid #4a6fa5;padding:.7rem 1rem;margin:1rem 0}
+  .risk{background:#fdeeee;border-left:4px solid #b00020;padding:.7rem 1rem;margin:1rem 0}
+  code{background:#eef2f8;padding:.1rem .3rem;border-radius:3px;font-size:.88em}
+  li{margin:.3rem 0}
+</style>
+</head>
+<body>
+<h1>OpenShell Patterns — Phase 0 Results</h1>
+<p class="meta">AEP vendored repo maintenance lane · Author: Musebot-Astro · Date: 2026-11-13 · Branch: <code>feat/openshell-patterns-phase0</code> (unpushed; parent review pending)<br>
+Phase 0 of the OpenShell-patterns adoption plan: four pre-registered gate experiments, executed — no feature builds. Evidence artefacts live beside this report in <code>docs/plans/openshell-patterns-phase0/</code>. A killed or unexecutable gate is a successful outcome of this phase, not a failure of the plan.</p>
+
+<h2>Executive takeaway</h2>
+<p>Three gates pass and one could not be executed as specified — and the unexecutable gate carries the phase's most consequential finding. The power-differ (G-P2) <strong>passes</strong>: it caught all three seeded escalations and, replaying twenty merged PRs, surfaced a real grant human review never mentioned — a bulk skill-sync PR that quietly gave an existing skill a runnable local server. The boot-gate census (G-P6) <strong>passes</strong> more starkly than the panel predicted: invocation coverage is not partial but <em>zero</em> — no cron, hook, or launcher anywhere invokes the gate. The authority index (G-P11) <strong>passes</strong> on completeness: building the one-page map surfaced an entire governance layer the unaided view missed (GitHub rulesets) and corrected a stale remembered fact about merge requirements. The ESF credential probe (G-P7) <strong>could not be executed as specified</strong> because its premise is void here: zero ESF runs have ever executed in this environment — and the executed mechanism probe shows ESF already ships the panel's requested pattern (<code>cube_egress</code> brokered injection), leaving a configuration-enforcement gap instead of a machinery gap. Net effect on the plan: Phases 1, 2b, and 3 proceed; Phase 2a is re-scoped downward; Phase 1 inherits one scope question the evidence raises against its own scoping decision.</p>
+
+<h2>Verdicts at a glance</h2>
+<table>
+<tr><th>Gate</th><th>Verdict</th><th>One-line evidence</th></tr>
+<tr><td><strong>G-P2</strong> power-differ replay</td><td class="pass">PASS</td><td>3/3 seeded escalations caught; PR #58 replay shows 35 of 40 newly-allowed items nowhere in its human review record, incl. a runnable server added to the <code>brainstorming</code> skill</td></tr>
+<tr><td><strong>G-P7</strong> ESF credential replay probe</td><td class="cne">COULD-NOT-EXECUTE as specified</td><td>Zero ESF runs exist in this environment (no Cube, no Temporal, no /dev/kvm, no state) — nothing to replay; mechanism probe executed instead: the standing-key exposure is real in <code>environment</code> mode, already closed in <code>cube_egress</code> mode</td></tr>
+<tr><td><strong>G-P6</strong> launch-path census</td><td class="pass">PASS</td><td>52 live schedules, 1 hook, 6 launch-path classes enumerated; <code>boot-gate.sh</code> invocation coverage is 0% — only its self-tests ever run it</td></tr>
+<tr><td><strong>G-P11</strong> authority index test</td><td class="pass">PASS (completeness leg)</td><td>The hand-built index catches the ruleset layer the unaided view missed and corrects a stale fact (no branch currently requires approving reviews); generation feasible for 11 of 15 rows mechanically</td></tr>
+<tr><td>Informational: credential census</td><td>—</td><td>P1 watch trigger <strong>not fired</strong>: GitHub (via ghg pass-through) is the only heavy agent credential use; no second provider shows repeated broad standing-credential use</td></tr>
+</table>
+
+<h2>G-P2 — Power-differ replay: PASS</h2>
+<p><strong>Criterion:</strong> catch all 3 seeded escalations AND at least 1 real delta human review missed. <strong>Method:</strong> a throwaway stdlib prototype differ over the policy artefacts AEP diffs by eye (<code>policy.data</code> deny-sets, ghg <code>DEFAULT_LIMITS</code> + classification sets, skills sync scope, skills-tree file sets), replayed over the 20 most recent merged PRs touching a policy-bearing path; mention test = full path, skill name, or bare filename anywhere in the PR's body, reviews, issue comments, or line-level review comments.</p>
+<ul>
+<li><strong>Seeds 3/3 caught:</strong> new ghg bucket (new credentialed host), <code>merge</code> leaving the mutating set (new method), <code>*/.config/gcloud</code> leaving the deny-set (metadata reach).</li>
+<li><strong>Direction and emptiness correct across the replay:</strong> grants produce non-empty deltas (#84 +36, #58 +40, #9 +29, #141 +8); the ghg telemetry PR #136 produces an explicit "changed, modelled power unchanged" note; removals (#85, #32) produce denied-only deltas; creations (#40, #43, #83) are reported as creations.</li>
+<li><strong>The missed delta — PR #58</strong> (bulk skill sync, merged 2026-10-26): 35 of 40 newly-allowed items appear nowhere in the human record. The body aggregates ("39 added") and names one file; the record never mentions the <code>brainstorming</code> skill acquiring <code>scripts/server.cjs</code> and its start/stop scripts, nor <code>executing-plans</code> acquiring executable task scripts. Control: PR #84 scores 0/36 unmentioned — the test is not trivially failed.</li>
+<li><strong>Universe caveat:</strong> the strict artefact subset holds only 9 PRs in the repo's whole history; the sample of 20 requires the skill-content PRs. Results are broken out by tier in the evidence.</li>
+</ul>
+<div class="callout"><strong>Scope observation for Phase 1:</strong> within the strict tier, every grant was a creation or was fully enumerated by its author — the catch came from the <em>skills tree</em>, the artefact class the plan's Phase 1 v1 scope defers. As scoped, the Phase 1 build would not have caught the #58 delta. The gate passes on the plan's criteria as written; the Phase 1 scope decision should be re-examined against this evidence before building.</div>
+
+<h2>G-P7 — ESF credential probe: COULD-NOT-EXECUTE as specified (premise void)</h2>
+<p><strong>Criterion:</strong> replay a credential from a completed ESF run; pass if any finished-run credential still works or any run was over-scoped. <strong>Why it could not run:</strong> the inventory leg returns zero — no CubeSandbox deployment, no Temporal, no <code>/dev/kvm</code>, no ESF state or data directories, no containers, and the vendored snapshot ships only <code>cube</code> and <code>fake</code> sandbox providers (the fork's podman provider is not in the pin). No ESF run has ever completed in this environment, so there is no finished-run credential to replay. This is reported as specified-cannot-execute, not redefined.</p>
+<p><strong>Substitute mechanism probe (executed):</strong> the snapshot's own test suites were run in a scratch copy (Go 1.27.2, sequential): <code>internal/agentharness</code> native-CLI tests, <code>internal/factory</code> credential-policy tests, and the cube provider's network-rule test — all pass. They establish, by execution:</p>
+<ul>
+<li><code>environment</code> mode (the legacy default when <code>credential_mode</code> is unset): the run receives the operator's <strong>standing</strong> provider key verbatim in its environment; a grep for rotation/revocation/expiry across the credential path returns zero hits — post-run replay would succeed by construction, and the key's scope is the whole provider account, broader than any run needs.</li>
+<li><code>cube_egress</code> mode: the run receives only the literal placeholder <code>cube-egress-managed-placeholder</code>; the secret is resolved worker-side and injected by CubeEgress into exact scheme/host/method/path matches. Nothing exists to replay.</li>
+</ul>
+<div class="callout"><strong>Premise correction for Phase 2a:</strong> the panel priced P7 as a build (per-run scoped credentials on ghg's lease machinery). The snapshot already contains the pattern — brokered, endpoint-scoped injection — as <code>cube_egress</code>. The residual gap is that <code>environment</code> mode exists and is the default. The AEP-shaped remainder is configuration enforcement (mandate <code>cube_egress</code>; refuse or alarm on <code>environment</code>), not new machinery — and it is dormant until an ESF-capable host exists, since <code>cube_egress</code> requires the Cube provider that cannot run in this VM.</div>
+
+<h2>G-P6 — Launch-path census: PASS</h2>
+<p><strong>Criterion:</strong> pass if any autonomous launch path does not invoke <code>boot-gate.sh</code>; kill if coverage is already 100%. <strong>Result:</strong> coverage is <strong>0%</strong>. The complete census (52 live schedules incl. system jobs, 61 on-disk definitions, 1 hook, and the lane-coordinator, orchestrator, and daemon-lifecycle launcher classes) finds no invocation anywhere; the only executions of the gate are its own self-tests and lane-coord's test fixtures. Lane claims carry a partial substitute — lane-coord hash-binds <code>policy.data</code> at claim time — covering the gate's policy check only, and only on that one path. The panel expected an unwired <em>fraction</em>; the executed census finds the wiring entirely absent, so Phase 2b's work is wiring design, not gap-hunting, and should compose with lane-coord's existing binding rather than duplicate it.</p>
+
+<h2>G-P11 — Authority index: PASS (completeness leg)</h2>
+<p><strong>Criterion:</strong> pass if the hand-built page measurably cuts answer time OR catches a surface the unaided answer missed. <strong>Time leg:</strong> recorded as <em>not demonstrated</em> — an expert tester's unaided verification lookups run 0.0–3s, a floor the page cannot beat; measured in operations, unaided answers need 2–4 sources per question, aided need 1. <strong>Completeness leg (decisive):</strong></p>
+<ul>
+<li><strong>Ruleset layer caught:</strong> branch governance is split between classic protection and two active rulesets on the default branch carrying deletion/force-push blocks, a CodeQL merge gate, a code-quality gate, strict status checks, and linear history. The unaided list named only "branch protection".</li>
+<li><strong>Stale fact corrected:</strong> lane records from 2026-11-09 state develop requires 1 approving review; at extraction, neither branch's protection contains a review requirement. The index reads the current surface, not the remembered one.</li>
+<li><strong>Omitted surface added:</strong> 13 SkillSpector baseline files gate skill changes and were absent from the unaided list; conversely CODEOWNERS proves to be a single effective rule line.</li>
+<li><strong>Generation feasibility:</strong> 11 of 15 index rows are fully generatable from an API or parseable file; 3 are generatable with a pointer component; 2 (procedural standing rules, runtime permission/guard state) are pointer-only by nature. The Phase 3 generator is feasible as priced.</li>
+</ul>
+
+<h2>What Phase 0 changes about the plan</h2>
+<table>
+<tr><th>Phase</th><th>Disposition after Phase 0</th></tr>
+<tr><td>Phase 1 — power-differ</td><td>Proceeds (G-P2 pass). <strong>Open scope question:</strong> the evidence's catch sits in the skills tree, which the plan's v1 scope defers — re-examine before building.</td></tr>
+<tr><td>Phase 2a — ESF per-run credentials</td><td><strong>Re-scoped downward:</strong> from building scoping machinery to mandating <code>cube_egress</code> / fencing <code>environment</code> mode in AEP's ESF configuration. Dormant until an ESF-capable host exists; no build justified today.</td></tr>
+<tr><td>Phase 2b — boot-gate wiring</td><td>Proceeds (G-P6 pass). The gap is total (0%), so this is a wiring-design build across all launch-path classes, composing with lane-coord's policy binding.</td></tr>
+<tr><td>Phase 3 — authority index</td><td>Proceeds (G-P11 pass). Generator feasible as priced; the index must read both protection and rulesets, or it will re-encode the very incompleteness it exists to fix.</td></tr>
+</table>
+<div class="risk"><strong>Observation outside the plan's scope, recorded because the census surfaced it:</strong> AEP's branch protection at extraction time contains <em>no required approving reviews</em> on either branch, contradicting lane records from 2026-11-09 (when the rule demonstrably blocked a merge). Phase 0 takes no position on whether the change was deliberate; it is flagged here and to the parent for the owner's awareness, since several standing workflows assume the rule exists. Correction (2026-11-13): the owner has since ruled the absence DELIBERATE — it is not drift and is not to be restored; standing records and workflows that presumed a required approving review before a develop merge are being corrected accordingly. The 8 status checks and develop linear history remain in force.</div>
+
+<h2>Evidence index</h2>
+<ul>
+<li><code>docs/plans/openshell-patterns-phase0/g-p2/</code> — prototype differ, seeds output, per-PR replay JSON, PR records, findings (incl. the #58 mention test).</li>
+<li><code>docs/plans/openshell-patterns-phase0/g-p7/</code> — findings, executed test log, inventory checks.</li>
+<li><code>docs/plans/openshell-patterns-phase0/g-p6/</code> — the complete launch-path census.</li>
+<li><code>docs/plans/openshell-patterns-phase0/g-p11/</code> — unaided list, extraction JSON (protection + rulesets), prototype index, time-to-answer log, findings.</li>
+<li><code>docs/plans/openshell-patterns-phase0/p1-credential-census/</code> — the informational census behind the P1 trigger assessment.</li>
+</ul>
+<p>Constraints honoured throughout: all GitHub reads via the ghg gateway (actor <code>openshell-patterns-phase0</code>, pre-flighted); no pushes, no PRs; the live NeuroStrata daemon was never contacted; ESF tests ran only in a scratch copy with temporary state.</p>
+</body>
+</html>
