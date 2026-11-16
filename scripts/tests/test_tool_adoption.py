@@ -6,6 +6,7 @@ script and execute it under stubs, so they regress if the shipped code
 reverts. Later findings append their own test classes to this file.
 """
 
+import ast
 import os
 import shlex
 import shutil
@@ -21,6 +22,9 @@ PLANNOTATOR_INSTALL = REPO_ROOT / "ops" / "tool-adoption" / "plannotator" / "ins
 ISOLATION_INSTALL = REPO_ROOT / "ops" / "tool-adoption" / "isolation" / "install.sh"
 SANDBOX_RUN = (
     REPO_ROOT / "ops" / "tool-adoption" / "isolation" / "bin" / "sandbox-run"
+)
+PROBE_READS = (
+    REPO_ROOT / "ops" / "tool-adoption" / "isolation" / "probes" / "probe_reads.py"
 )
 
 
@@ -52,6 +56,19 @@ def _extract_caller_block(text):
         if lines[idx] == "  fi":
             return "\n".join(lines[start : idx + 1]) + "\n"
     raise AssertionError("caller block has no closing '  fi'")
+
+
+def _extract_py_function(text, name):
+    """Source of a top-level def in a shipped Python file under test.
+
+    Same intent as _extract_function(), for Python instead of shell: the
+    tests exec the extracted text, so they regress if the shipped code
+    reverts.
+    """
+    for node in ast.parse(text).body:
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return ast.get_source_segment(text, node) + "\n"
+    raise AssertionError(f"function {name}() not found")
 
 
 class PlannotatorAttestationTests(unittest.TestCase):
@@ -521,6 +538,51 @@ exit 0
         result, starts = self._run_case(stub)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(starts, 2, "runtime --log error did not retry")
+
+
+class ProbeReadsDefaultRouteTests(unittest.TestCase):
+    """Finding: the routing probe must SELECT default routes, not skip them.
+
+    Criterion 1g asserts the sandbox has no default route. The predicate
+    used to keep only rows whose destination was NOT 00000000 and then
+    assert that remainder was empty, so a namespace holding only a
+    default route passed while a connected-only table failed. Fixtures
+    here pin the predicate in both directions.
+    """
+
+    HEADER = (
+        "Iface\tDestination\tGateway\t\tFlags\tRefCnt\tUse\tMetric"
+        "\tMask\t\tMTU\tWindow\tIRTT"
+    )
+    DEFAULT_ROW = "eth0\t00000000\t010011AC\t0003\t0\t0\t0\t00000000\t0\t0\t0"
+    CONNECTED_ROW = "eth0\t000011AC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0"
+
+    @classmethod
+    def setUpClass(cls):
+        source = _extract_py_function(PROBE_READS.read_text(), "default_routes")
+        namespace = {}
+        exec(source, namespace)  # noqa: S102 - shipped code under test
+        cls.default_routes = staticmethod(namespace["default_routes"])
+
+    def _table(self, *rows):
+        return "\n".join((self.HEADER,) + rows) + "\n"
+
+    def test_default_only_table_is_selected(self):
+        rows = self.default_routes(self._table(self.DEFAULT_ROW))
+        self.assertEqual(len(rows), 1, "default-only table must be selected")
+
+    def test_connected_only_table_selects_nothing(self):
+        rows = self.default_routes(self._table(self.CONNECTED_ROW))
+        self.assertEqual(rows, [], "connected-only table holds no default route")
+
+    def test_combined_table_selects_only_the_default(self):
+        rows = self.default_routes(self._table(self.CONNECTED_ROW, self.DEFAULT_ROW))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][1], "00000000")
+
+    def test_header_only_and_short_rows_are_ignored(self):
+        self.assertEqual(self.default_routes(self.HEADER + "\n"), [])
+        self.assertEqual(self.default_routes(self._table("", "eth0")), [])
 
 
 if __name__ == "__main__":

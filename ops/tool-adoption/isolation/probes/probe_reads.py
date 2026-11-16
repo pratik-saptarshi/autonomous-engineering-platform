@@ -12,6 +12,21 @@ def check(name, ok, detail=""):
     results.append((name, ok))
     print(f"{'PASS' if ok else 'FAIL'}  {name}  {detail}")
 
+def default_routes(table_text):
+    """Default-route rows of a /proc/net/route dump.
+
+    The table is a header line plus one whitespace-separated row per
+    route; the second field of a row is the destination in network byte
+    order as hex, and "00000000" is the catch-all.
+    """
+    rows = []
+    for line in table_text.splitlines()[1:]:
+        fields = line.split()
+        if len(fields) > 1 and fields[1] == "00000000":
+            rows.append(fields)
+    return rows
+
+
 def must_not_read(path):
     try:
         if os.path.isdir(path):
@@ -86,8 +101,8 @@ except OSError as e:
     check("no DNS resolution", True, type(e).__name__)
 try:
     with open("/proc/net/route") as f:
-        routes = [l for l in f.read().splitlines()[1:] if l.split()[1] != "00000000"]
-    check("no default route", not routes, f"routes={len(routes)}")
+        routes = default_routes(f.read())
+    check("no default route", not routes, f"default routes={len(routes)}")
 except OSError as e:
     check("no default route", False, f"route table unreadable: {e}")
 
