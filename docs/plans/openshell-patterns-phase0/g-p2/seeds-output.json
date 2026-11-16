@@ -1,0 +1,27 @@
+[
+ {
+  "seed": "S1 new credentialed host (new ghg bucket 'metadata_creds')",
+  "caught": true,
+  "newly_allowed": [
+   "ghg caps: NEW bucket 'metadata_creds' [(60, 30)] -> newly allowed call class"
+  ],
+  "newly_denied": []
+ },
+ {
+  "seed": "S2 new method on allowed host ('merge' leaves mutating set)",
+  "caught": true,
+  "newly_allowed": [
+   "ghg classify: 'merge' leaves mutating subcommand set -> newly allowed (escapes mutating classification)"
+  ],
+  "newly_denied": []
+ },
+ {
+  "seed": "S3 metadata-endpoint reach ('*/.config/gcloud' leaves deny-set)",
+  "caught": true,
+  "newly_allowed": [
+   "policy.data[sensitive-paths]: deny pattern removed -> newly allowed: */.config/gcloud",
+   "policy.data[sensitive-paths]: deny pattern removed -> newly allowed: */.config/gcloud/*"
+  ],
+  "newly_denied": []
+ }
+]
