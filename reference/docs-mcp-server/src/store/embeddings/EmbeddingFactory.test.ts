@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { loadConfig } from "../../utils/config";
 import { MissingCredentialsError } from "../errors";
 import type { EmbeddingProvider } from "./EmbeddingConfig";
-import { createEmbeddingModel } from "./EmbeddingFactory";
+import { areCredentialsAvailable, createEmbeddingModel } from "./EmbeddingFactory";
 import { FixedDimensionEmbeddings } from "./FixedDimensionEmbeddings";
 
 // Suppress logger output during tests
@@ -170,6 +170,86 @@ describe("createEmbeddingModel", () => {
     });
   });
 
+  describe("areCredentialsAvailable", () => {
+    test("returns true for OpenAI when OPENAI_API_KEY is present", () => {
+      vi.stubGlobal("process", { env: { OPENAI_API_KEY: "test-key" } });
+      expect(areCredentialsAvailable("openai")).toBe(true);
+    });
+
+    test("returns true for OpenAI without API key when OPENAI_API_BASE is set", () => {
+      vi.stubGlobal("process", { env: { OPENAI_API_BASE: "http://localhost:11434/v1" } });
+      expect(areCredentialsAvailable("openai")).toBe(true);
+    });
+
+    test("returns true for OpenAI without API key when OPENAI_BASE_URL is set", () => {
+      vi.stubGlobal("process", { env: { OPENAI_BASE_URL: "http://localhost:11434/v1" } });
+      expect(areCredentialsAvailable("openai")).toBe(true);
+    });
+
+    test("returns true for OpenAI without API key when DOCS_MCP_DIRECT_API is set", () => {
+      vi.stubGlobal("process", { env: { DOCS_MCP_DIRECT_API: "true" } });
+      expect(areCredentialsAvailable("openai")).toBe(true);
+    });
+
+    test("returns true for OpenAI without API key when DOCS_MCP_NO_API_KEY is set", () => {
+      vi.stubGlobal("process", { env: { DOCS_MCP_NO_API_KEY: "true" } });
+      expect(areCredentialsAvailable("openai")).toBe(true);
+    });
+
+    test("returns false for OpenAI when neither API key nor proxy/direct API is configured", () => {
+      vi.stubGlobal("process", { env: {} });
+      expect(areCredentialsAvailable("openai")).toBe(false);
+    });
+
+    test("returns true for OpenAI when directApi option is true without environment variables", () => {
+      vi.stubGlobal("process", { env: {} });
+      expect(areCredentialsAvailable("openai", { directApi: true })).toBe(true);
+    });
+  });
+
+  describe("direct API and proxy support without API key", () => {
+    test("creates OpenAI client with OPENAI_API_BASE when OPENAI_API_KEY is missing", () => {
+      vi.stubGlobal("process", {
+        env: { OPENAI_API_BASE: "http://localhost:11434/v1" },
+      });
+      const model = createEmbeddingModel("text-embedding-3-small", runtimeConfig);
+      expect(model).toBeInstanceOf(OpenAIEmbeddings);
+      expect(model).toMatchObject({
+        modelName: "text-embedding-3-small",
+        clientConfig: { baseURL: "http://localhost:11434/v1" },
+      });
+    });
+
+    test("creates OpenAI client with OPENAI_BASE_URL when OPENAI_API_KEY is missing", () => {
+      vi.stubGlobal("process", {
+        env: { OPENAI_BASE_URL: "http://localhost:1234/v1" },
+      });
+      const model = createEmbeddingModel("openai:text-embedding-3-small", runtimeConfig);
+      expect(model).toBeInstanceOf(OpenAIEmbeddings);
+      expect(model).toMatchObject({
+        modelName: "text-embedding-3-small",
+        clientConfig: { baseURL: "http://localhost:1234/v1" },
+      });
+    });
+
+    test("creates OpenAI client with DOCS_MCP_DIRECT_API=true when OPENAI_API_KEY is missing", () => {
+      vi.stubGlobal("process", {
+        env: { DOCS_MCP_DIRECT_API: "true" },
+      });
+      const model = createEmbeddingModel("text-embedding-3-small", runtimeConfig);
+      expect(model).toBeInstanceOf(OpenAIEmbeddings);
+    });
+
+    test("creates OpenAI client with directApi runtime option when OPENAI_API_KEY is missing", () => {
+      vi.stubGlobal("process", { env: {} });
+      const model = createEmbeddingModel("text-embedding-3-small", {
+        ...runtimeConfig,
+        directApi: true,
+      });
+      expect(model).toBeInstanceOf(OpenAIEmbeddings);
+    });
+  });
+
   describe("providers that ignore encoding_format", () => {
     /**
      * Stands in for Mistral / LM Studio / Ollama: accepts `encoding_format` and
@@ -236,6 +316,34 @@ describe("createEmbeddingModel", () => {
         expect(vector).toHaveLength(nativeDimension);
         expect(vector.every((value) => value === 0)).toBe(false);
         expect(vector.filter((value) => value !== 0)).toHaveLength(nativeDimension);
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    });
+
+    test("should embed successfully without OPENAI_API_KEY when OPENAI_BASE_URL points to a proxy", async () => {
+      const nativeDimension = 1024;
+      const { server, received } = startProvider(nativeDimension);
+      await new Promise<void>((resolve) =>
+        server.listen(0, "127.0.0.1", () => resolve()),
+      );
+      const { port } = server.address() as AddressInfo;
+
+      try {
+        vi.stubGlobal("process", {
+          env: {
+            OPENAI_BASE_URL: `http://127.0.0.1:${port}/v1`,
+          },
+        });
+
+        const model = createEmbeddingModel("openai:mistral-embed", {
+          vectorDimension: nativeDimension,
+        });
+        const vector = await model.embedQuery("test without key");
+
+        expect(received).toEqual(["float"]);
+        expect(vector).toHaveLength(nativeDimension);
+        expect(vector.every((value) => value === 0)).toBe(false);
       } finally {
         await new Promise<void>((resolve) => server.close(() => resolve()));
       }

@@ -86,6 +86,12 @@ export function registerGlobalOptions<T>(cli: Argv<T>) {
       description: "Custom path for data storage directory",
       alias: "storePath",
     })
+    .option("direct-api", {
+      type: "boolean",
+      description: "Allow direct API or proxy endpoints without an API key",
+      alias: "directApi",
+      defaultDescription: "false",
+    })
     .option("config", {
       type: "string",
       description: "Path to configuration file",
