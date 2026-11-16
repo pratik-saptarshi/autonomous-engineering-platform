@@ -397,7 +397,7 @@ b6fbfdddbbc134820b25994671213e63c713ac8646809df849884a26ea63c9b6  ./openspec/spe
 702573571b3be8e07cf68ec5ca82fb6c570a88504d8732c6063ed7f3b87b6ac3  ./openspec/specs/url-normalization/spec.md
 b4b8bd43289ded0baa9f76d3d97ecfd3923ed9b8ad2c69df2245465fc53a19a1  ./openspec/specs/version-resolution/spec.md
 e336831f22436d416988cd2ca8af83c9f01786949555ae8281eba2827425bd3b  ./openspec/specs/zip-processing/spec.md
-fc4e47e41a7b3b3d302954511071b45689beb84cbb23de6f343441337a1405ff  ./package-lock.json
+61224c2f67c04494acb1487d3d147f4a30ac4dec9e91b65941c54c675101d37a  ./package-lock.json
 e7cdb59383147cbb0d1b56727a7c99ae5ae307a6a2826ff417f2455754b980e9  ./package.json
 ee0ed5c163f4ba1f342fda148c8408a3f72153632a9c4d0d3672f9ba77fdcadc  ./public/android-icon-144x144.png
 911032bd2db9daf24904d85fa0461da0ccbb4a6a442289398e15c49dead317ca  ./public/android-icon-192x192.png
