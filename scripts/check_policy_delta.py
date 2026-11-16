@@ -1333,6 +1333,32 @@ def ghg_binding_census(tree):
             return _view_kinds_of(v.value)
         return set()
 
+    def _container_taints_callee(v):
+        """A literal container may yield a callee whose call
+        result is wrapper-tainted: any element/value leaf,
+        re-asked as a callee, whose call result would taint
+        a binding does. Mirrors _container_hands_over_callee's
+        container walk (literal layers, subscript-selected
+        containers, conditional containers) with
+        _value_taints as the leaf predicate instead of
+        hands_over."""
+        if isinstance(v, (ast.List, ast.Tuple, ast.Set)):
+            return any(_value_taints(ast.Call(func=leaf, args=[],
+                                              keywords=[]))
+                       for e in v.elts
+                       for leaf in _value_leaves(e))
+        if isinstance(v, ast.Dict):
+            return any(_value_taints(ast.Call(func=leaf, args=[],
+                                              keywords=[]))
+                       for e in v.values if e is not None
+                       for leaf in _value_leaves(e))
+        if isinstance(v, ast.Subscript):
+            return _container_taints_callee(v.value)
+        if isinstance(v, ast.IfExp):
+            return _container_taints_callee(v.body) \
+                or _container_taints_callee(v.orelse)
+        return False
+
     def _value_taints(v):
         """A binding to this value is wrapper-tainted: some
         value-transparent path through it reaches a wrapper (a
@@ -1368,6 +1394,14 @@ def ghg_binding_census(tree):
                 return any(_value_taints(
                     ast.Call(func=leaf, args=[], keywords=[]))
                     for leaf in _value_leaves(f))
+            if isinstance(f, ast.Subscript):
+                # A callee selected by subscripting a literal
+                # container of callees: the binding is tainted
+                # if ANY element the subscript may select would
+                # taint it as a direct callee -- the subscript
+                # is not evaluated, as _container_has_callee
+                # does not evaluate it for the callee census.
+                return _container_taints_callee(f.value)
             return False
         for w in (v, core):
             if isinstance(w, ast.BoolOp):

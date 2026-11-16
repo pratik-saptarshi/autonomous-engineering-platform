@@ -2539,6 +2539,122 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head6)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_wrapper_taint_through_subscript_callee(self):
+        # Codex PR #148 round 7, thread PRRT_kwDOVM-V9863wNyi:
+        # a wrapper-returning function invoked through a
+        # subscript-selected callee escaped _value_taints -- its
+        # Call branch recognized Name, Attribute, and conditional
+        # callees but had no Subscript arm, so the bound result
+        # was never wrapper-tainted, counted as a structural
+        # source, and its unpacked value took the scalar
+        # exemption.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\ndef _wrapper():\n'
+                   '    return [("caps", DEFAULT_LIMITS)]\n'
+                   '\n_wrapped = [_wrapper][0]()\n'
+                   'for _key, _value in _wrapped:\n'
+                   '    _uncap(_value)\n')
+        head = self.commit("wrapper-taint-subscript-callee")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Attack, tuple: the wrapper is selected from a tuple.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\ndef _wrapper():\n'
+                   '    return [("caps", DEFAULT_LIMITS)]\n'
+                   '\n_wrapped = (_wrapper,)[0]()\n'
+                   'for _key, _value in _wrapped:\n'
+                   '    _uncap(_value)\n')
+        head2 = self.commit("wrapper-taint-tuple-subscript-callee")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Attack, dict: the wrapper is selected by key (values
+        # only).
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\ndef _wrapper():\n'
+                   '    return [("caps", DEFAULT_LIMITS)]\n'
+                   '\n_wrapped = {"f": _wrapper}["f"]()\n'
+                   'for _key, _value in _wrapped:\n'
+                   '    _uncap(_value)\n')
+        head3 = self.commit("wrapper-taint-dict-subscript-callee")
+        r = self.run_tool("diff", self.base, head3)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Control: the direct callee is refused, as before.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\ndef _wrapper():\n'
+                   '    return [("caps", DEFAULT_LIMITS)]\n'
+                   '\n_wrapped = _wrapper()\n'
+                   'for _key, _value in _wrapped:\n'
+                   '    _uncap(_value)\n')
+        head4 = self.commit("wrapper-taint-direct-callee-r7")
+        r = self.run_tool("diff", self.base, head4)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Control: the conditional callee is refused, as before.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\ndef _wrapper():\n'
+                   '    return [("caps", DEFAULT_LIMITS)]\n'
+                   '\n_wrapped = (_wrapper if True else _wrapper)()\n'
+                   'for _key, _value in _wrapped:\n'
+                   '    _uncap(_value)\n')
+        head5 = self.commit("wrapper-taint-conditional-callee-r7")
+        r = self.run_tool("diff", self.base, head5)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: a wrapper-of-plain selected by subscript
+        # is not tainted -- its return holds no table.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\ndef _plainwrap():\n'
+                   '    return [("caps", {})]\n'
+                   '\n_wrapped = [_plainwrap][0]()\n'
+                   'for _key, _value in _wrapped:\n'
+                   '    _uncap(_value)\n')
+        head6 = self.commit("wrapper-taint-subscript-plain-wrapper")
+        r = self.run_tool("diff", self.base, head6)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        # Precision: a direct callee selected by subscript does
+        # not taint -- it returns DEFAULT_LIMITS directly.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\ndef _direct():\n'
+                   '    return DEFAULT_LIMITS\n'
+                   '\n_wrapped = [_direct][0]()\n'
+                   'for _key, _value in _wrapped:\n'
+                   '    _uncap(_value)\n')
+        head7 = self.commit("wrapper-taint-subscript-direct-callee")
+        r = self.run_tool("diff", self.base, head7)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        # Attack, conditional container: either branch's
+        # elements may be selected.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\ndef _wrapper():\n'
+                   '    return [("caps", DEFAULT_LIMITS)]\n'
+                   '\ndef _plainwrap():\n'
+                   '    return [("caps", {})]\n'
+                   '\n_wrapped = ([_wrapper] if True else '
+                   '[_plainwrap])[0]()\n'
+                   'for _key, _value in _wrapped:\n'
+                   '    _uncap(_value)\n')
+        head8 = self.commit("wrapper-taint-conditional-container-callee")
+        r = self.run_tool("diff", self.base, head8)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Attack, subscript callee as element: the element leaf
+        # re-asks through the same arm.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\ndef _wrapper():\n'
+                   '    return [("caps", DEFAULT_LIMITS)]\n'
+                   '\n_wrapped = [[_wrapper][0]][0]()\n'
+                   'for _key, _value in _wrapped:\n'
+                   '    _uncap(_value)\n')
+        head9 = self.commit("wrapper-taint-nested-subscript-callee")
+        r = self.run_tool("diff", self.base, head9)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+
     def test_ghg_view_conflict_through_callable_alias(self):
         # Codex PR #148 (round 2): a callable alias of a
         # view-conflicted function escaped the call-source
