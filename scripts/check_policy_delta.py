@@ -1178,6 +1178,14 @@ def ghg_binding_census(tree):
         if isinstance(v, ast.IfExp):
             return _container_hands_over_callee(v.body) \
                 or _container_hands_over_callee(v.orelse)
+        if isinstance(v, ast.Name):
+            # A container held in a name resolves only
+            # through the plain-literal record for this
+            # channel: the name is a table-return container
+            # iff some recorded literal for it holds a callee
+            # whose call hands over (settled by the growth
+            # step in the main fixpoint below).
+            return v.id in _named_container_hands_over
         return False
 
     def hands_over(value):
@@ -1459,6 +1467,54 @@ def ghg_binding_census(tree):
                     return True
         return False
 
+    # Plain-literal container bindings for the hands_over
+    # channel: a name bound directly, by a plain assignment,
+    # to a literal container. Only these names may resolve as
+    # containers in _container_hands_over_callee (see its Name
+    # arm). The construction is the callee census's
+    # plain-literal record duplicated for this channel: it is
+    # a pure walk over the tree, built here -- before the main
+    # fixpoint, in which hands_over is evaluated -- because
+    # this channel's consumers run inside the fixpoint, while
+    # the callee record's run after it. The two records apply
+    # the same conferral rule to the same tree and cannot
+    # disagree on it; their settled sets encode different
+    # predicates and are settled separately. The record is
+    # all-bindings: any other enumerated binding of the same
+    # name -- to a non-container, through a Call or a
+    # conditional, by an annotated or walrus binding --
+    # disqualifies the name, as a view-kind conflict drops a
+    # kind: the name then does not resolve at all, in either
+    # order. Bindings outside the enumeration (for targets,
+    # parameters, imports) neither confer nor disqualify.
+    _ho_literal_containers = {}
+    _ho_container_name_conflicts = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            _cvalue, _ctargets = node.value, node.targets
+        elif isinstance(node, ast.AnnAssign) \
+                and node.value is not None:
+            _cvalue, _ctargets = node.value, [node.target]
+        elif isinstance(node, ast.NamedExpr):
+            _cvalue, _ctargets = node.value, [node.target]
+        else:
+            continue
+        for t in _ctargets:
+            for n in _bound_names(t):
+                if isinstance(node, ast.Assign) \
+                        and isinstance(t, ast.Name) \
+                        and isinstance(_cvalue, (ast.List,
+                                                  ast.Tuple,
+                                                  ast.Set,
+                                                  ast.Dict)):
+                    _ho_literal_containers.setdefault(
+                        n, []).append(_cvalue)
+                else:
+                    _ho_container_name_conflicts.add(n)
+    for n in _ho_container_name_conflicts:
+        _ho_literal_containers.pop(n, None)
+    _named_container_hands_over = set()
+
     changed = True
     _guard = 0
     while changed:
@@ -1472,6 +1528,22 @@ def ghg_binding_census(tree):
             returning_direct_aliases.clear()
             break
         changed = False
+        # Named containers for the hands_over channel settle
+        # alongside the fixpoint: a recorded literal's elements
+        # hand over only once the census knows their callees
+        # return tables, which the fixpoint itself is still
+        # filling, so the set grows here, at the top of each
+        # iteration, and every addition re-runs the iteration
+        # (changed = True) so no consumer keeps an answer given
+        # under a smaller set. The set is add-only and bounded
+        # by the names in the tree, so the loop terminates as
+        # before.
+        for n, _containers in _ho_literal_containers.items():
+            if n not in _named_container_hands_over \
+                    and any(_container_hands_over_callee(c)
+                            for c in _containers):
+                _named_container_hands_over.add(n)
+                changed = True
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 is_enter = id(node) in enter_of

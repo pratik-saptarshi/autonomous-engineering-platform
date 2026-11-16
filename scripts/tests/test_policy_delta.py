@@ -2806,6 +2806,146 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head11)
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
 
+    def test_ghg_table_return_through_named_container(self):
+        # Codex PR #148 round 8, thread PRRT_kwDOVM-V9863xnti:
+        # a table-returning function invoked through a named
+        # container escaped hands_over --
+        # _container_hands_over_callee had no Name resolution,
+        # so a subscript of a container held in a name never
+        # handed over. Resolution is confined to plain literal
+        # bindings: a name bound directly, by a plain
+        # assignment, to a List/Tuple/Set/Dict literal; a name
+        # bound through a Call or a conditional does not
+        # resolve.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _tables():\n    return DEFAULT_LIMITS\n'
+                   '\n_readers = [_tables]\n'
+                   '_readers[0]().clear()\n')
+        head = self.commit("named-container-table-return")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Attack, dict-named: the container is a dict literal,
+        # selected by key.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _tables():\n    return DEFAULT_LIMITS\n'
+                   '\n_readers = {"t": _tables}\n'
+                   '_readers["t"]().clear()\n')
+        head2 = self.commit("named-dict-container-table-return")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Attack, tuple-named: the container is a tuple literal.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _tables():\n    return DEFAULT_LIMITS\n'
+                   '\n_readers = (_tables,)\n'
+                   '_readers[0]().clear()\n')
+        head3 = self.commit("named-tuple-container-table-return")
+        r = self.run_tool("diff", self.base, head3)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Control: the literal container is refused, as before.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _tables():\n    return DEFAULT_LIMITS\n'
+                   '\n[_tables][0]().clear()\n')
+        head4 = self.commit("literal-container-table-return-r8")
+        r = self.run_tool("diff", self.base, head4)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Control: the direct receiver is refused, as before.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _tables():\n    return DEFAULT_LIMITS\n'
+                   '\n_tables().clear()\n')
+        head5 = self.commit("direct-table-return-r8")
+        r = self.run_tool("diff", self.base, head5)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Control: the plain alias is refused, as before -- the
+        # plain function-alias path discriminates.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _tables():\n    return DEFAULT_LIMITS\n'
+                   '\n_readers = _tables\n'
+                   '_readers().clear()\n')
+        head6 = self.commit("plain-alias-table-return-r8")
+        r = self.run_tool("diff", self.base, head6)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: a named container of a callee returning a
+        # fresh literal dict hands over no table.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _plain():\n    return {}\n'
+                   '\n_readers = [_plain]\n'
+                   '_readers[0]().clear()\n')
+        head7 = self.commit("named-container-plain-return")
+        r = self.run_tool("diff", self.base, head7)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        # Precision: a named container of a builtin holds no
+        # table-returning callee.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_readers = [sorted]\n'
+                   '_readers[0](DEFAULT_LIMITS)\n')
+        head8 = self.commit("named-container-builtin-hands-over")
+        r = self.run_tool("diff", self.base, head8)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        # Rule lock: a literal-then-literal rebind still
+        # resolves -- the may-union over conferring bindings,
+        # mirroring add-only returning_aliases; labelled a rule
+        # lock, not a precision case.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _tables():\n    return DEFAULT_LIMITS\n'
+                   '\ndef _plain():\n    return {}\n'
+                   '\n_readers = [_tables]\n'
+                   '_readers = [_plain]\n'
+                   '_readers[0]().clear()\n')
+        head9 = self.commit(
+            "named-container-literal-rebind-may-hands-over")
+        r = self.run_tool("diff", self.base, head9)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision, disqualifier rule lock: a rebind through a
+        # Name disqualifies the name, so it does not resolve
+        # through the record, and runtime reaches only the
+        # plain callee's fresh dict.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _tables():\n    return DEFAULT_LIMITS\n'
+                   '\ndef _plain():\n    return {}\n'
+                   '\n_others = [_plain]\n'
+                   '_readers = [_tables]\n'
+                   '_readers = _others\n'
+                   '_readers[0]().clear()\n')
+        head10 = self.commit(
+            "named-container-name-rebind-disqualified-hands-over")
+        r = self.run_tool("diff", self.base, head10)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        # Attack: a container of a callee alias -- the
+        # composition that requires in-fixpoint growth.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _tables():\n    return DEFAULT_LIMITS\n'
+                   '\n_alias = _tables\n'
+                   '_readers = [_alias]\n'
+                   '_readers[0]().clear()\n')
+        head11 = self.commit("named-container-of-returning-alias")
+        r = self.run_tool("diff", self.base, head11)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Attack: a conditional element in a named container.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _tables():\n    return DEFAULT_LIMITS\n'
+                   '\n_readers = [(_tables if True else _tables)]\n'
+                   '_readers[0]().clear()\n')
+        head12 = self.commit(
+            "named-container-conditional-element-hands-over")
+        r = self.run_tool("diff", self.base, head12)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Guard lock, R3-2 / F2-20 non-recognition: a name
+        # bound from a subscript of a literal container is not
+        # recognized by the binding pass, so iterating its
+        # result and spending its pairs stays allowed. This is
+        # a guard lock on a recorded residual, not coverage;
+        # if it ever flips to 2 the confinement has been
+        # crossed.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\ndef _direct():\n    return DEFAULT_LIMITS\n'
+                   '\n_reader = [_direct][0]\n'
+                   'for _key, _pairs in _reader():\n'
+                   '    _uncap(_pairs)\n')
+        head13 = self.commit("f2-20-non-recognition-guard-r8")
+        r = self.run_tool("diff", self.base, head13)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_callee_in_named_container_is_local(self):
         # Codex PR #148 round 7, thread PRRT_kwDOVM-V9863wNyj:
         # a local callee stored in a named container escaped --
