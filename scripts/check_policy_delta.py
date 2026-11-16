@@ -1155,6 +1155,31 @@ def ghg_binding_census(tree):
                 return True
         return False
 
+    def _container_hands_over_callee(v):
+        """A literal container may yield a callee whose call
+        hands over a table: any element/value leaf, re-asked
+        as a callee, that would hand over as a direct callee
+        does. Mirrors _container_has_callee's container walk
+        (literal layers, subscript-selected containers,
+        conditional containers) with hands_over as the leaf
+        predicate instead of _is_callee_form."""
+        if isinstance(v, (ast.List, ast.Tuple, ast.Set)):
+            return any(hands_over(ast.Call(func=leaf, args=[],
+                                           keywords=[]))
+                       for e in v.elts
+                       for leaf in _value_leaves(e))
+        if isinstance(v, ast.Dict):
+            return any(hands_over(ast.Call(func=leaf, args=[],
+                                           keywords=[]))
+                       for e in v.values if e is not None
+                       for leaf in _value_leaves(e))
+        if isinstance(v, ast.Subscript):
+            return _container_hands_over_callee(v.value)
+        if isinstance(v, ast.IfExp):
+            return _container_hands_over_callee(v.body) \
+                or _container_hands_over_callee(v.orelse)
+        return False
+
     def hands_over(value):
         """The expression hands over (denotes) a watched table --
         ONE predicate for value positions and mutation receivers,
@@ -1216,6 +1241,14 @@ def ghg_binding_census(tree):
                 return any(hands_over(ast.Call(func=leaf, args=[],
                                                keywords=[]))
                            for leaf in _value_leaves(expr.func))
+            if isinstance(expr.func, ast.Subscript):
+                # A callee selected by subscripting a literal
+                # container of callees: the call hands over a
+                # table if ANY element the subscript may select
+                # would as a direct callee -- the subscript is
+                # not evaluated, as _container_has_callee does
+                # not evaluate it for the callee census.
+                return _container_hands_over_callee(expr.func.value)
             return False
         if isinstance(expr, (ast.ListComp, ast.SetComp,
                              ast.GeneratorExp)):

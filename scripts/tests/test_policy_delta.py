@@ -2325,6 +2325,78 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head5)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_table_return_through_subscript_callee(self):
+        # Codex PR #148 round 6: a table-returning function invoked
+        # through a subscript-selected callee escaped hands_over --
+        # the Call handling recognized Name, Call, and conditional
+        # callees but had no Subscript arm, so a callee selected
+        # from a literal container was never asked whether it
+        # returns a table.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _tables():\n    return DEFAULT_LIMITS\n'
+                   '\n[_tables][0]().clear()\n')
+        head = self.commit("subscript-callee-table")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Tuple container, constant index.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _tables():\n    return DEFAULT_LIMITS\n'
+                   '\n(_tables,)[0]().clear()\n')
+        head2 = self.commit("tuple-subscript-callee-table")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Dict container, constant key (values only).
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _tables():\n    return DEFAULT_LIMITS\n'
+                   '\n{"f": _tables}["f"]().clear()\n')
+        head3 = self.commit("dict-subscript-callee-table")
+        r = self.run_tool("diff", self.base, head3)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Conditional container: either branch's elements may be
+        # selected.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _tables():\n    return DEFAULT_LIMITS\n'
+                   '\ndef _other():\n    return {}\n'
+                   '\n([_tables] if True else [_other])[0]().clear()\n')
+        head4 = self.commit("conditional-container-callee-table")
+        r = self.run_tool("diff", self.base, head4)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # A subscript-selected callee as a container element: the
+        # element leaf re-asks through the same arm.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _tables():\n    return DEFAULT_LIMITS\n'
+                   '\n[[_tables][0]][0]().clear()\n')
+        head5 = self.commit("nested-subscript-callee-table")
+        r = self.run_tool("diff", self.base, head5)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Control: the direct callee is refused, as before.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _tables():\n    return DEFAULT_LIMITS\n'
+                   '\n_tables().clear()\n')
+        head6 = self.commit("direct-callee-table-r6")
+        r = self.run_tool("diff", self.base, head6)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Control: a table-returning method on a subscript-selected
+        # receiver was already refused before this fix (the strip
+        # loop answers on the method name, whatever the receiver).
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nclass _Svc:\n'
+                   '    def entries(self):\n'
+                   '        return DEFAULT_LIMITS\n'
+                   '\n_svc = _Svc()\n'
+                   '[_svc][0].entries().clear()\n')
+        head7 = self.commit("subscript-receiver-method-table")
+        r = self.run_tool("diff", self.base, head7)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: a subscript-selected callee whose sole element
+        # returns no table is not a site.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _other():\n    return {}\n'
+                   '\n[_other][0]().clear()\n')
+        head8 = self.commit("subscript-callee-nonreturning")
+        r = self.run_tool("diff", self.base, head8)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_view_conflict_through_function_return(self):
         # Codex PR #148: a function returning a name whose view
         # kind already conflicted was never marked conflicted
