@@ -30,13 +30,13 @@ Each provider reads its credentials from environment variables:
 
 | Provider | Required | Optional |
 |:---------|:---------|:---------|
-| OpenAI and compatible | `OPENAI_API_KEY` | `OPENAI_API_BASE`: base URL of an OpenAI-compatible API |
+| OpenAI and compatible | `OPENAI_API_KEY` (optional if `OPENAI_BASE_URL`, `OPENAI_API_BASE`, or `DOCS_MCP_DIRECT_API` is set) | `OPENAI_BASE_URL` or `OPENAI_API_BASE`: base URL of an OpenAI-compatible API or proxy. `DOCS_MCP_DIRECT_API`: set to `true` for a direct API/proxy requiring no key |
 | Vertex AI | `GOOGLE_APPLICATION_CREDENTIALS`: path to a service account JSON key | |
 | Gemini | `GOOGLE_API_KEY` | |
 | AWS Bedrock | `BEDROCK_AWS_REGION` or `AWS_REGION` (the first wins), and either `AWS_PROFILE` or both `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` | `AWS_SESSION_TOKEN` |
 | Azure OpenAI | `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_API_INSTANCE_NAME`, `AZURE_OPENAI_API_DEPLOYMENT_NAME`, `AZURE_OPENAI_API_VERSION` | |
 
-An OpenAI-compatible server that needs no key still needs `OPENAI_API_KEY` set, to any value.
+An OpenAI-compatible server, proxy, or direct API that needs no key does **not** require `OPENAI_API_KEY` when `OPENAI_BASE_URL`, `OPENAI_API_BASE`, or `DOCS_MCP_DIRECT_API=true` is set. The server automatically routes requests to your configured endpoint.
 
 Where the variables go depends on how you run the server: prefix the command, pass `-e` to `docker run`, write them to `.env` for Docker Compose, or list them under `env` in an MCP client's settings. [Installation](../setup/installation.md) shows each.
 
@@ -55,8 +55,7 @@ npx @arabold/docs-mcp-server@latest
 Pull the model in Ollama first (`ollama pull nomic-embed-text`).
 
 ```bash
-OPENAI_API_KEY="ollama" \
-OPENAI_API_BASE="http://localhost:11434/v1" \
+OPENAI_BASE_URL="http://localhost:11434/v1" \
 DOCS_MCP_EMBEDDING_MODEL="nomic-embed-text:latest" \
 npx @arabold/docs-mcp-server@latest
 ```
@@ -66,8 +65,7 @@ npx @arabold/docs-mcp-server@latest
 Start LM Studio's local server with an embedding model loaded.
 
 ```bash
-OPENAI_API_KEY="lmstudio" \
-OPENAI_API_BASE="http://localhost:1234/v1" \
+OPENAI_BASE_URL="http://localhost:1234/v1" \
 DOCS_MCP_EMBEDDING_MODEL="text-embedding-qwen3-embedding-4b" \
 npx @arabold/docs-mcp-server@latest
 ```

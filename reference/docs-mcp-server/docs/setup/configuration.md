@@ -95,6 +95,7 @@ Some settings also read shorter alias variables. When several aliases are set, t
 |:--------|:--------|
 | `app.telemetryEnabled` | `DOCS_MCP_TELEMETRY` |
 | `app.readOnly` | `DOCS_MCP_READ_ONLY` |
+| `app.directApi` | `DOCS_MCP_DIRECT_API`, `DOCS_MCP_NO_API_KEY` |
 | `app.embeddingModel` | `DOCS_MCP_EMBEDDING_MODEL` |
 | `server.protocol` | `DOCS_MCP_PROTOCOL` |
 | `server.host` | `DOCS_MCP_HOST`, `HOST` |
@@ -136,6 +137,7 @@ These flags set a configuration value for one run. `docs-mcp-server <command> --
 | `--server-instructions <text>` | `server.instructions` |
 | `--server-instructions-file <path>` | `server.instructionsFile` |
 | `--embedding-model <model>` | `app.embeddingModel` |
+| `--direct-api` | `app.directApi` |
 | `--read-only` | `app.readOnly` |
 | `--accept-model-change` | Confirm a changed embedding model without a prompt (default command, `mcp` and `worker`) |
 | `--no-telemetry` | `app.telemetryEnabled` |
@@ -189,6 +191,7 @@ General application settings.
 |:-------|:--------|:------------|
 | `storePath` | System data directory | Directory of the database. See [Data Directory](#data-directory). |
 | `telemetryEnabled` | `true` | Send usage events. [Telemetry](../infrastructure/telemetry.md) lists what they contain. |
+| `directApi` | `false` | Allow direct API or proxy endpoints without requiring an API key. |
 | `readOnly` | `false` | Register only the MCP tools that read the index. The tools that scrape, refresh, remove documentation or manage jobs are left out. |
 | `embeddingModel` | `text-embedding-3-small` | Model for vector embeddings. See [Embedding Models](../guides/embedding-models.md). |
 

@@ -43,7 +43,15 @@ Without an embedding model, search uses full-text matching. Vector search also f
 OPENAI_API_KEY="sk-proj-..." npx @arabold/docs-mcp-server@latest
 ```
 
-With Docker, add `-e OPENAI_API_KEY="sk-proj-..."`. [Embedding Models](docs/guides/embedding-models.md) covers Ollama, Gemini, Azure OpenAI and other providers.
+If you have an existing proxy, local endpoint (such as Ollama or LM Studio), or direct API requiring no API key, you can provide `OPENAI_BASE_URL` (or `OPENAI_API_BASE` / `DOCS_MCP_DIRECT_API=true`) without setting `OPENAI_API_KEY`. For local models, pull the model first (e.g., `ollama pull nomic-embed-text`) and specify it with `DOCS_MCP_EMBEDDING_MODEL`:
+
+```bash
+OPENAI_BASE_URL="http://localhost:11434/v1" \
+DOCS_MCP_EMBEDDING_MODEL="nomic-embed-text:latest" \
+npx @arabold/docs-mcp-server@latest
+```
+
+With Docker, add `-e OPENAI_API_KEY="sk-proj-..."` or `-e OPENAI_BASE_URL="http://host.docker.internal:11434/v1" -e DOCS_MCP_EMBEDDING_MODEL="nomic-embed-text:latest"`. [Embedding Models](docs/guides/embedding-models.md) covers Ollama, Gemini, Azure OpenAI and other providers.
 
 Do this before you add documentation. Embeddings are computed when a page is indexed, so documentation indexed without a model gets no vectors until you scrape it again with `--replace`.
 

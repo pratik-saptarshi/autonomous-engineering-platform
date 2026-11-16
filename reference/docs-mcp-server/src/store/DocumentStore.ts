@@ -706,7 +706,11 @@ export class DocumentStore {
     }
 
     // Skip if credentials are unavailable (will fall back to FTS-only in initializeEmbeddings)
-    if (!areCredentialsAvailable(this.embeddingConfig.provider)) {
+    if (
+      !areCredentialsAvailable(this.embeddingConfig.provider, {
+        directApi: this.config.app.directApi,
+      })
+    ) {
       return;
     }
 
@@ -794,7 +798,11 @@ export class DocumentStore {
     const config = this.embeddingConfig;
 
     // Check if credentials are available for the provider
-    if (!areCredentialsAvailable(config.provider)) {
+    if (
+      !areCredentialsAvailable(config.provider, {
+        directApi: this.config.app.directApi,
+      })
+    ) {
       logger.warn(
         `⚠️  No credentials found for ${config.provider} embedding provider. Vector search is disabled.\n` +
           `   Only full-text search will be available. To enable vector search, please configure the required\n` +
@@ -850,6 +858,7 @@ export class DocumentStore {
     return createEmbeddingModel(config.modelSpec, {
       requestTimeoutMs: this.config.embeddings.requestTimeoutMs,
       vectorDimension,
+      directApi: this.config.app.directApi,
     });
   }
 
@@ -886,7 +895,11 @@ export class DocumentStore {
     }
 
     const config = this.embeddingConfig;
-    if (!areCredentialsAvailable(config.provider)) {
+    if (
+      !areCredentialsAvailable(config.provider, {
+        directApi: this.config.app.directApi,
+      })
+    ) {
       return;
     }
 

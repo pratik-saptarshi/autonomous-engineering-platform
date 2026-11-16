@@ -123,7 +123,22 @@ export function runCrossJudge(opts: CrossJudgeOptions): CrossJudgeAgreement[] {
   };
   writeFileSync(tempConfigPath, stringifyYaml(config));
 
-  const env = { ...process.env, DOCS_EVAL_JUDGE_RESOLVED: opts.secondaryJudgeId };
+  const isDirectApiOrProxy =
+    !!process.env.OPENAI_BASE_URL ||
+    !!process.env.OPENAI_API_BASE ||
+    process.env.DOCS_MCP_DIRECT_API === "true" ||
+    process.env.DOCS_MCP_DIRECT_API === "1" ||
+    process.env.DOCS_MCP_NO_API_KEY === "true" ||
+    process.env.DOCS_MCP_NO_API_KEY === "1" ||
+    process.env.DOCS_EVAL_DIRECT_API === "true" ||
+    process.env.DOCS_EVAL_DIRECT_API === "1";
+  const env = {
+    ...process.env,
+    DOCS_EVAL_JUDGE_RESOLVED: opts.secondaryJudgeId,
+    ...(isDirectApiOrProxy && !process.env.OPENAI_API_KEY
+      ? { OPENAI_API_KEY: "direct-api-proxy" }
+      : {}),
+  };
   const child = spawnSync(
     "npx",
     ["-y", "promptfoo@0.121.11", "eval", "-c", tempConfigPath],
