@@ -1,0 +1,5 @@
+name: "plannotator-gate"
+title: "Plannotator Gate"
+description: "Route supported plan approvals through the locally pinned, hardened Plannotator gate: the owner reviews and annotates a plan before the agent proceeds, a denial returns structured feedback for revision, and the local archive preserves the decision. Use for the Plannotator pilot and, only after separate adoption approval, other interactive plan reviews. Do not use it to gate unattended lanes or as a substitute for explicit approval of merges, pushes, purchases, or other irreversible actions."
+category: "Work and knowledge"
+include_in_prompt: false

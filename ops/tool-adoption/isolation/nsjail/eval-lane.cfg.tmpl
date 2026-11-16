@@ -1,0 +1,183 @@
+# nsjail profile: untrusted-evaluation lane (rank 3a adoption, 2026-11-14).
+# Rendered per run by ~/workspace/bin/sandbox-run-nsjail from this template.
+# Placeholders: @WORKTREE@ (fresh eval worktree, host path), @SKILLS@
+# (read-only skills tree, host path), @OUT@ (outputs dir, host path),
+# @TIME_LIMIT@ (seconds), @RLIMIT_AS@ (MiB), @CGROUPV2@ (true/false),
+# @CGROUP_MEM_MAX@ (bytes; only meaningful when @CGROUPV2@ is true).
+#
+# Posture mirrors the isolation pilot's proven Stage-1 composite
+# (~/workspace/isolation-pilot/): fresh worktree bind, read-only skills
+# tree, NO network in the run phase, allowlist-only environment (the
+# wrapper also scrubs its own env before invoking nsjail, and nsjail is
+# never handed a GitHub write token), time limit, rlimits, Kafel seccomp.
+# Host home is hidden with a tmpfs overlay AFTER the binds are taken
+# (mounts apply in config order), so the payload sees /work, /skills,
+# /out and an empty /home and /root.
+#
+# CGROUP HONESTY: this runtime is delegated a cgroup v2 tree with NO
+# memory/cpu controllers (pilot criterion-2 finding), so nsjail's
+# cgroup limits are expected to be recorded-but-unenforceable here.
+# The default profile therefore leaves cgroupv2 OFF; the honesty test
+# renders this same template with @CGROUPV2@=true and a 512 MiB
+# cgroup_mem_max and records the hog outcome either way.
+
+name: "untrusted-eval"
+description: "Untrusted external repo/skill evaluation lane (nsjail profile)"
+mode: ONCE
+hostname: "NSJAIL-EVAL"
+cwd: "/work"
+
+time_limit: @TIME_LIMIT@
+
+# Allowlist env only (keep_env defaults to false).
+envar: "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+envar: "HOME=/work"
+envar: "LANG=C.UTF-8"
+envar: "LC_ALL=C.UTF-8"
+envar: "TERM=dumb"
+envar: "PYTHONDONTWRITEBYTECODE=0"
+
+# rlimits (nsjail defaults tightened where the lane allows)
+rlimit_as: @RLIMIT_AS@
+rlimit_cpu: @TIME_LIMIT@
+rlimit_core: 0
+rlimit_fsize: 1024
+rlimit_nofile: 1024
+rlimit_nproc: 1024
+rlimit_stack: 64
+
+# namespaces. NOTE: clone_newuser is FALSE, deliberately, on this
+# runtime: mounting procfs inside a nested user namespace is refused
+# here (measured 2026-11-14: `unshare -Urmpf` + `mount -t proc` ->
+# EPERM, while the same mount without a new userns succeeds; nsjail's
+# default clone_newuser:true died at "Failed to mount mandatory point:
+# '/proc'"). The pilot's Stage-1 composite made the same choice (no
+# userns; root in the runtime userns). The payload therefore runs as
+# uid 0 in the runtime user namespace — confinement comes from the
+# mount/pid/net namespaces, the tmpfs occlusion, seccomp and rlimits,
+# not from a uid mapping. Recorded as a residual in ADOPTION.md.
+clone_newnet: true
+clone_newuser: false
+clone_newns: true
+clone_newpid: true
+clone_newipc: true
+clone_newuts: true
+clone_newcgroup: true
+iface_no_lo: true
+mount_proc: true
+
+# --- binds first (sources resolved before the overlays below) ---
+# nsjail builds the jail root as a fresh tmpfs containing ONLY the
+# configured mounts (that's why upstream's example configs bind /lib,
+# /bin, /usr/bin one by one). Without the system binds below, execve of
+# anything fails ENOENT — measured 2026-11-14. The binds are read-only.
+# /etc is NOT bound wholesale (it carries host credential material the
+# payload must not reach, e.g. /etc/shadow readable by the payload's
+# uid 0); only three world-readable, non-sensitive files are bound.
+mount {
+	src: "/usr"
+	dst: "/usr"
+	is_bind: true
+	rw: false
+}
+mount {
+	src: "/bin"
+	dst: "/bin"
+	is_bind: true
+	rw: false
+}
+mount {
+	src: "/lib"
+	dst: "/lib"
+	is_bind: true
+	rw: false
+}
+mount {
+	src: "/lib64"
+	dst: "/lib64"
+	is_bind: true
+	rw: false
+	mandatory: false
+}
+mount {
+	src: "/etc/ld.so.cache"
+	dst: "/etc/ld.so.cache"
+	is_bind: true
+	rw: false
+	mandatory: false
+}
+mount {
+	src: "/etc/passwd"
+	dst: "/etc/passwd"
+	is_bind: true
+	rw: false
+}
+mount {
+	src: "/etc/group"
+	dst: "/etc/group"
+	is_bind: true
+	rw: false
+}
+mount {
+	src: "@WORKTREE@"
+	dst: "/work"
+	is_bind: true
+	rw: true
+}
+mount {
+	src: "@SKILLS@"
+	dst: "/skills"
+	is_bind: true
+	rw: false
+}
+mount {
+	src: "@OUT@"
+	dst: "/out"
+	is_bind: true
+	rw: true
+}
+
+# --- scratch + host-tree occlusion ---
+mount {
+	dst: "/tmp"
+	fstype: "tmpfs"
+	rw: true
+}
+mount {
+	dst: "/home"
+	fstype: "tmpfs"
+	rw: true
+}
+mount {
+	dst: "/root"
+	fstype: "tmpfs"
+	rw: true
+}
+
+# Kafel seccomp: denylist on top of DEFAULT ALLOW, EPERM semantics.
+# CAUTION (measured 2026-11-14): in Kafel, `DENY` compiles to
+# SECCOMP_RET_KILL (the payload dies with SIGSYS) — the EPERM action
+# is spelled ERRNO(1). The first battery run used DENY and the probe
+# payload was killed at its ptrace call: enforcement fired, semantics
+# wrong for this lane. ERRNO(1) matches the composite's EPERM denylist
+# posture and lets well-behaved payloads see a clean error.
+# ptrace and the process_vm pair are the classic introspection
+# escapes; mount and the module syscalls are namespace-escape plumbing
+# the payload never needs.
+seccomp_string: "ERRNO(1) {"
+seccomp_string: "	ptrace,"
+seccomp_string: "	process_vm_readv,"
+seccomp_string: "	process_vm_writev,"
+seccomp_string: "	mount,"
+# (umount2 was in the draft denylist but this Kafel build's syscall
+# table has no `umount2` identifier — policy compile failed on it,
+# 2026-11-14; mount(2) denial is the escape-relevant half and stays.)
+seccomp_string: "	init_module,"
+seccomp_string: "	finit_module,"
+seccomp_string: "	delete_module"
+seccomp_string: "}"
+seccomp_string: "DEFAULT ALLOW"
+
+# cgroup v2 (honesty-test variant only; see header)
+use_cgroupv2: @CGROUPV2@
+cgroup_mem_max: @CGROUP_MEM_MAX@
