@@ -275,8 +275,14 @@ class IsolationInstallDirTests(unittest.TestCase):
                     f"{path} has mode {oct(mode)}, expected 0o755",
                 )
 
+            probe_mode = stat.S_IMODE((probes_dir / "probe.py").stat().st_mode)
+            self.assertTrue(
+                probe_mode & stat.S_IROTH,
+                f"probe file should be world-readable, got {oct(probe_mode)}",
+            )
+
             setpriv = shutil.which("setpriv")
-            if setpriv is not None:
+            if setpriv is not None and os.geteuid() == 0:
                 read = subprocess.run(
                     [
                         setpriv,
@@ -395,6 +401,126 @@ class SandboxRunHogtestTests(unittest.TestCase):
                 (pilot / "logs" / "hog-summary-test1.txt").is_file(),
                 "hog summary missing: " + output,
             )
+
+
+class SandboxRunGoferRetryTests(unittest.TestCase):
+    """Codex PR #156 P2: separate runtime diagnostics from payload output.
+
+    cmd_exec_runsc() must only retry when runsc itself reports a pre-start
+    gofer-creation failure via --log, never when payload stdout/stderr
+    emits 'cannot create gofer process' and exits 128.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.sandbox_text = SANDBOX_RUN.read_text()
+        cls.exec_runsc_text = _extract_function(
+            cls.sandbox_text, "cmd_exec_runsc"
+        )
+
+    def _run_case(self, runsc_script):
+        with tempfile.TemporaryDirectory() as tmp:
+            scratch = Path(tmp)
+            run_dir = scratch / "runs" / "test1"
+            (run_dir / "worktree").mkdir(parents=True)
+            skills_dir = scratch / "skills"
+            skills_dir.mkdir()
+            count_file = scratch / "starts.txt"
+
+            runsc_stub = scratch / "runsc"
+            runsc_stub.write_text(runsc_script)
+            runsc_stub.chmod(0o755)
+
+            body = (
+                "RUNSC_BIN=" + shlex.quote(str(runsc_stub)) + "\n"
+                "RUNSC_PIN=test\n"
+                "SKILLS_TREE=" + shlex.quote(str(skills_dir)) + "\n"
+                "WALL_DEFAULT=10\n"
+                "COUNT_FILE=" + shlex.quote(str(count_file)) + "\n"
+                "export COUNT_FILE\n"
+                "run_dir_for() { printf '%s\\n' "
+                + shlex.quote(str(run_dir))
+                + "; }\n"
+                "check_runsc() { :; }\n"
+                "assert_no_credentials() { :; }\n"
+                'scrubbed_env() { "$@"; }\n'
+                'die() { printf \'%s\\n\' "DIE: $*" >&2; exit 99; }\n'
+                + self.exec_runsc_text
+                + 'cmd_exec_runsc test1 "echo hi"\n'
+            )
+            result = subprocess.run(
+                ["/bin/bash", "-c", body],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            starts = (
+                len(count_file.read_text().splitlines())
+                if count_file.exists()
+                else 0
+            )
+            return result, starts
+
+    def test_payload_output_cannot_trigger_retry(self):
+        stub = """#!/bin/bash
+for arg in "$@"; do
+  case "$arg" in
+    spec)
+      printf '{"process": {}, "mounts": []}\\n' > config.json
+      exit 0
+      ;;
+    run)
+      echo "start" >> "$COUNT_FILE"
+      echo "cannot create gofer process"
+      exit 128
+      ;;
+    delete)
+      exit 0
+      ;;
+  esac
+done
+exit 0
+"""
+        result, starts = self._run_case(stub)
+        self.assertEqual(
+            result.returncode, 128, result.stdout + result.stderr
+        )
+        self.assertEqual(starts, 1, "payload output spoofed a retry")
+
+    def test_runtime_log_gofer_error_retries(self):
+        stub = """#!/bin/bash
+log_path=""
+sub=""
+for arg in "$@"; do
+  case "$arg" in
+    --log=*) log_path="${arg#--log=}" ;;
+    spec|run|delete) sub="$arg" ;;
+  esac
+done
+case "$sub" in
+  spec)
+    printf '{"process": {}, "mounts": []}\\n' > config.json
+    exit 0
+    ;;
+  run)
+    echo "start" >> "$COUNT_FILE"
+    n=$(wc -l < "$COUNT_FILE")
+    if [ "$n" -eq 1 ]; then
+      printf '{"msg":"creating container: cannot create gofer process","level":"error"}\\n' > "$log_path"
+      exit 128
+    fi
+    echo "payload ok"
+    exit 0
+    ;;
+  delete)
+    exit 0
+    ;;
+esac
+exit 0
+"""
+        result, starts = self._run_case(stub)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(starts, 2, "runtime --log error did not retry")
 
 
 if __name__ == "__main__":

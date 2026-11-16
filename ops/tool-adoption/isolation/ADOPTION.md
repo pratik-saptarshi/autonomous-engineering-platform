@@ -116,12 +116,12 @@ never runs), exact exit-code propagation, clean teardown.
 
 | Artefact | SHA256 |
 |---|---|
-| `bin/sandbox-run` (this directory) | `ddc722afb1e615aec016027ee99aea8b8c65dbca0f5b6b119793d32125cead54` |
+| `bin/sandbox-run` (this directory) | `7374076c471053159f8dfb56b9e084b418fe5d9fafd59a50d674c1c1a6f4095d` |
 | `bin/inner.sh` | `66de07ba99ad6f50e71c380289ec61dadeed47f8214b746c7cc1558933f63fff` |
 | `gate/sandbox-gate.c` (source pin) | `d1a9bdea0480d19280c6def5ac7f2145dfc1de9d4706f5a45e37d087b9d716f1` |
 | built `sandbox-gate` binary (origin build, `gcc -O2 -static`) | `0e23eb3bd54e660743cfe1c2f0ccc2e2cad5f8e7bff848c6573ff0470ccd9762` |
 
-Note: the `bin/sandbox-run` pin above moved on 2026-11-15 with the hogtest log-directory remediation; the remaining rows are the origin runtime's pins, unchanged.
+Note: the `bin/sandbox-run` pin above moved with the hogtest log-directory and `runsc --log` diagnostic-channel remediations; the remaining rows are the origin runtime's pins, unchanged.
 
 The source is the pin: `install.sh` verifies the source hash, builds
 locally, and reports the resulting binary hash (a different toolchain

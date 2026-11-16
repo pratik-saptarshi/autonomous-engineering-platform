@@ -247,23 +247,31 @@ PY
   # runtime — observed 2/~11 starts in the smoke test). Creation failed
   # before the payload existed, so a retry cannot double-execute anything.
   # Any other outcome (including any payload exit code) is final.
-  local attempt out
+  # Check the runtime-only --log file ($rlog), never merged payload stdio
+  # ($out), so a payload printing that string and exiting 128 cannot
+  # spoof a pre-start failure and trigger retries.
+  local attempt out rlog
   rc=128
   for attempt in 1 2 3; do
     out=$(mktemp)
+    rlog=$(mktemp)
     scrubbed_env "$RUNSC_BIN" --root="$rd/runsc-root" \
       --platform=systrap --network=none --ignore-cgroups \
+      --log="$rlog" --log-format=json \
       run --bundle "$bundle" "$cid-$attempt" > "$out" 2>&1
     rc=$?
     cat "$out" | tee -a "$rd/logs/exec-runsc.log"
-    if [ "$rc" -eq 128 ] && grep -q 'cannot create gofer process' "$out"; then
+    if [ -s "$rlog" ]; then
+      sed 's/^/[runsc-log] /' "$rlog" >> "$rd/logs/exec-runsc.log"
+    fi
+    if [ "$rc" -eq 128 ] && grep -q 'cannot create gofer process' "$rlog"; then
       echo "[exec-runsc] attempt $attempt: gofer creation failed pre-start (transient); retrying" | tee -a "$rd/logs/exec-runsc.log"
       "$RUNSC_BIN" --root="$rd/runsc-root" delete --force "$cid-$attempt" >/dev/null 2>&1 || true
-      rm -f "$out"
+      rm -f "$out" "$rlog"
       sleep 1
       continue
     fi
-    rm -f "$out"
+    rm -f "$out" "$rlog"
     break
   done
   "$RUNSC_BIN" --root="$rd/runsc-root" delete --force "$cid-$attempt" >/dev/null 2>&1 || true
