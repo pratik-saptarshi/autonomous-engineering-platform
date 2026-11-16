@@ -2155,6 +2155,45 @@ def ghg_binding_census(tree):
     # Aliases of locally defined callees (`_run = _uncap`,
     # `_run = _Uncap.run`): invoking through the alias reaches
     # local code exactly as invoking the definition does.
+    # Plain-literal container bindings: a name bound directly,
+    # by a plain assignment, to a literal container. Only
+    # these names may resolve as containers in
+    # _container_has_callee (see its Name arm). The record is
+    # all-bindings: any other enumerated binding of the same
+    # name -- to a non-container, through a Call or a
+    # conditional, by an annotated or walrus binding --
+    # disqualifies the name, as a view-kind conflict drops a
+    # kind: the name then does not resolve at all, in either
+    # order. Bindings outside the enumeration (for targets,
+    # parameters, imports) neither confer nor disqualify, as
+    # in the alias pass below.
+    _literal_containers = {}
+    _container_name_conflicts = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            _cvalue, _ctargets = node.value, node.targets
+        elif isinstance(node, ast.AnnAssign) \
+                and node.value is not None:
+            _cvalue, _ctargets = node.value, [node.target]
+        elif isinstance(node, ast.NamedExpr):
+            _cvalue, _ctargets = node.value, [node.target]
+        else:
+            continue
+        for t in _ctargets:
+            for n in _bound_names(t):
+                if isinstance(node, ast.Assign) \
+                        and isinstance(t, ast.Name) \
+                        and isinstance(_cvalue, (ast.List,
+                                                  ast.Tuple,
+                                                  ast.Set,
+                                                  ast.Dict)):
+                    _literal_containers.setdefault(
+                        n, []).append(_cvalue)
+                else:
+                    _container_name_conflicts.add(n)
+    for n in _container_name_conflicts:
+        _literal_containers.pop(n, None)
+    _named_container_callees = set()
     callee_aliases = set()
     def _container_has_callee(v):
         """A literal container holds a local callee among its
@@ -2172,6 +2211,13 @@ def ghg_binding_census(tree):
         if isinstance(v, ast.IfExp):
             return _container_has_callee(v.body) \
                 or _container_has_callee(v.orelse)
+        if isinstance(v, ast.Name):
+            # A container held in a name resolves only
+            # through the plain-literal record above: the
+            # name is a callee container iff some recorded
+            # literal for it holds a local callee (settled
+            # by the growth step in the alias pass below).
+            return v.id in _named_container_callees
         return False
 
     def _is_callee_form(value):
@@ -2204,6 +2250,19 @@ def ghg_binding_census(tree):
     _alias = True
     while _alias:
         _alias = False
+        # Named containers settle alongside callee aliases:
+        # a recorded literal may hold a callee directly, hold
+        # a subscript of another named container, or hold a
+        # name that only becomes a callee alias in a later
+        # pass, so the two sets grow in the same loop. Both
+        # are add-only and bounded by the names in the tree,
+        # so the loop terminates as before.
+        for n, _containers in _literal_containers.items():
+            if n not in _named_container_callees \
+                    and any(_container_has_callee(c)
+                            for c in _containers):
+                _named_container_callees.add(n)
+                _alias = True
         for node in ast.walk(tree):
             if isinstance(node, ast.Assign):
                 value, targets = node.value, node.targets

@@ -2655,6 +2655,134 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head9)
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
 
+    def test_ghg_callee_in_named_container_is_local(self):
+        # Codex PR #148 round 7, thread PRRT_kwDOVM-V9863wNyj:
+        # a local callee stored in a named container escaped --
+        # _container_has_callee had no Name resolution, so a
+        # subscript of a container held in a name was never a
+        # callee form. Resolution is confined to plain literal
+        # bindings: a name bound directly, by a plain
+        # assignment, to a List/Tuple/Set/Dict literal; a name
+        # bound through a Call or a conditional does not
+        # resolve.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\n_runs = [_uncap]\n'
+                   '_runs[0](DEFAULT_LIMITS)\n')
+        head = self.commit("named-container-callee-direct")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Attack, alias: a name bound from a subscript of the
+        # named container is a callee alias.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\n_runs = [_uncap]\n'
+                   '_run = _runs[0]\n'
+                   '_run(DEFAULT_LIMITS)\n')
+        head2 = self.commit("named-container-callee-alias")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Attack, dict-named: the container is a dict literal,
+        # selected by key.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\n_runs = {"u": _uncap}\n'
+                   '_runs["u"](DEFAULT_LIMITS)\n')
+        head3 = self.commit("named-dict-container-callee")
+        r = self.run_tool("diff", self.base, head3)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Attack, tuple-named: the container is a tuple literal.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\n_runs = (_uncap,)\n'
+                   '_runs[0](DEFAULT_LIMITS)\n')
+        head4 = self.commit("named-tuple-container-callee")
+        r = self.run_tool("diff", self.base, head4)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Control: the literal-container direct call is refused,
+        # as before.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\n[_uncap][0](DEFAULT_LIMITS)\n')
+        head5 = self.commit("literal-container-callee-direct-r7")
+        r = self.run_tool("diff", self.base, head5)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Control: the direct call is refused, as before.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\n_uncap(DEFAULT_LIMITS)\n')
+        head6 = self.commit("direct-callee-r7")
+        r = self.run_tool("diff", self.base, head6)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Control: the literal-container alias is refused, as
+        # before.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\n_run = [_uncap][0]\n'
+                   '_run(DEFAULT_LIMITS)\n')
+        head7 = self.commit("literal-container-callee-alias-r7")
+        r = self.run_tool("diff", self.base, head7)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: a named container of a builtin holds no
+        # local callee.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_helpers = [sorted]\n'
+                   '_helpers[0](DEFAULT_LIMITS)\n')
+        head8 = self.commit("named-container-builtin")
+        r = self.run_tool("diff", self.base, head8)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        # Precision: a named container of an imported callable
+        # holds no local callee.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nimport json\n'
+                   '_helpers = [json.dumps]\n'
+                   '_s = _helpers[0](DEFAULT_LIMITS)\n')
+        head9 = self.commit("named-container-imported")
+        r = self.run_tool("diff", self.base, head9)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        # Rule lock: a literal-then-literal rebind still
+        # resolves -- the may-union over conferring bindings,
+        # mirroring add-only callee_aliases.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\n_runs = [_uncap]\n'
+                   '_runs = [sorted]\n'
+                   '_runs[0](DEFAULT_LIMITS)\n')
+        head10 = self.commit("named-container-literal-rebind-may")
+        r = self.run_tool("diff", self.base, head10)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision, disqualifier rule lock: a rebind through a
+        # Name disqualifies the name, so it does not resolve
+        # and runtime reaches only sorted.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\n_helpers = [sorted]\n'
+                   '_runs = [_uncap]\n'
+                   '_runs = _helpers\n'
+                   '_runs[0](DEFAULT_LIMITS)\n')
+        head11 = self.commit("named-container-name-rebind-disqualified")
+        r = self.run_tool("diff", self.base, head11)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        # Attack: a container of a callee alias settles in the
+        # same fixpoint as the alias itself.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\n_alias_run = _uncap\n'
+                   '_runs = [_alias_run]\n'
+                   '_runs[0](DEFAULT_LIMITS)\n')
+        head12 = self.commit("named-container-of-callee-alias")
+        r = self.run_tool("diff", self.base, head12)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Attack: a conditional element in a named container --
+        # the C8 mechanism composed with Name resolution.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\n_runs = [(_uncap if True else _uncap)]\n'
+                   '_runs[0](DEFAULT_LIMITS)\n')
+        head13 = self.commit("named-container-conditional-element")
+        r = self.run_tool("diff", self.base, head13)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+
     def test_ghg_view_conflict_through_callable_alias(self):
         # Codex PR #148 (round 2): a callable alias of a
         # view-conflicted function escaped the call-source
