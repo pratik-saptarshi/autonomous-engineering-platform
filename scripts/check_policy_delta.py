@@ -1283,6 +1283,39 @@ def ghg_binding_census(tree):
                        if e is not None)
         return False
 
+    def _container_view_kinds_of(v):
+        """The view kinds a literal container's selected callee
+        may yield: any element/value leaf, re-asked as a callee,
+        contributes its kinds, unioned -- differing kinds are a
+        conflict for the consumers, exactly as differing kinds
+        across a conditional callee's alternatives are. Mirrors
+        _container_taints_callee's container walk (literal
+        layers, subscript-selected containers, conditional
+        containers) with _view_kinds_of as the leaf predicate
+        instead of _value_taints."""
+        if isinstance(v, (ast.List, ast.Tuple, ast.Set)):
+            out = set()
+            for e in v.elts:
+                for leaf in _value_leaves(e):
+                    out |= _view_kinds_of(
+                        ast.Call(func=leaf, args=[], keywords=[]))
+            return out
+        if isinstance(v, ast.Dict):
+            out = set()
+            for e in v.values:
+                if e is None:
+                    continue
+                for leaf in _value_leaves(e):
+                    out |= _view_kinds_of(
+                        ast.Call(func=leaf, args=[], keywords=[]))
+            return out
+        if isinstance(v, ast.Subscript):
+            return _container_view_kinds_of(v.value)
+        if isinstance(v, ast.IfExp):
+            return _container_view_kinds_of(v.body) \
+                | _container_view_kinds_of(v.orelse)
+        return set()
+
     def _view_kinds_of(v):
         """The set of view kinds an expression may yield: a
         direct view call, a name carrying a view kind, a call to
@@ -1320,6 +1353,15 @@ def ghg_binding_census(tree):
                     out |= _view_kinds_of(
                         ast.Call(func=leaf, args=[], keywords=[]))
                 return out
+            if isinstance(v.func, ast.Subscript):
+                # A callee selected by subscripting a literal
+                # container of callees: the result's view kinds
+                # are the union over the callees ANY element the
+                # subscript may select would yield as a direct
+                # callee -- the subscript is not evaluated, as
+                # _container_has_callee does not evaluate it for
+                # the callee census.
+                return _container_view_kinds_of(v.func.value)
             return set()
         if isinstance(v, ast.IfExp):
             return _view_kinds_of(v.body) \

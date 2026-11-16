@@ -2655,6 +2655,157 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head9)
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
 
+    def test_ghg_view_kind_through_subscript_callee(self):
+        # Codex PR #148 round 8, thread PRRT_kwDOVM-V9863xntg:
+        # a view-returning function invoked through a
+        # subscript-selected callee escaped _view_kinds_of --
+        # its Call branch recognized Name, Attribute, and
+        # conditional callees but had no Subscript arm, so the
+        # bound result took no view kind, counted as a
+        # structural source, and its unpacked pairs took the
+        # scalar exemption.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\ndef _entries():\n'
+                   '    return DEFAULT_LIMITS.items()\n'
+                   '\n_view = [_entries][0]()\n'
+                   'for _key, _pairs in _view:\n'
+                   '    _uncap(_pairs)\n')
+        head = self.commit("view-kind-subscript-callee")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Attack, tuple: the view-returner is selected from a
+        # tuple.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\ndef _entries():\n'
+                   '    return DEFAULT_LIMITS.items()\n'
+                   '\n_view = (_entries,)[0]()\n'
+                   'for _key, _pairs in _view:\n'
+                   '    _uncap(_pairs)\n')
+        head2 = self.commit("view-kind-tuple-subscript-callee")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Attack, dict: the view-returner is selected by key
+        # (values only).
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\ndef _entries():\n'
+                   '    return DEFAULT_LIMITS.items()\n'
+                   '\n_view = {"f": _entries}["f"]()\n'
+                   'for _key, _pairs in _view:\n'
+                   '    _uncap(_pairs)\n')
+        head3 = self.commit("view-kind-dict-subscript-callee")
+        r = self.run_tool("diff", self.base, head3)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Control: the direct callee is refused, as before.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\ndef _entries():\n'
+                   '    return DEFAULT_LIMITS.items()\n'
+                   '\n_view = _entries()\n'
+                   'for _key, _pairs in _view:\n'
+                   '    _uncap(_pairs)\n')
+        head4 = self.commit("view-kind-direct-callee-r8")
+        r = self.run_tool("diff", self.base, head4)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Control: the conditional callee is refused, as
+        # before.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\ndef _entries():\n'
+                   '    return DEFAULT_LIMITS.items()\n'
+                   '\n_view = (_entries if True else _entries)()\n'
+                   'for _key, _pairs in _view:\n'
+                   '    _uncap(_pairs)\n')
+        head5 = self.commit("view-kind-conditional-callee-r8")
+        r = self.run_tool("diff", self.base, head5)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Parity (behaviour change): a keys-view through the
+        # same selection. Pre-fix this exited 2 -- the
+        # over-refusal the fix corrects -- while the direct
+        # form exits 0; kind propagation restores parity with
+        # the direct form, exempting the key name as scalar.
+        # This is the over-refusal correction, not a precision
+        # case.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\ndef _keys():\n'
+                   '    return DEFAULT_LIMITS.keys()\n'
+                   '\n_view = [_keys][0]()\n'
+                   'for _key in _view:\n'
+                   '    _uncap(_key)\n')
+        head6 = self.commit("view-kind-subscript-keys-parity")
+        r = self.run_tool("diff", self.base, head6)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        # Precision: a non-view callee selected by subscript
+        # returns an unrelated literal's items -- no watched
+        # table is involved.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\nPLAIN = {"core": [(1, 2)]}\n'
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\ndef _plain_entries():\n'
+                   '    return PLAIN.items()\n'
+                   '\n_view = [_plain_entries][0]()\n'
+                   'for _key, _pairs in _view:\n'
+                   '    _uncap(_pairs)\n')
+        head7 = self.commit("view-kind-subscript-non-view")
+        r = self.run_tool("diff", self.base, head7)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        # Precision: a wrapper-of-plain selected by subscript
+        # returns a fresh literal's pairs -- no view provenance
+        # over a watched table.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\ndef _plainwrap():\n'
+                   '    return [("caps", {})]\n'
+                   '\n_view = [_plainwrap][0]()\n'
+                   'for _key, _pairs in _view:\n'
+                   '    _uncap(_pairs)\n')
+        head8 = self.commit("view-kind-subscript-plain-wrapper")
+        r = self.run_tool("diff", self.base, head8)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        # Attack, conditional container: either branch's
+        # elements may be selected.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\ndef _entries():\n'
+                   '    return DEFAULT_LIMITS.items()\n'
+                   '\n_view = ([_entries] if True else '
+                   '[_entries])[0]()\n'
+                   'for _key, _pairs in _view:\n'
+                   '    _uncap(_pairs)\n')
+        head9 = self.commit("view-kind-conditional-container-callee")
+        r = self.run_tool("diff", self.base, head9)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Attack, subscript callee as element: the element leaf
+        # re-asks through the same arm.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\ndef _entries():\n'
+                   '    return DEFAULT_LIMITS.items()\n'
+                   '\n_view = [[_entries][0]][0]()\n'
+                   'for _key, _pairs in _view:\n'
+                   '    _uncap(_pairs)\n')
+        head10 = self.commit("view-kind-nested-subscript-callee")
+        r = self.run_tool("diff", self.base, head10)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Attack, mixed-kind container: the union of kinds is
+        # a conflict for the consumers, so no component is
+        # exempted.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\ndef _entries():\n'
+                   '    return DEFAULT_LIMITS.items()\n'
+                   '\ndef _keys():\n'
+                   '    return DEFAULT_LIMITS.keys()\n'
+                   '\n_view = [_entries, _keys][0]()\n'
+                   'for _key, _pairs in _view:\n'
+                   '    _uncap(_pairs)\n')
+        head11 = self.commit("view-kind-mixed-container-conflict")
+        r = self.run_tool("diff", self.base, head11)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+
     def test_ghg_callee_in_named_container_is_local(self):
         # Codex PR #148 round 7, thread PRRT_kwDOVM-V9863wNyj:
         # a local callee stored in a named container escaped --
