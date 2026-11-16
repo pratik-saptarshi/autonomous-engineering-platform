@@ -1,0 +1,10 @@
+Q1 unaided: 0s
+Q2 unaided: 0s
+Q3 unaided: 3s
+Q4 unaided: 0s
+Q5 unaided: 0s
+--- ms-precision rerun (unaided verification lookups) ---
+Q1 unaided lookup wall time: 0.02s
+Q2 unaided lookup wall time: 0.00s
+Q4 unaided lookup wall time: 0.00s
+Q5 unaided lookup wall time: 0.04s

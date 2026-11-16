@@ -1,0 +1,12 @@
+{
+ "base": "86864e8953cd55c776299183d4a9ba9f313e7021",
+ "head": "7860da6",
+ "newly_allowed": [],
+ "newly_denied": [
+  "skills scope: 're0-upgrade' leaves sync scope -> newly denied surface",
+  "skills: skill 're0-upgrade' removed -> newly denied capability surface"
+ ],
+ "notes": [],
+ "pr": 85,
+ "commit": "7860da6"
+}

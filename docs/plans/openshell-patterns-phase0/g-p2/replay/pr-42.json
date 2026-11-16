@@ -1,0 +1,11 @@
+{
+ "base": "d0286c6e123e010e51d5b8005a8e9b6ceb714240",
+ "head": "5c58c64",
+ "newly_allowed": [],
+ "newly_denied": [],
+ "notes": [
+  "1 SKILL.md content change(s) in surviving skills \u2014 not mechanically classifiable as grant/denial by this model"
+ ],
+ "pr": 42,
+ "commit": "5c58c64"
+}
