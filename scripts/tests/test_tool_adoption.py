@@ -7,6 +7,9 @@ reverts. Later findings append their own test classes to this file.
 """
 
 import os
+import shlex
+import shutil
+import stat
 import subprocess
 import tempfile
 import unittest
@@ -15,6 +18,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 PLANNOTATOR_INSTALL = REPO_ROOT / "ops" / "tool-adoption" / "plannotator" / "install.sh"
+ISOLATION_INSTALL = REPO_ROOT / "ops" / "tool-adoption" / "isolation" / "install.sh"
 
 
 def _extract_function(text, name):
@@ -170,6 +174,157 @@ class PlannotatorAttestationTests(unittest.TestCase):
         result = self._run_sh(self._direct_body(), "accept")
         output = result.stdout + result.stderr
         self.assertIn("RC:0", output)
+
+
+class IsolationInstallDirTests(unittest.TestCase):
+    """Finding 2: installed directories need explicit modes.
+
+    place() and the installer's other directory-creation sites must not
+    leave install-tree directories at the caller's umask (0700 under
+    umask 077); the dropped-privilege payload uid (65534) must be able
+    to traverse the whole install chain and read the placed probes.
+
+    The behavioural harness replicates the composite install's
+    directory-relevant sequence in order (coordinator addendum,
+    option A): the main-flow ensure_dir calls for $WS and $BIN_DIR,
+    a placement into $BIN_DIR, the $PILOT_DIR/inner.sh placement,
+    then the $PILOT_DIR/probes/probe.py placement.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.install_text = ISOLATION_INSTALL.read_text()
+        cls.sha_of_text = _extract_function(cls.install_text, "sha_of")
+        cls.place_text = _extract_function(cls.install_text, "place")
+        try:
+            cls.ensure_dir_text = _extract_function(
+                cls.install_text, "ensure_dir"
+            )
+        except AssertionError:
+            cls.ensure_dir_text = None
+
+    def _harness_body(self, scratch):
+        parts = [
+            'say() { printf \'%s\\n\' "$*"; }\n',
+            'die() { printf \'%s\\n\' "DIE: $*" >&2; exit 99; }\n',
+            self.sha_of_text,
+        ]
+        if self.ensure_dir_text is not None:
+            parts.append(self.ensure_dir_text)
+        parts.append(self.place_text)
+        parts.append(
+            "WS=" + shlex.quote(str(scratch / "workspace")) + "\n"
+            "BIN_DIR=\"$WS/bin\"\n"
+            "PILOT_DIR=\"$WS/isolation-pilot\"\n"
+            "SRC=" + shlex.quote(str(scratch / "src")) + "\n"
+            "umask 077\n"
+            # Guarded so that on the pre-fix tree (no ensure_dir) the
+            # place-driven assertions still execute and fail on their
+            # own modes, rather than the harness dying on a missing
+            # function before any placement happens.
+            "if type ensure_dir >/dev/null 2>&1; then\n"
+            "  ensure_dir \"$WS\"\n"
+            "  ensure_dir \"$BIN_DIR\"\n"
+            "fi\n"
+            "place \"$SRC/bin_fixture\" \"$BIN_DIR/bin_fixture\" 755\n"
+            "place \"$SRC/inner_fixture\" \"$PILOT_DIR/inner.sh\" 755\n"
+            "place \"$SRC/probe_fixture\" \"$PILOT_DIR/probes/probe.py\" 755\n"
+        )
+        return "".join(parts)
+
+    def test_install_chain_directories_are_0755_and_traversable(self):
+        with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
+            scratch = Path(tmp)
+            # The scratch root itself must be traversable by uid 65534,
+            # or it confounds the dropped-privilege read below.
+            scratch.chmod(0o755)
+            src = scratch / "src"
+            src.mkdir()
+            (src / "bin_fixture").write_text("bin fixture\n")
+            (src / "inner_fixture").write_text("inner fixture\n")
+            (src / "probe_fixture").write_text("probe fixture\n")
+
+            result = subprocess.run(
+                ["/bin/sh", "-c", self._harness_body(scratch)],
+                capture_output=True,
+                text=True,
+            )
+            output = result.stdout + result.stderr
+            self.assertEqual(result.returncode, 0, output)
+
+            ws = scratch / "workspace"
+            bin_dir = ws / "bin"
+            pilot_dir = ws / "isolation-pilot"
+            probes_dir = pilot_dir / "probes"
+            placed = [
+                bin_dir / "bin_fixture",
+                pilot_dir / "inner.sh",
+                probes_dir / "probe.py",
+            ]
+            for path in placed:
+                self.assertTrue(path.is_file(), f"placed file missing: {path}")
+
+            for path in (ws, bin_dir, pilot_dir, probes_dir):
+                mode = stat.S_IMODE(path.stat().st_mode)
+                self.assertEqual(
+                    mode,
+                    0o755,
+                    f"{path} has mode {oct(mode)}, expected 0o755",
+                )
+
+            setpriv = shutil.which("setpriv")
+            if setpriv is not None:
+                read = subprocess.run(
+                    [
+                        setpriv,
+                        "--reuid=65534",
+                        "--regid=65534",
+                        "--clear-groups",
+                        "cat",
+                        str(probes_dir / "probe.py"),
+                    ],
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(
+                    read.returncode,
+                    0,
+                    "dropped-privilege read of the probes file failed: "
+                    + read.stdout
+                    + read.stderr,
+                )
+                self.assertIn("probe fixture", read.stdout)
+
+    def test_mkdir_p_sites_are_only_audited_exceptions(self):
+        # The ensure_dir helper's own internal `mkdir -p "$1"` is the
+        # sanctioned creation mechanism, not a creation site: remove
+        # the helper's text before auditing the remaining sites, or
+        # the audit could never pass with the mandated fix in place.
+        audited_text = self.install_text
+        if self.ensure_dir_text is not None:
+            audited_text = audited_text.replace(self.ensure_dir_text, "")
+        allowed = (
+            'mkdir -p "$staging/extract"',
+            'mkdir -p "$BREW_PREFIX"',
+            'brew_as_user mkdir -p "$BREW_PREFIX/bin"',
+        )
+        offenders = []
+        for line in audited_text.splitlines():
+            if line.lstrip().startswith("#"):
+                # Comment prose (e.g. the ensure_dir header, which
+                # mentions mkdir -p by name) is not a creation site.
+                continue
+            if "mkdir -p" not in line:
+                continue
+            if any(exception in line for exception in allowed):
+                continue
+            offenders.append(line.strip())
+        self.assertEqual(
+            offenders,
+            [],
+            "unaudited mkdir -p sites remain in isolation/install.sh: "
+            + "; ".join(offenders),
+        )
 
 
 if __name__ == "__main__":

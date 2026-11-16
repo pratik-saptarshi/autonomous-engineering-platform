@@ -218,13 +218,23 @@ verify_artefact() {
   [ "$actual" = "$2" ] || die "artefact hash mismatch: $1 (computed $actual, pinned $2); aborting, nothing placed from it"
 }
 
+# ensure_dir <dir> — create an install-tree directory with an explicit
+# 0755 mode. Installed directories must not inherit the caller's umask:
+# under a restrictive umask (e.g. 077) a plain mkdir -p leaves them
+# 0700, and the dropped-privilege payload uid (65534) then cannot
+# traverse them to read the artefacts placed inside.
+ensure_dir() {
+  mkdir -p "$1"
+  chmod 755 "$1"
+}
+
 # place <src> <dst> [mode] — idempotent copy; skips when identical.
 place() {
   if [ -f "$2" ] && [ "$(sha_of "$1")" = "$(sha_of "$2")" ]; then
     say "already in place and verified: $2"
     return 0
   fi
-  mkdir -p "$(dirname "$2")"
+  ensure_dir "$(dirname "$2")"
   cp "$1" "$2"
   chmod "${3:-755}" "$2"
   say "placed $2 (sha256 $(sha_of "$2"))"
@@ -249,7 +259,7 @@ install_composite() {
     cc_bin=""
     for c in gcc cc; do command -v "$c" >/dev/null 2>&1 && { cc_bin="$c"; break; }; done
     [ -n "$cc_bin" ] || die "no C compiler (gcc/cc) available; cannot build sandbox-gate from its pinned source"
-    mkdir -p "$BIN_DIR"
+    ensure_dir "$BIN_DIR"
     tmp_bin="$(mktemp)"
     # shellcheck disable=SC2086
     "$cc_bin" -O2 -static -o "$tmp_bin" "$SCRIPT_DIR/gate/sandbox-gate.c" ||
@@ -326,7 +336,8 @@ install_gvisor() {
   bin_sha="$(sha_of "$staging/extract/runsc")"
   [ "$bin_sha" = "$SHA_runsc_binary" ] ||
     die "extracted runsc hash mismatch (computed $bin_sha, pinned $SHA_runsc_binary); aborting, nothing installed"
-  mkdir -p "$GVISOR_DIR/bin"
+  ensure_dir "$GVISOR_DIR"
+  ensure_dir "$GVISOR_DIR/bin"
   cp -a "$staging/extract/." "$GVISOR_DIR/bin/"
   say "runsc layout placed in $GVISOR_DIR/bin (runsc sha256 $bin_sha)"
   # First execution happens only now, after both verifications.
@@ -397,7 +408,7 @@ install_nsjail() {
       printf '%s\n' "install: WARNING: brew dependency drift vs the adoption record:$drift — a version bump is a new adoption; record it before relying on the build" >&2
 
     # Pinned source build.
-    mkdir -p "$NSJAIL_DIR"
+    ensure_dir "$NSJAIL_DIR"
     if [ ! -d "$SRC/.git" ]; then
       git clone "$NSJAIL_REPO" "$SRC"
     fi
@@ -470,6 +481,9 @@ if [ "$CHECK_ONLY" -eq 1 ]; then
   exit 0
 fi
 [ "$HARD_FAIL" -eq 0 ] || die "hard prerequisites missing (see above); nothing installed"
+
+ensure_dir "$WS"
+ensure_dir "$BIN_DIR"
 
 want composite && install_composite
 want gvisor && install_gvisor
