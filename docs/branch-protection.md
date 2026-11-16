@@ -60,4 +60,5 @@ is prose in `skills/feature-pr-pipeline/SKILL.md`, which is documentation,
 not an enforced workflow. A follow-up issue proposes a docs-only
 auto-merge guardrail once a pipeline workflow file exists; until such a
 file lands there is no regex or workflow target to edit, so this task
-makes no workflow change.
+makes no workflow change. Tracked as issue #159 ("Add docs-only auto-merge
+guardrail once a pipeline workflow exists").

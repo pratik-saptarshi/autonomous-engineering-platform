@@ -66,7 +66,7 @@ Guards: at most 6 iterations per run. Three failed attempts on one task stops th
 
 ## Component status
 
-Implemented means present in this repo; Absent means referenced but not present; External-only means it lives on the deployed VM, not in this repo. The canonical verifier is UNDECIDED — pending Task 1B.
+Implemented means present in this repo; Absent means referenced but not present; External-only means it lives on the deployed VM, not in this repo. The canonical verifier is `scripts/mechanical_verify.py` (see [verifier of record](docs/decisions/verifier-of-record.md)).
 
 | Component | Location in this repo | Status |
 |---|---|---|
@@ -75,7 +75,7 @@ Implemented means present in this repo; Absent means referenced but not present;
 | Ralph loop task-listing helper | none — repo-wide filename search (including `reference/`) finds no such helper; the only `backlog*` match is `reference/esf/docs/backlog/`, a vendored docs page | Absent |
 | Mechanical verifier, Python (~5354 lines) | `scripts/mechanical_verify.py` | Implemented |
 | Verifier runner, Go (~338 lines) | `internal/verifier/runner/runner.go` | Implemented |
-| Canonical verifier | UNDECIDED — pending Task 1B | UNDECIDED |
+| Canonical verifier | `scripts/mechanical_verify.py` (see [verifier of record](docs/decisions/verifier-of-record.md)) | Implemented |
 | Runbook and operations docs | `docs/runbook.md`, `docs/operations.md`, `docs/limitation-analysis.md` | Implemented |
 | Daemon watchdog + backup script | `scripts/watchdog-backup.sh` | Implemented |
 | NeuroStrata engine, memory store, model cache, beads, open-code-review, open-connector, scheduler | External-only — see deployed paths below | External-only |
