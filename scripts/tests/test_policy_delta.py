@@ -3260,6 +3260,94 @@ class CoreDeltaTests(SyntheticRepo):
         r = self.run_tool("diff", self.base, head5)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_ghg_container_alias_provenance(self):
+        # Codex PR #148 round 9, thread PRRT_kwDOVM-V9863zgvO: a
+        # named callee container assigned to another bare name
+        # dropped its provenance, so invoking the local function
+        # through the alias bypassed the protected-argument
+        # refusal. Plain-alias bindings now confer the container
+        # record too; a literal+alias mix still disqualifies, as
+        # recorded by the rebind rule locks above.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\n_runs = [_uncap]\n'
+                   '_alias = _runs\n'
+                   '_alias[0](DEFAULT_LIMITS)\n')
+        head = self.commit("named-container-plain-alias")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Attack, alias chain: the same record settles
+        # transitively inside the fixpoint.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(caps):\n    caps.clear()\n'
+                   '\n_runs = [_uncap]\n'
+                   '_first = _runs\n'
+                   '_second = _first\n'
+                   '_second[0](DEFAULT_LIMITS)\n')
+        head2 = self.commit("named-container-alias-chain")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Attack, table-returning callee: the hands_over channel
+        # carries the same alias provenance.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _tables():\n    return DEFAULT_LIMITS\n'
+                   '\n_readers = [_tables]\n'
+                   '_alias = _readers\n'
+                   '_alias[0]().clear()\n')
+        head3 = self.commit("named-container-alias-table-return")
+        r = self.run_tool("diff", self.base, head3)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: an alias of a container of a builtin holds
+        # no local callee.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_helpers = [sorted]\n'
+                   '_alias = _helpers\n'
+                   '_alias[0](DEFAULT_LIMITS)\n')
+        head4 = self.commit("named-container-alias-builtin")
+        r = self.run_tool("diff", self.base, head4)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_ghg_lookup_conflict_capture_call(self):
+        # Codex PR #148 round 9, thread PRRT_kwDOVM-V9863zil4: a
+        # view-method capture with conflicting bindings is still
+        # callable, and its call result took the scalar
+        # exemption because the call-source predicate consulted
+        # only the returning-conflict set.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\n_read = DEFAULT_LIMITS.values\n'
+                   '_read = DEFAULT_LIMITS.items\n'
+                   '_view = _read()\n'
+                   'for _key, _pairs in _view:\n'
+                   '    _uncap(_pairs)\n')
+        head = self.commit("lookup-conflict-capture-call")
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Attack, capture alias: an alias of the conflicted
+        # capture carries the conflict.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\n_read = DEFAULT_LIMITS.values\n'
+                   '_read = DEFAULT_LIMITS.items\n'
+                   '_alias = _read\n'
+                   '_view = _alias()\n'
+                   'for _key, _pairs in _view:\n'
+                   '    _uncap(_pairs)\n')
+        head2 = self.commit("lookup-conflict-capture-alias")
+        r = self.run_tool("diff", self.base, head2)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        # Precision: a single-kind capture call still spends
+        # scalars of that kind.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\ndef _uncap(x):\n    x.clear()\n'
+                   '\n_read = DEFAULT_LIMITS.keys\n'
+                   '_view = _read()\n'
+                   'for _key in _view:\n'
+                   '    _uncap(_key)\n')
+        head3 = self.commit("lookup-single-kind-capture-call")
+        r = self.run_tool("diff", self.base, head3)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
     def test_ghg_view_kind_repeated_conditional_alias_rebinding(self):
         # PR #148 / #155: repeated conditional alias bindings must
         # compare/merge view kinds across bindings (a stale first

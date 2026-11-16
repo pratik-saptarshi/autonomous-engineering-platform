@@ -276,6 +276,63 @@ def _bound_names(target):
     return []
 
 
+def _literal_container_records(tree):
+    """Plain-literal container bindings and their plain-alias edges.
+
+    Returns ``(literal, alias_sources)``:
+
+    - ``literal``: name -> [List/Tuple/Set/Dict node] for names bound
+      directly, by a plain assignment, to a literal container;
+    - ``alias_sources``: name -> {source name} for names bound
+      directly, by a plain assignment of a bare Name, to another name.
+
+    The record is all-bindings, as before: any other enumerated
+    binding of a name -- to a non-container, through a Call or a
+    conditional, by an annotated or walrus binding -- disqualifies it,
+    in either order. Mixing a literal binding with an alias binding
+    disqualifies it too, preserving the recorded rule that a
+    rebind-through-Name drops the name. Names bound only through
+    bare-Name aliases keep container provenance by propagation in the
+    fixpoint (an alias reaches the container runtime reaches), so
+    ``_alias = _runs; _alias[0](...)`` is not a provenance hole.
+
+    Bindings outside the enumeration (for targets, parameters,
+    imports) neither confer nor disqualify.
+    """
+    literal, alias_sources, conflicts = {}, {}, set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            _cvalue, _ctargets = node.value, node.targets
+        elif isinstance(node, ast.AnnAssign) \
+                and node.value is not None:
+            _cvalue, _ctargets = node.value, [node.target]
+        elif isinstance(node, ast.NamedExpr):
+            _cvalue, _ctargets = node.value, [node.target]
+        else:
+            continue
+        for t in _ctargets:
+            for n in _bound_names(t):
+                if isinstance(node, ast.Assign) \
+                        and isinstance(t, ast.Name) \
+                        and isinstance(_cvalue, (ast.List,
+                                                  ast.Tuple,
+                                                  ast.Set,
+                                                  ast.Dict)):
+                    literal.setdefault(n, []).append(_cvalue)
+                elif isinstance(node, ast.Assign) \
+                        and isinstance(t, ast.Name) \
+                        and isinstance(_cvalue, ast.Name):
+                    alias_sources.setdefault(n, set()).add(
+                        _cvalue.id)
+                else:
+                    conflicts.add(n)
+    conflicts |= set(literal) & set(alias_sources)
+    for n in conflicts:
+        literal.pop(n, None)
+        alias_sources.pop(n, None)
+    return literal, alias_sources
+
+
 def _pattern_captures(pattern):
     """Names a match-case pattern binds: capture patterns
     (MatchAs), starred captures (MatchStar), and a mapping
@@ -1438,7 +1495,13 @@ def ghg_binding_census(tree):
         container) carries a returning_view_conflicts marker."""
         f = call_node.func
         if isinstance(f, ast.Name):
-            return f.id in returning_view_conflicts
+            # A direct callee conflicts when its returns are
+            # recorded conflicted, and equally when the name is a
+            # lookup capture with conflicting view bindings (the
+            # capture is callable, so calling it must not grant
+            # the scalar exemption a single-kind capture earns).
+            return f.id in returning_view_conflicts \
+                or f.id in lookup_kind_conflicts
         if isinstance(f, ast.Attribute):
             return f.attr in returning_view_conflicts
         if isinstance(f, (ast.IfExp, ast.BoolOp, ast.NamedExpr)):
@@ -1556,32 +1619,8 @@ def ghg_binding_census(tree):
     # kind: the name then does not resolve at all, in either
     # order. Bindings outside the enumeration (for targets,
     # parameters, imports) neither confer nor disqualify.
-    _ho_literal_containers = {}
-    _ho_container_name_conflicts = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign):
-            _cvalue, _ctargets = node.value, node.targets
-        elif isinstance(node, ast.AnnAssign) \
-                and node.value is not None:
-            _cvalue, _ctargets = node.value, [node.target]
-        elif isinstance(node, ast.NamedExpr):
-            _cvalue, _ctargets = node.value, [node.target]
-        else:
-            continue
-        for t in _ctargets:
-            for n in _bound_names(t):
-                if isinstance(node, ast.Assign) \
-                        and isinstance(t, ast.Name) \
-                        and isinstance(_cvalue, (ast.List,
-                                                  ast.Tuple,
-                                                  ast.Set,
-                                                  ast.Dict)):
-                    _ho_literal_containers.setdefault(
-                        n, []).append(_cvalue)
-                else:
-                    _ho_container_name_conflicts.add(n)
-    for n in _ho_container_name_conflicts:
-        _ho_literal_containers.pop(n, None)
+    _ho_literal_containers, _ho_alias_sources = \
+        _literal_container_records(tree)
     _named_container_hands_over = set()
     _named_container_taints = set()
 
@@ -1612,6 +1651,18 @@ def ghg_binding_census(tree):
             if n not in _named_container_hands_over \
                     and any(_container_hands_over_callee(c)
                             for c in _containers):
+                _named_container_hands_over.add(n)
+                changed = True
+        # Plain aliases of a named container carry the same
+        # provenance (the alias reaches the container runtime
+        # reaches). Settled in the same fixpoint so chains and
+        # in-fixpoint callee knowledge compose; the map is keyed
+        # by name and every addition is monotone, so it
+        # terminates.
+        for n, _sources in _ho_alias_sources.items():
+            if n not in _named_container_hands_over \
+                    and any(s in _named_container_hands_over
+                            for s in _sources):
                 _named_container_hands_over.add(n)
                 changed = True
         for node in ast.walk(tree):
@@ -1756,7 +1807,9 @@ def ghg_binding_census(tree):
                       if _sn in returning_views
                       and _sn not in returning_view_conflicts}
             _conflicted = any(_sn in returning_view_conflicts
-                              for _sn in _src_names)
+                              for _sn in _src_names) \
+                or (isinstance(value, ast.Call)
+                    and _call_callee_view_conflicted(value))
             if _conflicted or len(_kinds) > 1:
                 for t in targets:
                     for n in _bound_names(t):
@@ -1878,6 +1931,14 @@ def ghg_binding_census(tree):
                     continue
                 if _k not in _leaf_kinds:
                     _leaf_kinds.append(_k)
+            # A capture alias of a conflicted capture carries the
+            # conflict: `_r2 = _read` reaches the same ambiguous
+            # view, so calling `_r2()` must not earn the scalar
+            # exemption either.
+            _leaf_lookup_conflicted = any(
+                isinstance(l, ast.Name)
+                and l.id in lookup_kind_conflicts
+                for l in _leaves)
             for _kind in _leaf_kinds:
                 for t in targets:
                     for n in _bound_names(t):
@@ -1890,6 +1951,13 @@ def ghg_binding_census(tree):
                             changed = True
                         elif n not in lookup_kinds:
                             lookup_kinds[n] = _kind
+                            changed = True
+            if _leaf_lookup_conflicted:
+                for t in targets:
+                    for n in _bound_names(t):
+                        if n not in lookup_kind_conflicts:
+                            lookup_kind_conflicts.add(n)
+                            lookup_kinds.pop(n, None)
                             changed = True
         for n, _containers in _ho_literal_containers.items():
             if n not in _named_container_taints \
@@ -2307,32 +2375,8 @@ def ghg_binding_census(tree):
     # order. Bindings outside the enumeration (for targets,
     # parameters, imports) neither confer nor disqualify, as
     # in the alias pass below.
-    _literal_containers = {}
-    _container_name_conflicts = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign):
-            _cvalue, _ctargets = node.value, node.targets
-        elif isinstance(node, ast.AnnAssign) \
-                and node.value is not None:
-            _cvalue, _ctargets = node.value, [node.target]
-        elif isinstance(node, ast.NamedExpr):
-            _cvalue, _ctargets = node.value, [node.target]
-        else:
-            continue
-        for t in _ctargets:
-            for n in _bound_names(t):
-                if isinstance(node, ast.Assign) \
-                        and isinstance(t, ast.Name) \
-                        and isinstance(_cvalue, (ast.List,
-                                                  ast.Tuple,
-                                                  ast.Set,
-                                                  ast.Dict)):
-                    _literal_containers.setdefault(
-                        n, []).append(_cvalue)
-                else:
-                    _container_name_conflicts.add(n)
-    for n in _container_name_conflicts:
-        _literal_containers.pop(n, None)
+    _literal_containers, _callee_alias_containers = \
+        _literal_container_records(tree)
     _named_container_callees = set()
     callee_aliases = set()
     def _container_has_callee(v):
@@ -2401,6 +2445,12 @@ def ghg_binding_census(tree):
             if n not in _named_container_callees \
                     and any(_container_has_callee(c)
                             for c in _containers):
+                _named_container_callees.add(n)
+                _alias = True
+        for n, _sources in _callee_alias_containers.items():
+            if n not in _named_container_callees \
+                    and any(s in _named_container_callees
+                            for s in _sources):
                 _named_container_callees.add(n)
                 _alias = True
         for node in ast.walk(tree):
