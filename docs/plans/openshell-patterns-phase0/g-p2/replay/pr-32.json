@@ -1,0 +1,17 @@
+{
+ "base": "3618495a105449e4efbe384cf1e45d6e94e3a103",
+ "head": "7a15219",
+ "newly_allowed": [],
+ "newly_denied": [
+  "skills: file removed from existing skill 'archify': skills/archify/bin/delivery-update.mjs -> surface contraction",
+  "skills: file removed from existing skill 'archify': skills/archify/references/update-awareness.md -> surface contraction",
+  "skills: file removed from existing skill 'archify': skills/archify/scripts/check-update.mjs -> surface contraction",
+  "skills: file removed from existing skill 'archify': skills/archify/scripts/delivery-update-child.mjs -> surface contraction",
+  "skills: file removed from existing skill 'archify': skills/archify/scripts/update-contract.mjs -> surface contraction"
+ ],
+ "notes": [
+  "1 SKILL.md content change(s) in surviving skills \u2014 not mechanically classifiable as grant/denial by this model"
+ ],
+ "pr": 32,
+ "commit": "7a15219"
+}
