@@ -69,6 +69,13 @@
 #     determined same-uid process.
 set -euo pipefail
 
+# Linux-only paths: flock(1) and /proc have no Darwin equivalents, so
+# refuse early with a loud skip instead of failing mid-run.
+if [ "$(uname)" = "Darwin" ]; then
+  echo "SKIP: lane-coord requires flock/proc (Linux-only)"
+  exit 0
+fi
+
 # Platform-standard tool locations (see TOOLS.md): non-interactive runs
 # (cron, agents) may not source ~/.bashrc, so ensure them here. They are
 # APPENDED (not prepended) so a caller-injected PATH — e.g. the --self-test

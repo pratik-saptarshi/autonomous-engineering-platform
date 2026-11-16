@@ -32,8 +32,9 @@
 #
 # The upstream backup.sh needs systemd; this environment has no user D-Bus,
 # so SIGTERM replaces `systemctl stop/start`. Exit 0 unless the backup copy
-# itself failed verification, a configured Drive upload failed, or (on the
-# daemon-down no-change path) Drive catch-up failed.
+# itself failed verification, a configured Drive upload failed, (on the
+# daemon-down no-change path) Drive catch-up failed, or the daemon would
+# not stop (a wedged daemon fails loudly — never a silent skip).
 set -euo pipefail
 
 BIN="$HOME/workspace/neurostrata/bin/neurostrata-mcp"
@@ -281,8 +282,13 @@ fi
 # 3. Quiesce: SIGTERM the daemon so the copy is checkpoint-consistent.
 # On-demand model: the daemon stays down after this — the MCP client
 # restarts it on the next coding loop.
-
-stop_daemon || exit 0
+# A daemon that will not stop fails the run loudly (exit 1): copying a
+# live DB would produce exactly the torn backup this step exists to
+# prevent, and silently skipping used to mask a wedged daemon forever.
+if ! stop_daemon; then
+  log "ERROR: daemon would not stop — backup skipped, daemon left running"
+  exit 1
+fi
 
 # 4. Backup + verify: hash the exact bytes being copied, taken immediately
 # before cp, and verify the copy against THAT — not against the earlier
