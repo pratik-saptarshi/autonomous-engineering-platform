@@ -110,7 +110,7 @@ Expected rejections (71 candidates):
 
 Preflight:
 
-```
+```text
 ok: workflow loads (tracker: beads)
 ok: tracker tool: bd found at ~/go/bin/bd
 ok: lanes directory: resolved as lane-coord resolves it (0 active claims)
@@ -122,7 +122,7 @@ preflight: PASS
 
 Dry-run (with `--log`):
 
-```
+```text
 dry-run: ~/workspace/goals/autonomous-code-defense-factory/hidden_files/orch-stage1/dap.workflow.md (tracker: beads)
 would dispatch (0):
 rejected (71):
@@ -206,7 +206,7 @@ observation appended: ~/workspace/goals/autonomous-code-defense-factory/hidden_f
 `--summarize` over the resulting log (one observation — the
 acceptance run's own entry):
 
-```
+```text
 observations: 1
 window span: 0s
 ready-set size: min 0, median 0, max 0

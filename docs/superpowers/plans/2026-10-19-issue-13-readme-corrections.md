@@ -8,7 +8,7 @@
 
 **Tech Stack:** Markdown, Mermaid diagrams. CI gate: markdownlint (v1 baseline in `.markdownlint.yaml` stays in effect).
 
-**Spec:** https://github.com/pratik-saptarshi/autonomous-engineering-platform/issues/13
+**Spec:** <https://github.com/pratik-saptarshi/autonomous-engineering-platform/issues/13>
 
 ## Global Constraints
 
@@ -35,9 +35,11 @@ The five reader-facing failure modes most likely to bite, most likely first — 
 ### Task 1: Build the verified ground-truth table
 
 **Files:**
+
 - Modify: none (research task; the table below is the deliverable, confirmed live)
 
 **Interfaces:**
+
 - Consumes: live environment (filesystem, binaries, scheduler)
 - Produces: ground-truth table consumed by Tasks 2–6. Every later task copies values from this table verbatim — it does not re-derive them.
 
@@ -72,26 +74,29 @@ Produce a table with columns: Component | Version (from `--version`) | Location 
 ### Task 2: Rewrite the component inventory table (README.md:65-78)
 
 **Files:**
+
 - Modify: `README.md:65-78` (the `## Component inventory` table)
 
 **Interfaces:**
+
 - Consumes: ground-truth table from Task 1 (copy values verbatim)
 - Produces: corrected inventory table
 
 - [ ] **Step 1: Rewrite each row from the ground-truth table**
 
 Replace the table body. Decisions (do not relitigate): keep one row per component including the non-existent ones, but set their Status to `Planned — not installed` (never `Installed`/`verified`). Correct rows:
-  - Skill library → location stays `~/workspace/custom-skills/`, version becomes the Task-1 count, status `Installed`
-  - Ralph loop → status `Planned — not installed` (no `~/workspace/ralph/`, no cron)
-  - NeuroStrata engine → location `~/workspace/neurostrata/` (data/log dir), binary note `~/go/bin/neurostrata-mcp`, v1.9.0, status `Installed`
-  - NeuroStrata MCP connector → status `Planned — not installed` (no stdio client; note the OpenCode MCP wiring exists at `~/.config/opencode/opencode.json` if Task 1 confirms it)
-  - Embedding model cache / Memory store → keep, verify paths from Task 1
-  - beads → location `~/go/bin/bd`, version `1.3.1 (dev)`, status `Installed`
-  - open-code-review → location `~/go/bin/ocr`, version `1.13.1`, status `Installed`
-  - open-connector → status `Planned — not installed`
-  - Scheduler → list only jobs confirmed in Task 1 Step 2 (expect `neurostrata-watchdog` 2h, `neurostrata-export` weekly; drop `ralph-loop` and `neurostrata-tls-validation`)
 
-  - [ ] **Step 2: Fix the table's Status vocabulary**
+- Skill library → location stays `~/workspace/custom-skills/`, version becomes the Task-1 count, status `Installed`
+- Ralph loop → status `Planned — not installed` (no `~/workspace/ralph/`, no cron)
+- NeuroStrata engine → location `~/workspace/neurostrata/` (data/log dir), binary note `~/go/bin/neurostrata-mcp`, v1.9.0, status `Installed`
+- NeuroStrata MCP connector → status `Planned — not installed` (no stdio client; note the OpenCode MCP wiring exists at `~/.config/opencode/opencode.json` if Task 1 confirms it)
+- Embedding model cache / Memory store → keep, verify paths from Task 1
+- beads → location `~/go/bin/bd`, version `1.3.1 (dev)`, status `Installed`
+- open-code-review → location `~/go/bin/ocr`, version `1.13.1`, status `Installed`
+- open-connector → status `Planned — not installed`
+- Scheduler → list only jobs confirmed in Task 1 Step 2 (expect `neurostrata-watchdog` 2h, `neurostrata-export` weekly; drop `ralph-loop` and `neurostrata-tls-validation`)
+
+- [ ] **Step 2: Fix the table's Status vocabulary**
 
 The only allowed Status values after this task: `Installed`, `Installed; verified` (only where a verification command in the runbook passes), or `Planned — not installed`. No other wording.
 
@@ -103,6 +108,7 @@ grep -oP '(?<=`)[~/][^`]+(?=`)' README.md | while read -r p; do eval test -e "$p
 # Every version must match --version output; every cron name must be in the scheduler list from Task 1.
 # No row may say Installed/verified unless verified. Fail the task if any check fails.
 ```
+
 Expected: all paths OK, all versions match, no unverified "Installed".
 
 - [ ] **Step 4: Commit**
@@ -117,9 +123,11 @@ git commit -m "docs(readme): correct component inventory against verified state"
 ### Task 3: Fix the Ecosystem mermaid diagram (README.md:5-43)
 
 **Files:**
+
 - Modify: `README.md:5-43` (the `## Ecosystem` mermaid `graph TB` block)
 
 **Interfaces:**
+
 - Consumes: ground-truth table from Task 1
 - Produces: diagram showing only real components
 
@@ -147,16 +155,19 @@ git commit -m "docs(readme): redraw ecosystem diagram without fictional componen
 ### Task 4: Fix the "Continuous loop cycle" section (README.md:45-63)
 
 **Files:**
+
 - Modify: `README.md:45-63` (`## Continuous loop cycle` + mermaid `flowchart LR`)
 
 **Interfaces:**
+
 - Consumes: Task 1 (confirms no loop exists)
 - Produces: honestly-labeled planned section
 
 - [ ] **Step 1: Retitle and disclaim the section**
 
 Decision (do not relitigate): keep the flowchart as design reference but retitle the heading to `## Planned: continuous loop cycle` and prepend this disclaimer verbatim:
-```
+
+```text
 > **Not yet implemented.** This is the design for the autonomous execution loop. No scheduler job currently runs this cycle; `backlog.py` and the `ralph-loop` cron do not exist.
 ```
 
@@ -165,6 +176,7 @@ Decision (do not relitigate): keep the flowchart as design reference but retitle
 ```bash
 grep -n "Planned: continuous loop cycle" README.md && grep -n "Not yet implemented" README.md
 ```
+
 Expected: both lines found.
 
 - [ ] **Step 3: Commit**
@@ -179,18 +191,22 @@ git commit -m "docs(readme): mark continuous loop cycle as planned, not implemen
 ### Task 5: Correct skill counts and the Skill sources table (README.md:17, 80-97)
 
 **Files:**
+
 - Modify: `README.md:17` (Ecosystem diagram `Skill library · 58 skills` node), `README.md:80-97` (`### Skill sources` table)
 
 **Interfaces:**
+
 - Consumes: Task 1 skill counts (repo `skills/` dirs, `~/workspace/custom-skills/` entries)
 - Produces: consistent counts everywhere
 
 - [ ] **Step 1: Update the counts**
 
 Set the Ecosystem `Skills` subgraph label and the inventory-adjacent claims to the Task-1 verified count of `~/workspace/custom-skills/` (observed 62 on 2026-10-19 — re-verify, do not copy blindly). In the `### Skill sources` section, add one clarifying line verbatim:
-```
+
+```text
 The repo's `skills/` directory carries a 30-skill curated subset; the full library lives at `~/workspace/custom-skills/`.
 ```
+
 Verify the 30-dir count: `ls -d skills/*/ | wc -l`.
 
 - [ ] **Step 2: Check count consistency across the file**
@@ -198,6 +214,7 @@ Verify the 30-dir count: `ls -d skills/*/ | wc -l`.
 ```bash
 grep -n "58 skills\|58-skill" README.md; grep -n "12 upstream" README.md
 ```
+
 Expected: no stale `58` or `12 upstream` claims remain (update or remove each hit).
 
 - [ ] **Step 3: Commit**
@@ -212,9 +229,11 @@ git commit -m "docs(readme): correct skill counts (62 local, 30 vendored)"
 ### Task 6: Fix Known limitations bullets for non-existent components (README.md:113-123)
 
 **Files:**
+
 - Modify: `README.md:113-123` (`## Known limitations`)
 
 **Interfaces:**
+
 - Consumes: Task 1 (confirms open-connector absent)
 - Produces: limitations that describe real components
 
@@ -231,6 +250,7 @@ The bullets mentioning MCP auto-spawn contradict `docs/limitation-analysis.md` �
 ```bash
 grep -n "ralph\|open-connector\|custom.neurostrata\|workspace/bin" README.md | grep -vi "planned\|not installed\|not yet"
 ```
+
 Expected: no hits outside the Task-2 table and the Task-3/4 disclaimers.
 
 - [ ] **Step 4: Final markdownlint check and commit**

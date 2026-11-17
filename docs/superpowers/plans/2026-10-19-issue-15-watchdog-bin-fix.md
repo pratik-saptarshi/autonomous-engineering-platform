@@ -32,10 +32,12 @@
 ### Task 1: Fix BIN path and add fail-fast executable check
 
 **Files:**
+
 - Modify: `scripts/watchdog-backup.sh:30` (BIN assignment)
 - Modify: `scripts/watchdog-backup.sh` (insert fail-fast check after line 40, `mkdir -p "$STAGE"`)
 
 **Interfaces:**
+
 - Consumes: none (first task)
 - Produces: corrected `BIN="$HOME/go/bin/neurostrata-mcp"`; fail-fast guard `[ -x "$BIN" ] || { log "FATAL: ..."; exit 1; }` placed where `log()` can write
 
@@ -67,11 +69,13 @@ Expected: FAIL with `rc=0` â€” the script logs "daemon idle (on-demand model) â€
 - [ ] **Step 3: Implement in `scripts/watchdog-backup.sh`**
 
 Change line 30 to:
+
 ```bash
 BIN="$HOME/go/bin/neurostrata-mcp"
 ```
 
 After line 40 (`mkdir -p "$STAGE"`), insert:
+
 ```bash
 # Fail fast on a bad binary path: without this, a missing $BIN makes
 # daemon_healthy() always fail and the script silently exits 0 forever.
@@ -101,9 +105,11 @@ git commit -m "fix(scripts): point watchdog BIN at real binary and fail fast if 
 > **Note:** Task 1 inserts lines into this file, so the line numbers below (204/212) are pre-Task-1 values. Re-derive with `grep -n` before starting; the test in Step 1 computes positions dynamically and is the source of truth.
 
 **Files:**
+
 - Modify: `scripts/watchdog-backup.sh` (relocate the `stop_daemon()` block from lines 212-234 to before line 159, the `# 1. On-demand model` main-flow section)
 
 **Interfaces:**
+
 - Consumes: Task 1's modified `scripts/watchdog-backup.sh`
 - Produces: `stop_daemon()` defined before its first call site (line 204); function body byte-identical
 
@@ -152,9 +158,11 @@ git commit -m "fix(scripts): define stop_daemon before its first call site"
 ### Task 3: Correct the stale header comment
 
 **Files:**
+
 - Modify: `scripts/watchdog-backup.sh:1-13` (header comment block)
 
 **Interfaces:**
+
 - Consumes: Tasks 1-2's modified `scripts/watchdog-backup.sh`
 - Produces: header comment accurately describing the on-demand model
 
@@ -165,6 +173,7 @@ The header currently says "1. Watchdog: if the daemon is down, restart it direct
 - [ ] **Step 1b: Remove remaining MCP auto-start claims from the main flow**
 
 The header is not the only place. Three comments in the main flow still claim the MCP client revives the daemon, contradicting the verified direct-nohup requirement (issue #16):
+
 - `scripts/watchdog-backup.sh:160-163`: "the MCP client starts it lazily at the beginning of a coding loop"
 - `scripts/watchdog-backup.sh:209-211`: "the MCP client restarts it on the next coding loop"
 - `scripts/watchdog-backup.sh:252`: "the MCP client restarts it next run"

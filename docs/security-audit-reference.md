@@ -9,7 +9,7 @@ Vendored snapshot: [PROVENANCE.md](../reference/security-audit-skill/PROVENANCE.
 ## Mapping to the AEP loop
 
 | security-audit | AEP (this environment) |
-|---|---|
+| --- | --- |
 | coverage ledger — every surface hunted or explicitly accounted for | deterministic coverage gates; no silent skips |
 | every candidate goes to a fresh verifier that tries to disprove it | independent reviewer per task; findings confirmed or refuted on evidence |
 | findings validated against `report-schema.json` before reporting | sealed receipts + mechanical verification before anything ships |

@@ -8,9 +8,10 @@
 
 **Tech Stack:** bash, iptables/ip6tables (nf_tables), getent.
 
-**Spec:** https://github.com/pratik-saptarshi/autonomous-engineering-platform/issues/20
+**Spec:** <https://github.com/pratik-saptarshi/autonomous-engineering-platform/issues/20>
 
 ## Global Constraints
+
 - Conventional Commits; commit as `Musebot-Astro <6238157+pratik-saptarshi@users.noreply.github.com>`.
 - Exact-path `git add` only (no `.gitignore` in repo).
 - Script must remain idempotent (safe to re-run on boot / after VM replacement).
@@ -18,6 +19,7 @@
 - Shellcheck-clean and `shfmt -d -i 2` clean (CI enforces both).
 
 ## Review Focus
+
 - **Stale IPs are already live:** `getent hosts` on 2026-10-19 resolves dolthub.com→198.18.92.28 and gastownhall-eventsapi.com→198.18.92.29 — the hardcoded 198.18.111.222/223 are stale NOW, and the OUTPUT chain is currently empty (no DROP rules at all). Task 1's verification must confirm the new IPs, not the old ones.
 - **IPv6 nuance:** the VM has an IPv6 default route, but neither domain publishes native AAAA records today (only IPv4-mapped `::ffff:`). The script must still install v6 rules when AAAA records exist AND fail closed with a warning when a v6 default route exists but no v6 addresses resolved — otherwise a future AAAA publication silently bypasses the control.
 - **DNS failure mode:** if `getent` fails (DNS down), the script must NOT silently apply zero rules and report success — it must fail loudly. An empty IP list is an error, not a no-op.
@@ -37,9 +39,11 @@
 ### Task 1: Rewrite apply-domain-blocks.sh
 
 **Files:**
+
 - Modify: `scripts/apply-domain-blocks.sh` (full rewrite)
 
 **Interfaces:**
+
 - Consumes: nothing (first task)
 - Produces: `apply_blocks()` behavior — resolves `dolthub.com` and `gastownhall-eventsapi.com` at apply time, installs idempotent v4/v6 DROP rules, fails loudly on any error, verifies before reporting success. Task 2 consumes the final script for runbook documentation.
 
@@ -133,42 +137,52 @@ Design notes for the implementer: the `while read` loops take their input from a
 - [ ] **Step 2: Syntax check and lint**
 
 Run:
+
 ```bash
 bash -n scripts/apply-domain-blocks.sh && echo SYNTAX-OK
 ```
+
 (This environment has no shellcheck binary; CI's shell-lint job is the lint gate. If shellcheck is available via ~/go/bin or apt, run `shellcheck scripts/apply-domain-blocks.sh` too.)
 
 - [ ] **Step 3: Test — dry-run the resolvers (no firewall changes)**
 
 Run:
+
 ```bash
 bash -c 'source <(sed -n "/^resolve_v4/,/^}/p;/^resolve_v6/,/^}/p" scripts/apply-domain-blocks.sh); resolve_v4 dolthub.com; echo ---; resolve_v6 dolthub.com; echo "(empty v6 is expected)"'
 ```
+
 Expected: prints one or more IPv4 addresses for dolthub.com; v6 section empty (no native AAAA as of 2026-10-19). **Critical:** the v4 addresses must NOT be the stale 198.18.111.222/223 — if they are, DNS has flipped back; record the actual values.
 
 - [ ] **Step 4: Test — apply as root and verify (this modifies the live firewall)**
 
 Run (as root):
+
 ```bash
 sudo ./scripts/apply-domain-blocks.sh
 ```
+
 Expected: prints `blocked (v4): ...` lines, the v6 warning, and ends with `Domain blocks applied and verified: dolthub.com gastownhall-eventsapi.com`, exit 0.
 
 - [ ] **Step 5: Test — verify rules exist and idempotency**
 
 Run:
+
 ```bash
 iptables -S OUTPUT | grep -c 'DROP' ; ./scripts/apply-domain-blocks.sh >/dev/null 2>&1; iptables -S OUTPUT | grep -c 'DROP'
 ```
+
 Expected: both counts identical (second run adds no duplicates). Also: `iptables -S OUTPUT` must show DROP rules for the CURRENT resolved IPs (198.18.92.28/29 as of 2026-10-19), not the stale .111.x addresses.
 
 - [ ] **Step 6: Test — failure mode (non-root)**
 
 Run (as non-root, if available; otherwise simulate by temporarily... skip if only root exists — note it):
+
 ```bash
 # if a non-root user exists:
 su nobody -s /bin/bash -c './scripts/apply-domain-blocks.sh'
 ```
+
 Expected: `FATAL: must run as root`, exit non-zero, NO success message.
 
 - [ ] **Step 7: Commit**
@@ -183,9 +197,11 @@ git commit -m "fix(scripts): resolve domain-block IPs at apply time, cover IPv6,
 ### Task 2: Document in the runbook
 
 **Files:**
+
 - Modify: `docs/runbook.md` (add to install steps)
 
 **Interfaces:**
+
 - Consumes: Task 1's rewritten script (references its path and behavior)
 - Produces: runbook documents the control so fresh installs enforce it
 
@@ -204,7 +220,8 @@ sudo ./scripts/apply-domain-blocks.sh
 ```
 
 Run on every boot / VM replacement — iptables rules do not survive either. Requires root.
-```
+
+```text
 
 - [ ] **Step 2: Verify the markdown renders (no lint breakage)**
 
@@ -217,6 +234,7 @@ git add docs/runbook.md
 git commit -m "docs: document egress domain-block script in runbook"
 git push origin feat/ci-platform-gates
 ```
+
 Then: `gh pr checks 12 --watch` — docs-lint and shell-lint must pass.
 
 ---

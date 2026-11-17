@@ -66,7 +66,7 @@ Design-before-implementation is an implicit habit, not a loadable skill: design 
 Component map: pristine bundle (`~/workspace/egm/` local; `reference/elephant-goldfish-model/` in AEP) → adapted skills (local `custom-skills/egm-*/`; AEP `skills/egm-*` wrappers) → gates (SkillSpector gate-scan; vendor-integrity; skills-freshness) → dispatch (Elephant driver + Goldfish reviewers via `subagent.spawn` / harness subagent tool, direct dispatch in Environment B) → artifacts (design docs, review reports, drift reports). The existing §§8–10 keep their detail; this section is the map, with pointers to them.
 
 | Component | Location | Defined in |
-|---|---|---|
+| --- | --- | --- |
 | Pristine bundle | `~/workspace/egm/` local; `reference/elephant-goldfish-model/` in AEP | D2, §10.2 |
 | Adapted skills | local `custom-skills/egm-*/`; AEP `skills/egm-*` wrappers | D3, D4 |
 | Gates | SkillSpector gate-scan; vendor-integrity; skills-freshness | D5, D4 |
@@ -102,7 +102,7 @@ Scale of the adopted set (verified 2026-11-06): 90-file bundle (2,810 lines of s
 - Local-only adoption until AEP need is proven — adopted in part: Phases 0–1 are local-only; the AEP PR (Phase 2) proceeds only on the §14 decision 5 pilot-value ruling.
 
 | Dimension | roundtable_review | EGM |
-|---|---|---|
+| --- | --- | --- |
 | Written standard | none | 5 standards files |
 | Configured reviewer panel | per-run reviewers + debate + judge | 10 named personas + synthesizer |
 | Fresh-context reviewers | yes | yes |
@@ -137,7 +137,7 @@ D-labels refer to §8.
   Skills + agents + standards + instructions total 2,810 lines.
 
 | Skill | Function |
-|---|---|
+| --- | --- |
 | `egm-brainstorm` (271 lines) | Multi-reviewer idea exploration → `concepts_brief.md` (written to the working directory alongside the brainstorm) |
 | `egm-draft` (321) | Brief → design document, section-by-section with user feedback |
 | `egm-review` (426) | Five-stage fresh-eyes design review |
@@ -186,7 +186,7 @@ Three mechanical adaptations, applied to every vendored-skills install (Path 2 a
 3. **Path resolution.** Rewrite mapping table (upstream reference → installed reference); `<bundle>` is `/home/hatch/workspace/egm` in Environment B, `<install-root>/egm` in Environment A Path 2, and `../../reference/elephant-goldfish-model` in the AEP wrappers:
 
 | Upstream reference | Installed reference |
-|---|---|
+| --- | --- |
 | `agents/` | `<bundle>/agents/` |
 | `resources/document_standards/` | `<bundle>/resources/document_standards/` |
 | `resources/execution_instructions.md` | `<bundle>/resources/execution_instructions.md` |
@@ -200,7 +200,7 @@ Record per-skill occurrence counts in the Phase 2 PR body (pilot counts for the 
 
 Mechanism: apply item 3 before item 2 (the routing line inserted in item 2 already contains `<bundle>/docs/muse.md`, so a later item-3 rewrite must not touch it), one `sed` per row in table order, and verify with §10.6 Verification check C1. Bind `<bundle>` first (Environment B: `bundle='~/workspace/egm'` — quoted, so the `~` form is preserved literally, not expanded; AEP wrappers: `bundle='../../reference/elephant-goldfish-model'`; Path 2: `bundle='<install-root>/egm'`), then run the literal commands below (one per row, `<file>` is the adapted `SKILL.md`; each skips already-prefixed lines; the `\|...|` address form is used because the bound value contains `/`, which would terminate a `/.../` address):
 
-```
+```text
 sed -i "\|$bundle/agents|!s|agents/|$bundle/agents/|g" <file>
 sed -i "\|$bundle/resources/document_standards|!s|resources/document_standards/|$bundle/resources/document_standards/|g" <file>
 sed -i "\|$bundle/resources/execution_instructions.md|!s|resources/execution_instructions.md|$bundle/resources/execution_instructions.md|g" <file>
@@ -224,7 +224,7 @@ Idempotency guard: before applying, assert the file contains neither the `<bundl
   the existing vendor pattern (`reference/esf`, `reference/neurostrata`,
   `reference/docs-mcp-server`, etc.). Covered by the `vendor-integrity` CI job once the tenth per-tree `run:` block lands in `.github/workflows/ci.yml` in the same PR (same `sha256sum -c` + unlisted-files + symlink pattern as the existing nine blocks); until that block lands the bundle has zero integrity verification. Generate `.github/vendor-elephant-goldfish-model.sha256` with `cd reference/elephant-goldfish-model && find . -type f | sort | xargs sha256sum > ../../.github/vendor-elephant-goldfish-model.sha256` (vendor line format `<sha256hex>  ./<path>`, sorted by path). Add the tenth `vendor-integrity` `run:` block to `.github/workflows/ci.yml` for `reference/elephant-goldfish-model`, inserted after the `humanizer` block (the `vendor-integrity` `run:` block for the existing `reference/humanizer/` tree) (pattern identical to the existing nine blocks, e.g. the esf block):
 
-  ```
+```text
       - run: |
           cd reference/elephant-goldfish-model
           sha256sum -c ../../.github/vendor-elephant-goldfish-model.sha256
@@ -236,6 +236,7 @@ Idempotency guard: before applying, assert the file contains neither the `<bundl
   ```
 
 Write `reference/elephant-goldfish-model/PROVENANCE.md` with the esf pattern's fields (`reference/esf/` is an existing vendored tree — the ESF reference implementation for the AEP factory lane, vendored from `pratik-saptarshi/esf`; its `PROVENANCE.md` is the pattern exemplar): Upstream URL, Pinned commit (+ subject), Snapshot date, License, Excluded from the vendor, Purpose, Updating, Update history. Order: write `PROVENANCE.md` first, then generate the `.sha256` file, so `PROVENANCE.md` itself is listed (esf precedent: `.github/vendor-esf.sha256` contains `./PROVENANCE.md`). Field values: Upstream URL `https://github.com/google/elephant-goldfish-model`; Pinned commit `e9e1f06a` + subject (copied from `git log -1 --format=%s e9e1f06a` at vendor time); Snapshot date `YYYY-MM-DD` (the vendor date); License `Apache-2.0`; Excluded from the vendor: `site/`, `scripts/`, `tests/`, `adapters/`, per-host plugin manifests, all other repo-root files; Purpose: 'Vendored EGM bundle for the AEP skill catalog — the 7 `egm-*` skills' personas, standards, and instructions (see §8 D4).' Updating: 'Re-vendor is a deliberate PR per the §10.2 cadence; the pin is re-checked on every sync (D1).' Update history: '2026-11-06: initial vendor at `e9e1f06a` (Phase 2 PR).'
+
 - **Wrappers:** `skills/egm-*/` — one thin directory per skill containing
   the adapted `SKILL.md` (D3) + `skill.yaml`, with paths pointing into
   `../../reference/elephant-goldfish-model/agents/` and
@@ -244,7 +245,6 @@ Write `reference/elephant-goldfish-model/PROVENANCE.md` with the esf pattern's f
 This wrapper→bundle coupling follows the existing `skills/craft-anything-protocol/` → `reference/craft-anything/` precedent (a skill referencing a vendored `reference/` tree under the sha256 vendor-integrity regime with a `PROVENANCE.md`); what is new is only the two-direction sync discipline for it, evaluated in §5. It is accepted explicitly here because the alternatives are worse (see §5: adapted skills inside the bundle tree break the pristine/verbatim rule; shared `skills/egm-agents/` + `skills/egm-resources/` dirs pollute the catalog; local-only adoption is adopted in part for Phases 0–1). The two-tree drift the coupling creates is managed by the §10.2 canonical direction (per artifact) and the §10.5 step 4 sync check.
 
 - **Alternative considered and rejected:** shared `skills/egm-agents/` + `skills/egm-resources/` dirs — evaluated in §5 (rejected: pollutes the skill catalog with non-skill directories). Two gates covering two layers (vendor-integrity for the bundle, skills-freshness for the wrappers) is cleaner separation.
-
 
 ### D5 — Every adapted skill passes the SkillSpector gate before install
 
@@ -264,7 +264,7 @@ unsupported on Muse — Claude tool allowlists do **not** restrict Muse
 reviewers, so do **not** assume Goldfish reviewers are read-only, even
 though every persona mandates read-only. There is no tool-restriction mechanism on Muse: 'agent tool projections' (see §1.1 Glossary) and 'Claude tool allowlists' (see §1.1 Glossary) do not exist here, so 'do not hand reviewers write tools' means only this — the brief names no write tool, and the reviewer is instructed read-only. Brief reviewers read-only, pass absolute paths to the persona / standards / target document, and never pass the parent transcript or private reasoning. Fresh context does not isolate the filesystem, configured memory services, or project instructions — reviewers must not retrieve conversation history or memory to supply missing design context. 'Configured memory services' (see §1.1 Glossary) and 'project instructions' (see §1.1 Glossary). NeuroStrata, the NeuroStrata MCP connector, and `AGENTS.md` are defined in the glossary (see §1.1 Glossary). 'Verify outputs' (see §1.1 Glossary). Detection is post-hoc: the snapshot diff detects a write after it happens; it does not prevent it. The round is fail-closed (a detected write fails the round), the filesystem is not — the residual write-before-detection risk stands (see §12). Before dispatch, snapshot each scope location by content hash with the `find` form (`find <dir> -type f -exec sha256sum {} + | sort > /tmp/egm-snapshot-<run>-<n>.sha256`, one file per location, `<n>` = 1–4 for the four locations in scope order, `<run>` is the round number, e.g. `r3`): (1) the target repo working tree, (2) `~/workspace/egm/`, (3) all seven `~/workspace/custom-skills/egm-*/` dirs together in one snapshot file (one `find` over the glob: `find ~/workspace/custom-skills/egm-*/ -type f -exec sha256sum {} + | sort`), (4) `~/workspace/plans/`. `git status --porcelain` is not a content hash and is not used as the snapshot command. Re-run the same commands to `-after` files (`/tmp/egm-snapshot-<run>-<n>-after.sha256`) and compare each pair with the exclusion procedure below; any output names a modified path. Exclusion procedure (per pair, with `<before>` the snapshot file and `<after>` the `-after` file): added paths are `comm -13 <(awk '{print $2}' <before> | sort) <(awk '{print $2}' <after> | sort)`; removed paths are `comm -23` with the same inputs; changed paths are those present in both files with a different hash, `join -j 2 <(sort -k2 <before>) <(sort -k2 <after>) | awk '$2 != $3 {print $1}'`. The after-diff ignores added paths under `~/workspace/plans/` (the round's own report and pilot-log entries); any removed or changed path anywhere, or any added path outside `~/workspace/plans/`, fails the round. Rollback re-vendor command: `rm -rf ~/workspace/egm/ && cp -r <repo>/reference/elephant-goldfish-model ~/workspace/egm/` (where `<repo>` is the AEP repo root; the `rm -rf` comes first because `cp -r` onto an existing destination nests rather than replaces), after `git checkout -- <paths>` restores the repo tree, where `<paths>` are the paths the diff names. Snapshot scope is the target repo working tree plus the local bundle (`~/workspace/egm/`), the adapted skills (`~/workspace/custom-skills/egm-*/`), and the reports directory (`~/workspace/plans/`). Before dispatch, copy the target document to a disposable per-round copy with the literal commands (`<target>` is the target document's absolute path):
 
-```
+```text
 mkdir -p /tmp/egm-review-<run> && cp <target> /tmp/egm-review-<run>/target.md
 ```
 
@@ -314,7 +314,6 @@ as `plugin:egm:egm-*`).
 
 **Native installs for the other harnesses:** commands from the bundle's `docs/harnesses.md` install table.
 
-
 - **Claude Code:** `claude plugin marketplace add google/elephant-goldfish-model && claude plugin install egm@egm`
 - **Antigravity CLI:** `agy plugin install https://github.com/google/elephant-goldfish-model`
 - **Antigravity App/IDEs:** run the `/plugin` slash command to open the plugin installer
@@ -350,7 +349,7 @@ Install steps:
 ### 9.4 Decision matrix
 
 | VM shape | Install path | Dispatch |
-|---|---|---|
+| --- | --- | --- |
 | Muse CLI present | Path 1 (plugin install) | Named `egm/egm-*` agents where spawn works; general-purpose fallback otherwise |
 | Another supported harness (Claude Code / Codex / Antigravity) | Path 1 (native install) | Per-harness subagent tool |
 | Headless / no harness plugin support | Path 2 (vendored skills, Muse only) | Harness subagent tool; general-purpose fallback |
@@ -379,7 +378,7 @@ Cursor and OpenCode are experimental / unverified upstream (§9.2) and are not s
 
 ### 10.2 Layout
 
-```
+```text
 ~/workspace/egm/                          # pristine bundle, verbatim upstream
   skills/ agents/ resources/ docs/ LICENSE plugin.json
   README.md       # local pin record, literal template (four lines): `Upstream: https://github.com/google/elephant-goldfish-model`, `Pinned SHA: e9e1f06a`, `Snapshot date: YYYY-MM-DD`, `License: Apache-2.0`. Written at install time; re-written on every re-sync (trigger: any upstream re-vendor or local adaptation change, per the §10.2 cadence).
@@ -406,7 +405,7 @@ Owner: the agent running the sync (the Elephant / main agent session that owns t
 Roles & dispatch:
 
 | Role | Actor |
-|---|---|
+| --- | --- |
 | Elephant | The session that owns the design doc and runs the loop (Environment B: the main agent; Environment A Path 1: the harness session that installed the plugin). |
 | Goldfish | One fresh-context subagent per reviewer (Environment B: `subagent.spawn` with a read-only brief; Path 1: named `egm/egm-*` agent where spawn works, else the general-purpose fallback). |
 | Driver | The Elephant acting in its driver capacity: checks every cited line exists in the target at the stated range and the named standard is the assigned one, enforces the readiness/section-approval gates, and stops and asks the owner on cap/churn. |
@@ -417,17 +416,19 @@ Direct dispatch from the Elephant is by design — flat dispatch keeps attributi
 #### 10.3.1 Reviewer brief
 
 - Reviewers: `subagent.spawn` with the persona file path and the verbatim prompt in the brief. Each reviewer's report must cite the persona by name, the target's line numbers for every finding, and the standard applied. The driver checks every cited line exists in the target at the stated range and the named standard is the assigned one; a report failing either check is incomplete — re-run once, then record the reviewer not run. The memory prohibition is enforced by the brief (it forbids retrieval) and checked by check (c): the Elephant at consolidation reads each finding's rationale and flags any that cites memory or conversation content (a quote of, or a paraphrase that depends on, prior context rather than the target document and its GoldfishContext); a flagged finding is discarded and the reviewer is not re-dispatched. Three checks are performed once each against the filed reports: (a) every cited line exists in the target at the stated range — performed by the driver at intake; (b) the named standard is the assigned one — performed by the driver at intake; (c) no finding's rationale cites memory or conversation content — performed by the Elephant at consolidation (it holds the conversation context, so it can judge whether a rationale quotes or paraphrases prior context). §10.5 step 3's questions ('did reviewers actually read persona/standards/target? were findings evidence-backed?') are answered by those three checks, not by additional checks. Wait for actual completion before consolidating; propagate failures and timeouts.
+
 #### 10.3.2 Readiness and section-approval gates
 
 Approval gates: preserve the skill's readiness and section-approval gates. Tool unavailability is not approval — ask one plain-text question and wait for the answer where no structured question tool exists.
 
 Readiness gate (fires before a review loop starts): the target document exists, reviewers and standards resolve to existing files, and GoldfishContext is provided (an empty list counts as provided only for a self-contained target; a design-doc review with external references must list them — this document's pilot supplied the companion doc (`~/workspace/plans/2026-11-06-egm-adoption-neurostrata.md`), README (`~/workspace/autonomous-engineering-platform/skills/README.md`), and repo clone (`~/workspace/autonomous-engineering-platform`)). The Elephant runs this check before asking the gate question, with the brief's absolute paths substituted for the placeholders:
 
-```
+```text
 for p in <target> <persona-paths...> <standard-paths...> <goldfishcontext-paths...>; do test -f "$p" || echo "MISSING: $p"; done
 ```
 
 Expected output: no `MISSING` lines; any `MISSING` line fails the readiness gate. Readiness-gate question (literal): 'Target document and reviewer panel verified — proceed with the review loop?' (options: proceed / stop). GoldfishContext: see §1.1 Glossary. Section-approval gate (fires after each drafted section in `egm-draft`): the `egm-draft` question, quoted verbatim — 'Drafted [Section Name] in design_draft.md. Please review. How would you like to proceed?' with options 'Approve [Section Name] and proceed to next section' / 'Request revisions to [Section Name] (via inline comments or write-in)'. Where no structured question tool exists, ask the same question as one plain-text question and wait for the answer. 'Approvals simulated up front' (upstream 2026-10-30 fixture) means the headless run pre-approved every gate instead of waiting for a human turn — interactive gates are therefore untested upstream and must be exercised by hand the first time (§9.5 step 3).
+
 #### 10.3.3 Overlap with existing tools
 
 - Overlap: EGM formalizes what three existing instruments do informally. `grilling` (`~/workspace/custom-skills/grilling/` — adversarial interview skill: relentless questioning of a plan or decision) and `roundtable_review` (`~/workspace/custom-skills/roundtable_review/` — multi-agent debate panel with claim verification and a judge's verdict) are single-session review tools with no written standard and no configured reviewer panel. The Ralph per-iteration verifier (Ralph is the autonomous loop system in `~/workspace/ralph/`; the verifier is an independent, non-blocking verification subagent at the end of every iteration, per the standing loop rule recorded in `~/workspace/custom-skills/ralph_loop/SKILL.md`, 'Independent verification (standing rule, 2026-10-17)') checks implementation against acceptance criteria, not design against a standard. EGM adds a written standard, a configured reviewer panel, and fresh-context reviewers. See the roundtable_review vs EGM delta table in §5. Named targets: `egm-drift-report` — the `skills/README.md` attribution table vs. the `skills/` tree (a verifiable drift surface: rows can be missing, stale, or point at removed skills). `egm-bootstrap` — `reference/` tree documentation (each tree currently carries only a `PROVENANCE.md`; no per-tree README describing what the tree is for). Both skills are deferred to Phase 1 with these named targets. Phase 1 runs `egm-drift-report` once against its named target (§11) and runs `egm-bootstrap` once against the `reference/` tree documentation, each producing a dated finding or a clean bill. Selection rule: use EGM when the artifact is a design document (or an upstream PR) that needs a written standard and a configured panel with filed reports; use `grilling` or `roundtable_review` for a fast single-session challenge with no filed report; use the Ralph verifier for implementation-against-acceptance-criteria checks, not design review; use `brainstorming` / `writing-plans` for pre-creative work and implementation-task planning, and `egm-brainstorm` / `egm-draft` only when the multi-reviewer panel and written standards are needed for those stages.
@@ -447,7 +448,7 @@ Bounds per review-loop run: at most 5 rounds (the upstream cap); at most 5 revie
 3. Pilot: run `egm-review-loop` + `egm-review` once against the Phase 0 pilot target (§14 decision 2). Invocation in Environment B: the Elephant invokes the skills explicitly via `subagent.spawn` briefs built per §10.3 (the pilot ran this way — the skills carry `disable-model-invocation: true` and are user-invocable only). Target: the content hash recorded in the pilot log before dispatch — `sha256sum <target>` output plus the recording date (`YYYY-MM-DD`) — (§14 decision 2); `~/workspace/plans/` is not a git repository, so no commit SHA exists for the pilot target. The Elephant audits its own consolidation in the same pass: it verifies each recorded severity change against the filed per-reviewer report (original severity matches, reason present) and that no severity change went unrecorded. Checks (a) and (b) are performed once, by the driver at intake; check (c) is performed once, by the Elephant at consolidation. No audit subagent is spawned: the check is a deterministic comparison of two artifacts the Elephant already holds (the filed per-reviewer reports and the consolidated report), and a fresh-context agent would add non-determinism to it. The §6/§10.4 spawn bound (at most 25 spawns per run) counts reviewer spawns only, and no other spawn is made by the loop.
 4. Sync check: copy the seven local `custom-skills/egm-*/SKILL.md` files and the seven `skill.yaml` files to a temp dir and compare per skill, as one compound command (run as a single invocation — `$tmp` is assigned and used inside it — with `<repo-root>` the AEP repo root, `~/workspace/autonomous-engineering-platform`):
 
-```
+```text
 tmp=$(mktemp -d) && cd ~/workspace/custom-skills && cp --parents egm-*/SKILL.md egm-*/skill.yaml "$tmp"/ && sed -i 's|~/workspace/egm|../../reference/elephant-goldfish-model|g' "$tmp"/egm-*/SKILL.md && cd ~/workspace/autonomous-engineering-platform && for s in "$tmp"/egm-*/; do diff -r "$s" "skills/$(basename "$s")" || exit 1; done
 ```
 
@@ -461,7 +462,7 @@ for f in skills/egm-*/SKILL.md; do grep -oE '\.\./\.\./reference/[A-Za-z0-9_./-]
 
 1. **C1 — Happy path:** for each of the 7 adapted `SKILL.md` files, every `agents/...`, `resources/...`, and `docs/...` reference resolves to an existing file or directory at the installed location (check by running, from the install location — Environment B: `<skills-dir>` is `~/workspace/custom-skills`, `<bundle>` is `~/workspace/egm`; Path 2: `<install-root>/skills` and `<install-root>/egm` respectively — `for f in <skills-dir>/egm-*/SKILL.md; do grep -oE '(agents|resources|docs)/[A-Za-z0-9_./-]*' "$f"; done | sed 's/\.$//' | sort -u | while read -r p; do test -e "<bundle>/$p" || echo "MISSING: $p"; done` — expected output: no `MISSING` lines. The pattern has no extension requirement, so bare directory references such as `agents/` and `resources/document_standards/` are covered; a trailing prose period is stripped before the check. 'By hand' is not an accepted method; a single dangling reference fails the check). Also assert, per adapted `SKILL.md`, the Muse routing line is present and no upstream-relative reference remains (run, from the install location, with `<skills-dir>` as in the C1 loop above):
 
-```
+```text
 for f in <skills-dir>/egm-*/SKILL.md; do grep -q 'In Muse, read .*docs/muse\.md first\.' "$f" || echo "MISSING routing line: $f"; ! grep -qE '(\.\./\.\./docs/|\$\{CLAUDE_PLUGIN_ROOT\}/docs/)' "$f" || echo "UPSTREAM-RELATIVE reference remains: $f"; done
 ```
 
@@ -471,7 +472,7 @@ for f in skills/egm-*/SKILL.md; do grep -oE '\.\./\.\./reference/[A-Za-z0-9_./-]
 ``` — expected output: no `MISSING` lines).
 3. **C3 — `skill.yaml` parses:** every `skill.yaml` parses as YAML and its `name` matches the `SKILL.md` frontmatter `name` (procedure: run with the §9.1 venv interpreter, `/tmp/egm-venv/bin/python3`, on the fresh VM — the literal loop below uses it; on Environment B, use the system `python3` only after `python3 -c "import yaml"` exits 0, and record the interpreter path in the pilot log:
 
-   ```
+```text
 for f in <skills-dir>/egm-*/skill.yaml; do skill="${f%/skill.yaml}/SKILL.md"; a=$(/tmp/egm-venv/bin/python3 -c "import yaml,sys; print(yaml.safe_load(open(sys.argv[1]))['name'])" "$f"); b=$(sed -n '/^---$/,/^---$/p' "$skill" | sed -n 's/^name: *//p' | head -1); [ "$a" = "$b" ] || { echo "MISMATCH: $f ($a) vs $skill ($b)"; exit 1; }; done
    ```
 
@@ -486,7 +487,7 @@ The pilot verifies the Muse routing line's target (`<bundle>/docs/muse.md`) reso
 ## 11. Rollout
 
 | Phase | Scope | Gate |
-|---|---|---|
+| --- | --- | --- |
 | 0 — Pilot (local only) | `egm-review-loop` + `egm-review`, bundle under `~/workspace/egm/`, 2 adapted skills | Gate-scan pass; pilot review completes with all reviewers run (0 not run), report filed, findings categorized; fails on any reviewer not run or no filed report |
 | 1 — Full local | Remaining 5 skills; `egm-drift-report` run once against the named target in the Gate column; `egm-bootstrap` run once against `reference/` tree documentation (see §10.3.3) | All 7 gate-scanned; drift report names its target in advance (`skills/README.md` attribution table vs. `skills/` tree) and produces a dated finding, or a clean bill stating the table's row coverage — every skill in the `skills/` tree accounted for as a row, a stated absence, or a stated mismatch, with the counts (rows compared vs skills in the tree) recorded; fails when no target is named. The drift report is filed at `~/workspace/plans/<date>-skills-attribution-drift.md` (the §7 pilot convention). |
 | 2 — AEP PR | `reference/elephant-goldfish-model/` + 7 `skills/egm-*` wrappers + scope/manifest/attribution updates — only after the §14 decision 5 pilot-value ruling; without it, Phase 2 installs the 2 review skills only. Branch: `chore/reference-vendor-elephant-goldfish-model` (per the repo's `type/scope-short-description` rule). | CI green (vendor-integrity + skills-freshness); Conventional Commits; owner review |

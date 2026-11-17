@@ -8,7 +8,7 @@ use** from agents. Metadata only — no credential values were read.
 ## What agents actually hold or use (2026-11-13)
 
 | Provider / credential | How agents touch it | Standing? | Broad? |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | GitHub (gh auth store, `~/.config/gh/hosts.yml`) | Exclusively via ghg pass-through: ghg classifies argv, reserves budget, execs the real `gh`; the token never transits the agent (panel R2, executed) | Yes (operator's PAT) | Scoped by ghg caps + branch protection; agent never possesses it |
 | SSH key (`~/.ssh/id_ed25519`) | git transport for clones/fetches | Yes | Single key, repo-scoped by GitHub |
 | Platform connectors (Gmail, Google Workspace, Plaid, Muse Mail, 1Password, Shop Pay, Tailscale, …) | OAuth/connection managed by the platform; agents call connector tools and never see credentials | n/a | Per-connector scopes |

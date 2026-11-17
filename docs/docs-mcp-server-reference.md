@@ -9,7 +9,7 @@ Vendored snapshot: [PROVENANCE.md](../reference/docs-mcp-server/PROVENANCE.md) �
 ## Mapping to the AEP loop
 
 | docs-mcp-server | AEP (this environment) |
-|---|---|
+| --- | --- |
 | version-matched documentation index: answers grounded in the exact library version in use, not the model's memory of any version | evidence discipline: claims grounded in the checked source at the pinned commit, not in a summary or a recollection |
 | fetch → scrape → chunk → embed → store pipeline with per-source refresh | vendored snapshots pinned by sha256 manifest; content changes only by re-vendoring to a new pin |
 | one index served over MCP, CLI, and web UI from the same store | NeuroStrata as the single memory store behind every lane, with files as the pointer layer |
