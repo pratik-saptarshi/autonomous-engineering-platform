@@ -4,7 +4,7 @@
 
 **Goal:** Add a session profiler AEP can trust: opencode sessions become schema-v2 records that the byte-pinned upstream renderer reads, with correct context nesting and token spend — and with a hard stop before vendoring if the translation cannot be faithful.
 
-**Architecture:** The vendored tree (`reference/harness-profiler/`) is never edited and never reimplemented. AEP writes a **translator**: opencode events → the Claude-shaped payload that the pin's own `buildRecord` consumes, then `serialize` for the line, then `mask` for secrets. Records carry `context_tokens` and `child_spend` because the renderer derives spend only from those (`hp.js:318-332`). A shell wrapper exposes `tree`; a Go subcommand is deferred.
+**Architecture:** The vendored tree (`reference/harness-profiler/`) is never edited and never reimplemented. AEP writes a **translator**: opencode events → the Claude-shaped payload that the pin's own `buildRecord` consumes, then `serialize` for the line, then `mask` for secrets. Records carry `context_tokens` and `child_spend` because the renderer derives spend from those, or from a transcript when a record names one (`hp.js:318-332`). A shell wrapper exposes `tree`; a Go subcommand is deferred.
 
 **Tech Stack:** Node 18+ CommonJS (`node --test`), opencode v2.3 event API, Bash wrapper, sha256 vendor checks.
 
