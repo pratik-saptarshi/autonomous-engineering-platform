@@ -234,6 +234,47 @@ test('E7b: step tokens join a specific call by assistantMessageID (non-zero cach
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('E8i: a background child that fails before any tokens still ends at its failure', async () => {
+  const dir = scratch();
+  const data = fixture('subagent.json');
+  // No token-bearing child step: with no spend entry, the terminal event must
+  // still end the call. Otherwise the pinned forest keeps it `running` with
+  // only its launch latency, forever.
+  data.events = data.events.filter(
+    (event) => !(event.type === 'session.step.ended' && event.data.sessionID === CHILD),
+  );
+  data.events.push(
+    { id: 'evt_child_failed', created: 1794932006000, type: 'session.execution.failed', data: { sessionID: CHILD } },
+    { id: 'evt_root_idle', created: 1794932007000, type: 'session.execution.succeeded', data: { sessionID: ROOT } },
+  );
+  const state = handle.createState({
+    cwd: dir,
+    env: enabled(dir),
+    sessionGet: (id) => ({ id, parentID: id === CHILD ? ROOT : undefined }),
+  });
+  const records = await feed(state, data.events);
+
+  const stop = records.find((record) => record.event === 'SubagentStop' && record.agent_id === CHILD);
+  assert.ok(stop, 'a failed child with no token-bearing step got no SubagentStop record');
+  assert.equal(stop.spend, undefined, 'the stop record must not invent a spend entry');
+
+  const forest = hp.buildForest(records);
+  const nodes = [];
+  const walk = (list) => {
+    for (const node of list) {
+      nodes.push(node);
+      walk(node.children);
+    }
+  };
+  walk(forest);
+  const node = nodes.find((candidate) => candidate.record && candidate.record.tool_use_id === 'call_spawn');
+  assert.ok(node, 'the spawn call is not in the forest');
+  assert.notEqual(node.record.running, true, 'the ended child still renders as running');
+  const start = Date.parse(node.record.at) - (node.record.duration_ms || 0);
+  assert.equal(node.record.duration_ms, Date.parse(stop.at) - start);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('E7c: a child turn-end records its spend so the live tree has no blank child column', async () => {
   const dir = scratch();
   const data = fixture('subagent.json');

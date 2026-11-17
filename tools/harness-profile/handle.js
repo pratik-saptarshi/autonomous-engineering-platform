@@ -831,7 +831,6 @@ function flushSession(state, tree, sessionId) {
 
 function buildChildStopRecord(state, tree, childSessionId, at) {
   const spend = tree.t.spend.get(childSessionId);
-  if (!spend) return null;
   const payload = {
     hook_event_name: 'SubagentStop',
     session_id: childSessionId,
@@ -839,7 +838,12 @@ function buildChildStopRecord(state, tree, childSessionId, at) {
     cwd: state.cwd,
   };
   const record = hp.buildEventRecord(payload, translate.HARNESS, new Date(at || tree.t.lastAt || Date.now()));
-  record.spend = { ...spend };
+  // Spend is optional: a child that fails or is interrupted before its first
+  // token-bearing step has none, and its terminal event must still end the
+  // call (hp.js withStop) — otherwise the renderer keeps it `running` with
+  // only its launch latency, forever. `contextSpend` reads `stop.spend` when
+  // present and ignores its absence, so omitting it is safe.
+  if (spend) record.spend = { ...spend };
   return record;
 }
 
