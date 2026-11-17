@@ -1,1 +1,4 @@
 dist/
+
+# .superpowers/ — local SDD workspace, never committed
+.superpowers/

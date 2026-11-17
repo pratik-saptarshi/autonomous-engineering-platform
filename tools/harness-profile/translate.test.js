@@ -61,7 +61,9 @@ test('E1: a call record carries the pin schema fields from the completion event'
   assert.equal(shell.duration_ms, 1794931114300 - 1794931110200);
   assert.equal(shell.tool, 'shell');
   assert.equal(shell.ok, true);
-  assert.ok(Buffer.byteLength(hp.serialize(shell)) <= 4096, 'serialize keeps a record under 4096 bytes');
+  const line = hp.serialize(shell);
+  assert.ok(Buffer.byteLength(line) < 300, 'a fixture-sized record needs no line fitting');
+  assert.equal(shell.args, '{"command":"echo hi"}', 'the pin did not truncate args');
 
   const failed = call(records, 'call_read');
   assert.equal(failed.ok, false);
@@ -76,7 +78,7 @@ test('E2: skill maps to Tool "Skill" and subagent to "Agent"', () => {
   const skill = call(records, 'call_skill');
   assert.equal(skill.tool, 'Skill');
   assert.equal(skill.name, 'braindump');
-  assert.equal(skill.child_agent_id, undefined, 'an inline skill starts no context');
+  assert.ok(!('child_agent_id' in skill), 'an inline skill starts no context');
 
   const nested = trace('subagent.json', { parents: { [CHILD]: ROOT } });
   const spawn = call(nested.records, 'call_spawn');
@@ -131,6 +133,42 @@ test('E4b: child_spend rides the spawning call and a SubagentStop carries root s
   const spend = hp.contextSpend([...records, stop]);
   assert.deepEqual(spend.get('main'), { new: 170, cached: 4150, out: 20, calls: 2 });
   assert.deepEqual(spend.get(CHILD), { new: 230, cached: 1100, out: 50, calls: 2 });
+});
+
+test('E1b: a credential literal in a tool argument is redacted before the pin sees it', () => {
+  const { records } = trace('secrets.json');
+  const record = call(records, 'call_secret');
+
+  assert.ok(!record.args.includes('GITHUB_TOKEN=x1'), 'the GITHUB_TOKEN value is gone');
+  assert.ok(!record.args.includes('AWS_SECRET_ACCESS_KEY=x2'), 'the AWS_SECRET_ACCESS_KEY value is gone');
+  assert.ok(record.args.includes('GITHUB_TOKEN=[redacted]'), 'the prefixed-name rule fired');
+  assert.ok(record.args.includes('AWS_SECRET_ACCESS_KEY=[redacted]'), 'the _-prefixed name is redacted too');
+  assert.ok(record.args.split('[redacted]').length - 1 >= 3, 'the Authorization/Bearer value is redacted too');
+  assert.ok(!record.args.includes('Bearer fakebear'), 'no Bearer value survives the pin');
+  assert.equal(record.context_tokens, 10 + 100 + 0);
+});
+
+test('redactSecrets masks only values behind a prefixed credential name', () => {
+  const text =
+    'GITHUB_TOKEN=x1 aws_secret_access_key=x2 ' +
+    'client_secret: x3 NEUROSTRATA_API_KEY=x4 PATH=/usr/bin';
+  const redacted = translate.redactSecrets(text);
+
+  for (const planted of ['x1', 'x2', 'x3', 'x4']) {
+    assert.ok(!redacted.includes(planted), `${planted} survived`);
+  }
+  assert.match(redacted, /GITHUB_TOKEN=\[redacted\]/);
+  assert.match(redacted, /aws_secret_access_key=\[redacted\]/);
+  assert.match(redacted, /client_secret: \[redacted\]/);
+  assert.match(redacted, /NEUROSTRATA_API_KEY=\[redacted\]/);
+  assert.match(redacted, /PATH=\/usr\/bin/, 'a non-credential name is left alone');
+
+  // Nested strings are visited; every other value survives untouched.
+  assert.deepEqual(translate.redactSecrets({ command: 'TOKEN=x5', count: 2, meta: { ok: true } }), {
+    command: 'TOKEN=[redacted]',
+    count: 2,
+    meta: { ok: true },
+  });
 });
 
 test('writeRecord appends every context to the root session file, via the pin serialize', () => {

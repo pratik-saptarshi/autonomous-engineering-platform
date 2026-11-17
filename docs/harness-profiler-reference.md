@@ -39,7 +39,7 @@ The adoption writes a translator (opencode events → the payload `buildRecord` 
 ## Caveats carried by the adoption
 
 - The pin is a **Claude Code** profiler. opencode support is the translator's job, and only the five fields the record needs are mapped.
-- `mask` covers three patterns; `GITHUB_TOKEN=`, `AWS_SECRET_ACCESS_KEY=`, `client_secret=`, and `--password x` shapes are among those that pass through. The translator adds one prefixed-name rule, and the gap is documented rather than papered over.
+- `mask` covers three patterns; `GITHUB_TOKEN=`, `AWS_SECRET_ACCESS_KEY=`, `client_secret=`, and `--password x` shapes are among those that pass through. The translator adds one prefixed-name rule — `redactSecrets` in `tools/harness-profile/translate.js` replaces the value of any name ending in `SECRET`, `TOKEN`, `PASSWORD`, `PASSWD`, `ACCESS_KEY`, `API_KEY` or `CREDENTIAL` when followed by `:` or `=` — and the pin's `mask` then runs on the translated text. `--password x` (space-separated, no `=` or `:`) is still exposed; that gap is carried to Phase E. The translator's fixtures plant deliberately inert short values (`GITHUB_TOKEN=x1`, `Authorization: Bearer fakebear`) so they exercise the rule without tripping the `security` job's gitleaks scan — no allowlist entry covers our own fixtures.
 - The renderer derives spend from `context_tokens`, `child_spend` / `SubagentStop.spend`, **and** — when a record names a transcript file — the transcript read through `spentTokens` (`hp.js:318-332`). A translator that omits the fields *and* the transcript path renders empty cost columns; the three sources are not interchangeable.
 
 ## Operator doc

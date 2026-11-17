@@ -11,9 +11,15 @@
 //   session.tool.success/failed the completion; no duration field anywhere
 //   session.step.ended          per-message tokens; lands after that step's calls
 //
-// Because a step's tokens arrive after its calls, state is filled first and
-// records are built from it. `ingest` is idempotent per event id, so a capture
-// handler may call `buildRecord` on every event and keep the records it returns.
+// Because a step's tokens arrive after its calls, `context_tokens` is unknown
+// when the call ends: a record must be built at or after that step's
+// `session.step.ended`. `buildRecord` re-runs `ingest` (idempotent per event id)
+// and then reads the step state, so a handler buffers a step's call records and
+// builds them once the step end arrives. The tests' `trace()` pre-ingests every
+// event to satisfy this ordering before building.
+//
+// Masking: the pin's `mask` runs inside `buildRecord`. One additive rule,
+// `redactSecrets`, runs on the payload strings first (see its comment).
 
 const fs = require('fs');
 const path = require('path');
@@ -256,13 +262,33 @@ function toPayload(event, state) {
   return payload;
 }
 
+// The pin's `mask` (hp.js:42-46) needs a word boundary in front of the key word;
+// `_` is a word character, so `GITHUB_TOKEN=`, `AWS_SECRET_ACCESS_KEY=` and
+// `NEUROSTRATA_API_KEY=` never reach it. One additive rule: when a credential
+// name ends in a secret-ish word, keep the name and the separator and drop the
+// value. The value stops at whitespace, quotes or JSON punctuation so a nested
+// string is not eaten whole. The pin's own `mask` still runs afterwards.
+const PREFIXED_SECRET =
+  /([A-Za-z0-9_]*(?:SECRET|TOKEN|PASSWORD|PASSWD|API_?KEY|ACCESS_KEY|CREDENTIAL)[A-Za-z0-9_]*["']?\s*[:=]\s*["']?)[^\s"'&,}]+/gi;
+
+function redactSecrets(value) {
+  if (typeof value === 'string') return value.replace(PREFIXED_SECRET, '$1[redacted]');
+  if (Array.isArray(value)) return value.map(redactSecrets);
+  if (value && typeof value === 'object') {
+    const out = {};
+    for (const [key, item] of Object.entries(value)) out[key] = redactSecrets(item);
+    return out;
+  }
+  return value;
+}
+
 // One completion event -> one record. Null when the event is not a call end.
 function buildRecord(event, state) {
   ingest(event, state);
   const payload = toPayload(event, state);
   if (!payload) return null;
 
-  const record = hp.buildRecord(payload, HARNESS, new Date(event.created));
+  const record = hp.buildRecord(redactSecrets(payload), HARNESS, new Date(event.created));
 
   const data = event.data || {};
   const call = state.calls.get(payload.tool_use_id) || {};
@@ -304,6 +330,7 @@ module.exports = {
   createState,
   ingest,
   noteChild,
+  redactSecrets,
   toPayload,
   buildRecord,
   buildStopRecord,
