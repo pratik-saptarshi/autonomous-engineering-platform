@@ -790,3 +790,33 @@ test('E10h: a default symlink into a nested checkout is judged by that checkout'
   assert.ok(fs.readdirSync(path.join(inner, 'traces')).length > 0, 'nothing was written to the ignored target');
   fs.rmSync(outer, { recursive: true, force: true });
 });
+
+test('E10i: the default destination verdict is computed once per process', async () => {
+  // It costs a `git` invocation, so it must not run per event. The cache also
+  // means a destination refused at startup stays refused: a mid-process repair
+  // is not silently trusted (a fresh process picks it up).
+  const root = gitRepo();
+  const cwd = path.join(root, 'work');
+  fs.mkdirSync(cwd, { recursive: true });
+  fs.mkdirSync(path.join(root, 'traces'), { recursive: true });
+  fs.symlinkSync(path.join(root, 'traces'), path.join(root, '.harness-profile'));
+  fs.writeFileSync(path.join(root, '.gitignore'), 'dist/\n');
+
+  const state = handle.createState({ cwd, env: enabled() });
+  const first = await feed(state, fixture('tool-calls.json').events);
+  assert.equal(first.length, 0, 'the unignored target was accepted');
+  assert.deepEqual(fs.readdirSync(path.join(root, 'traces')), []);
+
+  // Repair the repository, then keep feeding the SAME process: the cached
+  // refusal stands.
+  fs.writeFileSync(path.join(root, '.gitignore'), 'dist/\ntraces/\n');
+  const second = await feed(state, fixture('tool-calls.json').events);
+  assert.equal(second.length, 0, 'the cached verdict was recomputed mid-process');
+  assert.deepEqual(fs.readdirSync(path.join(root, 'traces')), []);
+
+  // A fresh process sees the repaired repository.
+  const fresh = handle.createState({ cwd, env: enabled() });
+  const third = await feed(fresh, fixture('tool-calls.json').events);
+  assert.ok(third.length > 0, 'a fresh process did not accept the repaired destination');
+  fs.rmSync(root, { recursive: true, force: true });
+});

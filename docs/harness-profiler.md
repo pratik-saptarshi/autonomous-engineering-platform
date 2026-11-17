@@ -242,7 +242,8 @@ refusal by pre-creating `.harness-profile/` in an unprotected tree: the next
 `git add -A` would commit it.
 
 The in-repository check asks **git itself** (`git check-ignore`) whether the
-resolved destination is ignored, so nested `.gitignore` files, negations such
+resolved destination is ignored, once per process per destination (the answer
+cannot change without a repair the hook has no way to notice), so nested `.gitignore` files, negations such
 as `!trace[s]/`, character classes and global excludes are evaluated with git's
 own precedence rather than a reimplementation. Any non-ignored answer, and any
 failure to obtain one (including git being unavailable), refuses the

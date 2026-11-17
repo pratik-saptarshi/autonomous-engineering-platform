@@ -553,6 +553,33 @@ function hasExplicitDir(state) {
 //
 // The refusal is recorded once per state, naming the reason, so a plugin can
 // surface it; it is not an error and never fails the session.
+// The implicit destination's verdict, computed once per process: the resolved
+// target decides, and the repository that contains it (innermost wins) decides
+// whether that target is ignored. A nested checkout is opaque to its outer one,
+// and another checkout has its own work tree, so neither is a substitute.
+function judgeImplicitDestination(state) {
+  const dir = traceDirOf(state);
+  const resolved = resolvedDestination(dir);
+  if (!resolved) {
+    return {
+      ok: false,
+      warning: `trace capture skipped: the default destination ${dir} cannot be resolved to a real path `
+        + '(symlink loop or unreadable component), so the trace cannot be shown to be excluded from git; '
+        + `point ${DIR} at a resolvable directory and retry`,
+    };
+  }
+  const destRoot = gitRoot(resolved);
+  if (!destRoot) return { ok: true }; // outside every work tree
+  const destRootReal = resolvedDestination(destRoot) || destRoot;
+  if (gitIgnored(destRootReal, resolved)) return { ok: true };
+  return {
+    ok: false,
+    warning: `trace capture skipped: the default destination ${dir} resolves to ${resolved}, which is inside `
+      + `the git work tree at ${destRoot} but not ignored there, so the trace would be committable in that `
+      + `repository; add an ignore rule for it there, or point ${DIR} at a directory outside every repository`,
+  };
+}
+
 function protectedDestination(state) {
   if (state.protection === undefined) {
     state.protection = state.gitRoot
@@ -600,34 +627,18 @@ function protectedDestination(state) {
     return false;
   }
   if (state.protection.ok) {
-    // The default destination is `<git root>/.harness-profile`, and a symlink
-    // there is judged by its target: excluding the link's name does not exclude
-    // the file it resolves to. An explicit destination already gets this check;
-    // the implicit one must not be the weaker path.
-    const dir = traceDirOf(state);
-    const resolved = resolvedDestination(dir);
-    if (!resolved) {
-      const warning =
-        `trace capture skipped: the default destination ${dir} cannot be resolved to a real path `
-        + '(symlink loop or unreadable component), so the trace cannot be shown to be excluded from git; '
-        + `point ${DIR} at a resolvable directory and retry`;
-      if (!state.warnings.includes(warning)) state.warnings.push(warning);
-      return false;
+    // The default destination is `<git root>/.harness-profile`; a symlink there
+    // is judged by its target, because excluding the link's name does not
+    // exclude the file it resolves to. The verdict is computed once per process
+    // — it costs a `git` invocation and the answer cannot change mid-process
+    // without a repair this hook has no way to notice anyway.
+    if (state.implicitVerdict === undefined) {
+      state.implicitVerdict = judgeImplicitDestination(state);
     }
-    // Judge by the repository that actually contains the target — the
-    // innermost one. A nested checkout is opaque to its outer repository, so
-    // asking the session's repo (or the outer one) would approve a path the
-    // destination's own work tree can commit.
-    const destRoot = gitRoot(resolved);
-    if (!destRoot) return true; // outside every work tree
-    const destRootReal = resolvedDestination(destRoot) || destRoot;
-    if (gitIgnored(destRootReal, resolved)) return true;
-    const rel = relativePath(destRootReal, resolved) || path.basename(resolved);
-    const warning =
-      `trace capture skipped: the default destination ${dir} resolves to ${resolved}, which is inside the `
-      + `git work tree at ${destRoot} but not ignored there, so the trace would be committable in that `
-      + `repository; add an ignore rule for it there, or point ${DIR} at a directory outside every repository`;
-    if (!state.warnings.includes(warning)) state.warnings.push(warning);
+    if (state.implicitVerdict.ok) return true;
+    if (state.implicitVerdict.warning && !state.warnings.includes(state.implicitVerdict.warning)) {
+      state.warnings.push(state.implicitVerdict.warning);
+    }
     return false;
   }
   const warning =
