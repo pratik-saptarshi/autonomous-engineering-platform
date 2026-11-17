@@ -141,14 +141,17 @@ test('E1b: a credential literal in a tool argument is redacted before the pin se
 
   assert.ok(!record.args.includes('GITHUB_TOKEN=x1'), 'the GITHUB_TOKEN value is gone');
   assert.ok(!record.args.includes('AWS_SECRET_ACCESS_KEY=x2'), 'the AWS_SECRET_ACCESS_KEY value is gone');
-  assert.ok(record.args.includes('GITHUB_TOKEN=[redacted]'), 'the prefixed-name rule fired');
+  assert.ok(record.args.includes('GITHUB_TOKEN=[redacted]'), 'the env-style rule fired');
   assert.ok(record.args.includes('AWS_SECRET_ACCESS_KEY=[redacted]'), 'the _-prefixed name is redacted too');
   assert.ok(record.args.split('[redacted]').length - 1 >= 3, 'the Authorization/Bearer value is redacted too');
   assert.ok(!record.args.includes('Bearer fakebear'), 'no Bearer value survives the pin');
+  // The profiler's own numbers are not credentials: no rule touches them.
+  assert.ok(record.args.includes('input_tokens=109326'), 'input_tokens survives masking');
+  assert.ok(record.args.includes('output_tokens=42'), 'output_tokens survives masking');
   assert.equal(record.context_tokens, 10 + 100 + 0);
 });
 
-test('redactSecrets masks only values behind a prefixed credential name', () => {
+test('redactSecrets masks the value behind a credential-shaped key', () => {
   const text =
     'GITHUB_TOKEN=x1 aws_secret_access_key=x2 ' +
     'client_secret: x3 NEUROSTRATA_API_KEY=x4 PATH=/usr/bin';
@@ -163,12 +166,54 @@ test('redactSecrets masks only values behind a prefixed credential name', () => 
   assert.match(redacted, /NEUROSTRATA_API_KEY=\[redacted\]/);
   assert.match(redacted, /PATH=\/usr\/bin/, 'a non-credential name is left alone');
 
+  // CLI style, `=` and whitespace alike.
+  assert.equal(translate.redactSecrets('--password x4'), '--password [redacted]');
+  assert.equal(translate.redactSecrets('--token=x5'), '--token=[redacted]');
+
+  // JSON-shaped args keep their quoting and their neighbours: only the value goes.
+  assert.equal(
+    translate.redactSecrets('{"GITHUB_TOKEN":"x6","b":2}'),
+    '{"GITHUB_TOKEN":"[redacted]","b":2}',
+  );
+  assert.equal(
+    translate.redactSecrets('{"env":{"AWS_SECRET_ACCESS_KEY":"x7"},"cwd":"/w"}'),
+    '{"env":{"AWS_SECRET_ACCESS_KEY":"[redacted]"},"cwd":"/w"}',
+  );
+
   // Nested strings are visited; every other value survives untouched.
-  assert.deepEqual(translate.redactSecrets({ command: 'TOKEN=x5', count: 2, meta: { ok: true } }), {
+  assert.deepEqual(translate.redactSecrets({ command: 'TOKEN=x8', count: 2, meta: { ok: true } }), {
     command: 'TOKEN=[redacted]',
     count: 2,
     meta: { ok: true },
   });
+});
+
+test('redactSecrets spares the token-count and tokenizer keys a profiler keeps', () => {
+  // These are the numbers the profile exists to report. The old "name contains
+  // TOKEN" rule redacted all four.
+  for (const kept of ['input_tokens=109326', 'output_tokens=42', 'total_tokens=5', 'tokenizer=cl100k']) {
+    assert.equal(translate.redactSecrets(kept), kept);
+  }
+  // Same reason, nearby shapes that must not trip the rules either.
+  for (const kept of ['max_tokens=4096', 'tokens_per_sec=12', 'PATH=/usr/bin']) {
+    assert.equal(translate.redactSecrets(kept), kept);
+  }
+  // The plural is what spares them: the singular suffix is still a credential.
+  assert.equal(translate.redactSecrets('auth_token=abc'), 'auth_token=[redacted]');
+  assert.equal(translate.redactSecrets('input_tokens=5 auth_token=abc'), 'input_tokens=5 auth_token=[redacted]');
+});
+
+test('redactSecrets stays linear on a pathological single-token blob', () => {
+  // The previous pattern's unbounded name runs backtracked cubically here:
+  // 8 KB of repeated `TOKEN` took 14.4 s inside a capture hook. Bounded runs
+  // measure ~0.02 ms; the budget only has to catch a return to cubic behaviour.
+  const blob = 'TOKEN'.repeat(1638); // 8190 bytes, no separator anywhere
+  const started = process.hrtime.bigint();
+  const redacted = translate.redactSecrets(blob);
+  const ms = Number(process.hrtime.bigint() - started) / 1e6;
+
+  assert.equal(redacted, blob, 'nothing in the blob is a key, so nothing changes');
+  assert.ok(ms < 2000, `8 KB blob took ${ms.toFixed(1)} ms — the name runs are unbounded again`);
 });
 
 test('writeRecord appends every context to the root session file, via the pin serialize', () => {

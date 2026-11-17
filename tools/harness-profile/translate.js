@@ -18,7 +18,7 @@
 // builds them once the step end arrives. The tests' `trace()` pre-ingests every
 // event to satisfy this ordering before building.
 //
-// Masking: the pin's `mask` runs inside `buildRecord`. One additive rule,
+// Masking: the pin's `mask` runs inside `buildRecord`. One additive step,
 // `redactSecrets`, runs on the payload strings first (see its comment).
 
 const fs = require('fs');
@@ -264,15 +264,42 @@ function toPayload(event, state) {
 
 // The pin's `mask` (hp.js:42-46) needs a word boundary in front of the key word;
 // `_` is a word character, so `GITHUB_TOKEN=`, `AWS_SECRET_ACCESS_KEY=` and
-// `NEUROSTRATA_API_KEY=` never reach it. One additive rule: when a credential
-// name ends in a secret-ish word, keep the name and the separator and drop the
-// value. The value stops at whitespace, quotes or JSON punctuation so a nested
+// `NEUROSTRATA_API_KEY=` never reach it. Three additive rules cover the shapes
+// that matter. Each keeps the key name and separator and replaces only the
+// value; the value stops at whitespace, quotes or JSON punctuation so a nested
 // string is not eaten whole. The pin's own `mask` still runs afterwards.
-const PREFIXED_SECRET =
-  /([A-Za-z0-9_]*(?:SECRET|TOKEN|PASSWORD|PASSWD|API_?KEY|ACCESS_KEY|CREDENTIAL)[A-Za-z0-9_]*["']?\s*[:=]\s*["']?)[^\s"'&,}]+/gi;
+//
+// Every name quantifier is bounded. A name run open at both ends of the
+// alternation (`[A-Za-z0-9_]*(?:TOKEN|...)[A-Za-z0-9_]*`) backtracks cubically
+// on one long token blob with no separator: 8 KB of repeated `TOKEN` measured
+// 14.4 s, and this runs inside a capture hook. Bounded runs (`{0,63}`) take
+// 0.02 ms on the same blob, and realistic input was always fast either way.
+//
+// The rules are deliberately intent-specific rather than "the name contains a
+// secret word", which over-redacted the very numbers a profiler exists to keep:
+//   ENV_SECRET     UPPERCASE env-style names carrying a secret word anywhere
+//   SUFFIX_SECRET  any name *ending* in _secret/_token/... (case-insensitive)
+//   CLI_SECRET     --password/--token/--secret then `=` or whitespace
+// `input_tokens=`, `output_tokens=`, `total_tokens=` and `tokenizer=` survive
+// because ENV_SECRET is case-sensitive (it needs an uppercase start; the leading
+// run may be empty so a bare `TOKEN=` is still a credential) and SUFFIX_SECRET
+// needs the singular `_token` immediately before the separator, which `_tokens`
+// and `tokenizer` do not have. An all-caps `INPUT_TOKENS=` does match
+// ENV_SECRET; that is accepted, since uppercase token counts are rare and a miss
+// costs more than an over-redaction.
+const ENV_SECRET =
+  /(\b[A-Z0-9_]{0,63}(?:SECRET|TOKEN|PASSWORD|PASSWD|API_?KEY|ACCESS_KEY|CREDENTIAL)[A-Z0-9_]{0,63}["']?\s*[:=]\s*["']?)[^\s"'&,}]+/g;
+const SUFFIX_SECRET =
+  /(\b\w{0,32}(?:_secret|_token|_password|_passwd|_api_?key|_access_key)["']?\s*[:=]\s*["']?)[^\s"'&,}]+/gi;
+const CLI_SECRET = /(--(?:password|token|secret)[=\s]+)[^\s"'&,}]+/gi;
 
 function redactSecrets(value) {
-  if (typeof value === 'string') return value.replace(PREFIXED_SECRET, '$1[redacted]');
+  if (typeof value === 'string') {
+    return value
+      .replace(ENV_SECRET, '$1[redacted]')
+      .replace(SUFFIX_SECRET, '$1[redacted]')
+      .replace(CLI_SECRET, '$1[redacted]');
+  }
   if (Array.isArray(value)) return value.map(redactSecrets);
   if (value && typeof value === 'object') {
     const out = {};
