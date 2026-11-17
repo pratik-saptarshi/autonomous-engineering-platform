@@ -1,0 +1,17 @@
+{
+  "name": "harness-profiler",
+  "owner": {
+    "name": "Aleksandr Furmanov",
+    "url": "https://afurmanov.com"
+  },
+  "metadata": {
+    "description": "A profiler for your agent harness."
+  },
+  "plugins": [
+    {
+      "name": "harness-profiler",
+      "source": "./plugin",
+      "description": "Records every skill, agent, and tool call of a Claude Code session, and shows which calls share a context and what each one costs in tokens."
+    }
+  ]
+}

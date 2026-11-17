@@ -1,0 +1,1 @@
+Use the validator skill again, then reply with the line of index.html that has id="search".
