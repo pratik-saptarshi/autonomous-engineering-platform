@@ -47,6 +47,34 @@ function scratch(prefix = 'hp-handle-dir-') {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
 
+// Drive one plugin `setup()` against `dir` and resolve once its subscription
+// has consumed `events`. The plugin module is ESM and cached per process, which
+// is the scope its dedupe promises ("once per process"), so repeated calls here
+// exercise the same module-level state a long-lived `opencode serve` would.
+async function drivePlugin(dir, events, write) {
+  const module = await import(pathToFileURL(PLUGIN).href);
+  let delivered = 0;
+  const ctx = {
+    directory: dir,
+    event: {
+      subscribe: () => (async function* stream() {
+        for (const event of events) {
+          delivered += 1;
+          yield event;
+        }
+      })(),
+    },
+    session: { get: async ({ sessionID }) => ({ id: sessionID }) },
+  };
+  const dispose = await module.default.setup(ctx, { write });
+  for (let i = 0; i < 100 && delivered < events.length; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await dispose();
+  return delivered;
+}
+
 function enabled(dir, extra = {}) {
   return { AEP_HARNESS_PROFILE: '1', AEP_HARNESS_PROFILE_DIR: dir, ...extra };
 }
@@ -582,37 +610,86 @@ test('E14d: the plugin surfaces capture refusals once per process', async () => 
     writes.push(String(chunk));
     return true;
   };
-  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   try {
-    const module = await import(pathToFileURL(PLUGIN).href);
     const events = [
       { type: 'session.created', data: { sessionID: 'ses_refused' } },
       { type: 'session.created', data: { sessionID: 'ses_refused' } },
       { type: 'session.created', data: { sessionID: 'ses_refused' } },
     ];
-    let delivered = 0;
-    const ctx = {
-      directory: dir,
-      event: {
-        subscribe: () => (async function* stream() {
-          for (const event of events) {
-            delivered += 1;
-            yield event;
-          }
-        })(),
-      },
-      session: { get: async ({ sessionID }) => ({ id: sessionID }) },
-    };
-    const dispose = await module.default.setup(ctx, { write });
-    for (let i = 0; i < 100 && delivered < events.length; i += 1) await sleep(10);
-    await sleep(50);
-    await dispose();
+    await drivePlugin(dir, events, write);
 
     assert.equal(writes.length, 1, `expected one refusal line for three events, got ${writes.length}: ${writes.join('')}`);
     assert.match(writes[0], /^\[aep-harness-profile\] /, 'the line must name the plugin for the server log');
     assert.match(writes[0], /trace capture skipped/, 'the line must say capture was skipped');
     assert.match(writes[0], /AEP_HARNESS_PROFILE_DIR/, 'the line must name the escape hatch');
     assert.match(writes[0], /no git repository/i, 'the line must carry the refusal reason');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    if (previous === undefined) delete process.env.AEP_HARNESS_PROFILE;
+    else process.env.AEP_HARNESS_PROFILE = previous;
+    if (previousDir === undefined) delete process.env.AEP_HARNESS_PROFILE_DIR;
+    else process.env.AEP_HARNESS_PROFILE_DIR = previousDir;
+  }
+});
+
+// The other half of "once per process": a second `setup()` in the same process
+// (the serve reloads a plugin without restarting) must not repeat a warning the
+// process already logged. A `Set` scoped to one `setup()` passes the per-event
+// test above and fails this one.
+test('E14d: a second setup in the same process does not repeat the warning', async () => {
+  const previous = process.env.AEP_HARNESS_PROFILE;
+  const previousDir = process.env.AEP_HARNESS_PROFILE_DIR;
+  const dir = scratch('hp-handle-refusal-once-');
+  process.env.AEP_HARNESS_PROFILE = '1';
+  delete process.env.AEP_HARNESS_PROFILE_DIR;
+
+  const events = [{ type: 'session.created', data: { sessionID: 'ses_refused_once' } }];
+  const first = [];
+  const second = [];
+  try {
+    await drivePlugin(dir, events, (chunk) => {
+      first.push(String(chunk));
+      return true;
+    });
+    await drivePlugin(dir, events, (chunk) => {
+      second.push(String(chunk));
+      return true;
+    });
+
+    assert.equal(first.length, 1, `the first setup must log the refusal once, got ${first.length}`);
+    assert.equal(second.length, 0, `a second setup repeated the refusal: ${second.join('')}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    if (previous === undefined) delete process.env.AEP_HARNESS_PROFILE;
+    else process.env.AEP_HARNESS_PROFILE = previous;
+    if (previousDir === undefined) delete process.env.AEP_HARNESS_PROFILE_DIR;
+    else process.env.AEP_HARNESS_PROFILE_DIR = previousDir;
+  }
+});
+
+// A sink that throws (EPIPE on a closed stderr) must not burn the warning: the
+// plugin records it as reported only after the write lands, so a later setup
+// with a working sink still delivers it once.
+test('E14d: a throwing sink does not suppress the warning permanently', async () => {
+  const previous = process.env.AEP_HARNESS_PROFILE;
+  const previousDir = process.env.AEP_HARNESS_PROFILE_DIR;
+  const dir = scratch('hp-handle-refusal-throw-');
+  process.env.AEP_HARNESS_PROFILE = '1';
+  delete process.env.AEP_HARNESS_PROFILE_DIR;
+
+  const events = [{ type: 'session.created', data: { sessionID: 'ses_refused_throw' } }];
+  const writes = [];
+  try {
+    await drivePlugin(dir, events, () => {
+      throw new Error('EPIPE');
+    });
+    await drivePlugin(dir, events, (chunk) => {
+      writes.push(String(chunk));
+      return true;
+    });
+
+    assert.equal(writes.length, 1, `the warning was lost after a throwing sink: ${writes.length} line(s)`);
+    assert.match(writes[0], /trace capture skipped/, 'the recovered line must carry the refusal');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
     if (previous === undefined) delete process.env.AEP_HARNESS_PROFILE;

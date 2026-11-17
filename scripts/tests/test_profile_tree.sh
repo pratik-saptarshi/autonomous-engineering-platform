@@ -9,7 +9,9 @@
 #         trace with it (a throwaway root proves it is not the caller's cwd);
 #   E14b  with no node on PATH it stops with the actionable one-line message
 #         "node 18+ required for profiling; install Node or skip" and a non-zero
-#         exit — never a raw "command not found";
+#         exit — never a raw "command not found". A second, distinct assertion
+#         covers a node that exists but cannot report a usable version, so the
+#         presence check and the version probe each fail their own mutation;
 #   E14c  --help documents both the root walk and the node requirement, and
 #         works without node (help must not require the runtime it describes).
 #
@@ -24,12 +26,21 @@ RENDERER="reference/harness-profiler/plugin/libexec/hp.js"
 BASH_BIN="$(command -v bash)"
 SB="$(mktemp -d "${TMPDIR:-/tmp}/test-profile-tree.XXXXXX")"
 FAILURES=0
+# Every assertion must run: the count is compared with EXPECTED_ASSERTIONS at
+# the end, so deleting an eval block fails the run instead of printing a
+# constant total over whatever is left.
+CHECKED=0
+EXPECTED_ASSERTIONS=5
 
 trap 'rm -rf "$SB"' EXIT
 
 note() { echo "# $*"; }
-ok() { echo "ok - $*"; }
+ok() {
+  CHECKED=$((CHECKED + 1))
+  echo "ok - $*"
+}
 fail() {
+  CHECKED=$((CHECKED + 1))
   echo "FAIL - $*"
   FAILURES=$((FAILURES + 1))
 }
@@ -68,7 +79,32 @@ else
   fail "E14: absolute invocation failed ($status): $out"
 fi
 
-# --- E14b: no node on PATH is actionable, non-zero, no raw traceback. ---
+# --- E14b: the node floor, once per guard. ---
+# A node that exists but cannot report a version (`-v` exits 1) exercises the
+# version probe; an empty PATH exercises the presence check. Expecting
+# "found: unknown" in the first case and no "found:" in the second keeps the
+# two guards distinguishable by mutation: deleting either one fails only its
+# own assertion.
+FAKE_BIN="$SB/fakebin"
+mkdir -p "$FAKE_BIN"
+printf '%s\n' '#!/bin/sh' 'exit 1' >"$FAKE_BIN/node"
+chmod +x "$FAKE_BIN/node"
+
+note "E14b: a node whose -v fails is rejected with the actionable message"
+out="$(cd "$CHILD/scripts" && PATH="$FAKE_BIN" AEP_HARNESS_PROFILE_DIR='' "$BASH_BIN" ./profile-tree.sh tree 2>&1)"
+status=$?
+if [ "$status" -eq 0 ]; then
+  fail "E14b: wrapper succeeded with a node that cannot report a version"
+elif ! grep -q 'node 18+ required for profiling; install Node or skip' <<<"$out"; then
+  fail "E14b: version probe message is not actionable: $out"
+elif ! grep -q 'found: unknown' <<<"$out"; then
+  fail "E14b: version probe did not name the unusable version: $out"
+elif grep -qi 'command not found\|^sh: node\|^bash: node' <<<"$out"; then
+  fail "E14b: raw shell traceback leaked: $out"
+else
+  ok "E14b: unusable node version named, exit $status, no traceback"
+fi
+
 note "E14b: PATH without node prints the actionable message and exits non-zero"
 out="$(cd "$CHILD/scripts" && PATH=/nonexistent AEP_HARNESS_PROFILE_DIR='' "$BASH_BIN" ./profile-tree.sh tree 2>&1)"
 status=$?
@@ -76,6 +112,11 @@ if [ "$status" -eq 0 ]; then
   fail "E14b: wrapper succeeded without node"
 elif ! grep -q 'node 18+ required for profiling; install Node or skip' <<<"$out"; then
   fail "E14b: message is not actionable: $out"
+elif grep -q 'found:' <<<"$out"; then
+  # The presence check reports the missing binary, not an unknown version; a
+  # "found:" suffix here means the version probe answered for a node that
+  # is not on PATH.
+  fail "E14b: no-node path went through the version probe: $out"
 elif grep -qi 'command not found\|^sh: node\|^bash: node' <<<"$out"; then
   fail "E14b: raw shell traceback leaked: $out"
 else
@@ -98,5 +139,10 @@ else
   ok "E14c: --help documents root discovery and the node floor"
 fi
 
-echo "# 4 assertions checked, $FAILURES failure(s)"
+if [ "$CHECKED" -ne "$EXPECTED_ASSERTIONS" ]; then
+  FAILURES=$((FAILURES + 1))
+  echo "FAIL - expected $EXPECTED_ASSERTIONS assertions, ran $CHECKED (an eval block is missing)"
+fi
+
+echo "# $CHECKED/$EXPECTED_ASSERTIONS assertions checked, $FAILURES failure(s)"
 [ "$FAILURES" -eq 0 ]

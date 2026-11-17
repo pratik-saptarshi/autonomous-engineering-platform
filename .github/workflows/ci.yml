@@ -192,10 +192,11 @@ jobs:
   # Bounded claim: the adoption's own suites pass under the Node version CI
   # runs. Through Phase D they were local-only (`task-D1-report.md`, concern 4)
   # while the plan's Test Plan listed them as gates; this job makes them
-  # merge-gating, so a handler or wrapper regression fails the PR instead of
-  # merely failing a reviewer's terminal. No `npm install`: both suites are
-  # dependency-free and use the pinned tree in place. Node 22 matches
-  # `vendor-tests`.
+  # PR-gating, so a handler or wrapper regression fails the PR instead of
+  # merely failing a reviewer's terminal. Neither job is a required check on
+  # `develop` yet; that is a promotion-time decision. No `npm install`: both
+  # suites are dependency-free and use the pinned tree in place. Node 22
+  # matches `vendor-tests`.
   profile-tests:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -207,14 +208,28 @@ jobs:
         with:
           node-version: '22'
       - name: Run harness-profile handler suite
-        # Same explicit glob as `vendor-tests`: Node 22 reads a positional
-        # `--test` argument as a glob pattern, so the bare directory form
-        # (`tools/harness-profile/`) fails there with "Cannot find module".
-        # Four files, 40 tests.
-        run: node --test tools/harness-profile/*.test.js
+        # The four files are named explicitly, as `script-tests` names each
+        # shell test, and their presence is checked first: Node 22+ treats each
+        # positional `--test` argument as a glob, and a non-matching pattern is
+        # silently skipped (verified on 26: a deleted gate.test.js still exited
+        # 0), so the explicit list alone would shrink quietly. Four files, 42
+        # tests.
+        run: |
+          files=(
+            tools/harness-profile/gate.test.js
+            tools/harness-profile/handle.test.js
+            tools/harness-profile/hygiene.test.js
+            tools/harness-profile/translate.test.js
+          )
+          for f in "${files[@]}"; do
+            test -f "$f" || { echo "ERROR: missing test file $f"; exit 1; }
+          done
+          node --test "${files[@]}"
       - name: Run profile-tree wrapper evals
         # E14/E14b/E14c: root walk from scripts/, the node floor with no node
-        # on PATH, and `--help` without node. Four assertions.
+        # on PATH (and a fake node whose `--version` fails), and `--help`
+        # without node. Five assertions; the script fails unless it actually
+        # ran that many, so deleting an eval block cannot pass.
         run: bash scripts/tests/test_profile_tree.sh
 
   # Bounded claim: this gate proves the repo skills/ tree equals the manifest

@@ -20,12 +20,16 @@ const reported = new Set();
 function reportWarnings(state, write) {
   for (const warning of state.warnings) {
     if (reported.has(warning)) continue;
-    reported.add(warning);
     try {
       write(`[aep-harness-profile] ${warning}\n`);
     } catch {
-      // Logging cannot fail a session either.
+      // Logging cannot fail a session either. Leave the warning unreported so a
+      // later event with a working sink can still deliver it: recording before
+      // the write would suppress it for the rest of the process after one
+      // EPIPE.
+      continue;
     }
+    reported.add(warning);
   }
 }
 
