@@ -1,5 +1,7 @@
 'use strict';
 
+const { spawnSync } = require('node:child_process');
+
 // Opt-in capture handler for opencode 2.3. This is the logic the thin ESM
 // plugin subscribes to; nothing here runs unless AEP_HARNESS_PROFILE is set.
 //
@@ -193,31 +195,6 @@ function isDirectory(target) {
 // trailing-slash directory patterns, negation) — a shape it cannot evaluate is
 // treated as "not ignored", which refuses the write instead of risking one.
 
-// A nested `.gitignore` can negate the root rule that approved a destination
-// (`!.harness-profile/`), and this guard reads only the root file plus the
-// common `info/exclude`. When an ancestor has its own ignore file, precedence
-// cannot be verified without re-implementing gitignore semantics, so capture
-// fails closed and names the file. The destination's own `.gitignore` governs
-// its contents, not whether the directory is ignored, so it is not included.
-function nestedIgnoreFiles(root, dir) {
-  const rel = relativePath(root, dir);
-  if (!rel) return [];
-  const parts = rel.split('/');
-  const found = [];
-  for (let i = 1; i < parts.length; i += 1) {
-    const file = path.join(root, ...parts.slice(0, i), '.gitignore');
-    if (fs.existsSync(file)) found.push(file);
-  }
-  return found;
-}
-
-function ignoreFiles(root) {
-  const files = [path.join(root, '.gitignore')];
-  const common = commonGitDir(root);
-  if (common) files.push(path.join(common, 'info', 'exclude'));
-  return files;
-}
-
 // Path of `dir` below `root`, with forward slashes; null when it is not below.
 function relativePath(root, dir) {
   const rel = path.relative(root, dir);
@@ -226,96 +203,18 @@ function relativePath(root, dir) {
   return rel.split(path.sep).join('/').replace(/\/+$/, '');
 }
 
-function globToRegExp(glob) {
-  let source = '^';
-  for (let i = 0; i < glob.length; i += 1) {
-    const char = glob[i];
-    if (char === '*') {
-      if (glob[i + 1] === '*') {
-        i += 1;
-        if (glob[i + 1] === '/') {
-          i += 1;
-          source += '(?:.*/)?';
-        } else {
-          source += '.*';
-        }
-      } else {
-        source += '[^/]*';
-      }
-    } else if (char === '?') {
-      source += '[^/]';
-    } else if ('\\^$.|+()[]{}'.includes(char)) {
-      source += `\\${char}`;
-    } else {
-      source += char;
-    }
-  }
-  return new RegExp(`${source}$`);
-}
-
-function parseIgnoreLine(line) {
-  let text = line.replace(/\s+$/, '');
-  if (!text || text.startsWith('#')) return null;
-  let negated = false;
-  if (text.startsWith('\\!') || text.startsWith('\\#')) text = text.slice(1);
-  else if (text.startsWith('!')) {
-    negated = true;
-    text = text.slice(1);
-  }
-  if (text.endsWith('/')) text = text.slice(0, -1);
-  const anchored = text.startsWith('/');
-  if (anchored) text = text.slice(1);
-  if (!text) return null;
-  return {
-    negated,
-    anchored,
-    hasSlash: text.includes('/'),
-    re: globToRegExp(text),
-  };
-}
-
-// A slash-free pattern matches a path segment at any depth; an anchored or
-// slash-bearing one matches the whole path from the repository root.
-function matchesIgnore(pattern, candidate) {
-  const base = candidate.slice(candidate.lastIndexOf('/') + 1);
-  return pattern.anchored || pattern.hasSlash ? pattern.re.test(candidate) : pattern.re.test(base);
-}
-
-// The last matching pattern in one file decides; a negation re-includes.
-function ignoreDecision(lines, candidates) {
-  let decision = null;
-  for (const line of lines) {
-    const pattern = parseIgnoreLine(line);
-    if (!pattern) continue;
-    if (candidates.some((candidate) => matchesIgnore(pattern, candidate))) {
-      decision = pattern.negated ? 'include' : 'ignore';
-    }
-  }
-  return decision;
-}
-
-// True when `dir`, or one of its ancestors below `root`, is ignored. `.gitignore`
-// is consulted first because a per-directory file outranks `info/exclude`; the
-// runtime file answers only when the committed one says nothing about the path.
-function ignoredInsideRepository(root, dir) {
+// The ignore decision is git's, not ours. A hand-rolled matcher is what missed
+// `!trace[s]/` re-including an approved destination: character classes, nested
+// files, `core.excludesFile` and precedence are exactly what git already knows.
+// The destination is a directory, and a trailing slash is what makes a
+// directory-only pattern (`foo/`) answer for a directory that does not exist
+// yet. Any non-zero result — including git being unavailable — is "not proven
+// ignored", so capture fails closed.
+function gitIgnored(root, dir) {
   const rel = relativePath(root, dir);
   if (!rel) return false;
-  // A `.git` that does not resolve is not a work tree git reads; fail closed
-  // rather than trusting a stray `.gitignore` in it.
-  if (!commonGitDir(root)) return false;
-  const parts = rel.split('/');
-  const candidates = parts.map((_, index) => parts.slice(0, index + 1).join('/'));
-  for (const file of ignoreFiles(root)) {
-    let lines;
-    try {
-      lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
-    } catch {
-      continue;
-    }
-    const decision = ignoreDecision(lines, candidates);
-    if (decision) return decision === 'ignore';
-  }
-  return false;
+  const result = spawnSync('git', ['-C', root, 'check-ignore', '-q', '--', `${rel}/`], { stdio: 'ignore' });
+  return result.status === 0;
 }
 
 // Unconditional and idempotent: the pin only writes this when it creates the
@@ -680,18 +579,14 @@ function protectedDestination(state) {
     // prefix (`/var` -> `/private/var` on macOS), and a spelling mismatch would
     // read as "outside the work tree" and silently approve the destination.
     const rootReal = resolvedDestination(root) || root;
-    const nested = nestedIgnoreFiles(rootReal, resolved);
-    if (nested.length) {
-      const shown = resolved === dir ? dir : `${dir} (resolves to ${resolved})`;
-      const warning =
-        `trace capture skipped: ${DIR}=${shown} is governed by a nested ignore file (${nested[0]}); `
-        + 'this guard reads only the repository root .gitignore and the common info/exclude, so a nested '
-        + 'rule (for example a negation) cannot be verified; move the destination outside the repository, '
-        + 'or choose one with no nested .gitignore above it';
-      if (!state.warnings.includes(warning)) state.warnings.push(warning);
-      return false;
+    // One git answer per destination per process: the hook must stay cheap.
+    if (!state.explicitIgnored) state.explicitIgnored = new Map();
+    let ignored = state.explicitIgnored.get(resolved);
+    if (ignored === undefined) {
+      ignored = gitIgnored(rootReal, resolved);
+      state.explicitIgnored.set(resolved, ignored);
     }
-    if (ignoredInsideRepository(rootReal, resolved)) return true;
+    if (ignored) return true;
     const common = commonGitDir(root);
     const sources = [path.join(root, '.gitignore')];
     if (common) sources.push(path.join(common, 'info', 'exclude'));
@@ -732,17 +627,7 @@ function protectedDestination(state) {
       if (!state.warnings.includes(warning)) state.warnings.push(warning);
       return false;
     }
-    const nested = nestedIgnoreFiles(rootReal, resolved);
-    if (nested.length) {
-      const warning =
-        `trace capture skipped: the default destination ${dir} resolves to ${resolved}, which is governed `
-        + `by a nested ignore file (${nested[0]}); nested ignore precedence cannot be verified, so the trace `
-        + 'cannot be shown to be excluded from git; point AEP_HARNESS_PROFILE_DIR outside the repository, '
-        + 'or choose a destination with no nested .gitignore above it';
-      if (!state.warnings.includes(warning)) state.warnings.push(warning);
-      return false;
-    }
-    if (ignoredInsideRepository(rootReal, resolved)) return true;
+    if (gitIgnored(rootReal, resolved)) return true;
     const warning =
       `trace capture skipped: the default destination ${dir} resolves to ${resolved}, which is inside the `
       + `git work tree at ${root} but not ignored, so the trace would be committable; add an ignore rule for `
@@ -996,7 +881,11 @@ const MAX_TREES = 200;
 function evictInactiveTrees(state) {
   if (state.trees.size <= MAX_TREES) return;
   const candidates = [...state.trees.values()]
-    .filter((tree) => tree.pending.size === 0 && ![...tree.t.openSpawns.values()].some((open) => open.length > 0))
+    // A running tool is neither pending nor an open spawn: keep its call map,
+    // or the tree is dropped mid-call and the completion has nothing to record.
+    .filter((tree) => tree.pending.size === 0
+      && tree.t.calls.size === 0
+      && ![...tree.t.openSpawns.values()].some((open) => open.length > 0))
     .sort((a, b) => (a.lastAt || 0) - (b.lastAt || 0));
   const excess = state.trees.size - MAX_TREES;
   for (const tree of candidates.slice(0, excess)) {

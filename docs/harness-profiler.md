@@ -239,12 +239,12 @@ destination whose resolved path is inside the repository must also be named by
 refusal by pre-creating `.harness-profile/` in an unprotected tree: the next
 `git add -A` would commit it.
 
-The in-repository check reads only the repository-**root** `.gitignore` and the
-common `info/exclude`. When any ancestor of the destination has its own
-`.gitignore`, precedence cannot be verified without re-implementing gitignore
-semantics, so capture **refuses the destination** and names the nested file.
-There is no committable-trace case left: both a nested rule that ignores and a
-nested negation that re-includes are refused, not judged.
+The in-repository check asks **git itself** (`git check-ignore`) whether the
+resolved destination is ignored, so nested `.gitignore` files, negations such
+as `!trace[s]/`, character classes and global excludes are evaluated with git's
+own precedence rather than a reimplementation. Any non-ignored answer, and any
+failure to obtain one (including git being unavailable), refuses the
+destination: capture never approves a path it cannot prove git ignores.
 
 The remedy for both shapes is the same: prefer the default destination
 (`<git-root>/.harness-profile/`, protected through `info/exclude`) or point

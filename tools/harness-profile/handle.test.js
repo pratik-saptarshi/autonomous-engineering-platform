@@ -22,6 +22,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
+const { execFileSync } = require('node:child_process');
 
 const handle = require('./handle.js');
 const hp = require('../../reference/harness-profiler/plugin/libexec/hp.js');
@@ -38,8 +39,10 @@ function fixture(name) {
 // A temp git root. A real `.git` directory is enough for root discovery and
 // `info/exclude`; no git binary is needed.
 function repo(prefix = 'hp-handle-') {
+  // A real repository: the ignore verdict is git's own (`git check-ignore`),
+  // so a bare `.git` directory would not answer.
   const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  fs.mkdirSync(path.join(root, '.git'), { recursive: true });
+  execFileSync('git', ['init', '-q', root], { stdio: 'ignore' });
   return root;
 }
 
@@ -183,7 +186,9 @@ test('E6: without AEP_HARNESS_PROFILE handleEvent is inert', async () => {
 
   assert.equal(lookedUp, 0, 'the inert path called session.get');
   assert.equal(fs.existsSync(path.join(root, '.harness-profile')), false, 'a trace directory was created');
-  assert.equal(fs.existsSync(path.join(root, '.git', 'info', 'exclude')), false, 'the exclusion was written');
+  const excludeFile = path.join(root, '.git', 'info', 'exclude');
+  const excludeBody = fs.existsSync(excludeFile) ? fs.readFileSync(excludeFile, 'utf8') : '';
+  assert.equal(excludeBody.split(/\r?\n/).includes('.harness-profile/'), false, 'the exclusion was written');
   assert.deepEqual(state.errors, []);
   fs.rmSync(root, { recursive: true, force: true });
 });

@@ -676,3 +676,65 @@ test('E13e: inactive session trees are bounded, and a resumed session reseeds it
   assert.deepEqual(stop.spend, { new: 6, cached: 0, out: 6, calls: 2 }, 'the resume did not restore the prior spend');
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('E10e: an ignore-file negation that re-includes the destination is refused', async () => {
+  // `!trace[s]/` re-includes `traces`; a hand-rolled glob matcher escapes the
+  // brackets and misses it, approving a committable trace. The verdict is git's.
+  const root = gitRepo();
+  const cwd = path.join(root, 'a');
+  fs.mkdirSync(cwd, { recursive: true });
+  fs.mkdirSync(path.join(root, 'traces'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.gitignore'), 'traces/\n!trace[s]/\n');
+
+  const dest = path.join(root, 'traces');
+  const refused = handle.createState({ cwd, env: enabled({ AEP_HARNESS_PROFILE_DIR: dest }) });
+  const records = await feed(refused, fixture('tool-calls.json').events);
+  assert.equal(records.length, 0, 'capture wrote where git would not ignore it');
+  assert.deepEqual(fs.readdirSync(dest), [], 'a trace file was written');
+  assert.match(refused.warnings.join('\n'), /not ignored|committable/i);
+
+  // Control: the same destination is accepted when git really ignores it.
+  fs.writeFileSync(path.join(root, '.gitignore'), 'traces/\n');
+  const accepted = handle.createState({ cwd, env: enabled({ AEP_HARNESS_PROFILE_DIR: dest }) });
+  const written = await feed(accepted, fixture('tool-calls.json').events);
+  assert.ok(written.length > 0, 'an ignored destination was refused');
+  assert.ok(fs.readdirSync(dest).length > 0, 'nothing was written to the ignored destination');
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('E13f: a running tool call keeps its session tree from eviction', async () => {
+  // A running call is neither pending nor an open spawn. Evicting its tree
+  // loses the call's name, input and start time — none of it on disk yet — so
+  // the completion could never be recorded.
+  const dir = scratch();
+  const env = enabled({ AEP_HARNESS_PROFILE_DIR: dir });
+  const running = 'ses_root_running';
+  const state = handle.createState({ cwd: dir, env, sessionGet: (id) => ({ id }) });
+  await feed(state, [
+    { id: 'run1', created: 1794932400000, type: 'session.tool.input.started', data: { sessionID: running, id: 'call_shell', name: 'bash' } },
+    { id: 'run2', created: 1794932400001, type: 'session.tool.called', data: { sessionID: running, id: 'call_shell', assistantMessageID: 'mrun', input: { command: 'sleep 100' } } },
+  ]);
+  assert.ok(state.trees.has(running), 'the running session tree was never created');
+
+  for (let i = 0; i < 205; i += 1) {
+    const session = `ses_root_fill_${i}`;
+    const base = 1794932500000 + i * 10;
+    await feed(state, [
+      { id: `f${i}a`, created: base, type: 'session.tool.input.started', data: { sessionID: session, id: `cf_${i}`, name: 'bash' } },
+      { id: `f${i}b`, created: base + 1, type: 'session.tool.called', data: { sessionID: session, id: `cf_${i}`, assistantMessageID: `mf_${i}`, input: {} } },
+      { id: `f${i}c`, created: base + 2, type: 'session.tool.success', data: { sessionID: session, id: `cf_${i}`, assistantMessageID: `mf_${i}`, content: [] } },
+      { id: `f${i}d`, created: base + 3, type: 'session.step.ended', data: { sessionID: session, assistantMessageID: `mf_${i}`, tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } } } },
+      { id: `f${i}e`, created: base + 4, type: 'session.execution.succeeded', data: { sessionID: session } },
+    ]);
+  }
+
+  assert.ok(state.trees.has(running), 'the running call tree was evicted');
+  assert.ok(state.trees.get(running).t.calls.has('call_shell'), 'the running call was dropped');
+
+  const done = await feed(state, [
+    { id: 'run3', created: 1794932600000, type: 'session.tool.success', data: { sessionID: running, id: 'call_shell', assistantMessageID: 'mrun', content: [{ type: 'text', text: 'ok' }] } },
+    { id: 'run4', created: 1794932600001, type: 'session.step.ended', data: { sessionID: running, assistantMessageID: 'mrun', tokens: { input: 3, output: 2, reasoning: 0, cache: { read: 0, write: 0 } } } },
+  ]);
+  assert.ok(done.some((record) => record.tool_use_id === 'call_shell'), 'the completion produced no record');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
