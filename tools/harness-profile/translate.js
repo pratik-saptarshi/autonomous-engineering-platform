@@ -199,6 +199,12 @@ function responseOf(data) {
   const response = {};
   if (data.content !== undefined) response.content = data.content;
   if (data.metadata !== undefined) response.metadata = data.metadata;
+  // opencode carries the background flag inside the spawn response's metadata;
+  // the pinned builder reads it at the top level only (hp.js isBackground:
+  // `response.background === true`). Promote it, or the call reads as already
+  // finished and keeps its launch latency instead of ending at the child's
+  // SubagentStop (hp.js withStop).
+  if (data.metadata && data.metadata.background === true) response.background = true;
   return response;
 }
 

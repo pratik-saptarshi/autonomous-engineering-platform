@@ -181,12 +181,14 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: '22'
+          node-version: '26'
       - name: Run vendored harness-profiler unit suite
-        # Explicit glob: Node 22 treats positional --test arguments as glob
+        # Explicit glob: Node 22+ treats positional --test arguments as glob
         # patterns, so a bare directory argument fails with
         # "Cannot find module .../test" there. The glob yields the same
-        # 4 test files (51 tests) on Node 18, 20, 22 and 26.
+        # 4 test files (51 tests) on Node 18, 20, 22, 24 and 26. CI pins
+        # Node 26, the current stable line; the wrapper's own floor stays
+        # node 18+ (upstream engines).
         run: node --test reference/harness-profiler/test/*.test.js
 
   # Bounded claim: the adoption's own suites pass under the Node version CI
@@ -195,8 +197,9 @@ jobs:
   # PR-gating, so a handler or wrapper regression fails the PR instead of
   # merely failing a reviewer's terminal. Neither job is a required check on
   # `develop` yet; that is a promotion-time decision. No `npm install`: both
-  # suites are dependency-free and use the pinned tree in place. Node 22
-  # matches `vendor-tests`.
+  # suites are dependency-free and use the pinned tree in place. Node 26
+  # matches `vendor-tests` (current stable line; the wrapper floor stays
+  # node 18+).
   profile-tests:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -206,7 +209,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: '22'
+          node-version: '26'
       - name: Run harness-profile handler suite
         # The four files are named explicitly, as `script-tests` names each
         # shell test, and their presence is checked first: Node 22+ treats each
@@ -214,7 +217,7 @@ jobs:
         # silently skipped (verified on 26: a deleted gate.test.js still exited
         # 0), so the explicit list alone would shrink quietly. The runner's pass
         # count is then asserted: the list and `test -f` catch a deleted FILE,
-        # never a deleted TEST inside one. Four files, 46 tests today.
+        # never a deleted TEST inside one. Four files, 47 tests today.
         run: |
           files=(
             tools/harness-profile/gate.test.js
@@ -225,7 +228,7 @@ jobs:
           for f in "${files[@]}"; do
             test -f "$f" || { echo "ERROR: missing test file $f"; exit 1; }
           done
-          expected=46
+          expected=47
           out=$(node --test "${files[@]}" 2>&1) || { printf '%s\n' "$out"; echo "ERROR: harness-profile suite failed"; exit 1; }
           printf '%s\n' "$out"
           passes=$(printf '%s\n' "$out" | sed -n 's/^[^0-9]*pass \([0-9][0-9]*\)$/\1/p' | tail -n 1)
@@ -239,8 +242,9 @@ jobs:
           fi
       - name: Run profile-tree wrapper evals
         # E14/E14b/E14c: root walk from scripts/, the node floor with no node
-        # on PATH (and a fake node whose `--version` fails), and `--help`
-        # without node. Five assertions; the script fails unless it actually
+        # on PATH (and a fake node whose `--version` fails), `--help`
+        # without node, and explicit-destination handling (in-repo rejected,
+        # external honored). Seven assertions; the script fails unless it actually
         # ran that many, so deleting an eval block cannot pass.
         run: bash scripts/tests/test_profile_tree.sh
 

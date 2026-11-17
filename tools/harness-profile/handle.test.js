@@ -268,6 +268,48 @@ test('E7c: a child turn-end records its spend so the live tree has no blank chil
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('E8h: a background spawn ends at the child stop, not at its launch', async () => {
+  const dir = scratch();
+  const data = fixture('subagent.json');
+  // The child's turn ends after the root's steps flushed the spawn record, so
+  // the child's SubagentStop is the later of the two ends.
+  data.events.push(
+    { id: 'evt_child_idle', created: 1794932006000, type: 'session.execution.succeeded', data: { sessionID: CHILD } },
+    { id: 'evt_root_idle', created: 1794932007000, type: 'session.execution.succeeded', data: { sessionID: ROOT } },
+  );
+  const state = handle.createState({
+    cwd: dir,
+    env: enabled(dir),
+    sessionGet: (id) => ({ id, parentID: id === CHILD ? ROOT : undefined }),
+  });
+  const records = await feed(state, data.events);
+
+  // opencode's `metadata.background` must reach the top level the pinned
+  // builder reads; nested, hp.js isBackground() never sees it.
+  const spawn = byId(records, 'call_spawn');
+  assert.equal(spawn.background, true, 'metadata.background was not promoted to the top level');
+
+  // The pinned renderer decides the duration: withStop extends a background
+  // call to its child's SubagentStop; without the flag the call reads as
+  // finished and keeps its launch latency.
+  const stop = records.find((record) => record.event === 'SubagentStop' && record.agent_id === CHILD);
+  assert.ok(stop, 'no child SubagentStop was written');
+  const forest = hp.buildForest(records);
+  const nodes = [];
+  const walk = (list) => {
+    for (const node of list) {
+      nodes.push(node);
+      walk(node.children);
+    }
+  };
+  walk(forest);
+  const node = nodes.find((candidate) => candidate.record && candidate.record.tool_use_id === 'call_spawn');
+  assert.ok(node, 'the spawn call is not in the forest');
+  const start = Date.parse(spawn.at) - (spawn.duration_ms || 0);
+  assert.equal(node.record.duration_ms, Date.parse(stop.at) - start, 'the background call kept its launch latency instead of ending at the child stop');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('E8: the spawn response outranks session.get and reconciles its binding (response after FIFO)', async () => {
   const dir = scratch();
   const parents = { [CHILD]: ROOT };

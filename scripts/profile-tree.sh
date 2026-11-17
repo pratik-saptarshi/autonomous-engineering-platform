@@ -37,8 +37,11 @@ usage() {
     '' \
     'Traces:' \
     '  Read from <repo>/.harness-profile, the default capture location. An explicit' \
-    '  AEP_HARNESS_PROFILE_DIR is rendered when it names a directory called' \
-    '  .harness-profile (the pinned renderer reads only <project>/.harness-profile).' \
+    '  AEP_HARNESS_PROFILE_DIR is rendered only when it names a directory called' \
+    '  .harness-profile that sits outside any git work tree: the pinned renderer' \
+    '  resolves its project through git, so a destination inside one is re-read' \
+    '  from that repository root instead, and the wrapper rejects it rather than' \
+    '  silently rendering a different directory.' \
     '' \
     'Scope:' \
     '  Development host only. The shipped image has no Node and no reference/ tree,' \
@@ -103,15 +106,28 @@ if [ "$node_major" -lt 18 ]; then
 fi
 
 # An explicit destination is renderable only when it is a .harness-profile
-# directory: hp.js reads <CLAUDE_PROJECT_DIR>/.harness-profile unconditionally.
+# directory OUTSIDE any git work tree: hp.js projectDir() resolves the project
+# as gitRoot(CLAUDE_PROJECT_DIR) || start, so a destination inside a work tree
+# is silently re-read from that repository's own root .harness-profile (the
+# reviewer's repro: "No traces", or the default rendered instead). Reject it
+# with the reason and both remedies rather than render a different directory.
 if [ -n "${AEP_HARNESS_PROFILE_DIR:-}" ]; then
   trace_dir=$(cd -- "$AEP_HARNESS_PROFILE_DIR" 2>/dev/null && pwd) || {
     die "AEP_HARNESS_PROFILE_DIR does not exist: $AEP_HARNESS_PROFILE_DIR"
   }
   case $trace_dir in
-  */.harness-profile) export CLAUDE_PROJECT_DIR=${trace_dir%/.harness-profile} ;;
+  */.harness-profile) project_dir=${trace_dir%/.harness-profile} ;;
   *) die "AEP_HARNESS_PROFILE_DIR is $trace_dir; the pinned renderer reads only a directory named .harness-profile" ;;
   esac
+  probe=$project_dir
+  while [ "$probe" != / ]; do
+    if [ -e "$probe/.git" ]; then
+      die "AEP_HARNESS_PROFILE_DIR is $trace_dir, inside a git work tree rooted at $probe; the pinned renderer would read $probe/.harness-profile instead. Unset it to use a repository's default destination, or choose a .harness-profile outside any git repository"
+    fi
+    probe=${probe%/*}
+    [ -z "$probe" ] && probe=/
+  done
+  export CLAUDE_PROJECT_DIR=$project_dir
 fi
 
 cd -- "$root" || die "cannot enter repository root: $root"

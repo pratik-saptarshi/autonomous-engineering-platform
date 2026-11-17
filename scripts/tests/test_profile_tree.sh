@@ -30,7 +30,7 @@ FAILURES=0
 # the end, so deleting an eval block fails the run instead of printing a
 # constant total over whatever is left.
 CHECKED=0
-EXPECTED_ASSERTIONS=5
+EXPECTED_ASSERTIONS=7
 
 trap 'rm -rf "$SB"' EXIT
 
@@ -137,6 +137,48 @@ elif ! grep -qi 'walk' <<<"$out"; then
   fail "E14c: --help does not document the root walk: $out"
 else
   ok "E14c: --help documents root discovery and the node floor"
+fi
+
+# --- E14e: explicit destinations are honored exactly, or rejected by name. ---
+# hp.js projectDir() resolves the project as gitRoot(CLAUDE_PROJECT_DIR) || dir,
+# so a destination inside a git work tree is silently re-read from that
+# repository's root .harness-profile. The wrapper must reject it with the
+# reason rather than render a different directory, and must honor an override
+# outside any work tree down to the exact directory.
+note "E14e: an in-repo explicit destination is rejected, not silently mis-rendered"
+mkdir -p "$CHILD/nested/.harness-profile"
+printf '%s\n' \
+  '{"v":2,"at":"2026-01-01T00:00:00.000Z","session":"ses_eval_nested","agent":"main","tool":"Bash","name":"nested-call"}' \
+  >"$CHILD/nested/.harness-profile/ses_eval_nested.jsonl"
+out="$(cd "$CHILD/scripts" && AEP_HARNESS_PROFILE_DIR="$CHILD/nested/.harness-profile" "$BASH_BIN" ./profile-tree.sh tree --verbose 2>&1)"
+status=$?
+if [ "$status" -eq 0 ]; then
+  fail "E14e: an in-repo destination was accepted: $out"
+elif ! grep -q 'inside a git work tree' <<<"$out"; then
+  fail "E14e: the rejection does not name the reason: $out"
+elif ! grep -q 'Unset it to use' <<<"$out"; then
+  fail "E14e: the rejection does not name both remedies: $out"
+elif grep -q 'eval-call\|nested-call' <<<"$out"; then
+  fail "E14e: the wrapper rendered a different directory instead of refusing: $out"
+else
+  ok "E14e: in-repo destination rejected with reason and remedies, exit $status"
+fi
+
+note "E14e: an override outside any work tree is rendered exactly"
+mkdir -p "$SB/external/project/.harness-profile"
+printf '%s\n' \
+  '{"v":2,"at":"2026-01-01T00:00:00.000Z","session":"ses_eval_external","agent":"main","tool":"Bash","name":"external-call"}' \
+  >"$SB/external/project/.harness-profile/ses_eval_external.jsonl"
+out="$(cd "$CHILD/scripts" && AEP_HARNESS_PROFILE_DIR="$SB/external/project/.harness-profile" "$BASH_BIN" ./profile-tree.sh tree --verbose 2>&1)"
+status=$?
+if [ "$status" -ne 0 ]; then
+  fail "E14e: the external override was rejected: $out"
+elif ! grep -q 'external-call' <<<"$out"; then
+  fail "E14e: the external override was not rendered exactly: $out"
+elif grep -q 'eval-call' <<<"$out"; then
+  fail "E14e: the wrapper rendered the repository default instead of the override: $out"
+else
+  ok "E14e: external override honored down to the exact directory"
 fi
 
 if [ "$CHECKED" -ne "$EXPECTED_ASSERTIONS" ]; then

@@ -138,10 +138,15 @@ prints the same contract.
 message when no `node` is on `PATH`; it exits non-zero instead of printing a
 shell traceback. `--help` does not need Node.
 
-The pin's renderer reads only `<project>/.harness-profile`. The default
-location and an `AEP_HARNESS_PROFILE_DIR` whose last path component is
-`.harness-profile` are both renderable; a destination with another name is
-rejected by the wrapper rather than silently rendering a different directory.
+The pin's renderer reads only `<project>/.harness-profile`, and it resolves
+the project through git (`gitRoot` of the configured directory), so an
+explicit `AEP_HARNESS_PROFILE_DIR` is renderable only when its final path is a
+`.harness-profile` directory **outside any git work tree**. A destination
+inside one is rejected by the wrapper with the reason and both remedies —
+without that guard the renderer silently reads the repository root's own
+`.harness-profile` instead, reporting "No traces" or rendering the wrong
+directory. A destination with another name is likewise rejected rather than
+silently rendering a different directory.
 
 ## When capture writes nothing: refusals are logged
 
