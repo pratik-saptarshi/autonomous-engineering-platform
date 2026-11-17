@@ -172,6 +172,14 @@ when the trace cannot be shown to be excluded from git:
 - a default `.harness-profile` that is a symlink whose resolved target is inside
   the work tree and not ignored (the link's name is not what git sees).
 
+## Memory in a long-lived service
+
+Capture holds only what an unfinished call needs. Once a call's records are
+written, its input and its step's tokens are released, and completed sessions
+are evicted least-recently-active first beyond 200 retained trees. Eviction is
+safe because a resumed session reseeds its cumulative spend from the trace on
+disk; a session with a pending step or an open spawn is never evicted.
+
 ## Service restart and cumulative spend
 
 A restarted `opencode serve` starts a fresh process against an existing trace.

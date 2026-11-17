@@ -937,13 +937,23 @@ function flush(state, tree, key) {
   if (!events) return [];
   tree.pending.delete(key);
   const records = [];
+  const release = { calls: new Set(), steps: new Set() };
   for (const event of events) {
     const record = translate.buildRecord(event, tree.t);
     if (record) {
       writeOne(state, tree, record);
       records.push(record);
     }
+    const data = event.data || {};
+    if (data.id) release.calls.add(data.id);
+    if (data.assistantMessageID) release.steps.add(data.assistantMessageID);
   }
+  // A long-lived service would otherwise keep every completed call's full input
+  // (and its step's tokens) reachable forever — 100 completed sessions with
+  // 1 MiB write inputs left 100 MiB reachable though nothing was pending.
+  // Spend, links and parentage survive: they are what background children need.
+  for (const id of release.calls) tree.t.calls.delete(id);
+  for (const mid of release.steps) tree.t.steps.delete(mid);
   return records;
 }
 
@@ -976,9 +986,31 @@ function buildChildStopRecord(state, tree, childSessionId, at) {
   return record;
 }
 
+// Completed sessions would otherwise be retained for the life of the service.
+// Keep a bounded number of trees, evicting the least recently active one that
+// has nothing in flight. Eviction is safe: a resumed session reseeds its
+// cumulative spend from the trace on disk (seedSpendFromTrace), and a tree with
+// pending steps or open spawns is never evicted.
+const MAX_TREES = 200;
+
+function evictInactiveTrees(state) {
+  if (state.trees.size <= MAX_TREES) return;
+  const candidates = [...state.trees.values()]
+    .filter((tree) => tree.pending.size === 0 && ![...tree.t.openSpawns.values()].some((open) => open.length > 0))
+    .sort((a, b) => (a.lastAt || 0) - (b.lastAt || 0));
+  const excess = state.trees.size - MAX_TREES;
+  for (const tree of candidates.slice(0, excess)) {
+    state.trees.delete(tree.rootSessionId);
+    for (const [session, root] of [...state.sessionRoot]) {
+      if (root === tree.rootSessionId) state.sessionRoot.delete(session);
+    }
+  }
+}
+
 async function dispatch(state, event, tree) {
   const data = event.data || {};
   const t = tree.t;
+  if (Number.isFinite(event.created)) tree.lastAt = Math.max(tree.lastAt || 0, event.created);
   const records = [];
 
   if (event.type === 'session.tool.success' || event.type === 'session.tool.failed') {
@@ -1066,6 +1098,7 @@ async function handleEvent(event, state) {
       state.deferred.delete(sessionId);
       const records = [];
       for (const deferred of waiting.events) records.push(...(await dispatch(state, deferred, tree)));
+      evictInactiveTrees(state);
       return records.length ? records : null;
     }
 
@@ -1075,6 +1108,7 @@ async function handleEvent(event, state) {
       return null;
     }
     const records = await dispatch(state, event, tree);
+    evictInactiveTrees(state);
     return records.length ? records : null;
   } catch (error) {
     // Capture must never fail a session. The error is kept for tests/debug.

@@ -615,3 +615,64 @@ test('E10d: a default .harness-profile that is a symlink is judged by its target
   assert.ok(written.length > 0, 'an ignored symlink target was refused');
   assert.ok(fs.readdirSync(path.join(root, 'traces')).length > 0, 'no trace landed in the ignored target');
 });
+
+test('E13d: a flushed call releases its input and step tokens', async () => {
+  // A long-lived service must not retain every completed call's payload: 100
+  // sessions with 1 MiB inputs left 100 MiB reachable though nothing was
+  // pending. Spend and links survive; the payload does not.
+  const dir = scratch();
+  const big = 'x'.repeat(1024 * 1024);
+  const session = 'ses_root_release';
+  const events = [
+    { id: 'r1', created: 1794932100000, type: 'session.tool.input.started', data: { sessionID: session, id: 'call_big', name: 'write' } },
+    { id: 'r2', created: 1794932100001, type: 'session.tool.called', data: { sessionID: session, id: 'call_big', assistantMessageID: 'm1', input: { content: big } } },
+    { id: 'r3', created: 1794932100002, type: 'session.tool.success', data: { sessionID: session, id: 'call_big', assistantMessageID: 'm1', content: [{ type: 'text', text: 'ok' }] } },
+    { id: 'r4', created: 1794932100003, type: 'session.step.ended', data: { sessionID: session, assistantMessageID: 'm1', tokens: { input: 10, output: 5, reasoning: 0, cache: { read: 0, write: 0 } } } },
+    { id: 'r5', created: 1794932100004, type: 'session.execution.succeeded', data: { sessionID: session } },
+  ];
+  const state = handle.createState({ cwd: dir, env: enabled({ AEP_HARNESS_PROFILE_DIR: dir }), sessionGet: (id) => ({ id }) });
+  const records = await feed(state, events);
+  assert.ok(records.length > 0, 'nothing was recorded');
+
+  const tree = [...state.trees.values()][0];
+  assert.equal(tree.t.calls.size, 0, 'a completed call kept its input reachable');
+  assert.equal(tree.t.steps.size, 0, 'a completed step kept its tokens reachable');
+  // The cumulative spend a later stop needs is still there.
+  assert.deepEqual(tree.t.spend.get(session), { new: 10, cached: 0, out: 5, calls: 1 });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('E13e: inactive session trees are bounded, and a resumed session reseeds its spend', async () => {
+  // state.trees otherwise grows for the service's lifetime. Completed sessions
+  // are evicted least-recently-active first; a tree with nothing in flight is
+  // safe to drop because a resume restores spend from the trace on disk.
+  const dir = scratch();
+  const total = 205;
+  const turn = (session, index) => [
+    { id: `t${index}a`, created: 1794932200000 + index * 10 + 0, type: 'session.tool.input.started', data: { sessionID: session, id: `c_${index}`, name: 'bash' } },
+    { id: `t${index}b`, created: 1794932200000 + index * 10 + 1, type: 'session.tool.called', data: { sessionID: session, id: `c_${index}`, assistantMessageID: `m_${index}`, input: {} } },
+    { id: `t${index}c`, created: 1794932200000 + index * 10 + 2, type: 'session.tool.success', data: { sessionID: session, id: `c_${index}`, assistantMessageID: `m_${index}`, content: [{ type: 'text', text: 'ok' }] } },
+    { id: `t${index}d`, created: 1794932200000 + index * 10 + 3, type: 'session.step.ended', data: { sessionID: session, assistantMessageID: `m_${index}`, tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } } } },
+    { id: `t${index}e`, created: 1794932200000 + index * 10 + 4, type: 'session.execution.succeeded', data: { sessionID: session } },
+  ];
+  const state = handle.createState({ cwd: dir, env: enabled({ AEP_HARNESS_PROFILE_DIR: dir }), sessionGet: (id) => ({ id }) });
+  for (let i = 0; i < total; i += 1) {
+    await feed(state, turn(`ses_root_bounded_${i}`, i));
+  }
+  assert.ok(state.trees.size <= 200, `retained ${state.trees.size} session trees`);
+
+  // The first session is gone from memory; a resume must still be cumulative,
+  // because the trace on disk is the source of truth.
+  const first = 'ses_root_bounded_0';
+  assert.equal(state.trees.has(first), false, 'the oldest completed tree was not evicted');
+  const resumed = handle.createState({ cwd: dir, env: enabled({ AEP_HARNESS_PROFILE_DIR: dir }), sessionGet: (id) => ({ id }) });
+  const again = [
+    { id: 'z1', created: 1794932300000, type: 'session.step.ended', data: { sessionID: first, assistantMessageID: 'mz', tokens: { input: 5, output: 5, reasoning: 0, cache: { read: 0, write: 0 } } } },
+    { id: 'z2', created: 1794932300001, type: 'session.execution.succeeded', data: { sessionID: first } },
+  ];
+  const written = await feed(resumed, again);
+  const stop = written.find((record) => record.event === 'SubagentStop');
+  assert.ok(stop, 'the resumed session wrote no stop');
+  assert.deepEqual(stop.spend, { new: 6, cached: 0, out: 6, calls: 2 }, 'the resume did not restore the prior spend');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
