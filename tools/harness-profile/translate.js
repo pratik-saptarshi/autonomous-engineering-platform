@@ -273,32 +273,42 @@ function toPayload(event, state) {
 //
 // The rule keeps the key name and separator and replaces only the value. Two
 // details stop it from eating neighbours:
-//   - the value stops at whitespace, quotes or JSON punctuation, and an opening
-//     quote must be balanced, so `{"GITHUB_TOKEN":"x","b":2}` keeps its shape;
+//   - the value is a complete quoted string (either quote) or an unquoted run
+//     that stops at whitespace, quotes or JSON punctuation. A quoted value is
+//     replaced whole, quote character kept, so `GITHUB_TOKEN="a b"` loses both
+//     words and `{"GITHUB_TOKEN":"x","b":2}` keeps its shape. Matching the
+//     quoted branch first is what keeps masking fail-closed: the earlier
+//     balanced-quote backreference (`[^\s"'&,}]+\4`) abandoned the match when
+//     the quoted value held a space, and `GITHUB_TOKEN="a b"` came out intact.
 //   - a known benign key name (the token counts and the tokenizer) is returned
 //     unchanged by the callback. A callback skip is clearer than lookarounds and
 //     cannot be defeated by group numbering.
 //
-// Every quantifier is bounded. A name run open at both ends of the alternation
+// Every quantifier is either bounded (`{0,64}` on the two name runs) or a
+// single-character-class repeat (`[ \t]*` separator, `[^"\n]*` / `[^'\n]*` /
+// `[^\s"'&,}]+` value), so all are linear. A name run open at both ends
 // (`[A-Za-z0-9_]*(?:TOKEN|...)[A-Za-z0-9_]*`) backtracks cubically on one long
 // token blob with no separator: 8 KB of repeated `TOKEN` measured 14.4 s, and
-// this runs inside a capture hook. Bounded runs (`{0,64}`) take 0.02 ms on the
+// this runs inside a capture hook. Bounded runs (`{0,64}`) take 0.01 ms on the
 // same blob: `\b` pins each attempt to a word start and both name runs stop.
 //
 // The keyword may sit anywhere in the name, including the start: a mandatory
 // leading character would leave bare `TOKEN=` and `credential=` unmatched.
 const CREDENTIAL =
-  /\b([A-Za-z0-9_]{0,64}(?:SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL|ACCESS_KEY|API_?KEY)[A-Za-z0-9_]{0,64})(["']?)([ \t]*[:=][ \t]*|[ \t]+)(["']?)[^\s"'&,}]+\4/gi;
+  /\b([A-Za-z0-9_]{0,64}(?:SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL|ACCESS_KEY|API_?KEY)[A-Za-z0-9_]{0,64})(["']?)([ \t]*[:=][ \t]*|[ \t]+)("[^"\n]*"|'[^'\n]*'|[^\s"'&,}]+)/gi;
 
 // Keys a profiler exists to report and must keep verbatim. The instruction's
 // `^(input|output)_tokens$` case is already covered by `_?tokens?`.
 const BENIGN_KEY = /^(?:(?:input|output|total|num|max|prompt|completion)_?tokens?|tokenizer)$/i;
 
-function redactMatch(match, key, keyQuote, separator, quote, offset, text) {
+function redactMatch(match, key, keyQuote, separator, value, offset, text) {
   if (BENIGN_KEY.test(key)) return match;
   // A bare space separates a flag from its value (`--password x`); a sentence
   // such as "the token budget" keeps its words.
   if (!separator.trim() && text[offset - 1] !== '-') return match;
+  // The value group is either a whole quoted string or an unquoted run; keep
+  // whichever quote it used so JSON and CLI quoting survive the substitution.
+  const quote = value[0] === '"' || value[0] === "'" ? value[0] : '';
   return `${key}${keyQuote}${separator}${quote}[redacted]${quote}`;
 }
 

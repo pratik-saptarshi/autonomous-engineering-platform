@@ -228,6 +228,29 @@ test('redactSecrets keeps JSON quoting, neighbours and CLI forms intact', () => 
   });
 });
 
+test('redactSecrets fails closed on quoted values containing whitespace', () => {
+  // Round 4 balanced the opening quote with a backreference (`[^\s"'&,}]+\4`),
+  // and the value class cannot hold a space, so a quoted value with one dropped
+  // the whole match and came out intact. A quoted value is now matched as a
+  // complete string and replaced whole, quotes kept.
+  assert.equal(translate.redactSecrets('GITHUB_TOKEN="a b"'), 'GITHUB_TOKEN="[redacted]"');
+  assert.equal(translate.redactSecrets('client_secret="a b"'), 'client_secret="[redacted]"');
+  assert.equal(translate.redactSecrets('DB_PASSWORD="hunter two"'), 'DB_PASSWORD="[redacted]"');
+  assert.equal(translate.redactSecrets("api_key='sk live 42'"), "api_key='[redacted]'");
+  assert.equal(translate.redactSecrets('--password "a b"'), '--password "[redacted]"');
+
+  // The JSON neighbour is the integrity check: the object still parses, and
+  // neither word of the value survives.
+  const json = '{"client_secret":"a b","x":1}';
+  const out = translate.redactSecrets(json);
+  assert.equal(out, '{"client_secret":"[redacted]","x":1}');
+  assert.deepEqual(JSON.parse(out), { client_secret: '[redacted]', x: 1 });
+  assert.ok(!out.includes('a b'), 'the spaced value leaked');
+
+  // An empty quoted value is masked too: the rule never leaves a readable slot.
+  assert.equal(translate.redactSecrets('{"token":""}'), '{"token":"[redacted]"}');
+});
+
 test('redactSecrets stays linear on a pathological single-token blob', () => {
   // The previous pattern's unbounded name runs backtracked cubically here:
   // 8 KB of repeated `TOKEN` took 14.4 s inside a capture hook. The bounded
