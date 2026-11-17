@@ -170,8 +170,9 @@ when the trace cannot be shown to be excluded from git:
 - a destination with a nested `.gitignore` anywhere above it, because a nested
   rule can negate the root rule and this guard does not evaluate precedence;
 - a default `.harness-profile` that is a symlink whose resolved target is inside
-  a work tree — this one or any other checkout — and not ignored there (the
-  link's name is not what git sees).
+  a work tree — this one, another checkout, or a nested repository — and not
+  ignored **by the innermost repository that contains it** (a nested checkout
+  is opaque to its outer one, and the link's name is not what git sees).
 
 ## Memory in a long-lived service
 

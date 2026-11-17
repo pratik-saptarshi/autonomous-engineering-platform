@@ -614,39 +614,19 @@ function protectedDestination(state) {
       if (!state.warnings.includes(warning)) state.warnings.push(warning);
       return false;
     }
-    const root = state.gitRoot;
-    if (!root) return true;
-    // Same canonical comparison as the explicit branch.
-    const rootReal = resolvedDestination(root) || root;
-    const rel = relativePath(rootReal, resolved);
-    if (rel === null) {
-      // Resolved outside this checkout — but a *different* work tree still
-      // commits what it does not ignore. Validate against the repository that
-      // actually contains the target, as the explicit branch does.
-      const destRoot = gitRoot(resolved);
-      if (!destRoot) return true; // outside every work tree
-      const destRootReal = resolvedDestination(destRoot) || destRoot;
-      if (gitIgnored(destRootReal, resolved)) return true;
-      const warning =
-        `trace capture skipped: the default destination ${dir} resolves to ${resolved}, which is inside the `
-        + `git work tree at ${destRoot} but not ignored there, so the trace would be committable in that `
-        + `repository; add an ignore rule for it there, move the link outside every repository, or point `
-        + `${DIR} at a protected directory and retry`;
-      if (!state.warnings.includes(warning)) state.warnings.push(warning);
-      return false;
-    }
-    if (!rel) {
-      const warning =
-        `trace capture skipped: the default destination ${dir} resolves to the repository root ${root}, `
-        + 'so no trace directory can be excluded; point AEP_HARNESS_PROFILE_DIR at a directory and retry';
-      if (!state.warnings.includes(warning)) state.warnings.push(warning);
-      return false;
-    }
-    if (gitIgnored(rootReal, resolved)) return true;
+    // Judge by the repository that actually contains the target — the
+    // innermost one. A nested checkout is opaque to its outer repository, so
+    // asking the session's repo (or the outer one) would approve a path the
+    // destination's own work tree can commit.
+    const destRoot = gitRoot(resolved);
+    if (!destRoot) return true; // outside every work tree
+    const destRootReal = resolvedDestination(destRoot) || destRoot;
+    if (gitIgnored(destRootReal, resolved)) return true;
+    const rel = relativePath(destRootReal, resolved) || path.basename(resolved);
     const warning =
       `trace capture skipped: the default destination ${dir} resolves to ${resolved}, which is inside the `
-      + `git work tree at ${root} but not ignored, so the trace would be committable; add an ignore rule for `
-      + `\`${rel}/\` or point ${DIR} at a directory outside the repository and retry`;
+      + `git work tree at ${destRoot} but not ignored there, so the trace would be committable in that `
+      + `repository; add an ignore rule for it there, or point ${DIR} at a directory outside every repository`;
     if (!state.warnings.includes(warning)) state.warnings.push(warning);
     return false;
   }

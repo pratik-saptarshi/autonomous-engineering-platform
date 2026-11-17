@@ -764,3 +764,29 @@ test('E10g: a default symlink into another checkout is judged by that checkout',
   fs.rmSync(a, { recursive: true, force: true });
   fs.rmSync(b, { recursive: true, force: true });
 });
+
+test('E10h: a default symlink into a nested checkout is judged by that checkout', async () => {
+  // A nested repository is opaque to its outer one: ignoring `nested/` in the
+  // outer repo says nothing about what `outer/nested` can commit. Judgment
+  // belongs to the innermost repository containing the target.
+  const outer = gitRepo('hp-hygiene-outer-');
+  const inner = path.join(outer, 'nested');
+  fs.mkdirSync(inner, { recursive: true });
+  execFileSync('git', ['init', '-q', inner], { stdio: 'ignore' });
+  fs.mkdirSync(path.join(inner, 'traces'), { recursive: true });
+  fs.writeFileSync(path.join(outer, '.gitignore'), 'nested/\n');
+  fs.symlinkSync(path.join(inner, 'traces'), path.join(outer, '.harness-profile'));
+
+  const refused = handle.createState({ cwd: outer, env: enabled() });
+  const records = await feed(refused, fixture('tool-calls.json').events);
+  assert.equal(records.length, 0, 'capture approved a target its own checkout can commit');
+  assert.deepEqual(fs.readdirSync(path.join(inner, 'traces')), [], 'a trace landed in the nested checkout');
+  assert.match(refused.warnings.join('\n'), /not ignored|committable/i);
+
+  fs.writeFileSync(path.join(inner, '.gitignore'), 'traces/\n');
+  const accepted = handle.createState({ cwd: outer, env: enabled() });
+  const written = await feed(accepted, fixture('tool-calls.json').events);
+  assert.ok(written.length > 0, 'a destination the nested checkout ignores was refused');
+  assert.ok(fs.readdirSync(path.join(inner, 'traces')).length > 0, 'nothing was written to the ignored target');
+  fs.rmSync(outer, { recursive: true, force: true });
+});
