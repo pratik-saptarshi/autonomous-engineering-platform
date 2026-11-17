@@ -32,11 +32,16 @@
 //
 // Hygiene: the trace directory is excluded through the repository's own
 // `info/exclude` on the first event, unconditionally (the pin skips it when the
-// directory already exists), and it is pruned at the same moment — 14 days or
-// 32 MiB by default, older-files-first. Without a repository above the working
-// directory and without an explicit `AEP_HARNESS_PROFILE_DIR`, capture writes
-// nothing: a trace that cannot be excluded from git is not written at all, and
-// the refusal is recorded in `state.warnings` instead of failing the session.
+// directory already exists), and the entry is read back before any record is
+// written. The directory is pruned at the same moment — 14 days or 32 MiB by
+// default, older-files-first, limited to this handler's own `ses_*` files.
+// Without a usable repository above the working directory and without an
+// explicit `AEP_HARNESS_PROFILE_DIR`, capture writes nothing: a trace that
+// cannot be shown to be excluded from git (no repository, a malformed `.git`, an
+// unwritable or unverified `info/exclude`) is not written at all, and the
+// refusal reason is recorded once in `state.warnings` instead of failing the
+// session. The committed `.gitignore` entry is the second layer: it covers a
+// fresh clone and a runtime write that cannot land.
 
 const fs = require('fs');
 const path = require('path');
@@ -65,9 +70,11 @@ const MAX_TRACE_BYTES = 32 * 1024 * 1024;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 // Trace files this handler owns: one JSONL per root session plus the debug
-// sidecar. Anything else in the directory (an operator's notes, a subdirectory)
-// is never pruned.
-const TRACE_FILE = /\.(?:jsonl|parentage\.json)$/;
+// sidecar, both named from a root session id, which always starts with `ses_`.
+// Anything else in the directory (an operator's `notes.jsonl`, another tool's
+// `*-traces.jsonl`, a subdirectory) is never pruned, which matters because an
+// explicit `AEP_HARNESS_PROFILE_DIR` may be shared.
+const TRACE_FILE = /^ses_[\w.-]+\.(?:jsonl|parentage\.json)$/;
 
 // The spawning tool names, before the translator's mapping to `Agent`.
 const SPAWN_TOOLS = new Set(['subagent', 'task', 'Agent', 'Task']);
@@ -110,7 +117,10 @@ function gitRoot(start) {
 }
 
 // A worktree's `.git` is a file pointing at its own git dir; worktrees share
-// the main repository's info/exclude through `commondir`.
+// the main repository's info/exclude through `commondir`. Only a directory that
+// actually exists is accepted as the target, so a malformed pointer
+// (`gitdir: /nonexistent`, an empty `.git` file) cannot send the exclusion into
+// a directory git never reads.
 function commonGitDir(root) {
   const dotGit = path.join(root, '.git');
   let dir;
@@ -121,25 +131,64 @@ function commonGitDir(root) {
   } catch {
     return null;
   }
+  if (!isDirectory(dir)) return null;
   const pointer = path.join(dir, 'commondir');
-  return fs.existsSync(pointer) ? path.resolve(dir, fs.readFileSync(pointer, 'utf8').trim()) : dir;
+  if (!fs.existsSync(pointer)) return dir;
+  try {
+    const common = path.resolve(dir, fs.readFileSync(pointer, 'utf8').trim());
+    return isDirectory(common) ? common : null;
+  } catch {
+    return null;
+  }
+}
+
+function isDirectory(target) {
+  try {
+    return fs.statSync(target).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 // Unconditional and idempotent: the pin only writes this when it creates the
 // trace directory, so a pre-existing `.harness-profile/` would stay visible to
-// git without this path.
+// git without this path. The return value is the point: `ok` means the entry is
+// *in the file now*, read back from disk — not that a write was attempted. A
+// throw is not the only failure mode (a redirected path, a stale mount), so the
+// exact line is the test, and the caller refuses to write a trace otherwise.
 function excludeTraceDir(cwd) {
   const root = gitRoot(cwd);
-  if (!root) return false;
+  if (!root) return { ok: false, reason: `no git repository above ${cwd}` };
   const dir = commonGitDir(root);
-  if (!dir) return false;
+  if (!dir) {
+    return {
+      ok: false,
+      reason: `the .git at ${path.join(root, '.git')} does not resolve to a git directory (malformed pointer or missing target)`,
+    };
+  }
   const exclude = path.join(dir, 'info', 'exclude');
   const line = `${translate.TRACE_DIR}/`;
-  const current = fs.existsSync(exclude) ? fs.readFileSync(exclude, 'utf8') : '';
-  if (current.split(/\r?\n/).includes(line)) return false;
-  fs.mkdirSync(path.dirname(exclude), { recursive: true });
-  fs.appendFileSync(exclude, `${current && !current.endsWith('\n') ? '\n' : ''}${line}\n`);
-  return true;
+  let current;
+  try {
+    current = fs.existsSync(exclude) ? fs.readFileSync(exclude, 'utf8') : '';
+  } catch (error) {
+    return { ok: false, reason: `cannot read ${exclude}: ${error.code || error.message}` };
+  }
+  if (current.split(/\r?\n/).includes(line)) return { ok: true, changed: false, exclude };
+  try {
+    fs.mkdirSync(path.dirname(exclude), { recursive: true });
+    fs.appendFileSync(exclude, `${current && !current.endsWith('\n') ? '\n' : ''}${line}\n`);
+  } catch (error) {
+    return { ok: false, reason: `cannot write ${exclude}: ${error.code || error.message}` };
+  }
+  let landed;
+  try {
+    landed = fs.readFileSync(exclude, 'utf8').split(/\r?\n/).includes(line);
+  } catch (error) {
+    return { ok: false, reason: `cannot verify ${exclude}: ${error.code || error.message}` };
+  }
+  if (!landed) return { ok: false, reason: `the exclusion did not land in ${exclude}` };
+  return { ok: true, changed: true, exclude };
 }
 
 // ---------- retention ----------
@@ -239,6 +288,7 @@ function createState(options = {}) {
     resolving: new Set(),
     deferred: new Map(), // sessionId -> { events }
     prepared: false,
+    protection: undefined, // undefined until the exclusion is checked; then {ok, reason?, changed?, exclude?}
     gitRoot: options.gitRoot !== undefined ? options.gitRoot : gitRoot(cwd),
     errors: [],
     warnings: [], // capture refusals, for tests/debug (see protectedDestination)
@@ -365,31 +415,41 @@ function hasExplicitDir(state) {
   return typeof override === 'string' && override.trim() !== '';
 }
 
-// Fail closed: a trace in an implicit directory with no repository above it
-// cannot be excluded from git, so it is not written at all. An explicit
+// Fail closed: a trace in an implicit directory is written only when its
+// exclusion is proven on disk. That covers three shapes the old "does a git
+// root exist" test let through: no repository at all, a malformed `.git` whose
+// target git never reads, and a repository whose `info/exclude` cannot be
+// written or read back (EACCES, a redirected path). The runtime write itself is
+// still attempted whenever a repository is found, even with an explicit
+// destination, so the pin's own capture stays excluded. An explicit
 // `AEP_HARNESS_PROFILE_DIR` is the operator's choice of destination and is
-// honored everywhere (tests, ad-hoc capture, a directory outside the repo).
-// The refusal is recorded once per state so a plugin can surface it; it is not
-// an error and never fails the session.
+// honored everywhere (tests, ad-hoc capture, a directory outside the repo). The
+// refusal is recorded once per state, naming the reason, so a plugin can surface
+// it; it is not an error and never fails the session.
 function protectedDestination(state) {
-  if (state.gitRoot || hasExplicitDir(state)) return true;
+  if (state.protection === undefined) {
+    state.protection = state.gitRoot
+      ? excludeTraceDir(state.cwd)
+      : { ok: false, reason: `no git repository above ${state.cwd} and ${DIR} is unset` };
+  }
+  if (hasExplicitDir(state)) return true;
+  if (state.protection.ok) return true;
   const warning =
-    `trace capture skipped: no git repository above ${state.cwd} and ${DIR} is unset, `
-    + 'so the trace could not be excluded from git; set '
-    + `${DIR} to capture in an explicit directory`;
+    `trace capture skipped: ${state.protection.reason}, so the trace could not be excluded from git; `
+    + `set ${DIR} to capture in an explicit directory`;
   if (!state.warnings.includes(warning)) state.warnings.push(warning);
   return false;
 }
 
-// Preparation runs once, before the first event is dispatched: write the
-// exclusion that keeps the ledger out of git (unconditional, because the pin
-// skips it when the directory already exists), then bound the directory's
-// growth. Both are best-effort; a failure is recorded and capture continues.
+// Preparation runs once, before the first event is dispatched: the exclusion is
+// already verified by `protectedDestination`, so this only bounds the
+// directory's growth. It is best-effort; a failure is recorded and capture
+// continues. Pruning runs once per process, so the bounds hold across process
+// starts rather than continuously within one long-lived process.
 function ensurePrepared(state) {
   if (state.prepared) return;
   state.prepared = true;
   try {
-    excludeTraceDir(state.cwd);
     pruneTraces(traceDirOf(state), { days: retentionDays(state.env), maxBytes: maxTraceBytes(state.env) });
   } catch (error) {
     state.errors.push(error);

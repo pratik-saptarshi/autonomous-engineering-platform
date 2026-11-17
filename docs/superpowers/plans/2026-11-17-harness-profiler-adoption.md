@@ -41,7 +41,7 @@ Panels: feasibility ×2, code-quality, risk ×2, devil ×2. All six returned pro
 - No `npx`, no `npm install`, no telemetry at runtime. Zero adapter dependencies.
 - Capture is opt-in and inert by default; disabling leaves no files and no directories.
 - Capture never fails a session: every handler path returns.
-- Traces never enter git: `.gitignore` entry **and** the common git dir's `info/exclude`, written unconditionally and idempotently; new trace files mode `0600`.
+- Traces never enter git through two layers: a committed `.gitignore` entry for `.harness-profile/` (a fresh clone, and any runtime write that cannot land) **and** the common git dir's `info/exclude`, written unconditionally, idempotently, and read back from disk before the first record. If the entry cannot be verified and `AEP_HARNESS_PROFILE_DIR` is unset, capture writes nothing and records a one-time warning naming the reason (no repository, an unresolvable `.git`, an unwritable or unreadable `info/exclude`). The runtime attribution is proved by E10 in its own throwaway repo, whose `.gitignore` contains only `dist/`; in this checkout the committed `.gitignore` outranks `info/exclude` and names the ignore. New trace files mode `0600`.
 - Records: schema v2, one JSON object per line, ≤ 4096 bytes, fields per `hp.js:335-370`.
 - `context_tokens` means prompt-side only: `input + cache.read + cache.write` (`hp.js:238`); never `tokens.total`, never `+ output`.
 - Root-context records omit `agent_id`; emitting it makes `contextsOf` create a phantom second root (`hp.js:547-575`).
@@ -147,11 +147,11 @@ Evals: **E6** inertness, **E7** duration pairing, **E8** parent linkage on live 
 
 **Files:** create `tools/harness-profile/hygiene.test.js`; modify `.gitignore`.
 
-Evals: **E10** pre-existing trace dir still excluded; **E11** no-`.git` directory gets no exclusion and is documented; **E12** two concurrent writers produce well-formed lines; **E13** retention: prune older than N days, documented size budget.
+Evals: **E10** pre-existing trace dir still excluded; **E10b** the committed `.gitignore` and the runtime `info/exclude` both hold; **E11** no-`.git` directory gets no exclusion and is documented; **E11b** an unwritable `info/exclude` or a malformed `.git` writes no records and warns; **E12** two concurrent writers produce well-formed lines; **E13** retention: prune older than N days, documented size budget.
 
 - [ ] **Step 1 (RED):** each case fails against the naive implementation (reproduced failures: exclude skipped when the dir exists, `0644` files).
 - [ ] **Step 2:** fix; document retention in the operator doc.
-- [ ] **Step 3 (GREEN):** all pass; `git check-ignore -v .harness-profile/x` names `info/exclude` (not merely `.gitignore`).
+- [ ] **Step 3 (GREEN):** all pass; E10 proves in its own throwaway repo that `git check-ignore -v .harness-profile/x` names `info/exclude`, and E10b that the committed `.gitignore` entry and the runtime entry both hold; E11b proves an unwritable `info/exclude` and a malformed `.git` write no records.
 - [ ] **Step 4:** commit `fix(profile): make trace exclusion idempotent and bound growth`.
 
 ## Phase D — Operator surface (M4)
@@ -164,6 +164,7 @@ Eval **E14**: wrapper resolves the repo root by walking up for `reference/harnes
 
 - [ ] **Step 1 (RED):** run `bash scripts/profile-tree.sh tree` from `scripts/` with `PATH` stripped of `node` → the current failure is a raw `sh: node: not found` with no guidance. That is the RED.
 - [ ] **Step 2:** implement root discovery, the Node check, `--help`, and the message; document enable/disable (including the service-restart requirement, since a shell-exported env var does not reach a running `opencode serve`), trace location, retention, masking caveat, and dev-host scope.
+- [ ] **Condition (operator surface for refusals):** D1 must surface the capture refusals the handler records in `state.warnings` — E11's no-repository refusal and C2's unverifiable-exclusion refusal (EACCES, malformed `.git`) — at least once per process, so a quietly absent capture is visible in the server log rather than only in the reference page.
 - [ ] **Step 3 (GREEN):** wrapper works from a subdirectory; markdownlint clean; `shellcheck`/`shfmt` clean.
 - [ ] **Step 4:** commit `feat(profile): add profile-tree wrapper and operator docs`.
 
@@ -199,7 +200,7 @@ Eval **E14**: wrapper resolves the repo root by walking up for `reference/harnes
 - [ ] M0: the five fields are observed from real opencode events; PROCEED recorded before any vendoring, or the adoption ends as principles-only.
 - [ ] M1: manifest, unlisted-file guard and symlink check green; `docs-lint` and `security` green; upstream suite green in a CI job; byte-identity proven by second-extraction `diff -r`.
 - [ ] M2: E1–E5 green with recorded RED; the pin's `contextsOf`/`renderTree` prove nesting and spend **on records read back from the written trace file**; no `parent not recorded` output; root and child spend both non-zero.
-- [ ] M3: E6–E13 green; capture inert by default; the plugin's export shape is verified against the v2.3 server; exclusion idempotent and verified via `git check-ignore -v`; growth bounded; `git status` clean with the ledger present.
+- [ ] M3: E6–E13 green; capture inert by default; the plugin's export shape is verified against the v2.3 server; exclusion idempotent, read back from disk before the first record, and verified via `git check-ignore -v` in E10's throwaway repo; growth bounded **across process starts** (14 days / 32 MiB, first event of each process); `git status` clean with the ledger present.
 - [ ] M4: E14 green; docs state dev-host scope, the service-restart requirement, and the masking gaps.
 - [ ] M5: owner ruling recorded before production wiring.
 - [ ] Every task SDD-executed: implementer + fresh reviewer, ledger entries, no completion on self-review alone.

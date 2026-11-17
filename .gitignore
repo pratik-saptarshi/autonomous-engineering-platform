@@ -1,10 +1,13 @@
 dist/
 
-# .harness-profile/ is deliberately not listed here: the capture handler writes
-# the repository's own info/exclude on first event, so `git check-ignore -v
-# .harness-profile/x` names the runtime exclusion rather than this file. Listing
-# it here as well would outrank that entry (per-directory .gitignore beats
-# $GIT_DIR/info/exclude) and hide whether the handler's write happened.
+# Harness capture ledger. Two layers: this committed entry covers a fresh clone
+# and a runtime write that cannot land, while the handler also writes
+# `.harness-profile/` into the common git dir's `info/exclude` on first event and
+# verifies it before writing any record. A per-directory .gitignore outranks
+# `$GIT_DIR/info/exclude`, so in this checkout `git check-ignore -v` names this
+# file; E10 proves the runtime write in its own throwaway repo, whose .gitignore
+# contains only `dist/`.
+/.harness-profile/
 
 # .superpowers/ — local SDD workspace, never committed
 .superpowers/

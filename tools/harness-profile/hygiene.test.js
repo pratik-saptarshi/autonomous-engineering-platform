@@ -8,17 +8,23 @@
 //     the directory, so a `.harness-profile/` that already exists would stay
 //     visible to git without the handler's own unconditional write. The test
 //     pre-creates the directory, then asserts the repository's `info/exclude`
-//     is the source `git check-ignore -v` names.
+//     is the source `git check-ignore -v` names. E10b repeats it with the
+//     committed `.gitignore` layer present, so both layers are shown to hold and
+//     the attribution case stays in a repo whose `.gitignore` has only `dist/`.
 // E11 no git repository and no explicit dir: fail closed. The trace could not
 //     be excluded from git, so no record (masked or not) is written into an
 //     unprotected directory; the handler records one warning instead. An
 //     explicit `AEP_HARNESS_PROFILE_DIR` is the documented escape hatch and is
-//     tested here too.
+//     tested here too. E11b covers the other unprotected shapes: a repository
+//     whose `info/exclude` cannot be written (EACCES) and a malformed `.git`
+//     file. Both must write nothing; the old guard only asked whether a git
+//     root existed, so both wrote a committable trace.
 // E12 concurrent writers: two processes append to the same session file. Every
 //     line must be one complete record; a writer that emits the body and the
 //     newline as separate appends interleaves them.
 // E13 retention: age-prune with a default window plus a hard byte ceiling, both
-//     env-overridable, idempotent, and limited to this writer's file suffixes.
+//     env-overridable, idempotent, and limited to this writer's own `ses_*`
+//     trace names, so a shared explicit directory keeps foreign files.
 //
 // The concurrency test uses real processes: in-process appends are serialized
 // by JavaScript, so only separate processes can interleave at the write(2)
@@ -132,6 +138,37 @@ test('E10: a pre-existing trace dir is excluded through the repository info/excl
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test('E10b: with the committed .gitignore layer present, both layers hold and info/exclude still gets the entry', async () => {
+  const root = gitRepo();
+  const cwd = path.join(root, 'a', 'b');
+  fs.mkdirSync(cwd, { recursive: true });
+  fs.mkdirSync(path.join(root, '.harness-profile'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.harness-profile', 'ses_previous.jsonl'), '{"v":2}\n');
+  // The committed layer, exactly as this repository ships it.
+  fs.writeFileSync(path.join(root, '.gitignore'), 'dist/\n/.harness-profile/\n');
+
+  const state = handle.createState({ cwd, env: enabled() });
+  const records = await feed(state, fixture('tool-calls.json').events);
+  assert.ok(records.length > 0, 'the capture wrote no records');
+  assert.deepEqual(state.warnings, [], 'a writable repository is not a refusal');
+
+  // Layer 1: the runtime entry is still written and readable as the exact line.
+  const excludeFile = path.join(root, '.git', 'info', 'exclude');
+  const entries = fs.readFileSync(excludeFile, 'utf8').split(/\r?\n/).filter((line) => line === '.harness-profile/');
+  assert.equal(entries.length, 1, 'the runtime entry was not written exactly once');
+
+  // Layer 2: git ignores the trace, and the committed file is what names it
+  // (per-directory .gitignore outranks $GIT_DIR/info/exclude). The attribution
+  // proof for the runtime write lives in E10's own dist/-only repo above.
+  const checked = execFileSync('git', ['-C', root, 'check-ignore', '-v', '.harness-profile/x'], { encoding: 'utf8' }).trim();
+  const match = /^(.*):(\d+):(.*)\t(.*)$/.exec(checked);
+  assert.ok(match, `unexpected check-ignore output: ${checked}`);
+  assert.equal(fs.realpathSync(path.resolve(root, match[1])), fs.realpathSync(path.join(root, '.gitignore')));
+  assert.deepEqual(execFileSync('git', ['-C', root, 'status', '--porcelain', '--', '.harness-profile'], { encoding: 'utf8' }), '', 'the ledger is visible to git status');
+
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test('E11: with no git repository and no explicit dir, capture writes nothing (fail closed)', async () => {
   // A temp directory with no `.git` anywhere above it. The default trace dir
   // would be `.harness-profile/` here, unprotected: git could commit it.
@@ -159,6 +196,80 @@ test('E11: with no git repository and no explicit dir, capture writes nothing (f
 
   fs.rmSync(dir, { recursive: true, force: true });
   fs.rmSync(override, { recursive: true, force: true });
+});
+
+test('E11b: an unverifiable exclusion writes no records and warns with the reason', async (t) => {
+  // The three shapes the "does a git root exist" guard let through. Each must
+  // write nothing and name the reason once.
+  const capture = async (cwd) => {
+    const state = handle.createState({ cwd, env: enabled() });
+    const records = await feed(state, fixture('tool-calls.json').events);
+    return { state, records };
+  };
+
+  // (a) The repository exists but info/exclude cannot be written: 0555 info,
+  // 0444 exclude leaves the file readable and the append EACCES.
+  if (typeof process.getuid === 'function' && process.getuid() === 0) {
+    t.diagnostic('skipping the EACCES case: root bypasses permission bits');
+  } else {
+    const root = gitRepo();
+    const info = path.join(root, '.git', 'info');
+    const exclude = path.join(info, 'exclude');
+    fs.chmodSync(exclude, 0o444);
+    fs.chmodSync(info, 0o555);
+    try {
+      const { state, records } = await capture(root);
+      assert.deepEqual(records, [], 'a record was written although the exclusion failed');
+      assert.equal(fs.existsSync(path.join(root, '.harness-profile')), false, 'a trace directory was created without a verified exclusion');
+      assert.equal(state.warnings.length, 1, 'the refusal must be recorded once');
+      assert.match(state.warnings[0], /EACCES|EPERM/, 'the warning must name the write error');
+      assert.match(state.warnings[0], /AEP_HARNESS_PROFILE_DIR/, 'the warning must name the escape hatch');
+      assert.deepEqual(state.errors, [], 'a refusal is a warning, not a handler error');
+      assert.deepEqual(execFileSync('git', ['-C', root, 'status', '--porcelain'], { encoding: 'utf8' }), '', 'the refused capture left the tree dirty');
+
+      // The normal path is unaffected once the permission is restored.
+      fs.chmodSync(info, 0o755);
+      fs.chmodSync(exclude, 0o644);
+      const normal = await capture(root);
+      assert.equal(normal.records.length, 3, 'the writable path stopped capturing');
+      assert.deepEqual(normal.state.warnings, [], 'a writable repository is not a refusal');
+      assert.equal(
+        fs.readFileSync(exclude, 'utf8').split(/\r?\n/).filter((line) => line === '.harness-profile/').length,
+        1,
+        'the exclusion was not written once the permission was restored',
+      );
+      assert.doesNotThrow(
+        () => execFileSync('git', ['-C', root, 'check-ignore', '-q', '.harness-profile/x']),
+        'the restored repository does not ignore the ledger',
+      );
+    } finally {
+      fs.chmodSync(info, 0o755);
+      fs.chmodSync(exclude, 0o644);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  // (b) `.git` is a file whose target does not exist: git would refuse the
+  // repository, so the exclusion cannot be shown to be in effect.
+  const dangling = scratch('hp-hygiene-dangling-');
+  fs.writeFileSync(path.join(dangling, '.git'), 'gitdir: /nonexistent/hp-hygiene-gitdir\n');
+  const first = await capture(dangling);
+  assert.deepEqual(first.records, [], 'a dangling .git still wrote records');
+  assert.equal(fs.existsSync(path.join(dangling, '.harness-profile')), false);
+  assert.equal(first.state.warnings.length, 1);
+  assert.match(first.state.warnings[0], /does not resolve|malformed/i, 'the warning must name the malformed .git');
+
+  // (c) `.git` is a file with no gitdir line at all.
+  const garbage = scratch('hp-hygiene-garbage-git-');
+  fs.writeFileSync(path.join(garbage, '.git'), 'this is not a gitdir pointer\n');
+  const second = await capture(garbage);
+  assert.deepEqual(second.records, [], 'a garbage .git still wrote records');
+  assert.equal(fs.existsSync(path.join(garbage, '.harness-profile')), false);
+  assert.equal(second.state.warnings.length, 1);
+  assert.match(second.state.warnings[0], /does not resolve|malformed/i);
+
+  fs.rmSync(dangling, { recursive: true, force: true });
+  fs.rmSync(garbage, { recursive: true, force: true });
 });
 
 // The two-writer child. It waits for a `go` file so both processes append at
@@ -276,6 +387,10 @@ test('E13: retention prunes traces older than the default window and is idempote
   const current = touch(dir, 'ses_current.jsonl', 0.1, { now });
   const boundary = touch(dir, 'ses_boundary.jsonl', 14.5, { now });
   const unrelated = touch(dir, 'notes.txt', 30, { now });
+  // A shared AEP_HARNESS_PROFILE_DIR: another tool's JSONL is not ours to prune,
+  // even though it has the same extension and is far outside the window.
+  const foreign = touch(dir, 'other-tool-traces.jsonl', 30, { now });
+  const operatorNotes = touch(dir, 'notes.jsonl', 30, { now });
   const nested = path.join(dir, 'nested.jsonl');
   fs.mkdirSync(nested);
   touch(nested, 'inside.jsonl', 30, { now });
@@ -285,7 +400,7 @@ test('E13: retention prunes traces older than the default window and is idempote
   const removed = handle.pruneTraces(dir, { now });
   assert.deepEqual(names(removed), ['ses_boundary.jsonl', 'ses_old.jsonl', 'ses_old.parentage.json']);
   for (const gone of [old, oldSidecar, boundary]) assert.equal(fs.existsSync(gone), false, `${gone} survived`);
-  for (const kept of [recent, current, unrelated]) assert.equal(fs.existsSync(kept), true, `${kept} was pruned`);
+  for (const kept of [recent, current, unrelated, foreign, operatorNotes]) assert.equal(fs.existsSync(kept), true, `${kept} was pruned`);
   assert.equal(fs.existsSync(path.join(nested, 'inside.jsonl')), true, 'prune recursed into a directory named like a trace');
 
   // Idempotent: the second run has nothing left to remove and deletes nothing.
@@ -310,15 +425,18 @@ test('E13b: the byte budget removes the oldest trace files until the directory f
   const middle = touch(dir, 'ses_b.jsonl', 2, { now, body });
   const newest = touch(dir, 'ses_c.jsonl', 1, { now, body });
   const unrelated = touch(dir, 'notes.txt', 4, { now, body });
+  const foreign = touch(dir, 'other-tool-traces.jsonl', 5, { now, body });
 
-  // 1,800 bytes of traces against a 1,000-byte ceiling: drop oldest-first.
+  // 1,800 bytes of traces against a 1,000-byte ceiling: drop oldest-first. The
+  // foreign JSONL is neither counted nor removed.
   const removed = handle.pruneTraces(dir, { now, days: 0, maxBytes: 1000 });
   assert.deepEqual(names(removed), ['ses_a.jsonl', 'ses_b.jsonl']);
   for (const gone of [oldest, middle]) assert.equal(fs.existsSync(gone), false);
   assert.equal(fs.existsSync(newest), true, 'the newest trace was pruned before an older one');
   assert.equal(fs.existsSync(unrelated), true, 'a non-trace file counted against the budget');
+  assert.equal(fs.existsSync(foreign), true, 'a foreign .jsonl was pruned from a shared directory');
 
-  const total = fs.readdirSync(dir).filter((name) => name.endsWith('.jsonl')).reduce((sum, name) => sum + fs.statSync(path.join(dir, name)).size, 0);
+  const total = fs.readdirSync(dir).filter((name) => /^ses_.*\.jsonl$/.test(name)).reduce((sum, name) => sum + fs.statSync(path.join(dir, name)).size, 0);
   assert.ok(total <= 1000, `${total} bytes remain above the budget`);
   assert.deepEqual(handle.pruneTraces(dir, { now, days: 0, maxBytes: 1000 }), [], 'the size prune is not idempotent');
 
