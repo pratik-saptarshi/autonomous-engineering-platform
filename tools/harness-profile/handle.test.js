@@ -5,10 +5,16 @@
 // spawns must bind deterministically, and a `session.get` miss must never be
 // cached as "no parent".
 //
+// Parentage order under test: the spawn response (authoritative) reconciles an
+// earlier `session.get`/FIFO binding; `session.get` binds while the response is
+// in flight; FIFO is provisional. E8, E8d, E8e and E8f cover both arrival orders
+// and two out-of-order children. C1's slice is E6-E9b; M3 also needs C2's
+// E10-E13, so these tests passing does not close M3.
+//
 // The handler is the only thing under test here. The `.opencode/plugins/`
 // entry point is thin ESM that subscribes and calls `handleEvent`; E9b imports
-// it dynamically and asserts the shape opencode 2.3 accepts, so M3 cannot pass
-// while the plugin is dead.
+// it dynamically and asserts the shape opencode 2.3 accepts, so the plugin
+// cannot be dead while this suite is green.
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -58,6 +64,73 @@ function byId(records, id) {
   const found = records.find((record) => record.tool_use_id === id);
   assert.ok(found, `no record for ${id}`);
   return found;
+}
+
+// opencode 2.3's spawn response carries `metadata: {sessionID, background}`
+// (task tool). A test that isolates a non-response parentage source removes it
+// rather than exercising an event shape the runtime does not send.
+function withoutSpawnResponse(data) {
+  for (const event of data.events) {
+    if (event.type === 'session.tool.success' && event.data.id === 'call_spawn') {
+      delete event.data.metadata;
+    }
+  }
+  return data;
+}
+
+// Two concurrent spawning calls for one parent. `first` is the order in which
+// the children's events are observed (which is what FIFO guesses from);
+// `responses` is the order in which the spawn responses arrive (which is
+// authoritative). opencode 2.3's real metadata is on every response.
+function concurrentSpawn({ first, responses }) {
+  const root = 'ses_root_concurrent';
+  const childA = 'ses_child_a';
+  const childB = 'ses_child_b';
+  const callOf = { [childA]: 'call_a', [childB]: 'call_b' };
+  const events = [
+    ['session.tool.input.started', root, 'call_a', 'msg_r', 'subagent', {}],
+    ['session.tool.called', root, 'call_a', 'msg_r', '', { agent: 'general', description: 'a', prompt: 'a' }],
+    ['session.tool.input.started', root, 'call_b', 'msg_r', 'subagent', {}],
+    ['session.tool.called', root, 'call_b', 'msg_r', '', { agent: 'general', description: 'b', prompt: 'b' }],
+  ];
+  for (const child of first) {
+    const suffix = child === childA ? 'a' : 'b';
+    const tokens = child === childA ? 1 : 2;
+    events.push(
+      ['session.tool.input.started', child, `call_r${suffix}`, `msg_${suffix}`, 'read', {}],
+      ['session.tool.called', child, `call_r${suffix}`, `msg_${suffix}`, '', { filePath: suffix }],
+      ['session.tool.success', child, `call_r${suffix}`, `msg_${suffix}`, '', { content: [{ type: 'text', text: suffix }] }],
+      ['session.step.ended', child, '', `msg_${suffix}`, '', { tokens: { input: tokens, output: tokens, reasoning: 0, cache: { read: 0, write: 0 } } }],
+    );
+  }
+  for (const child of responses) {
+    events.push([
+      'session.tool.success',
+      root,
+      callOf[child],
+      'msg_r',
+      '',
+      { content: [{ type: 'text', text: 'done' }], metadata: { sessionID: child, background: true } },
+    ]);
+  }
+  events.push(['session.step.ended', root, '', 'msg_r', '', { tokens: { input: 10, output: 10, reasoning: 0, cache: { read: 0, write: 1 } } }]);
+  return {
+    root,
+    childA,
+    childB,
+    events: events.map(([type, sessionID, id, assistantMessageID, name, data], index) => ({
+      id: `evt_${index}`,
+      created: 1800000000000 + index * 100,
+      type,
+      data: {
+        sessionID,
+        assistantMessageID,
+        ...(id ? { id } : {}),
+        ...(name ? { name } : {}),
+        ...data,
+      },
+    })),
+  };
 }
 
 test('E6: without AEP_HARNESS_PROFILE handleEvent is inert', async () => {
@@ -167,7 +240,7 @@ test('E7c: a child turn-end records its spend so the live tree has no blank chil
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test('E8: parentage arrives through ctx.session.get().parentID and says so', async () => {
+test('E8: the spawn response outranks session.get and reconciles its binding (response after FIFO)', async () => {
   const dir = scratch();
   const parents = { [CHILD]: ROOT };
   const looks = [];
@@ -180,23 +253,36 @@ test('E8: parentage arrives through ctx.session.get().parentID and says so', asy
     },
   });
 
+  // Both sources are present. The child's first event binds through the API
+  // (and the sole open spawn's FIFO tie-break) before the spawning call ends;
+  // the response then arrives and is authoritative, so it reconciles that
+  // earlier binding instead of being refused.
   const records = await feed(state, fixture('subagent.json').events);
   const spawn = byId(records, 'call_spawn');
 
   assert.equal(spawn.tool, 'Agent');
   assert.equal(spawn.name, 'general', 'the real spawn input names the agent');
   assert.equal(spawn.child_agent_id, CHILD, 'the spawning call carries the child session');
-  assert.deepEqual(handle.parentageOf(state, CHILD), { parent: ROOT, via: 'session.get' });
+  assert.deepEqual(spawn.child_spend, { new: 230, cached: 1100, out: 50, calls: 2 });
+  assert.deepEqual(handle.parentageOf(state, CHILD), { parent: ROOT, via: 'spawn-response' });
+  assert.equal(handle.spawnResponseOf(state, 'call_spawn'), CHILD);
 
-  // `session.get` is consulted once per session, only while its parent is
-  // unknown, and not again after the answer arrives.
+  // The API really did resolve first (so both sources were present), once.
+  assert.ok(looks.includes(CHILD), 'session.get did not run, so this is not the both-sources case');
   assert.equal(looks.filter((id) => id === CHILD).length, 1, `child looked up ${looks.length} times`);
+
+  // Superseding a non-response binding is recorded, not silent.
+  assert.deepEqual(handle.reconciliationsOf(state), [
+    { spawn: 'call_spawn', from: CHILD, to: CHILD, parent: ROOT },
+  ]);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
 test('E8a: session.created is the parentage source only when there is no session API', async () => {
   const dir = scratch();
-  const data = fixture('subagent.json');
+  // Isolate the event fallback: remove the spawn response's session id, which
+  // opencode 2.3 does send, so only `session.created` can bind here.
+  const data = withoutSpawnResponse(fixture('subagent.json'));
   // `session.created` for a child arrives after the spawning call started, as
   // it must for any parentage source to find the open spawn.
   data.events.splice(2, 0, {
@@ -215,15 +301,11 @@ test('E8a: session.created is the parentage source only when there is no session
 
 test('E8b: a spawn response carrying a session id binds that child, and says so', async () => {
   const dir = scratch();
-  // No session.get at all: the response is the only source. This is the path a
-  // host takes when it does return the child id; the live smoke asserts that
-  // opencode 2.3 does not, which is why the API path is the one that fires.
+  // No session.get at all and no child events: the response is the only source.
+  // opencode 2.3 does return the child id in the spawn response metadata,
+  // `{sessionID, background}`; the live smoke's debug sidecar records the same
+  // shape (`spawnResponses: [{call, sessionID}]`).
   const data = fixture('subagent.json');
-  for (const event of data.events) {
-    if (event.type === 'session.tool.success' && event.data.id === 'call_spawn') {
-      event.data.metadata = { ...(event.data.metadata || {}), sessionID: CHILD };
-    }
-  }
   const state = handle.createState({ cwd: dir, env: enabled(dir) });
   // Only the root's events: a child session that appeared before the response
   // would have been rooted on its own, which is the documented limitation.
@@ -244,7 +326,8 @@ test('E8c: a session.get miss is retried, never cached as "no parent"', async ()
     undefined, // first event: the API cannot answer yet
     { id: CHILD, parentID: ROOT },
   ];
-  const events = fixture('subagent.json').events;
+  // Isolate the retry: no spawn response session id, so only the API can bind.
+  const events = withoutSpawnResponse(fixture('subagent.json')).events;
   const state = handle.createState({
     cwd: dir,
     env: enabled(dir),
@@ -266,60 +349,98 @@ test('E8c: a session.get miss is retried, never cached as "no parent"', async ()
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test('E8d: concurrent spawns bind FIFO to the first observed child', async () => {
-  // Two spawning calls are open for the same parent when both children appear.
-  // There is no spawn-call -> child API, so the branch that used to produce
-  // `parent not recorded` must pick deterministically: the first child session
-  // whose parent is learned binds to the earliest-started still-open call.
+test('E8d: out-of-order concurrent children are corrected by the spawn responses', async () => {
+  // Children are observed B then A, so FIFO guesses A<-B and B<-A. Both calls'
+  // responses carry 2.3's real metadata (`{sessionID, background}`) and arrive
+  // in spawn order, which re-points both calls. The final records must be
+  // correct by call, not by observation order.
   const dir = scratch();
-  const root = 'ses_root_concurrent';
-  const childA = 'ses_child_a';
-  const childB = 'ses_child_b';
-  const parents = { [childA]: root, [childB]: root };
-  const events = [
-    ['session.tool.input.started', root, 'call_a', 'msg_r', 'subagent', {}],
-    ['session.tool.called', root, 'call_a', 'msg_r', '', { agent: 'general', description: 'a', prompt: 'a' }],
-    ['session.tool.input.started', root, 'call_b', 'msg_r', 'subagent', {}],
-    ['session.tool.called', root, 'call_b', 'msg_r', '', { agent: 'general', description: 'b', prompt: 'b' }],
-    ['session.tool.input.started', childA, 'call_ra', 'msg_a', 'read', {}],
-    ['session.tool.called', childA, 'call_ra', 'msg_a', '', { filePath: 'a' }],
-    ['session.tool.success', childA, 'call_ra', 'msg_a', '', { content: [{ type: 'text', text: 'a' }] }],
-    ['session.step.ended', childA, '', 'msg_a', '', { tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } } }],
-    ['session.tool.input.started', childB, 'call_rb', 'msg_b', 'read', {}],
-    ['session.tool.called', childB, 'call_rb', 'msg_b', '', { filePath: 'b' }],
-    ['session.tool.success', childB, 'call_rb', 'msg_b', '', { content: [{ type: 'text', text: 'b' }] }],
-    ['session.step.ended', childB, '', 'msg_b', '', { tokens: { input: 2, output: 2, reasoning: 0, cache: { read: 0, write: 0 } } }],
-    ['session.tool.success', root, 'call_a', 'msg_r', '', { content: [{ type: 'text', text: 'da' }] }],
-    ['session.tool.success', root, 'call_b', 'msg_r', '', { content: [{ type: 'text', text: 'db' }] }],
-    ['session.step.ended', root, '', 'msg_r', '', { tokens: { input: 10, output: 10, reasoning: 0, cache: { read: 0, write: 1 } } }],
-  ].map(([type, sessionID, id, assistantMessageID, name, data], index) => ({
-    id: `evt_${index}`,
-    created: 1800000000000 + index * 100,
-    type,
-    data: {
-      sessionID,
-      assistantMessageID,
-      ...(id ? { id } : {}),
-      ...(name ? { name } : {}),
-      ...data,
-    },
-  }));
-
+  const data = concurrentSpawn({ first: ['ses_child_b', 'ses_child_a'], responses: ['ses_child_a', 'ses_child_b'] });
+  const parents = { [data.childA]: data.root, [data.childB]: data.root };
   const state = handle.createState({
     cwd: dir,
     env: enabled(dir),
     sessionGet: (id) => ({ id, parentID: parents[id] }),
   });
-  const records = await feed(state, events);
+  const records = await feed(state, data.events);
 
-  assert.equal(byId(records, 'call_a').child_agent_id, childA, 'the earliest open spawn took the first child');
-  assert.equal(byId(records, 'call_b').child_agent_id, childB, 'the second spawn took the second child');
-  assert.deepEqual(handle.parentageOf(state, childA), { parent: root, via: 'session.get' });
-  assert.deepEqual(handle.parentageOf(state, childB), { parent: root, via: 'session.get' });
+  assert.equal(byId(records, 'call_a').child_agent_id, data.childA, 'call_a must carry child A');
+  assert.equal(byId(records, 'call_b').child_agent_id, data.childB, 'call_b must carry child B');
+  assert.deepEqual(byId(records, 'call_a').child_spend, { new: 1, cached: 0, out: 1, calls: 1 });
+  assert.deepEqual(byId(records, 'call_b').child_spend, { new: 2, cached: 0, out: 2, calls: 1 });
+  assert.deepEqual(handle.parentageOf(state, data.childA), { parent: data.root, via: 'spawn-response' });
+  assert.deepEqual(handle.parentageOf(state, data.childB), { parent: data.root, via: 'spawn-response' });
 
   // The renderer's own view: two child contexts, neither orphaned.
   const { contexts } = hp.contextsOf(records);
   assert.equal(contexts.filter((context) => context.parent !== undefined).length, 2, 'both children hang off main');
+
+  const reconciled = handle.reconciliationsOf(state);
+  assert.equal(reconciled.length, 2, 'both swapped calls must record a reconciliation');
+  assert.deepEqual(
+    reconciled.map((entry) => `${entry.spawn}:${entry.to}`).sort(),
+    ['call_a:ses_child_a', 'call_b:ses_child_b'],
+  );
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('E8e: the same two children are correct when the responses arrive reversed', async () => {
+  // Identical observation order (B then A), but call B's response lands before
+  // call A's. Arrival order must not change the final attribution.
+  const dir = scratch();
+  const data = concurrentSpawn({ first: ['ses_child_b', 'ses_child_a'], responses: ['ses_child_b', 'ses_child_a'] });
+  const parents = { [data.childA]: data.root, [data.childB]: data.root };
+  const state = handle.createState({
+    cwd: dir,
+    env: enabled(dir),
+    sessionGet: (id) => ({ id, parentID: parents[id] }),
+  });
+  const records = await feed(state, data.events);
+
+  assert.equal(byId(records, 'call_a').child_agent_id, data.childA);
+  assert.equal(byId(records, 'call_b').child_agent_id, data.childB);
+  assert.deepEqual(byId(records, 'call_a').child_spend, { new: 1, cached: 0, out: 1, calls: 1 });
+  assert.deepEqual(byId(records, 'call_b').child_spend, { new: 2, cached: 0, out: 2, calls: 1 });
+  assert.deepEqual(handle.parentageOf(state, data.childA), { parent: data.root, via: 'spawn-response' });
+  assert.deepEqual(handle.parentageOf(state, data.childB), { parent: data.root, via: 'spawn-response' });
+
+  const reconciled = handle.reconciliationsOf(state);
+  assert.equal(reconciled.length, 2);
+  assert.deepEqual(
+    reconciled.map((entry) => `${entry.spawn}:${entry.to}`).sort(),
+    ['call_a:ses_child_a', 'call_b:ses_child_b'],
+  );
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('E8f: a response observed first binds the child; later child events do not override it (FIFO after response)', async () => {
+  const dir = scratch();
+  const data = fixture('subagent.json');
+  const response = data.events.find((event) => event.type === 'session.tool.success' && event.data.id === 'call_spawn');
+  const childEvents = data.events.filter((event) => event.data.sessionID === CHILD);
+  const rest = data.events.filter((event) => event !== response && event.data.sessionID !== CHILD);
+  // Arrival order: root call start, spawn response, then every child event.
+  const events = [...rest.slice(0, 2), response, ...childEvents, ...rest.slice(2)];
+
+  const looks = [];
+  const state = handle.createState({
+    cwd: dir,
+    env: enabled(dir),
+    sessionGet: (id) => {
+      looks.push(id);
+      return { id, parentID: id === CHILD ? ROOT : undefined };
+    },
+  });
+  const records = await feed(state, events);
+
+  const spawn = byId(records, 'call_spawn');
+  assert.equal(spawn.child_agent_id, CHILD);
+  // The response already made the child a member of the root tree, so the
+  // child's own events never need an API lookup (and cannot be re-bound).
+  assert.equal(looks.filter((id) => id === CHILD).length, 0, 'the child was re-resolved after the response bound it');
+  assert.deepEqual(handle.parentageOf(state, CHILD), { parent: ROOT, via: 'spawn-response' });
+  assert.deepEqual(spawn.child_spend, { new: 230, cached: 1100, out: 50, calls: 2 });
+  assert.deepEqual(handle.reconciliationsOf(state), []);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 

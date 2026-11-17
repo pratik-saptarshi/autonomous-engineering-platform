@@ -95,7 +95,7 @@
         "assistantMessageID": "msg_r1",
         "id": "call_spawn",
         "content": [{ "type": "text", "text": "done" }],
-        "metadata": { "status": "completed" },
+        "metadata": { "sessionID": "ses_child_agent", "background": true },
         "executed": false
       }
     },

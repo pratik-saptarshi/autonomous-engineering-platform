@@ -9,14 +9,26 @@
 // the completion event would lose `context_tokens` (the translator's header
 // documents the same contract).
 //
-// Parentage: `session.created` never fired in Phase 0, so a child is bound
-// through `ctx.session.get().parentID` whenever the API is available. (The
-// 2.3 spawn response does carry a session id in `metadata`, and some hosts emit
-// `session.created`; both are recorded, but the API is the primary path and the
-// live smoke asserts which one actually bound.) A lookup miss is *not*
-// remembered: the session's events are deferred and the lookup is retried on
-// each following event. Only a real answer (a parent id, or a session object
-// with no parent) is cached.
+// Parentage precedence, highest first:
+//
+//   1. The spawn response — `session.tool.success.metadata.sessionID`, the
+//      authoritative call -> child mapping opencode 2.3 returns (it sends
+//      `{sessionID, background}`). It wins whenever it arrives, even after an
+//      earlier binding: a `session.get`/FIFO link for that open spawn is
+//      reconciled in place — the call is re-pointed, the displaced child is
+//      released, and the record built later carries the corrected
+//      `child_agent_id` and `child_spend`. Arrival order never decides.
+//   2. `ctx.session.get().parentID` — the authoritative parent of a child
+//      session, and what binds the child while a response is still in flight.
+//      A lookup miss is *not* remembered: the session's events are deferred and
+//      the lookup is retried on each following event. Only a real answer (a
+//      parent id, or a session object with no parent) is cached.
+//   3. FIFO among still-open spawns for the same parent — a provisional
+//      fallback for out-of-order observation when several spawns are open. It
+//      is never final: either call's response supersedes it.
+//
+// `session.created` is a host-dependent extra, honored only when there is no
+// session API at all, so it can never outrank the API path.
 
 const fs = require('fs');
 const path = require('path');
@@ -138,6 +150,7 @@ function createRootTree(state, id) {
       parentage: new Map(), // child -> { parent, via }
       spawnResponses: new Map(), // spawn call -> child session id | null
       tieBreaks: [], // concurrent-spawn bindings, for the debug sidecar
+      reconciliations: [], // response bindings that superseded an earlier one
     };
     state.trees.set(id, tree);
   }
@@ -195,11 +208,11 @@ async function ensureTree(state, id) {
 // Bind a child to its tree. `translate.noteChild` handles the unambiguous
 // one-open-spawn case. When several spawning calls are open for the same
 // parent, the translator deliberately refuses; this handler then applies the
-// deterministic tie-break: the first child session whose parentage is learned
+// provisional tie-break: the first child session whose parentage is learned
 // takes the earliest-started still-open call (FIFO, the order openSpawns keeps).
-// There is no spawn-call -> child API in opencode 2.3, so an ordering rule is
-// the only deterministic choice; children that emit their first event out of
-// order can still be misattributed.
+// This is only a guess for out-of-order observation. When the spawn response
+// for either call arrives it supersedes the guess: `bindSpawnResponse` re-points
+// the call and releases the displaced child.
 function attachChild(state, tree, child, parent, via) {
   state.parents.set(child, parent);
   state.sessionRoot.set(child, tree.rootSessionId);
@@ -284,6 +297,7 @@ function writeDebugSidecar(state, tree) {
       parentage: [...tree.parentage].map(([child, info]) => ({ child, ...info })),
       spawnResponses: [...tree.spawnResponses].map(([call, child]) => ({ call, sessionID: child })),
       tieBreaks: tree.tieBreaks,
+      reconciliations: tree.reconciliations,
     };
     const file = path.join(dir, `${String(tree.rootSessionId).replace(/[^\w.-]/g, '_')}.parentage.json`);
     fs.mkdirSync(dir, { recursive: true });
@@ -325,25 +339,74 @@ function spawnResponseChild(data) {
   return candidates.find((id) => id !== data.sessionID);
 }
 
+// A provisional (FIFO/session.get) link is dropped without touching the child's
+// parent: it keeps its tree, only its call attribution is reopened.
+function releaseLink(tree, callId) {
+  const t = tree.t;
+  const child = t.links.get(callId);
+  if (!child) return undefined;
+  t.links.delete(callId);
+  t.claimed.delete(child);
+  const entry = tree.parentage.get(child);
+  if (entry && entry.via !== 'spawn-response') tree.parentage.set(child, { ...entry, unbound: true });
+  return child;
+}
+
+// Put a call back in the open list after its provisional child was taken by
+// another call's authoritative response. Ordered by call start so "earliest
+// still-open" keeps its meaning for the FIFO fallback.
+function reopenSpawn(t, callId) {
+  const call = t.calls.get(callId);
+  if (!call || !call.sessionID) return;
+  let open = t.openSpawns.get(call.sessionID);
+  if (!open) t.openSpawns.set(call.sessionID, (open = []));
+  if (open.includes(callId)) return;
+  open.push(callId);
+  const startOf = (id) => {
+    const linked = t.calls.get(id) || {};
+    return linked.startedAt ?? linked.calledAt ?? Number.POSITIVE_INFINITY;
+  };
+  open.sort((a, b) => startOf(a) - startOf(b));
+}
+
+// The spawn response is authoritative for call -> child. It does not refuse a
+// child another source already tentatively bound: it takes the child over,
+// releases the call's previous guess, and records the correction so the
+// record built at the parent's step end carries the right child and spend.
 function bindSpawnResponse(state, tree, callId, childId) {
+  const t = tree.t;
   tree.spawnResponses.set(callId, childId || null);
   if (!childId) return;
-  const call = tree.t.calls.get(callId);
+  const call = t.calls.get(callId);
   if (!call || !call.sessionID || childId === call.sessionID) return;
-  if (tree.t.claimed.has(childId)) return;
-  // The child's events already created a tree of their own; re-rooting would
-  // strand its records in another file. The API path is what prevents that.
+  // A child already rooted on its own wrote records to its own file; re-rooting
+  // would strand them. Only a response that beat the child's first event can
+  // bind it (the API path makes that rare, and `session.get` prevents it in
+  // production).
   const existingRoot = state.sessionRoot.get(childId);
   if (existingRoot && existingRoot === childId && state.trees.has(childId)) return;
 
-  state.parents.set(childId, call.sessionID);
+  const parent = call.sessionID;
+  const hadEarlierBinding = t.links.has(callId) || tree.parentage.has(childId);
+  const previous = t.links.get(callId);
+  if (previous && previous !== childId) releaseLink(tree, callId);
+  for (const [other, linked] of [...t.links]) {
+    if (linked !== childId || other === callId) continue;
+    releaseLink(tree, other);
+    // Only reopen a call that has not answered yet; a response already seen is
+    // final for its own call.
+    if (!tree.spawnResponses.has(other)) reopenSpawn(t, other);
+  }
+
+  t.parents.set(childId, parent);
+  t.links.set(callId, childId);
+  t.claimed.add(childId);
+  pruneOpen(t, callId);
+  state.parents.set(childId, parent);
   state.via.set(childId, 'spawn-response');
   state.sessionRoot.set(childId, tree.rootSessionId);
-  tree.t.parents.set(childId, call.sessionID);
-  tree.t.links.set(callId, childId);
-  tree.t.claimed.add(childId);
-  pruneOpen(tree.t, callId);
-  tree.parentage.set(childId, { parent: call.sessionID, via: 'spawn-response' });
+  tree.parentage.set(childId, { parent, via: 'spawn-response' });
+  if (hadEarlierBinding) tree.reconciliations.push({ spawn: callId, from: previous || null, to: childId, parent });
 }
 
 function buffer(tree, event) {
@@ -521,6 +584,14 @@ function spawnResponseOf(state, callId) {
   return undefined;
 }
 
+// Response bindings that superseded an earlier (session.get/FIFO) binding, in
+// arrival order. Evidence for tests and for the debug sidecar.
+function reconciliationsOf(state) {
+  const all = [];
+  for (const tree of state.trees.values()) all.push(...tree.reconciliations);
+  return all;
+}
+
 module.exports = {
   ENABLE,
   DIR,
@@ -528,6 +599,7 @@ module.exports = {
   createState,
   handleEvent,
   parentageOf,
+  reconciliationsOf,
   spawnResponseOf,
   traceDirOf,
   excludeTraceDir,
