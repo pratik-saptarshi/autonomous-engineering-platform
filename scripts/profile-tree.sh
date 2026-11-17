@@ -41,7 +41,9 @@ usage() {
     '  .harness-profile that sits outside any git work tree: the pinned renderer' \
     '  resolves its project through git, so a destination inside one is re-read' \
     '  from that repository root instead, and the wrapper rejects it rather than' \
-    '  silently rendering a different directory.' \
+    '  silently rendering a different directory. On the default path the wrapper' \
+    '  sets CLAUDE_PROJECT_DIR to this repository, so an inherited value from' \
+    '  another checkout cannot redirect the read.' \
     '' \
     'Scope:' \
     '  Development host only. The shipped image has no Node and no reference/ tree,' \
@@ -128,6 +130,12 @@ if [ -n "${AEP_HARNESS_PROFILE_DIR:-}" ]; then
     [ -z "$probe" ] && probe=/
   done
   export CLAUDE_PROJECT_DIR=$project_dir
+else
+  # Default path: make the selection explicit. hp.js projectDir() reads
+  # env.CLAUDE_PROJECT_DIR before cwd, so an inherited value from another
+  # checkout would silently render that project's traces — set it to this
+  # repository's root instead of relying on the cd above.
+  export CLAUDE_PROJECT_DIR=$root
 fi
 
 cd -- "$root" || die "cannot enter repository root: $root"

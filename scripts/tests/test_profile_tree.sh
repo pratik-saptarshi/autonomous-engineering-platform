@@ -30,7 +30,7 @@ FAILURES=0
 # the end, so deleting an eval block fails the run instead of printing a
 # constant total over whatever is left.
 CHECKED=0
-EXPECTED_ASSERTIONS=7
+EXPECTED_ASSERTIONS=8
 
 trap 'rm -rf "$SB"' EXIT
 
@@ -179,6 +179,28 @@ elif grep -q 'eval-call' <<<"$out"; then
   fail "E14e: the wrapper rendered the repository default instead of the override: $out"
 else
   ok "E14e: external override honored down to the exact directory"
+fi
+
+# --- E14f: the default path ignores an inherited project selection. ---
+# hp.js projectDir() reads env.CLAUDE_PROJECT_DIR before cwd, so a value
+# inherited from another checkout would silently render that project's traces.
+# The wrapper must set it to this repository on the default path.
+note "E14f: an inherited CLAUDE_PROJECT_DIR cannot redirect the default read"
+FOREIGN="$SB/foreign"
+mkdir -p "$FOREIGN/.harness-profile"
+printf '%s\n' \
+  '{"v":2,"at":"2026-01-01T00:00:00.000Z","session":"ses_eval_foreign","agent":"main","tool":"Bash","name":"foreign-call"}' \
+  >"$FOREIGN/.harness-profile/ses_eval_foreign.jsonl"
+out="$(cd "$CHILD/scripts" && env -u AEP_HARNESS_PROFILE_DIR CLAUDE_PROJECT_DIR="$FOREIGN" "$BASH_BIN" ./profile-tree.sh tree --verbose 2>&1)"
+status=$?
+if [ "$status" -ne 0 ]; then
+  fail "E14f: the default path failed with an inherited project: $out"
+elif ! grep -q 'eval-call' <<<"$out"; then
+  fail "E14f: the default path did not render this repository's trace: $out"
+elif grep -q 'foreign-call' <<<"$out"; then
+  fail "E14f: an inherited CLAUDE_PROJECT_DIR redirected the read: $out"
+else
+  ok "E14f: default path renders this repository despite an inherited project"
 fi
 
 if [ "$CHECKED" -ne "$EXPECTED_ASSERTIONS" ]; then

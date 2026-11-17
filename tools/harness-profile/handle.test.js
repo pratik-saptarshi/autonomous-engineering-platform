@@ -234,6 +234,32 @@ test('E7b: step tokens join a specific call by assistantMessageID (non-zero cach
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('E7d: a service restart preserves the session cumulative spend', async () => {
+  // A restarted `opencode serve` starts a new process with an empty spend map
+  // but appends to the same trace file. The renderer keeps only the LAST stop
+  // per context, so without restoring the prior total the next stop erases
+  // everything captured before the restart (the reviewer's repro: 100 + 200
+  // rendered as 200).
+  const dir = scratch();
+  const turn = (root, tag, tokens) => [
+    { id: `a_${tag}_1`, created: 1794932000000, type: 'session.tool.input.started', data: { sessionID: root, id: `c_${tag}`, name: 'bash' } },
+    { id: `a_${tag}_2`, created: 1794932000001, type: 'session.tool.called', data: { sessionID: root, id: `c_${tag}`, assistantMessageID: `m_${tag}`, input: {} } },
+    { id: `a_${tag}_3`, created: 1794932000002, type: 'session.tool.success', data: { sessionID: root, id: `c_${tag}`, assistantMessageID: `m_${tag}`, content: [{ type: 'text', text: 'ok' }] } },
+    { id: `a_${tag}_4`, created: 1794932000003, type: 'session.step.ended', data: { sessionID: root, assistantMessageID: `m_${tag}`, tokens } },
+    { id: `a_${tag}_5`, created: 1794932000004, type: 'session.execution.succeeded', data: { sessionID: root } },
+  ];
+  const options = () => ({ cwd: dir, env: enabled(dir), sessionGet: (id) => ({ id }) });
+  const records1 = await feed(handle.createState(options()), turn(ROOT, 't1', { input: 100, output: 50, reasoning: 0, cache: { read: 200, write: 10 } }));
+  // The restart: a fresh process state, same destination, new turn.
+  const records2 = await feed(handle.createState(options()), turn(ROOT, 't2', { input: 50, output: 20, reasoning: 0, cache: { read: 100, write: 0 } }));
+
+  const spend = hp.contextSpend([...records1, ...records2]);
+  // The renderer keys the root context `main` (hp.js MAIN), not the session id.
+  assert.deepEqual(spend.get('main'), { new: 160, cached: 300, out: 70, calls: 2 },
+    'the second stop replaced the first instead of extending it');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('E8i: a background child that fails before any tokens still ends at its failure', async () => {
   const dir = scratch();
   const data = fixture('subagent.json');

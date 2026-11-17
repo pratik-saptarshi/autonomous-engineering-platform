@@ -460,9 +460,60 @@ function createRootTree(state, id) {
       reconciliations: [], // response bindings that superseded an earlier one
     };
     state.trees.set(id, tree);
+    seedSpendFromTrace(state, tree);
   }
   state.sessionRoot.set(id, id);
   return tree;
+}
+
+// A restarted `opencode serve` is a fresh process with an empty spend map that
+// appends to the same trace file. The pinned renderer keeps only the LAST
+// SubagentStop per context (`contextSpend`), so a process-local subtotal would
+// erase everything captured before the restart. Seed from the file, with the
+// renderer's own precedence: spawn-call `child_spend` first, then stops, each
+// last-wins in file order. Only the newest bytes are read — the last stop per
+// context is what matters, and it is always in the tail.
+const SEED_BYTES = 4 * 1024 * 1024;
+
+function seedSpendFromTrace(state, tree) {
+  const dir = traceDirOf(state);
+  const file = path.join(dir, `${String(tree.rootSessionId).replace(/[^\w.-]/g, '_')}.jsonl`);
+  let text;
+  try {
+    const size = fs.statSync(file).size;
+    const fd = fs.openSync(file, 'r');
+    try {
+      const length = Math.min(size, SEED_BYTES);
+      const buffer = Buffer.alloc(length);
+      fs.readSync(fd, buffer, 0, length, size - length);
+      text = buffer.toString('utf8');
+    } finally {
+      fs.closeSync(fd);
+    }
+    if (size > SEED_BYTES) text = text.slice(text.indexOf('\n') + 1); // drop the torn head
+  } catch {
+    return; // first capture in this destination, or unreadable
+  }
+  const childSpend = new Map();
+  const stops = new Map();
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    let record;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      continue; // a torn line is skipped, as the renderer does
+    }
+    if (record.event === 'SubagentStop' && record.agent_id && record.spend) {
+      // The translator keys the root's spend by session id, while the stop
+      // record carries the renderer's `main` id (translate.buildStopRecord);
+      // key the restore the same way the next stop will read it.
+      const key = record.agent_id === 'main' ? tree.rootSessionId : record.agent_id;
+      stops.set(key, record.spend);
+    } else if (record.child_agent_id && record.child_spend) childSpend.set(record.child_agent_id, record.child_spend);
+  }
+  for (const [id, spend] of childSpend) tree.t.spend.set(id, spend);
+  for (const [id, spend] of stops) tree.t.spend.set(id, spend);
 }
 
 // Consult the session API only while a session's parent is unknown. A miss

@@ -138,8 +138,9 @@ prints the same contract.
 message when no `node` is on `PATH`; it exits non-zero instead of printing a
 shell traceback. `--help` does not need Node.
 
-The pin's renderer reads only `<project>/.harness-profile`, and it resolves
-the project through git (`gitRoot` of the configured directory), so an
+The wrapper sets `CLAUDE_PROJECT_DIR` to the repository it discovered on the
+default path, so a value inherited from another checkout cannot silently
+redirect the read to a different project's traces. An
 explicit `AEP_HARNESS_PROFILE_DIR` is renderable only when its final path is a
 `.harness-profile` directory **outside any git work tree**. A destination
 inside one is rejected by the wrapper with the reason and both remedies —
@@ -166,6 +167,15 @@ when the trace cannot be shown to be excluded from git:
 - an explicit `AEP_HARNESS_PROFILE_DIR` that cannot be resolved to a real path
   at all (a symlink loop, an unreadable component), since capture cannot then
   prove which side of the work tree it is on.
+
+## Service restart and cumulative spend
+
+A restarted `opencode serve` starts a fresh process against an existing trace.
+Before the first record of a session is built, capture restores that session's
+cumulative spend from the trace already on disk (the newest few MiB), so the
+next root stop is the running total rather than a per-process subtotal. Without
+this the renderer would keep only the latest stop and silently drop everything
+captured before the restart.
 
 On the first refused event, the handler records the reason once, and the plugin
 writes it once per process to the `opencode serve` log:
