@@ -183,7 +183,11 @@ jobs:
         with:
           node-version: '22'
       - name: Run vendored harness-profiler unit suite
-        run: node --test reference/harness-profiler/test/
+        # Explicit glob: Node 22 treats positional --test arguments as glob
+        # patterns, so a bare directory argument fails with
+        # "Cannot find module .../test" there. The glob yields the same
+        # 4 test files (51 tests) on Node 18, 20, 22 and 26.
+        run: node --test reference/harness-profiler/test/*.test.js
 
   # Bounded claim: this gate proves the repo skills/ tree equals the manifest
   # generated from the repo tree immediately after the last sync copied from

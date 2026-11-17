@@ -6,7 +6,7 @@
 
 **Architecture:** The vendored tree (`reference/harness-profiler/`) is never edited and never reimplemented. AEP writes a **translator**: opencode events → the Claude-shaped payload that the pin's own `buildRecord` consumes, then `serialize` for the line, then `mask` for secrets. Records carry `context_tokens` and `child_spend` because the renderer derives spend only from those (`hp.js:318-332`). A shell wrapper exposes `tree`; a Go subcommand is deferred.
 
-**Tech Stack:** Node 18.13+ CommonJS (`node --test`), opencode v2.3 event API, Bash wrapper, sha256 vendor checks.
+**Tech Stack:** Node 18+ CommonJS (`node --test`), opencode v2.3 event API, Bash wrapper, sha256 vendor checks.
 
 **Spec:** `docs/plans/2026-11-17-harness-profiler-evaluation.md`. Pin: `v0.2.2` = `847bd8f6ab2a0348fd7b7057c1943e4c2fa861e8`.
 
@@ -93,7 +93,7 @@ Panels: feasibility ×2, code-quality, risk ×2, devil ×2. All six returned pro
   Plain `sort` matches the CI guard's own `find … | sort`; the set comparison is collation-consistent either way on this corpus (measured: locale and `LC_ALL=C` orders are identical here, 0 differing lines).
 
   Verify locally with the CI triple before committing: `sha256sum -c`, the `comm -23` unlisted guard, the broken-symlink loop.
-- [ ] **Step 6:** add a `vendor-tests` job (`actions/setup-node` Node 22 — Node 18 and 20 are past end-of-life as of 2026-11; upstream's floor stays `engines >=18.13`), `node --test reference/harness-profiler/test/`, timeout 5 min. No `npm install`; the suite runs 51/51 without playwright.
+- [ ] **Step 6:** add a `vendor-tests` job (`actions/setup-node` Node 22 — Node 18 and 20 are past end-of-life as of 2026-11; upstream's floor stays `engines >=18`), `node --test reference/harness-profiler/test/*.test.js` (the explicit glob; Node 22 treats a positional `--test` argument as a glob pattern and fails on the bare directory), timeout 5 min. No `npm install`; the suite runs 51/51 without playwright.
 - [ ] **Step 7 (GREEN):** manifest check clean; upstream suite green from the tree; `gitleaks detect --source . --no-git` clean; `markdownlint-cli2` over the repo clean; and byte-identity shown by extracting the tarball a second time into a temp dir and `diff -r --exclude=PROVENANCE.md` — the excluded file is the one addition, and the step asserts exactly that.
 - [ ] **Step 8:** write `docs/harness-profiler-reference.md` (pin, purpose, what AEP uses vs ignores, link to the operator doc).
 - [ ] **Step 9:** commit `chore(vendor): add harness-profiler v0.2.2 snapshot`.

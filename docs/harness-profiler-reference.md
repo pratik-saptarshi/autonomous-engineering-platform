@@ -12,7 +12,7 @@ Vendored snapshot: [PROVENANCE.md](../reference/harness-profiler/PROVENANCE.md) 
 |---|---|
 | one record per call, schema `v: 2`, ≤ 4096 bytes, secrets masked at write time | evidence discipline: a trace is a record of what happened, bounded and scrubbed like every other ledger |
 | contexts derived from spawn edges, not from guessed timestamps | claims about "which agent did what" ground in the recorded edge, not in a summary |
-| token spend attributed per context, derived only from `child_spend` / `SubagentStop.spend` | cost claims carry the field they came from; a blank column is shown blank, never estimated |
+| token spend attributed per context, from `child_spend` / `SubagentStop.spend` or, when the record carries a transcript path, from the transcript via `spentTokens` | cost claims carry the field they came from; a blank column is shown blank, never estimated |
 | vendored snapshot pinned by commit + sha256 manifest | everything imported from upstream is byte-identical and re-vendor-only |
 
 ## What AEP uses vs. ignores
@@ -32,7 +32,7 @@ The adoption writes a translator (opencode events → the payload `buildRecord` 
 ## Integrity and tests
 
 - `.github/vendor-harness-profiler.sha256` — 80 entries: the 79 upstream files plus `PROVENANCE.md`, the only added file. The `vendor-integrity` job checks sha256, rejects unlisted files, and rejects broken symlinks.
-- `vendor-tests` runs the pin's own suite, `node --test reference/harness-profiler/test/` (51 tests, Node 22, no `npm install`), under a 5-minute timeout.
+- `vendor-tests` runs the pin's own suite, `node --test reference/harness-profiler/test/*.test.js` (51 tests, Node 22, no `npm install`), under a 5-minute timeout. The explicit glob matters: Node 22 treats a positional `--test` argument as a glob pattern, so the directory form (`.../test/`) fails there with `Cannot find module …/test`; the four `*.test.js` files resolve identically on 18, 20, 22 and 26.
 - `docs-lint` excludes `reference/harness-profiler/**/*.md`: the pin ships 21 Markdown files preserved byte-exact, and `docs/design.md` uses a continuous ordered-list numbering (14 MD029 findings) that must not be edited in a vendor tree.
 - `security` scans the tree with gitleaks; `test/capture.test.js` is allowlisted by path for the two synthetic masker fixtures documented in `PROVENANCE.md`.
 
@@ -40,7 +40,7 @@ The adoption writes a translator (opencode events → the payload `buildRecord` 
 
 - The pin is a **Claude Code** profiler. opencode support is the translator's job, and only the five fields the record needs are mapped.
 - `mask` covers three patterns; `GITHUB_TOKEN=`, `AWS_SECRET_ACCESS_KEY=`, `client_secret=`, and `--password x` shapes are among those that pass through. The translator adds one prefixed-name rule, and the gap is documented rather than papered over.
-- The renderer derives spend only from `context_tokens` and `child_spend` / `SubagentStop.spend`; a translator that omits those renders empty cost columns.
+- The renderer derives spend from `context_tokens`, `child_spend` / `SubagentStop.spend`, **and** — when a record names a transcript file — the transcript read through `spentTokens` (`hp.js:318-332`). A translator that omits the fields *and* the transcript path renders empty cost columns; the three sources are not interchangeable.
 
 ## Operator doc
 
