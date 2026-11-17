@@ -33,6 +33,7 @@ The adoption writes a translator (opencode events → the payload `buildRecord` 
 
 - `.github/vendor-harness-profiler.sha256` — 80 entries: the 79 upstream files plus `PROVENANCE.md`, the only added file. The `vendor-integrity` job checks sha256, rejects unlisted files, and rejects broken symlinks.
 - `vendor-tests` runs the pin's own suite, `node --test reference/harness-profiler/test/*.test.js` (51 tests, Node 22, no `npm install`), under a 5-minute timeout. The explicit glob matters: Node 22 treats a positional `--test` argument as a glob pattern, so the directory form (`.../test/`) fails there with `Cannot find module …/test`; the four `*.test.js` files resolve identically on 18, 20, 22 and 26.
+- `profile-tests` gates the adoption itself, in parallel with `vendor-tests`: the same Node 22 pin and 5-minute timeout, no `npm install`, running `node --test tools/harness-profile/*.test.js` (40 tests) and the wrapper evals in `scripts/tests/test_profile_tree.sh` (4 assertions). Both suites were local-only through Phase D; a failure here now blocks the merge rather than surviving review, so the handler and the `scripts/profile-tree.sh` contract are merge conditions.
 - `docs-lint` excludes `reference/harness-profiler/**/*.md`: the pin ships 21 Markdown files preserved byte-exact, and `docs/design.md` uses a continuous ordered-list numbering (14 MD029 findings) that must not be edited in a vendor tree.
 - `security` scans the tree with gitleaks; `test/capture.test.js` is allowlisted by path for the two synthetic masker fixtures documented in `PROVENANCE.md`.
 

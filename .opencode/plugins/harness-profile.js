@@ -17,16 +17,24 @@ const handle = require(path.join(root, 'tools', 'harness-profile', 'handle.js'))
 // the server log keeps the diagnosis, and a stream of events cannot flood it.
 const reported = new Set();
 
-function reportWarnings(state) {
+function reportWarnings(state, write) {
   for (const warning of state.warnings) {
     if (reported.has(warning)) continue;
     reported.add(warning);
     try {
-      process.stderr.write(`[aep-harness-profile] ${warning}\n`);
+      write(`[aep-harness-profile] ${warning}\n`);
     } catch {
       // Logging cannot fail a session either.
     }
   }
+}
+
+// The sink is injected so the test does not have to patch the process-global
+// `process.stderr.write`: Node's runner may execute test files concurrently,
+// and a global stub would swallow another file's writes. Production passes no
+// options and keeps the serve log.
+function stderrWrite(chunk) {
+  process.stderr.write(chunk);
 }
 
 function directoryOf(ctx) {
@@ -37,8 +45,9 @@ function directoryOf(ctx) {
 
 export default {
   id: 'aep-harness-profile',
-  async setup(ctx) {
+  async setup(ctx, options = {}) {
     if (typeof ctx?.event?.subscribe !== 'function') return () => {};
+    const write = typeof options?.write === 'function' ? options.write : stderrWrite;
     const controller = new AbortController();
     const state = handle.createState({
       cwd: directoryOf(ctx),
@@ -50,7 +59,7 @@ export default {
     const consuming = (async () => {
       for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
         await handle.handleEvent(event, state);
-        reportWarnings(state);
+        reportWarnings(state, write);
       }
     })().catch(() => {});
     return async () => {

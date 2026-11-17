@@ -189,6 +189,34 @@ jobs:
         # 4 test files (51 tests) on Node 18, 20, 22 and 26.
         run: node --test reference/harness-profiler/test/*.test.js
 
+  # Bounded claim: the adoption's own suites pass under the Node version CI
+  # runs. Through Phase D they were local-only (`task-D1-report.md`, concern 4)
+  # while the plan's Test Plan listed them as gates; this job makes them
+  # merge-gating, so a handler or wrapper regression fails the PR instead of
+  # merely failing a reviewer's terminal. No `npm install`: both suites are
+  # dependency-free and use the pinned tree in place. Node 22 matches
+  # `vendor-tests`.
+  profile-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - name: Run harness-profile handler suite
+        # Same explicit glob as `vendor-tests`: Node 22 reads a positional
+        # `--test` argument as a glob pattern, so the bare directory form
+        # (`tools/harness-profile/`) fails there with "Cannot find module".
+        # Four files, 40 tests.
+        run: node --test tools/harness-profile/*.test.js
+      - name: Run profile-tree wrapper evals
+        # E14/E14b/E14c: root walk from scripts/, the node floor with no node
+        # on PATH, and `--help` without node. Four assertions.
+        run: bash scripts/tests/test_profile_tree.sh
+
   # Bounded claim: this gate proves the repo skills/ tree equals the manifest
   # generated from the repo tree immediately after the last sync copied from
   # live -- a consistency claim about the sync's own output, never a freshness

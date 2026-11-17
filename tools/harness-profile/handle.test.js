@@ -575,8 +575,10 @@ test('E14d: the plugin surfaces capture refusals once per process', async () => 
   delete process.env.AEP_HARNESS_PROFILE_DIR;
 
   const writes = [];
-  const original = process.stderr.write;
-  process.stderr.write = (chunk) => {
+  // Injected sink, not a `process.stderr.write` patch: Node's runner may run
+  // test files concurrently, and a global stub would capture another file's
+  // writes and fail it unpredictably.
+  const write = (chunk) => {
     writes.push(String(chunk));
     return true;
   };
@@ -601,7 +603,7 @@ test('E14d: the plugin surfaces capture refusals once per process', async () => 
       },
       session: { get: async ({ sessionID }) => ({ id: sessionID }) },
     };
-    const dispose = await module.default.setup(ctx);
+    const dispose = await module.default.setup(ctx, { write });
     for (let i = 0; i < 100 && delivered < events.length; i += 1) await sleep(10);
     await sleep(50);
     await dispose();
@@ -612,7 +614,6 @@ test('E14d: the plugin surfaces capture refusals once per process', async () => 
     assert.match(writes[0], /AEP_HARNESS_PROFILE_DIR/, 'the line must name the escape hatch');
     assert.match(writes[0], /no git repository/i, 'the line must carry the refusal reason');
   } finally {
-    process.stderr.write = original;
     fs.rmSync(dir, { recursive: true, force: true });
     if (previous === undefined) delete process.env.AEP_HARNESS_PROFILE;
     else process.env.AEP_HARNESS_PROFILE = previous;
