@@ -264,42 +264,46 @@ function toPayload(event, state) {
 
 // The pin's `mask` (hp.js:42-46) needs a word boundary in front of the key word;
 // `_` is a word character, so `GITHUB_TOKEN=`, `AWS_SECRET_ACCESS_KEY=` and
-// `NEUROSTRATA_API_KEY=` never reach it. Three additive rules cover the shapes
-// that matter. Each keeps the key name and separator and replaces only the
-// value; the value stops at whitespace, quotes or JSON punctuation so a nested
-// string is not eaten whole. The pin's own `mask` still runs afterwards.
+// `NEUROSTRATA_API_KEY=` never reach it. One additive rule covers the shapes
+// that matter: a key name that *contains* a secret word, in any case and with
+// any runner. Case-insensitive containment is what keeps `secret_key`,
+// `secretKey`, `dbPassword`, `clientSecret`, `awsSecretAccessKey`,
+// `credential` and `access_key` all covered by one rule instead of three
+// intent-specific ones whose union kept losing shapes.
 //
-// Every name quantifier is bounded. A name run open at both ends of the
-// alternation (`[A-Za-z0-9_]*(?:TOKEN|...)[A-Za-z0-9_]*`) backtracks cubically
-// on one long token blob with no separator: 8 KB of repeated `TOKEN` measured
-// 14.4 s, and this runs inside a capture hook. Bounded runs (`{0,63}`) take
-// 0.02 ms on the same blob, and realistic input was always fast either way.
+// The rule keeps the key name and separator and replaces only the value. Two
+// details stop it from eating neighbours:
+//   - the value stops at whitespace, quotes or JSON punctuation, and an opening
+//     quote must be balanced, so `{"GITHUB_TOKEN":"x","b":2}` keeps its shape;
+//   - a known benign key name (the token counts and the tokenizer) is returned
+//     unchanged by the callback. A callback skip is clearer than lookarounds and
+//     cannot be defeated by group numbering.
 //
-// The rules are deliberately intent-specific rather than "the name contains a
-// secret word", which over-redacted the very numbers a profiler exists to keep:
-//   ENV_SECRET     UPPERCASE env-style names carrying a secret word anywhere
-//   SUFFIX_SECRET  any name *ending* in _secret/_token/... (case-insensitive)
-//   CLI_SECRET     --password/--token/--secret then `=` or whitespace
-// `input_tokens=`, `output_tokens=`, `total_tokens=` and `tokenizer=` survive
-// because ENV_SECRET is case-sensitive (it needs an uppercase start; the leading
-// run may be empty so a bare `TOKEN=` is still a credential) and SUFFIX_SECRET
-// needs the singular `_token` immediately before the separator, which `_tokens`
-// and `tokenizer` do not have. An all-caps `INPUT_TOKENS=` does match
-// ENV_SECRET; that is accepted, since uppercase token counts are rare and a miss
-// costs more than an over-redaction.
-const ENV_SECRET =
-  /(\b[A-Z0-9_]{0,63}(?:SECRET|TOKEN|PASSWORD|PASSWD|API_?KEY|ACCESS_KEY|CREDENTIAL)[A-Z0-9_]{0,63}["']?\s*[:=]\s*["']?)[^\s"'&,}]+/g;
-const SUFFIX_SECRET =
-  /(\b\w{0,32}(?:_secret|_token|_password|_passwd|_api_?key|_access_key)["']?\s*[:=]\s*["']?)[^\s"'&,}]+/gi;
-const CLI_SECRET = /(--(?:password|token|secret)[=\s]+)[^\s"'&,}]+/gi;
+// Every quantifier is bounded. A name run open at both ends of the alternation
+// (`[A-Za-z0-9_]*(?:TOKEN|...)[A-Za-z0-9_]*`) backtracks cubically on one long
+// token blob with no separator: 8 KB of repeated `TOKEN` measured 14.4 s, and
+// this runs inside a capture hook. Bounded runs (`{0,64}`) take 0.02 ms on the
+// same blob: `\b` pins each attempt to a word start and both name runs stop.
+//
+// The keyword may sit anywhere in the name, including the start: a mandatory
+// leading character would leave bare `TOKEN=` and `credential=` unmatched.
+const CREDENTIAL =
+  /\b([A-Za-z0-9_]{0,64}(?:SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL|ACCESS_KEY|API_?KEY)[A-Za-z0-9_]{0,64})(["']?)([ \t]*[:=][ \t]*|[ \t]+)(["']?)[^\s"'&,}]+\4/gi;
+
+// Keys a profiler exists to report and must keep verbatim. The instruction's
+// `^(input|output)_tokens$` case is already covered by `_?tokens?`.
+const BENIGN_KEY = /^(?:(?:input|output|total|num|max|prompt|completion)_?tokens?|tokenizer)$/i;
+
+function redactMatch(match, key, keyQuote, separator, quote, offset, text) {
+  if (BENIGN_KEY.test(key)) return match;
+  // A bare space separates a flag from its value (`--password x`); a sentence
+  // such as "the token budget" keeps its words.
+  if (!separator.trim() && text[offset - 1] !== '-') return match;
+  return `${key}${keyQuote}${separator}${quote}[redacted]${quote}`;
+}
 
 function redactSecrets(value) {
-  if (typeof value === 'string') {
-    return value
-      .replace(ENV_SECRET, '$1[redacted]')
-      .replace(SUFFIX_SECRET, '$1[redacted]')
-      .replace(CLI_SECRET, '$1[redacted]');
-  }
+  if (typeof value === 'string') return value.replace(CREDENTIAL, redactMatch);
   if (Array.isArray(value)) return value.map(redactSecrets);
   if (value && typeof value === 'object') {
     const out = {};

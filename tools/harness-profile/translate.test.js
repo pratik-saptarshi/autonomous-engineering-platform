@@ -141,9 +141,14 @@ test('E1b: a credential literal in a tool argument is redacted before the pin se
 
   assert.ok(!record.args.includes('GITHUB_TOKEN=x1'), 'the GITHUB_TOKEN value is gone');
   assert.ok(!record.args.includes('AWS_SECRET_ACCESS_KEY=x2'), 'the AWS_SECRET_ACCESS_KEY value is gone');
+  // Mixed case with no underscore between the words: the shapes the round-3
+  // rules lost. The pin's own `mask` needs a word boundary and does not help.
+  assert.ok(!record.args.includes('secretKey=abc'), 'the camelCase secretKey value is gone');
+  assert.ok(!record.args.includes('dbPassword=def'), 'the camelCase dbPassword value is gone');
   assert.ok(record.args.includes('GITHUB_TOKEN=[redacted]'), 'the env-style rule fired');
   assert.ok(record.args.includes('AWS_SECRET_ACCESS_KEY=[redacted]'), 'the _-prefixed name is redacted too');
-  assert.ok(record.args.split('[redacted]').length - 1 >= 3, 'the Authorization/Bearer value is redacted too');
+  assert.ok(record.args.includes('secretKey=[redacted]'), 'the mixed-case name is redacted end to end');
+  assert.ok(record.args.split('[redacted]').length - 1 >= 5, 'the Authorization/Bearer value is redacted too');
   assert.ok(!record.args.includes('Bearer fakebear'), 'no Bearer value survives the pin');
   // The profiler's own numbers are not credentials: no rule touches them.
   assert.ok(record.args.includes('input_tokens=109326'), 'input_tokens survives masking');
@@ -151,24 +156,59 @@ test('E1b: a credential literal in a tool argument is redacted before the pin se
   assert.equal(record.context_tokens, 10 + 100 + 0);
 });
 
-test('redactSecrets masks the value behind a credential-shaped key', () => {
-  const text =
-    'GITHUB_TOKEN=x1 aws_secret_access_key=x2 ' +
-    'client_secret: x3 NEUROSTRATA_API_KEY=x4 PATH=/usr/bin';
-  const redacted = translate.redactSecrets(text);
-
-  for (const planted of ['x1', 'x2', 'x3', 'x4']) {
-    assert.ok(!redacted.includes(planted), `${planted} survived`);
+test('redactSecrets covers mixed-case and non-underscore credential names', () => {
+  // Round-3's three rules were case-sensitive (env) or demanded an underscore
+  // before the word (suffix), so every shape below leaked end to end. One
+  // case-insensitive containment rule covers them without a third alternation.
+  const redacted = [
+    ['GITHUB_TOKEN=x1', 'x1'],
+    ['AWS_SECRET_ACCESS_KEY=x2', 'x2'],
+    ['client_secret=x3', 'x3'],
+    ['--password x4', 'x4'],
+    ['TOKEN=x5', 'x5'],
+    ['secret_key=abc', 'abc'],
+    ['secretKey=abc', 'abc'],
+    ['dbPassword=abc', 'abc'],
+    ['clientSecret=abc', 'abc'],
+    ['awsSecretAccessKey=abc', 'abc'],
+    ['credential=abc', 'abc'],
+    ['access_key=abc', 'abc'],
+  ];
+  for (const [input, value] of redacted) {
+    const out = translate.redactSecrets(input);
+    // Absence of the value is the assertion, never a substring of the output.
+    assert.ok(!out.includes(value), `${input} leaked its value: ${out}`);
+    // Everything but the value survives, so the record still says which key it was.
+    assert.equal(out.replace('[redacted]', ''), input.replace(value, ''), `${input} lost more than its value: ${out}`);
   }
-  assert.match(redacted, /GITHUB_TOKEN=\[redacted\]/);
-  assert.match(redacted, /aws_secret_access_key=\[redacted\]/);
-  assert.match(redacted, /client_secret: \[redacted\]/);
-  assert.match(redacted, /NEUROSTRATA_API_KEY=\[redacted\]/);
-  assert.match(redacted, /PATH=\/usr\/bin/, 'a non-credential name is left alone');
+});
 
-  // CLI style, `=` and whitespace alike.
+test('redactSecrets spares the token-count and tokenizer keys a profiler keeps', () => {
+  // The numbers the profile exists to report, plus neighbouring shapes that
+  // must not trip the rule. These are the keys opencode actually emits.
+  for (const kept of [
+    'input_tokens=109326',
+    'output_tokens=42',
+    'total_tokens=5',
+    'tokenizer=cl100k',
+    'num_tokens=3',
+    'max_tokens=4096',
+    'PATH=/usr/bin',
+  ]) {
+    assert.equal(translate.redactSecrets(kept), kept);
+  }
+  // The skip is a whole-name test, so it holds next to a real redaction.
+  assert.equal(translate.redactSecrets('input_tokens=5 auth_token=abc'), 'input_tokens=5 auth_token=[redacted]');
+  // Accepted residue: any other name containing TOKEN is redacted, including a
+  // rate metric. A miss costs more than an over-redaction.
+  assert.equal(translate.redactSecrets('tokens_per_sec=12'), 'tokens_per_sec=[redacted]');
+});
+
+test('redactSecrets keeps JSON quoting, neighbours and CLI forms intact', () => {
+  // CLI style, `=` and whitespace alike; a bare space separates only a flag.
   assert.equal(translate.redactSecrets('--password x4'), '--password [redacted]');
   assert.equal(translate.redactSecrets('--token=x5'), '--token=[redacted]');
+  assert.equal(translate.redactSecrets('the token budget is 4096'), 'the token budget is 4096');
 
   // JSON-shaped args keep their quoting and their neighbours: only the value goes.
   assert.equal(
@@ -176,44 +216,30 @@ test('redactSecrets masks the value behind a credential-shaped key', () => {
     '{"GITHUB_TOKEN":"[redacted]","b":2}',
   );
   assert.equal(
-    translate.redactSecrets('{"env":{"AWS_SECRET_ACCESS_KEY":"x7"},"cwd":"/w"}'),
-    '{"env":{"AWS_SECRET_ACCESS_KEY":"[redacted]"},"cwd":"/w"}',
+    translate.redactSecrets('{"env":{"secretKey":"x7"},"cwd":"/w"}'),
+    '{"env":{"secretKey":"[redacted]"},"cwd":"/w"}',
   );
 
   // Nested strings are visited; every other value survives untouched.
-  assert.deepEqual(translate.redactSecrets({ command: 'TOKEN=x8', count: 2, meta: { ok: true } }), {
-    command: 'TOKEN=[redacted]',
+  assert.deepEqual(translate.redactSecrets({ command: 'secretKey=x8', count: 2, meta: { ok: true } }), {
+    command: 'secretKey=[redacted]',
     count: 2,
     meta: { ok: true },
   });
 });
 
-test('redactSecrets spares the token-count and tokenizer keys a profiler keeps', () => {
-  // These are the numbers the profile exists to report. The old "name contains
-  // TOKEN" rule redacted all four.
-  for (const kept of ['input_tokens=109326', 'output_tokens=42', 'total_tokens=5', 'tokenizer=cl100k']) {
-    assert.equal(translate.redactSecrets(kept), kept);
-  }
-  // Same reason, nearby shapes that must not trip the rules either.
-  for (const kept of ['max_tokens=4096', 'tokens_per_sec=12', 'PATH=/usr/bin']) {
-    assert.equal(translate.redactSecrets(kept), kept);
-  }
-  // The plural is what spares them: the singular suffix is still a credential.
-  assert.equal(translate.redactSecrets('auth_token=abc'), 'auth_token=[redacted]');
-  assert.equal(translate.redactSecrets('input_tokens=5 auth_token=abc'), 'input_tokens=5 auth_token=[redacted]');
-});
-
 test('redactSecrets stays linear on a pathological single-token blob', () => {
   // The previous pattern's unbounded name runs backtracked cubically here:
-  // 8 KB of repeated `TOKEN` took 14.4 s inside a capture hook. Bounded runs
-  // measure ~0.02 ms; the budget only has to catch a return to cubic behaviour.
+  // 8 KB of repeated `TOKEN` took 14.4 s inside a capture hook. The bounded
+  // rule measures ~0.01 ms; the budget only has to catch a return to cubic
+  // behaviour, so it is set well above jitter and far below the old number.
   const blob = 'TOKEN'.repeat(1638); // 8190 bytes, no separator anywhere
   const started = process.hrtime.bigint();
   const redacted = translate.redactSecrets(blob);
   const ms = Number(process.hrtime.bigint() - started) / 1e6;
 
   assert.equal(redacted, blob, 'nothing in the blob is a key, so nothing changes');
-  assert.ok(ms < 2000, `8 KB blob took ${ms.toFixed(1)} ms — the name runs are unbounded again`);
+  assert.ok(ms < 100, `8 KB blob took ${ms.toFixed(1)} ms — the name runs are unbounded again`);
 });
 
 test('writeRecord appends every context to the root session file, via the pin serialize', () => {
