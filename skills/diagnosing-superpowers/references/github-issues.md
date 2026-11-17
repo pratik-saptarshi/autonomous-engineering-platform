@@ -59,7 +59,7 @@ template, which applies both labels for any reporter. The link's body is
 the url-encoded content of `issue-gate/post-body.md` — never the
 unscrubbed draft:
 
-```
+```text
 https://github.com/obra/superpowers/issues/new?template=diagnosis_report.md&title=<url-encoded title>&body=<url-encoded content of issue-gate/post-body.md>
 ```
 

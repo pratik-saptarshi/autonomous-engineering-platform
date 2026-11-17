@@ -17,7 +17,7 @@ Run the project's full test suite (`npm test` / `cargo test` / `pytest` / `go te
 
 **If tests fail**, report the failures and stop — the menu comes after a green suite:
 
-```
+```text
 Tests failing (<N> failures). Must fix before completing:
 
 [Show failures]
@@ -38,7 +38,7 @@ WORKTREE_PATH=$(git rev-parse --show-toplevel)
 This determines which menu to show and how cleanup works:
 
 | State | Menu | Cleanup |
-|-------|------|---------|
+| ------- | ------ | --------- |
 | `GIT_DIR == GIT_COMMON` (normal repo) | Standard 3 options | No worktree to clean up |
 | `GIT_DIR != GIT_COMMON`, named branch | Standard 3 options | Provenance-based (see Step 6) |
 | `GIT_DIR != GIT_COMMON`, detached HEAD | Reduced 2 options (no merge) | Externally managed — leave in place |
@@ -54,7 +54,7 @@ Confirm before merging: merging into the wrong base is expensive to undo.
 
 **Normal repo and named-branch worktree — present exactly these 3 options:**
 
-```
+```text
 Implementation complete. What would you like to do?
 
 1. Merge back to <base-branch> locally
@@ -66,7 +66,7 @@ Which option?
 
 **Detached HEAD — present exactly these 2 options:**
 
-```
+```text
 Implementation complete. You're on a detached HEAD (externally managed workspace).
 
 1. Push as new branch and create a Pull Request
@@ -134,7 +134,7 @@ Report: "Keeping branch <name>. Worktree preserved at <path>."
 This path exists only as a response to an explicit request to throw the
 work away. Confirm first:
 
-```
+```text
 This will permanently delete:
 - Branch <name>
 - All commits: <commit-list>
@@ -183,7 +183,7 @@ partner what is at stake and ask:
 git -C "$WORKTREE_PATH" status --porcelain -uall
 ```
 
-```
+```text
 Worktree removal refused — these files were never committed:
 
 <file list>
@@ -203,7 +203,7 @@ place. If your platform provides a workspace-exit tool, use it.
 ## Quick Reference
 
 | Option | Merge | Push | Keep Worktree | Cleanup Branch |
-|--------|-------|------|---------------|----------------|
+| -------- | ------- | ------ | --------------- | ---------------- |
 | 1. Merge locally | yes | - | - | yes |
 | 2. Create PR | - | yes | yes | - |
 | 3. Keep as-is | - | - | yes | - |
@@ -212,7 +212,7 @@ place. If your platform provides a workspace-exit tool, use it.
 ## Common Rationalizations
 
 | Excuse | Reality |
-|--------|---------|
+| -------- | --------- |
 | "Tests passed earlier this session" | Run the suite on the tree you are about to integrate. A green run only proves the tree it ran on. |
 | "They obviously want it merged" | Integration is your human partner's decision. Present the menu and wait. |
 | "They seem done with this feature — I'll offer to discard it" | The menu is complete as written. Discard happens only when your human partner asks for it in so many words. |

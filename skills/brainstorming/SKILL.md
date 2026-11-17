@@ -134,7 +134,7 @@ Once you understand what they want, pick a size and say it in plain
 words. They can override it.
 
 | Size | The full description | Then |
-|------|----------------------|------|
+| ------ | ---------------------- | ------ |
 | A quick, clear task | the request itself | do it |
 | A small change | in chat | build it through the normal workflow |
 | A project with a written design | a written design document | a full plan (for software: superpowers:writing-plans) |
@@ -197,7 +197,7 @@ software, invoke superpowers:writing-plans and no other skill.
 ## Red Flags
 
 | Thought | Reality |
-|---------|---------|
+| --------- | --------- |
 | "I'll offer options to save them effort" | Options steer. Ask them to describe it first. |
 | "I'll fill in sensible defaults" | Good. Say them out loud. A default they never heard is one they couldn't reject. |
 | "I should explain the process first" | Ask your question. The process shows itself. |

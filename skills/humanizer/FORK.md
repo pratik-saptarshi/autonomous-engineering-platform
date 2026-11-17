@@ -2,7 +2,7 @@
 
 This copy is a **locally modified fork** of a third-party skill. It is not the upstream original.
 
-- **Source origin:** blader/humanizer — https://github.com/blader/humanizer (upstream author: Siqi Chen)
+- **Source origin:** blader/humanizer — <https://github.com/blader/humanizer> (upstream author: Siqi Chen)
 - **Origin version / pin:** v3.1.0, commit 0ef9fe5bc3572734fd3ae6c448fe00a30cd5dcf0 (2026-10-28). Origin `metadata.version: "3.1.0"` in SKILL.md is the upstream version and is kept unchanged.
 - **Fork version:** 1 (first marked fork version, 2026-11-04)
 - **Internal marker:** `fork_of` + `fork_version: 1` in SKILL.md frontmatter.

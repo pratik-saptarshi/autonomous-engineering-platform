@@ -128,7 +128,7 @@ backed by rendered nodes receive Semantic Legend controls.
 ### Fixed v1
 
 | Constant | Value |
-|----------|-------|
+| ---------- | ------- |
 | viewBox | default `[720, auto]` — auto height = 52 + lanes×104 + (lanes−1)×20 + 124 |
 | Lane frame | x 40, width 640, height 104, gap 20; first lane top at y 52 |
 | Lane title strip | top 30px of each lane; node boxes must stay below it |
@@ -150,7 +150,7 @@ a verified migration-to-v2 repair; v1 never falls through to adaptive layout.
 ### Readable v2
 
 | Invariant | Contract |
-|----------|----------|
+| ---------- | ---------- |
 | Logical columns | `col` is an integer in `0..5`; pixel centers are measured output |
 | Adjacent-rank baseline | 120px center distance before document-specific constraints |
 | Same-lane node clearance | ≥8px when vertical node intervals overlap |

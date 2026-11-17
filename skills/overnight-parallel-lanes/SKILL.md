@@ -56,7 +56,7 @@ Conversation memory does not survive the night. Every run owns a ledger file (on
 ## Common Rationalizations
 
 | Excuse | Reality |
-|--------|---------|
+| -------- | --------- |
 | "These lanes are simple — skip the worktrees" | Shared working copies are how parallel runs corrupt each other. Isolation is not overhead, it is the run. |
 | "I'll review the lanes myself, it's faster" | The coordinator that dispatched a lane cannot review it — you have context the reviewer must not, and stakes in the outcome. Fresh agent or it didn't happen. |
 | "One more round will converge" | Past the cap, rounds don't converge. Adjudicate and re-scope. |
@@ -67,7 +67,7 @@ Conversation memory does not survive the night. Every run owns a ledger file (on
 ## Quick Reference
 
 | Situation | Action |
-|-----------|--------|
+| ----------- | -------- |
 | Lanes share a file | Re-split; not independent |
 | No deterministic gate | Do not run unattended |
 | Lane exceeds 1h | Stop, commit partial, re-scope or park |
