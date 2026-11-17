@@ -251,6 +251,34 @@ test('redactSecrets fails closed on quoted values containing whitespace', () => 
   assert.equal(translate.redactSecrets('{"token":""}'), '{"token":"[redacted]"}');
 });
 
+test('redactSecrets closes the hyphenated-header and unterminated-quote gaps', () => {
+  // HTTP header shapes spell KEY with a hyphen and often carry an `X-` prefix.
+  // The paired keywords accept `-` as well as `_`; the prefix is preserved and
+  // only the value goes.
+  assert.equal(translate.redactSecrets('X-API-Key: abc'), 'X-API-Key: [redacted]');
+  assert.equal(translate.redactSecrets('x-api-key=abc'), 'x-api-key=[redacted]');
+  assert.equal(translate.redactSecrets('api-key=abc'), 'api-key=[redacted]');
+  assert.equal(translate.redactSecrets('X-ACCESS-KEY: abc'), 'X-ACCESS-KEY: [redacted]');
+
+  // A closing quote clipped by the 200-char args limit must not fail open. The
+  // quoted span runs to the closing quote or to end of line, so every word of
+  // the value is gone; only the opening quote is restored, never a fabricated
+  // closer.
+  assert.equal(translate.redactSecrets('TOKEN="a b'), 'TOKEN="[redacted]');
+  assert.equal(translate.redactSecrets("client_secret='x y"), "client_secret='[redacted]");
+
+  for (const [input, value] of [
+    ['X-API-Key: abc', 'abc'],
+    ['x-api-key=abc', 'abc'],
+    ['api-key=abc', 'abc'],
+    ['TOKEN="a b', 'a b'],
+    ["client_secret='x y", 'x y'],
+  ]) {
+    const out = translate.redactSecrets(input);
+    assert.ok(!out.includes(value), `${input} leaked its value: ${out}`);
+  }
+});
+
 test('redactSecrets stays linear on a pathological single-token blob', () => {
   // The previous pattern's unbounded name runs backtracked cubically here:
   // 8 KB of repeated `TOKEN` took 14.4 s inside a capture hook. The bounded

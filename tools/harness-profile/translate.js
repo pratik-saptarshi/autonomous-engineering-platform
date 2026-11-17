@@ -269,15 +269,22 @@ function toPayload(event, state) {
 // any runner. Case-insensitive containment is what keeps `secret_key`,
 // `secretKey`, `dbPassword`, `clientSecret`, `awsSecretAccessKey`,
 // `credential` and `access_key` all covered by one rule instead of three
-// intent-specific ones whose union kept losing shapes.
+// intent-specific ones whose union kept losing shapes. The two paired keywords
+// accept a hyphen as well as an underscore (`API[-_]?KEY`, `ACCESS[-_]?KEY`), so
+// the HTTP header shapes `X-API-Key:`, `x-api-key=` and `api-key=` redact too.
 //
 // The rule keeps the key name and separator and replaces only the value. Two
 // details stop it from eating neighbours:
-//   - the value is a complete quoted string (either quote) or an unquoted run
-//     that stops at whitespace, quotes or JSON punctuation. A quoted value is
-//     replaced whole, quote character kept, so `GITHUB_TOKEN="a b"` loses both
-//     words and `{"GITHUB_TOKEN":"x","b":2}` keeps its shape. Matching the
-//     quoted branch first is what keeps masking fail-closed: the earlier
+//   - the value is a quoted span (either quote) or an unquoted run that stops
+//     at whitespace, quotes or JSON punctuation. A quoted value is replaced
+//     whole, quote character kept, so `GITHUB_TOKEN="a b"` loses both words and
+//     `{"GITHUB_TOKEN":"x","b":2}` keeps its shape. The closing quote is
+//     optional so an unterminated quote fails closed too: the span runs to the
+//     closing quote or to the end of the line (the class excludes `\n`), so a
+//     truncated `TOKEN="a b` loses `a b` instead of passing through. Only an
+//     opening quote is restored when the closing one was absent, so the
+//     redaction never fabricates a delimiter the input did not have. Matching
+//     the quoted branch first is what keeps masking fail-closed: the earlier
 //     balanced-quote backreference (`[^\s"'&,}]+\4`) abandoned the match when
 //     the quoted value held a space, and `GITHUB_TOKEN="a b"` came out intact.
 //   - a known benign key name (the token counts and the tokenizer) is returned
@@ -286,7 +293,8 @@ function toPayload(event, state) {
 //
 // Every quantifier is either bounded (`{0,64}` on the two name runs) or a
 // single-character-class repeat (`[ \t]*` separator, `[^"\n]*` / `[^'\n]*` /
-// `[^\s"'&,}]+` value), so all are linear. A name run open at both ends
+// `[^\s"'&,}]+` value), so all are linear; the optional closing quote adds one
+// optional character, never a nested repeat. A name run open at both ends
 // (`[A-Za-z0-9_]*(?:TOKEN|...)[A-Za-z0-9_]*`) backtracks cubically on one long
 // token blob with no separator: 8 KB of repeated `TOKEN` measured 14.4 s, and
 // this runs inside a capture hook. Bounded runs (`{0,64}`) take 0.01 ms on the
@@ -295,7 +303,7 @@ function toPayload(event, state) {
 // The keyword may sit anywhere in the name, including the start: a mandatory
 // leading character would leave bare `TOKEN=` and `credential=` unmatched.
 const CREDENTIAL =
-  /\b([A-Za-z0-9_]{0,64}(?:SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL|ACCESS_KEY|API_?KEY)[A-Za-z0-9_]{0,64})(["']?)([ \t]*[:=][ \t]*|[ \t]+)("[^"\n]*"|'[^'\n]*'|[^\s"'&,}]+)/gi;
+  /\b([A-Za-z0-9_]{0,64}(?:SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL|ACCESS[-_]?KEY|API[-_]?KEY)[A-Za-z0-9_]{0,64})(["']?)([ \t]*[:=][ \t]*|[ \t]+)("[^"\n]*"?|'[^'\n]*'?|[^\s"'&,}]+)/gi;
 
 // Keys a profiler exists to report and must keep verbatim. The instruction's
 // `^(input|output)_tokens$` case is already covered by `_?tokens?`.
@@ -306,10 +314,13 @@ function redactMatch(match, key, keyQuote, separator, value, offset, text) {
   // A bare space separates a flag from its value (`--password x`); a sentence
   // such as "the token budget" keeps its words.
   if (!separator.trim() && text[offset - 1] !== '-') return match;
-  // The value group is either a whole quoted string or an unquoted run; keep
-  // whichever quote it used so JSON and CLI quoting survive the substitution.
+  // The value group is a quoted span or an unquoted run; keep whichever quote
+  // it used so JSON and CLI quoting survive the substitution. A quoted span
+  // whose closing quote was clipped (truncated args) gets the opening quote
+  // back and nothing more: the value goes, no delimiter is invented.
   const quote = value[0] === '"' || value[0] === "'" ? value[0] : '';
-  return `${key}${keyQuote}${separator}${quote}[redacted]${quote}`;
+  const closed = quote !== '' && value.length > 1 && value.endsWith(quote);
+  return `${key}${keyQuote}${separator}${quote}[redacted]${closed ? quote : ''}`;
 }
 
 function redactSecrets(value) {
