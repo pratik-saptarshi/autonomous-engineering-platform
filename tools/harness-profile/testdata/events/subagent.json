@@ -1,0 +1,125 @@
+{
+  "rootSessionId": "ses_root_agent",
+  "events": [
+    {
+      "id": "evt_s01",
+      "created": 1794932000100,
+      "type": "session.tool.input.started",
+      "data": {
+        "sessionID": "ses_root_agent",
+        "assistantMessageID": "msg_r1",
+        "id": "call_spawn",
+        "name": "subagent"
+      }
+    },
+    {
+      "id": "evt_s02",
+      "created": 1794932000200,
+      "type": "session.tool.called",
+      "data": {
+        "sessionID": "ses_root_agent",
+        "assistantMessageID": "msg_r1",
+        "id": "call_spawn",
+        "input": {
+          "agent": "general",
+          "description": "inspect the pin",
+          "prompt": "Inspect the pin.\nReport findings."
+        },
+        "executed": false
+      }
+    },
+    {
+      "id": "evt_c01",
+      "created": 1794932001000,
+      "type": "session.tool.input.started",
+      "data": {
+        "sessionID": "ses_child_agent",
+        "assistantMessageID": "msg_c1",
+        "id": "call_child_read",
+        "name": "read"
+      }
+    },
+    {
+      "id": "evt_c02",
+      "created": 1794932001050,
+      "type": "session.tool.called",
+      "data": {
+        "sessionID": "ses_child_agent",
+        "assistantMessageID": "msg_c1",
+        "id": "call_child_read",
+        "input": { "filePath": "reference/harness-profiler/plugin/libexec/hp.js" },
+        "executed": false
+      }
+    },
+    {
+      "id": "evt_c03",
+      "created": 1794932001400,
+      "type": "session.tool.success",
+      "data": {
+        "sessionID": "ses_child_agent",
+        "assistantMessageID": "msg_c1",
+        "id": "call_child_read",
+        "content": [{ "type": "text", "text": "pin ok" }],
+        "metadata": { "status": "completed" },
+        "executed": false
+      }
+    },
+    {
+      "id": "evt_c04",
+      "created": 1794932001500,
+      "type": "session.step.ended",
+      "data": {
+        "sessionID": "ses_child_agent",
+        "assistantMessageID": "msg_c1",
+        "finish": "tool-calls",
+        "tokens": { "input": 100, "output": 20, "reasoning": 0, "cache": { "read": 500, "write": 10 } }
+      }
+    },
+    {
+      "id": "evt_c05",
+      "created": 1794932002400,
+      "type": "session.step.ended",
+      "data": {
+        "sessionID": "ses_child_agent",
+        "assistantMessageID": "msg_c2",
+        "finish": "stop",
+        "tokens": { "input": 120, "output": 30, "reasoning": 5, "cache": { "read": 600, "write": 0 } }
+      }
+    },
+    {
+      "id": "evt_s03",
+      "created": 1794932003000,
+      "type": "session.tool.success",
+      "data": {
+        "sessionID": "ses_root_agent",
+        "assistantMessageID": "msg_r1",
+        "id": "call_spawn",
+        "content": [{ "type": "text", "text": "done" }],
+        "metadata": { "status": "completed" },
+        "executed": false
+      }
+    },
+    {
+      "id": "evt_s04",
+      "created": 1794932003100,
+      "type": "session.step.ended",
+      "data": {
+        "sessionID": "ses_root_agent",
+        "assistantMessageID": "msg_r1",
+        "finish": "tool-calls",
+        "tokens": { "input": 50, "output": 12, "reasoning": 0, "cache": { "read": 2000, "write": 100 } }
+      }
+    },
+    {
+      "id": "evt_s05",
+      "created": 1794932004000,
+      "type": "session.step.ended",
+      "data": {
+        "sessionID": "ses_root_agent",
+        "assistantMessageID": "msg_r2",
+        "finish": "stop",
+        "tokens": { "input": 20, "output": 8, "reasoning": 0, "cache": { "read": 2150, "write": 0 } }
+      }
+    }
+  ]
+}
