@@ -1,0 +1,366 @@
+'use strict';
+
+// Hygiene evals E10-E13 for the opt-in capture handler. C1's E6-E9b proved the
+// capture records the right thing; these prove it stays out of git and cannot
+// grow without bound.
+//
+// E10 pre-existing trace dir: the pin calls its exclusion only when it creates
+//     the directory, so a `.harness-profile/` that already exists would stay
+//     visible to git without the handler's own unconditional write. The test
+//     pre-creates the directory, then asserts the repository's `info/exclude`
+//     is the source `git check-ignore -v` names.
+// E11 no git repository and no explicit dir: fail closed. The trace could not
+//     be excluded from git, so no record (masked or not) is written into an
+//     unprotected directory; the handler records one warning instead. An
+//     explicit `AEP_HARNESS_PROFILE_DIR` is the documented escape hatch and is
+//     tested here too.
+// E12 concurrent writers: two processes append to the same session file. Every
+//     line must be one complete record; a writer that emits the body and the
+//     newline as separate appends interleaves them.
+// E13 retention: age-prune with a default window plus a hard byte ceiling, both
+//     env-overridable, idempotent, and limited to this writer's file suffixes.
+//
+// The concurrency test uses real processes: in-process appends are serialized
+// by JavaScript, so only separate processes can interleave at the write(2)
+// level, which is the failure mode this eval exists for.
+
+const test = require('node:test');
+const assert = require('node:assert');
+const { execFileSync, spawn } = require('node:child_process');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { setTimeout: sleep } = require('node:timers/promises');
+
+const handle = require('./handle.js');
+
+const EVENTS = path.join(__dirname, 'testdata', 'events');
+const ROOT = 'ses_root_hygiene';
+const DAY = 24 * 60 * 60 * 1000;
+
+function fixture(name) {
+  return JSON.parse(fs.readFileSync(path.join(EVENTS, name), 'utf8'));
+}
+
+function scratch(prefix = 'hp-hygiene-') {
+  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+}
+
+// A real git repository: E10 asserts through `git check-ignore` and
+// `git status`, so a bare `.git` directory is not enough here.
+function gitRepo(prefix = 'hp-hygiene-repo-') {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  execFileSync('git', ['init', '-q', root], { stdio: 'ignore' });
+  return root;
+}
+
+function enabled(extra = {}) {
+  return { AEP_HARNESS_PROFILE: '1', ...extra };
+}
+
+async function feed(state, events) {
+  const records = [];
+  for (const event of events) {
+    const out = await handle.handleEvent(event, state);
+    if (out) records.push(...out);
+  }
+  return records;
+}
+
+function touch(dir, name, ageDays, { now = Date.now(), body = '{"v":2}\n' } = {}) {
+  const file = path.join(dir, name);
+  fs.writeFileSync(file, body);
+  const when = new Date(now - ageDays * DAY);
+  fs.utimesSync(file, when, when);
+  return file;
+}
+
+function names(files) {
+  return files.map((file) => path.basename(file)).sort();
+}
+
+test('E10: a pre-existing trace dir is excluded through the repository info/exclude, not a .gitignore', async () => {
+  const root = gitRepo();
+  const cwd = path.join(root, 'a', 'b');
+  fs.mkdirSync(cwd, { recursive: true });
+  // A copy that already ran capture: the directory and a trace exist before
+  // this handler sees its first event. That is the case the pin's own capture
+  // skips (it only excludes when it creates the directory).
+  fs.mkdirSync(path.join(root, '.harness-profile'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.harness-profile', 'ses_previous.jsonl'), '{"v":2}\n');
+  // An unrelated committed ignore file, so precedence is exercised rather than
+  // assumed: the entry under test is the runtime one, not this file's.
+  fs.writeFileSync(path.join(root, '.gitignore'), 'dist/\n');
+
+  const state = handle.createState({ cwd, env: enabled() });
+  const records = await feed(state, fixture('tool-calls.json').events);
+  assert.ok(records.length > 0, 'the capture wrote no records');
+
+  const dir = path.join(root, '.harness-profile');
+  const file = path.join(dir, 'ses_root_tools.jsonl');
+  assert.ok(fs.existsSync(file), 'the default trace did not land at the git root');
+  assert.equal(fs.statSync(file).mode & 0o777, 0o600, 'a new trace file must be 0600');
+
+  const excludeFile = path.join(root, '.git', 'info', 'exclude');
+  const entry = () => (fs.existsSync(excludeFile)
+    ? fs.readFileSync(excludeFile, 'utf8').split(/\r?\n/).filter((line) => line === '.harness-profile/').length
+    : 0);
+  assert.equal(entry(), 1, 'the exclusion was not written exactly once');
+
+  // The required end-to-end check: git itself ignores the pre-existing dir, and
+  // the source it names is the repository's info/exclude.
+  const ignoreSource = () => {
+    const checked = execFileSync('git', ['-C', root, 'check-ignore', '-v', '.harness-profile/x'], { encoding: 'utf8' }).trim();
+    const match = /^(.*):(\d+):(.*)\t(.*)$/.exec(checked);
+    assert.ok(match, `unexpected check-ignore output: ${checked}`);
+    assert.equal(match[3], '.harness-profile/', 'the matching pattern is not the trace dir');
+    assert.equal(match[4], '.harness-profile/x');
+    return fs.realpathSync(path.resolve(root, match[1]));
+  };
+  const excludeReal = fs.realpathSync(excludeFile);
+  assert.equal(ignoreSource(), excludeReal, 'check-ignore did not name the repository info/exclude');
+  assert.deepEqual(execFileSync('git', ['-C', root, 'status', '--porcelain', '--', '.harness-profile'], { encoding: 'utf8' }), '', 'the ledger is visible to git status');
+  assert.deepEqual(state.errors, []);
+
+  // Idempotent: a second capture writes no second entry and stays ignored.
+  const second = handle.createState({ cwd, env: enabled() });
+  await feed(second, fixture('tool-calls.json').events);
+  assert.equal(entry(), 1, 'the exclusion was appended twice');
+  assert.equal(ignoreSource(), excludeReal);
+  assert.deepEqual(execFileSync('git', ['-C', root, 'status', '--porcelain', '--', '.harness-profile'], { encoding: 'utf8' }), '');
+
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test('E11: with no git repository and no explicit dir, capture writes nothing (fail closed)', async () => {
+  // A temp directory with no `.git` anywhere above it. The default trace dir
+  // would be `.harness-profile/` here, unprotected: git could commit it.
+  const dir = scratch('hp-hygiene-nogit-');
+  const state = handle.createState({ cwd: dir, env: enabled() });
+  const records = await feed(state, fixture('tool-calls.json').events);
+
+  assert.deepEqual(records, [], 'a record was returned from an unprotected directory');
+  assert.equal(fs.existsSync(path.join(dir, '.harness-profile')), false, 'a trace directory was created without a git root');
+  assert.deepEqual(fs.readdirSync(dir), [], 'capture left files in an unprotected directory');
+  assert.equal(state.warnings.length, 1, 'the refusal must be recorded once, not per event');
+  assert.match(state.warnings[0], /no git repository/i);
+  assert.match(state.warnings[0], /AEP_HARNESS_PROFILE_DIR/, 'the warning must name the escape hatch');
+  assert.deepEqual(state.errors, []);
+
+  // The explicit override is the documented escape hatch: the operator names the
+  // destination, so capture is allowed outside a repository (E9 already relies
+  // on this for tests and ad-hoc capture).
+  const override = scratch('hp-hygiene-override-');
+  const explicit = handle.createState({ cwd: dir, env: enabled({ AEP_HARNESS_PROFILE_DIR: override }) });
+  const written = await feed(explicit, fixture('tool-calls.json').events);
+  assert.ok(written.length > 0, 'the explicit override wrote nothing');
+  assert.ok(fs.existsSync(path.join(override, 'ses_root_tools.jsonl')));
+  assert.deepEqual(explicit.warnings, [], 'an explicit destination is not a refusal');
+
+  fs.rmSync(dir, { recursive: true, force: true });
+  fs.rmSync(override, { recursive: true, force: true });
+});
+
+// The two-writer child. It waits for a `go` file so both processes append at
+// the same time, then feeds `count` calls through the real handler. Each line is
+// built and appended by `translate.writeRecord`, exactly as in production.
+const WRITER = `'use strict';
+const fs = require('node:fs');
+const [, , handlePath, dir, tag, count, readyFile, goFile, root] = process.argv;
+const handle = require(handlePath);
+const pause = new Int32Array(new SharedArrayBuffer(4));
+fs.writeFileSync(readyFile, '');
+while (!fs.existsSync(goFile)) Atomics.wait(pause, 0, 0, 1);
+const state = handle.createState({
+  cwd: dir,
+  env: { AEP_HARNESS_PROFILE: '1', AEP_HARNESS_PROFILE_DIR: dir },
+});
+const total = Number(count);
+const pad = 'x'.repeat(1500);
+(async () => {
+  for (let i = 0; i < total; i += 1) {
+    const id = 'call_' + tag + '_' + i;
+    const message = 'msg_' + tag + '_' + i;
+    const at = Date.now();
+    const events = [
+      { id: 'e_' + tag + '_' + i + '_in', created: at, type: 'session.tool.input.started', data: { sessionID: root, assistantMessageID: message, id, name: 'shell' } },
+      { id: 'e_' + tag + '_' + i + '_call', created: at + 1, type: 'session.tool.called', data: { sessionID: root, assistantMessageID: message, id, input: { command: pad, index: i } } },
+      { id: 'e_' + tag + '_' + i + '_ok', created: at + 2, type: 'session.tool.success', data: { sessionID: root, assistantMessageID: message, id, content: [{ type: 'text', text: 'ok ' + i }] } },
+      { id: 'e_' + tag + '_' + i + '_end', created: at + 3, type: 'session.step.ended', data: { sessionID: root, assistantMessageID: message, tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } } } },
+    ];
+    for (const event of events) await handle.handleEvent(event, state);
+  }
+})().catch((error) => { console.error(error); process.exit(1); });
+`;
+
+function runWriter(args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.on('error', reject);
+    child.on('exit', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`writer exited ${code}: ${stderr}`));
+    });
+  });
+}
+
+async function waitFor(files, timeout = 5000) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    if (files.every((file) => fs.existsSync(file))) return;
+    await sleep(5);
+  }
+  throw new Error('writers did not become ready');
+}
+
+test('E12: two concurrent writers produce only complete, well-formed JSON lines', async () => {
+  const dir = scratch('hp-hygiene-race-');
+  const script = path.join(dir, 'writer.js');
+  const go = path.join(dir, 'go');
+  fs.writeFileSync(script, WRITER);
+  const perWriter = 150;
+
+  const tags = ['a', 'b'];
+  const ready = tags.map((tag) => path.join(dir, `${tag}.ready`));
+  // Both processes load, signal ready, and wait for the same `go` file, so the
+  // appends start together rather than one writer finishing first.
+  const running = tags.map((tag, at) => runWriter([
+    script,
+    path.join(__dirname, 'handle.js'),
+    dir,
+    tag,
+    String(perWriter),
+    ready[at],
+    go,
+    ROOT,
+  ]));
+  await waitFor(ready);
+  fs.writeFileSync(go, '');
+  await Promise.all(running);
+
+  const file = path.join(dir, `${ROOT}.jsonl`);
+  assert.ok(fs.existsSync(file), 'the writers produced no trace');
+  assert.equal(fs.statSync(file).mode & 0o777, 0o600, 'the raced file must still be 0600');
+
+  const text = fs.readFileSync(file, 'utf8');
+  assert.ok(text.endsWith('\n'), 'the last line is not newline-terminated');
+  const lines = text.slice(0, -1).split('\n');
+  assert.equal(lines.length, perWriter * 2, 'a record was split or lost');
+
+  const seen = new Set();
+  for (const [index, line] of lines.entries()) {
+    assert.notEqual(line.trim(), '', `line ${index} is empty (a split newline)`);
+    let record;
+    try {
+      record = JSON.parse(line);
+    } catch (error) {
+      assert.fail(`line ${index} is not one complete record (${error.message}): ${line.slice(0, 120)}`);
+    }
+    assert.match(record.tool_use_id, /^call_[ab]_\d+$/, `line ${index} belongs to neither writer`);
+    assert.ok(!seen.has(record.tool_use_id), `line ${index} duplicates ${record.tool_use_id}`);
+    seen.add(record.tool_use_id);
+  }
+  assert.equal(seen.size, perWriter * 2, 'both writers are not fully represented');
+
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('E13: retention prunes traces older than the default window and is idempotent', () => {
+  const dir = scratch('hp-hygiene-retention-');
+  const now = Date.now();
+  const old = touch(dir, 'ses_old.jsonl', 30, { now });
+  const oldSidecar = touch(dir, 'ses_old.parentage.json', 30, { now });
+  const recent = touch(dir, 'ses_recent.jsonl', 13, { now });
+  const current = touch(dir, 'ses_current.jsonl', 0.1, { now });
+  const boundary = touch(dir, 'ses_boundary.jsonl', 14.5, { now });
+  const unrelated = touch(dir, 'notes.txt', 30, { now });
+  const nested = path.join(dir, 'nested.jsonl');
+  fs.mkdirSync(nested);
+  touch(nested, 'inside.jsonl', 30, { now });
+
+  assert.equal(handle.RETENTION_DAYS, 14, 'the documented default window moved');
+
+  const removed = handle.pruneTraces(dir, { now });
+  assert.deepEqual(names(removed), ['ses_boundary.jsonl', 'ses_old.jsonl', 'ses_old.parentage.json']);
+  for (const gone of [old, oldSidecar, boundary]) assert.equal(fs.existsSync(gone), false, `${gone} survived`);
+  for (const kept of [recent, current, unrelated]) assert.equal(fs.existsSync(kept), true, `${kept} was pruned`);
+  assert.equal(fs.existsSync(path.join(nested, 'inside.jsonl')), true, 'prune recursed into a directory named like a trace');
+
+  // Idempotent: the second run has nothing left to remove and deletes nothing.
+  const before = fs.readdirSync(dir).sort();
+  assert.deepEqual(handle.pruneTraces(dir, { now }), []);
+  assert.deepEqual(fs.readdirSync(dir).sort(), before, 'the second prune changed the directory');
+
+  // A directory that does not exist is not created just to prune it.
+  const missing = path.join(dir, 'missing');
+  assert.deepEqual(handle.pruneTraces(missing, { now }), []);
+  assert.equal(fs.existsSync(missing), false);
+
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('E13b: the byte budget removes the oldest trace files until the directory fits', () => {
+  const dir = scratch('hp-hygiene-budget-');
+  const now = Date.now();
+  assert.equal(handle.MAX_TRACE_BYTES, 32 * 1024 * 1024, 'the documented byte budget moved');
+  const body = 'x'.repeat(600);
+  const oldest = touch(dir, 'ses_a.jsonl', 3, { now, body });
+  const middle = touch(dir, 'ses_b.jsonl', 2, { now, body });
+  const newest = touch(dir, 'ses_c.jsonl', 1, { now, body });
+  const unrelated = touch(dir, 'notes.txt', 4, { now, body });
+
+  // 1,800 bytes of traces against a 1,000-byte ceiling: drop oldest-first.
+  const removed = handle.pruneTraces(dir, { now, days: 0, maxBytes: 1000 });
+  assert.deepEqual(names(removed), ['ses_a.jsonl', 'ses_b.jsonl']);
+  for (const gone of [oldest, middle]) assert.equal(fs.existsSync(gone), false);
+  assert.equal(fs.existsSync(newest), true, 'the newest trace was pruned before an older one');
+  assert.equal(fs.existsSync(unrelated), true, 'a non-trace file counted against the budget');
+
+  const total = fs.readdirSync(dir).filter((name) => name.endsWith('.jsonl')).reduce((sum, name) => sum + fs.statSync(path.join(dir, name)).size, 0);
+  assert.ok(total <= 1000, `${total} bytes remain above the budget`);
+  assert.deepEqual(handle.pruneTraces(dir, { now, days: 0, maxBytes: 1000 }), [], 'the size prune is not idempotent');
+
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('E13c: capture prunes on its first event, and both bounds are env-overridable', async () => {
+  // The age bound through the handler: a 3-day-old file goes when the window is
+  // one day; a half-day-old file stays.
+  const root = gitRepo();
+  const dir = path.join(root, '.harness-profile');
+  fs.mkdirSync(dir);
+  const stale = touch(dir, 'ses_stale.jsonl', 3);
+  const live = touch(dir, 'ses_live.jsonl', 0.5);
+  const withWindow = handle.createState({ cwd: root, env: enabled({ AEP_HARNESS_PROFILE_RETENTION_DAYS: '1' }) });
+  await feed(withWindow, fixture('tool-calls.json').events);
+  assert.equal(fs.existsSync(stale), false, 'the age override did not prune the stale trace');
+  assert.equal(fs.existsSync(live), true, 'the age override pruned a file inside its window');
+  assert.ok(fs.existsSync(path.join(dir, 'ses_root_tools.jsonl')), 'capture did not write after pruning');
+  assert.deepEqual(withWindow.errors, []);
+
+  // The byte bound through the handler: age disabled, a 1,000-byte ceiling.
+  const sized = path.join(root, '.harness-profile-sized');
+  fs.mkdirSync(sized);
+  const bigOld = touch(sized, 'ses_big_old.jsonl', 3, { body: 'x'.repeat(600) });
+  const bigNew = touch(sized, 'ses_big_new.jsonl', 2, { body: 'x'.repeat(600) });
+  const withBudget = handle.createState({ cwd: root, env: enabled({
+    AEP_HARNESS_PROFILE_DIR: sized,
+    AEP_HARNESS_PROFILE_RETENTION_DAYS: '0',
+    AEP_HARNESS_PROFILE_MAX_BYTES: '1000',
+  }) });
+  await feed(withBudget, fixture('tool-calls.json').events);
+  assert.equal(fs.existsSync(bigOld), false, 'the byte override did not prune the oldest trace');
+  assert.equal(fs.existsSync(bigNew), true, 'the byte override pruned the newest trace first');
+  assert.deepEqual(withBudget.errors, []);
+
+  // A window of 0 disables the age bound rather than pruning everything.
+  const kept = scratch('hp-hygiene-nowindow-');
+  const old = touch(kept, 'ses_old.jsonl', 90);
+  handle.pruneTraces(kept, { days: 0, maxBytes: 0 });
+  assert.equal(fs.existsSync(old), true, 'days=0 must disable the age bound');
+
+  fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(kept, { recursive: true, force: true });
+});

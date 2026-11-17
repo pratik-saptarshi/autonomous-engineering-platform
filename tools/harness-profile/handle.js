@@ -29,6 +29,14 @@
 //
 // `session.created` is a host-dependent extra, honored only when there is no
 // session API at all, so it can never outrank the API path.
+//
+// Hygiene: the trace directory is excluded through the repository's own
+// `info/exclude` on the first event, unconditionally (the pin skips it when the
+// directory already exists), and it is pruned at the same moment — 14 days or
+// 32 MiB by default, older-files-first. Without a repository above the working
+// directory and without an explicit `AEP_HARNESS_PROFILE_DIR`, capture writes
+// nothing: a trace that cannot be excluded from git is not written at all, and
+// the refusal is recorded in `state.warnings` instead of failing the session.
 
 const fs = require('fs');
 const path = require('path');
@@ -39,10 +47,27 @@ const hp = require('../../reference/harness-profiler/plugin/libexec/hp.js');
 const ENABLE = 'AEP_HARNESS_PROFILE';
 const DIR = 'AEP_HARNESS_PROFILE_DIR';
 const DEBUG = 'AEP_HARNESS_PROFILE_DEBUG';
+const RETENTION = 'AEP_HARNESS_PROFILE_RETENTION_DAYS';
+const MAX_BYTES = 'AEP_HARNESS_PROFILE_MAX_BYTES';
 
 // A session whose lookup keeps missing holds its events, bounded so a broken
 // API cannot grow the capture without limit. Nothing is written for it.
 const MAX_DEFERRED = 64;
+
+// Growth is bounded on two axes. Age is the primary one: the evaluation
+// measured ~430 B per record and ~1 MB/day across four lanes, so 14 days is
+// ~14 MB steady state. The byte ceiling caps what accumulates between starts
+// (a burst of sessions, duplicated writers) and is set at roughly twice that
+// steady state; the oldest trace files go first. Both are env-overridable and
+// `0` disables that bound.
+const RETENTION_DAYS = 14;
+const MAX_TRACE_BYTES = 32 * 1024 * 1024;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// Trace files this handler owns: one JSONL per root session plus the debug
+// sidecar. Anything else in the directory (an operator's notes, a subdirectory)
+// is never pruned.
+const TRACE_FILE = /\.(?:jsonl|parentage\.json)$/;
 
 // The spawning tool names, before the translator's mapping to `Agent`.
 const SPAWN_TOOLS = new Set(['subagent', 'task', 'Agent', 'Task']);
@@ -117,6 +142,87 @@ function excludeTraceDir(cwd) {
   return true;
 }
 
+// ---------- retention ----------
+
+function bound(value, fallback) {
+  if (typeof value !== 'string' || !value.trim()) return fallback;
+  const parsed = Number(value.trim());
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function retentionDays(env) {
+  return bound((env || {})[RETENTION], RETENTION_DAYS);
+}
+
+function maxTraceBytes(env) {
+  return bound((env || {})[MAX_BYTES], MAX_TRACE_BYTES);
+}
+
+// The trace files directly in `dir`, with the facts pruning needs. A missing or
+// unreadable directory is empty, not an error: the first capture may run before
+// anything has been written. Subdirectories are never entered or removed.
+function traceFiles(dir) {
+  let names;
+  try {
+    names = fs.readdirSync(dir);
+  } catch {
+    return [];
+  }
+  const files = [];
+  for (const name of names) {
+    if (!TRACE_FILE.test(name)) continue;
+    const file = path.join(dir, name);
+    let stat;
+    try {
+      stat = fs.lstatSync(file);
+    } catch {
+      continue;
+    }
+    if (stat.isFile()) files.push({ file, mtime: stat.mtimeMs, size: stat.size });
+  }
+  return files;
+}
+
+// Bound the trace directory: remove files older than `days` by mtime, then the
+// oldest files until the directory fits `maxBytes`. Both are measured on the
+// files this handler owns, so a shared `AEP_HARNESS_PROFILE_DIR` keeps its other
+// contents. `0` disables a bound. Idempotent: a second run with the same inputs
+// removes nothing. Returns the removed paths.
+function pruneTraces(dir, options = {}) {
+  const now = options.now ?? Date.now();
+  const days = options.days ?? RETENTION_DAYS;
+  const maxBytes = options.maxBytes ?? MAX_TRACE_BYTES;
+  const removed = [];
+  const kept = [];
+  for (const entry of traceFiles(dir)) {
+    if (days > 0 && now - entry.mtime > days * DAY_MS) {
+      try {
+        fs.rmSync(entry.file, { force: true });
+        removed.push(entry.file);
+        continue;
+      } catch {
+        // A file we cannot remove is still counted against the byte budget.
+      }
+    }
+    kept.push(entry);
+  }
+  let total = kept.reduce((sum, entry) => sum + entry.size, 0);
+  if (maxBytes > 0 && total > maxBytes) {
+    kept.sort((a, b) => a.mtime - b.mtime);
+    for (const entry of kept) {
+      if (total <= maxBytes) break;
+      try {
+        fs.rmSync(entry.file, { force: true });
+        removed.push(entry.file);
+        total -= entry.size;
+      } catch {
+        // Keep the entry (and its bytes) rather than claiming a bound we miss.
+      }
+    }
+  }
+  return removed;
+}
+
 // ---------- state ----------
 
 function createState(options = {}) {
@@ -132,9 +238,10 @@ function createState(options = {}) {
     via: new Map(), // sessionId -> parentage source
     resolving: new Set(),
     deferred: new Map(), // sessionId -> { events }
-    excluded: false,
+    prepared: false,
     gitRoot: options.gitRoot !== undefined ? options.gitRoot : gitRoot(cwd),
     errors: [],
+    warnings: [], // capture refusals, for tests/debug (see protectedDestination)
   };
   if (options.rootSessionId) createRootTree(state, options.rootSessionId);
   return state;
@@ -253,11 +360,37 @@ function traceDirOf(state) {
   return path.join(gitRoot(state.cwd) || state.cwd, translate.TRACE_DIR);
 }
 
-function ensureExclusion(state) {
-  if (state.excluded) return;
-  state.excluded = true;
+function hasExplicitDir(state) {
+  const override = (state.env || {})[DIR];
+  return typeof override === 'string' && override.trim() !== '';
+}
+
+// Fail closed: a trace in an implicit directory with no repository above it
+// cannot be excluded from git, so it is not written at all. An explicit
+// `AEP_HARNESS_PROFILE_DIR` is the operator's choice of destination and is
+// honored everywhere (tests, ad-hoc capture, a directory outside the repo).
+// The refusal is recorded once per state so a plugin can surface it; it is not
+// an error and never fails the session.
+function protectedDestination(state) {
+  if (state.gitRoot || hasExplicitDir(state)) return true;
+  const warning =
+    `trace capture skipped: no git repository above ${state.cwd} and ${DIR} is unset, `
+    + 'so the trace could not be excluded from git; set '
+    + `${DIR} to capture in an explicit directory`;
+  if (!state.warnings.includes(warning)) state.warnings.push(warning);
+  return false;
+}
+
+// Preparation runs once, before the first event is dispatched: write the
+// exclusion that keeps the ledger out of git (unconditional, because the pin
+// skips it when the directory already exists), then bound the directory's
+// growth. Both are best-effort; a failure is recorded and capture continues.
+function ensurePrepared(state) {
+  if (state.prepared) return;
+  state.prepared = true;
   try {
     excludeTraceDir(state.cwd);
+    pruneTraces(traceDirOf(state), { days: retentionDays(state.env), maxBytes: maxTraceBytes(state.env) });
   } catch (error) {
     state.errors.push(error);
   }
@@ -265,7 +398,7 @@ function ensureExclusion(state) {
 
 function writeOne(state, tree, record) {
   if (!record) return null;
-  ensureExclusion(state);
+  ensurePrepared(state);
   const dir = traceDirOf(state);
   const file = path.join(dir, `${String(tree.rootSessionId).replace(/[^\w.-]/g, '_')}.jsonl`);
   try {
@@ -527,7 +660,9 @@ async function handleEvent(event, state) {
   if (!isEnabled(state.env)) return null;
   if (!event || typeof event !== 'object' || !event.type) return null;
   try {
-    ensureExclusion(state);
+    // No repository and no explicit destination: write nothing (fail closed).
+    if (!protectedDestination(state)) return null;
+    ensurePrepared(state);
     if (!inDirectory(state, event)) return null;
 
     const data = event.data || {};
@@ -596,6 +731,10 @@ module.exports = {
   ENABLE,
   DIR,
   DEBUG,
+  RETENTION,
+  MAX_BYTES,
+  RETENTION_DAYS,
+  MAX_TRACE_BYTES,
   createState,
   handleEvent,
   parentageOf,
@@ -603,4 +742,5 @@ module.exports = {
   spawnResponseOf,
   traceDirOf,
   excludeTraceDir,
+  pruneTraces,
 };

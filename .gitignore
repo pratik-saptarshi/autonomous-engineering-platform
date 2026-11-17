@@ -1,4 +1,10 @@
 dist/
 
+# .harness-profile/ is deliberately not listed here: the capture handler writes
+# the repository's own info/exclude on first event, so `git check-ignore -v
+# .harness-profile/x` names the runtime exclusion rather than this file. Listing
+# it here as well would outrank that entry (per-directory .gitignore beats
+# $GIT_DIR/info/exclude) and hide whether the handler's write happened.
+
 # .superpowers/ — local SDD workspace, never committed
 .superpowers/

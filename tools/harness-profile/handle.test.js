@@ -444,6 +444,37 @@ test('E8f: a response observed first binds the child; later child events do not 
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('E8g: one response binds its child and the other call keeps the displaced child', async () => {
+  // Both calls complete, but only call A's response carries 2.3's session id
+  // (the shape a host that omits metadata for one call produces). FIFO has
+  // guessed A<-B and B<-A from the observation order. A's response then takes
+  // child A for call A, which must release both stale links: call A's previous
+  // guess (child B) and call B's link to the child A is taking. Without the
+  // releases, both calls end up claiming child A and child B's spend is lost.
+  const dir = scratch();
+  const data = concurrentSpawn({ first: ['ses_child_b', 'ses_child_a'], responses: ['ses_child_a', 'ses_child_b'] });
+  for (const event of data.events) {
+    if (event.type === 'session.tool.success' && event.data.id === 'call_b') delete event.data.metadata;
+  }
+  const parents = { [data.childA]: data.root, [data.childB]: data.root };
+  const state = handle.createState({
+    cwd: dir,
+    env: enabled(dir),
+    sessionGet: (id) => ({ id, parentID: parents[id] }),
+  });
+  const records = await feed(state, data.events);
+
+  assert.equal(byId(records, 'call_a').child_agent_id, data.childA);
+  assert.equal(byId(records, 'call_b').child_agent_id, data.childB, 'the unresponded call double-bound child A');
+  assert.deepEqual(byId(records, 'call_a').child_spend, { new: 1, cached: 0, out: 1, calls: 1 });
+  assert.deepEqual(byId(records, 'call_b').child_spend, { new: 2, cached: 0, out: 2, calls: 1 });
+  assert.deepEqual(handle.parentageOf(state, data.childA), { parent: data.root, via: 'spawn-response' });
+
+  const { contexts } = hp.contextsOf(records);
+  assert.deepEqual(contexts.map((context) => context.id).sort(), ['main', data.childA, data.childB].sort(), 'the renderer lost a child context');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('E9: trace dir honors AEP_HARNESS_PROFILE_DIR, else the git root; exclusion is unconditional and 0600', async () => {
   const root = repo();
   const cwd = path.join(root, 'a', 'b');

@@ -372,6 +372,9 @@ function writeRecord(traceDir, record, rootSessionId) {
   if (!record) return null;
   const file = path.join(traceDir, `${String(rootSessionId).replace(/[^\w.-]/g, '_')}.jsonl`);
   fs.mkdirSync(traceDir, { recursive: true });
+  // One append per record, body and newline together: a reader or a second
+  // writer must never observe half a line. Splitting this into two appends lets
+  // two processes interleave their halves (E12 in hygiene.test.js).
   fs.appendFileSync(file, `${hp.serialize(record)}\n`);
   return file;
 }
