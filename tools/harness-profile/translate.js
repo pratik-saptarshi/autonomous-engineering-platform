@@ -19,7 +19,9 @@
 // event to satisfy this ordering before building.
 //
 // Masking: the pin's `mask` runs inside `buildRecord`. One additive step,
-// `redactSecrets`, runs on the payload strings first (see its comment).
+// `redactSecrets`, runs on the payload first: strings by the credential text
+// rule, and structured objects by the same rule applied to each key name (a
+// credential key's whole value becomes `[redacted]`). See its comment.
 
 const fs = require('fs');
 const path = require('path');
@@ -309,6 +311,18 @@ const CREDENTIAL =
 // `^(input|output)_tokens$` case is already covered by `_?tokens?`.
 const BENIGN_KEY = /^(?:(?:input|output|total|num|max|prompt|completion)_?tokens?|tokenizer)$/i;
 
+// The same name rule, applied to a structured payload's key instead of to text.
+// A string never carries the `=`/`:` the CREDENTIAL rule needs when the caller
+// sends `{env: {AWS_SECRET_ACCESS_KEY: …}}` or `{headers: {dbPassword: …}}`, so
+// key names are tested here. Containment (not a suffix, not uppercase-only)
+// covers `AWS_SECRET_ACCESS_KEY`, `NEUROSTRATA_API_KEY`, `dbPassword` and
+// `client_secret` with one rule; the profiler's own keys are spared first.
+const CREDENTIAL_NAME = /(?:SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL|ACCESS[-_]?KEY|API[-_]?KEY)/i;
+
+function isCredentialKey(key) {
+  return typeof key === 'string' && CREDENTIAL_NAME.test(key) && !BENIGN_KEY.test(key);
+}
+
 function redactMatch(match, key, keyQuote, separator, value, offset, text) {
   if (BENIGN_KEY.test(key)) return match;
   // A bare space separates a flag from its value (`--password x`); a sentence
@@ -328,7 +342,11 @@ function redactSecrets(value) {
   if (Array.isArray(value)) return value.map(redactSecrets);
   if (value && typeof value === 'object') {
     const out = {};
-    for (const [key, item] of Object.entries(value)) out[key] = redactSecrets(item);
+    for (const [key, item] of Object.entries(value)) {
+      // A credential key masks its whole value, without recursing: the body of
+      // an object-valued credential must not stay readable.
+      out[key] = isCredentialKey(key) ? '[redacted]' : redactSecrets(item);
+    }
     return out;
   }
   return value;

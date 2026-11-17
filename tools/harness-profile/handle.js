@@ -41,7 +41,11 @@
 // unwritable or unverified `info/exclude`) is not written at all, and the
 // refusal reason is recorded once in `state.warnings` instead of failing the
 // session. The committed `.gitignore` entry is the second layer: it covers a
-// fresh clone and a runtime write that cannot land.
+// fresh clone and a runtime write that cannot land. An explicit
+// `AEP_HARNESS_PROFILE_DIR` is honored outside every repository, but when it
+// resolves inside a work tree it must be named by that repository's `.gitignore`
+// or common `info/exclude`; otherwise the trace would be committable and capture
+// refuses it (the reason and both remedies are recorded in `state.warnings`).
 
 const fs = require('fs');
 const path = require('path');
@@ -148,6 +152,125 @@ function isDirectory(target) {
   } catch {
     return false;
   }
+}
+
+// ---------- ignore-file matching ----------
+//
+// An explicit `AEP_HARNESS_PROFILE_DIR` used to bypass both git layers: it was
+// honored even inside the work tree, so `git status` showed `A traces/...`.
+// When the resolved destination is inside a repository it must now be named by
+// `.gitignore` (the committed layer) or the common `info/exclude` (the runtime
+// layer). The check reads the two files and matches the directory path; it
+// never shells out to git, because this runs inside a capture hook. Matching
+// is deliberately a subset of gitignore syntax (anchoring, `*`, `**`, `?`,
+// trailing-slash directory patterns, negation) — a shape it cannot evaluate is
+// treated as "not ignored", which refuses the write instead of risking one.
+
+function ignoreFiles(root) {
+  const files = [path.join(root, '.gitignore')];
+  const common = commonGitDir(root);
+  if (common) files.push(path.join(common, 'info', 'exclude'));
+  return files;
+}
+
+// Path of `dir` below `root`, with forward slashes; null when it is not below.
+function relativePath(root, dir) {
+  const rel = path.relative(root, dir);
+  if (!rel || rel === '.') return '';
+  if (path.isAbsolute(rel) || rel === '..' || rel.startsWith(`..${path.sep}`)) return null;
+  return rel.split(path.sep).join('/').replace(/\/+$/, '');
+}
+
+function globToRegExp(glob) {
+  let source = '^';
+  for (let i = 0; i < glob.length; i += 1) {
+    const char = glob[i];
+    if (char === '*') {
+      if (glob[i + 1] === '*') {
+        i += 1;
+        if (glob[i + 1] === '/') {
+          i += 1;
+          source += '(?:.*/)?';
+        } else {
+          source += '.*';
+        }
+      } else {
+        source += '[^/]*';
+      }
+    } else if (char === '?') {
+      source += '[^/]';
+    } else if ('\\^$.|+()[]{}'.includes(char)) {
+      source += `\\${char}`;
+    } else {
+      source += char;
+    }
+  }
+  return new RegExp(`${source}$`);
+}
+
+function parseIgnoreLine(line) {
+  let text = line.replace(/\s+$/, '');
+  if (!text || text.startsWith('#')) return null;
+  let negated = false;
+  if (text.startsWith('\\!') || text.startsWith('\\#')) text = text.slice(1);
+  else if (text.startsWith('!')) {
+    negated = true;
+    text = text.slice(1);
+  }
+  if (text.endsWith('/')) text = text.slice(0, -1);
+  const anchored = text.startsWith('/');
+  if (anchored) text = text.slice(1);
+  if (!text) return null;
+  return {
+    negated,
+    anchored,
+    hasSlash: text.includes('/'),
+    re: globToRegExp(text),
+  };
+}
+
+// A slash-free pattern matches a path segment at any depth; an anchored or
+// slash-bearing one matches the whole path from the repository root.
+function matchesIgnore(pattern, candidate) {
+  const base = candidate.slice(candidate.lastIndexOf('/') + 1);
+  return pattern.anchored || pattern.hasSlash ? pattern.re.test(candidate) : pattern.re.test(base);
+}
+
+// The last matching pattern in one file decides; a negation re-includes.
+function ignoreDecision(lines, candidates) {
+  let decision = null;
+  for (const line of lines) {
+    const pattern = parseIgnoreLine(line);
+    if (!pattern) continue;
+    if (candidates.some((candidate) => matchesIgnore(pattern, candidate))) {
+      decision = pattern.negated ? 'include' : 'ignore';
+    }
+  }
+  return decision;
+}
+
+// True when `dir`, or one of its ancestors below `root`, is ignored. `.gitignore`
+// is consulted first because a per-directory file outranks `info/exclude`; the
+// runtime file answers only when the committed one says nothing about the path.
+function ignoredInsideRepository(root, dir) {
+  const rel = relativePath(root, dir);
+  if (!rel) return false;
+  // A `.git` that does not resolve is not a work tree git reads; fail closed
+  // rather than trusting a stray `.gitignore` in it.
+  if (!commonGitDir(root)) return false;
+  const parts = rel.split('/');
+  const candidates = parts.map((_, index) => parts.slice(0, index + 1).join('/'));
+  for (const file of ignoreFiles(root)) {
+    let lines;
+    try {
+      lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
+    } catch {
+      continue;
+    }
+    const decision = ignoreDecision(lines, candidates);
+    if (decision) return decision === 'ignore';
+  }
+  return false;
 }
 
 // Unconditional and idempotent: the pin only writes this when it creates the
@@ -421,18 +544,41 @@ function hasExplicitDir(state) {
 // target git never reads, and a repository whose `info/exclude` cannot be
 // written or read back (EACCES, a redirected path). The runtime write itself is
 // still attempted whenever a repository is found, even with an explicit
-// destination, so the pin's own capture stays excluded. An explicit
-// `AEP_HARNESS_PROFILE_DIR` is the operator's choice of destination and is
-// honored everywhere (tests, ad-hoc capture, a directory outside the repo). The
-// refusal is recorded once per state, naming the reason, so a plugin can surface
-// it; it is not an error and never fails the session.
+// destination, so the pin's own capture stays excluded.
+//
+// An explicit `AEP_HARNESS_PROFILE_DIR` is the operator's choice of destination,
+// but it is not a way around the ledger rule: a destination inside a git work
+// tree is honored only when `.gitignore` or the common `info/exclude` names it.
+// Otherwise `git status` would show the trace as untracked (verified: an
+// unignored `<repo>/traces` produced `A traces/ses_*.jsonl`), so capture refuses
+// and names both remedies. A destination outside every repository is honored
+// as before (tests, ad-hoc capture, an operator-controlled directory).
+//
+// The refusal is recorded once per state, naming the reason, so a plugin can
+// surface it; it is not an error and never fails the session.
 function protectedDestination(state) {
   if (state.protection === undefined) {
     state.protection = state.gitRoot
       ? excludeTraceDir(state.cwd)
       : { ok: false, reason: `no git repository above ${state.cwd} and ${DIR} is unset` };
   }
-  if (hasExplicitDir(state)) return true;
+  if (hasExplicitDir(state)) {
+    const dir = traceDirOf(state);
+    const root = gitRoot(dir);
+    // Outside every work tree: the escape hatch is unchanged.
+    if (!root) return true;
+    if (ignoredInsideRepository(root, dir)) return true;
+    const common = commonGitDir(root);
+    const sources = [path.join(root, '.gitignore')];
+    if (common) sources.push(path.join(common, 'info', 'exclude'));
+    const rel = relativePath(root, dir) || path.basename(dir);
+    const warning =
+      `trace capture skipped: ${DIR}=${dir} is inside the git work tree at ${root} but not ignored by `
+      + `${sources.join(' or ')}, so the trace would be committable; move the directory outside the repository, `
+      + `or add an ignore rule for it (for example \`${rel}/\` in .gitignore) and retry`;
+    if (!state.warnings.includes(warning)) state.warnings.push(warning);
+    return false;
+  }
   if (state.protection.ok) return true;
   const warning =
     `trace capture skipped: ${state.protection.reason}, so the trace could not be excluded from git; `

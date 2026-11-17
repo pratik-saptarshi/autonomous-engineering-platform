@@ -73,13 +73,19 @@ root is found by walking up from the session's working directory:
 Set `AEP_HARNESS_PROFILE_DIR` to send traces to an explicit directory instead
 (relative values resolve against the session's working directory). The override
 wins even outside a git repository, which is the escape hatch for ad-hoc
-capture. The directory is created if needed; records are appended one complete
-line at a time.
+capture. A destination **inside** a git work tree is accepted only when that
+repository's `.gitignore` or the common `info/exclude` names it; otherwise the
+trace would show up in `git status`, so capture refuses it (see
+[refusals](#when-capture-writes-nothing-refusals-are-logged)). The directory is
+created if needed; records are appended one complete line at a time.
 
 The trace directory is excluded from git through the repository's own
 `.git/info/exclude`. The entry is written on the first event and read back from
 disk before any record is written. A committed `.gitignore` entry is the second
-layer but is not substituted for the runtime check.
+layer but is not substituted for the runtime check. In this checkout both layers
+exist, and `git check-ignore -v` names the committed `.gitignore` (a
+per-directory file outranks `info/exclude`); that is correct, not a fault. The
+next section shows how to read the attribution.
 
 ## Retention
 
@@ -99,6 +105,14 @@ counted or removed. A shared explicit directory keeps everything else.
 An invalid value falls back to the default. Pruning runs once per process, so
 growth is bounded across process starts rather than continuously inside one
 long-running service.
+
+**Pruning is destructive and this is the only retention boundary.** A trace that
+passes either bound is deleted, not archived, and cannot be recovered from the
+profiler afterwards. `0` disables that bound rather than emptying the directory:
+`AEP_HARNESS_PROFILE_RETENTION_DAYS=0` leaves age alone, and
+`AEP_HARNESS_PROFILE_MAX_BYTES=0` leaves size alone — setting both to `0` means
+the directory grows without limit until an operator removes files. Disabling
+capture deletes nothing.
 
 ## Render a trace
 
@@ -136,13 +150,22 @@ when the trace cannot be shown to be excluded from git:
 - a `.git` that does not resolve to a real git directory (a malformed pointer,
   a missing target);
 - an `info/exclude` that cannot be written or read back (for example
-  `EACCES`/`EPERM`, or a redirected path).
+  `EACCES`/`EPERM`, or a redirected path);
+- an explicit `AEP_HARNESS_PROFILE_DIR` that lies inside a git work tree but is
+  named by neither that repository's `.gitignore` nor its common
+  `info/exclude` — the trace would be committable there.
 
 On the first refused event, the handler records the reason once, and the plugin
 writes it once per process to the `opencode serve` log:
 
 ```text
 [aep-harness-profile] trace capture skipped: <reason>, so the trace could not be excluded from git; set AEP_HARNESS_PROFILE_DIR to capture in an explicit directory
+```
+
+For the in-repository override the line names the directory and both remedies:
+
+```text
+[aep-harness-profile] trace capture skipped: AEP_HARNESS_PROFILE_DIR=<dir> is inside the git work tree at <root> but not ignored by <root>/.gitignore or <common>/info/exclude, so the trace would be committable; move the directory outside the repository, or add an ignore rule for it (for example `<relative>/` in .gitignore) and retry
 ```
 
 That line is the operator surface. It appears in the service's stderr (the
@@ -157,15 +180,30 @@ To diagnose manually, from the session's working directory:
 git rev-parse --show-toplevel          # is there a repository at all?
 git rev-parse --git-common-dir        # worktrees share info/exclude here
 git check-ignore -v .harness-profile/x
-# expect: .../.git/info/exclude:<line>:.harness-profile/  .harness-profile/x
 ls -ld "$(git rev-parse --git-common-dir)/info"
 test -w "$(git rev-parse --git-common-dir)/info/exclude" && echo writable
 ```
 
+`git check-ignore -v` naming `.gitignore:10:/.harness-profile/` in this
+checkout is the expected answer, not a missing runtime entry. Two ignore layers
+exist, and a per-directory `.gitignore` outranks `$GIT_DIR/info/exclude`, so
+when both name the trace git reports the committed file. The handler's
+`info/exclude` line is still written unconditionally and read back from disk
+before the first record; E10 proves that attribution in a throwaway repository
+whose `.gitignore` contains only `dist/`. The command confirms the trace is
+ignored: the file it names tells you which layer answered, and either layer is
+sufficient.
+
 If the exclusion cannot be made to work, set `AEP_HARNESS_PROFILE_DIR` to a
-directory you control, restart the service with it, and capture there. Do not
-work around the refusal by pre-creating `.harness-profile/` in an unprotected
-tree: the next `git add -A` would commit it.
+directory you control, restart the service with it, and capture there. The
+wrapper renders only a directory whose final path component is exactly
+`.harness-profile` (`scripts/profile-tree.sh`), so name the destination that
+way — for example `/Users/you/aep-profile/.harness-profile`; any other name
+still captures, but `bash scripts/profile-tree.sh tree` refuses to render it. A
+destination inside the repository must also be named by `.gitignore` or
+`info/exclude`, or capture refuses it. Do not work around the refusal by
+pre-creating `.harness-profile/` in an unprotected tree: the next `git add -A`
+would commit it.
 
 ## Masking caveats
 
@@ -174,7 +212,14 @@ translator's bounded credential rule (`tools/harness-profile/translate.js`).
 The rule covers key names containing `SECRET`, `TOKEN`, `PASSWORD`, `PASSWD`,
 `CREDENTIAL`, `ACCESS_KEY`/`ACCESS-KEY`, `API_KEY`/`APIKEY`/`API-KEY` in any
 case, in `KEY=value`, `KEY: value`, and `--flag value` shapes. It keeps the key
-name and separator and replaces only the value.
+name and separator and replaces only the value. The same name rule is applied to
+structured payloads: every object key is tested, so nested
+`AWS_SECRET_ACCESS_KEY`, `NEUROSTRATA_API_KEY`, `dbPassword` and `client_secret`
+keys each lose their whole value (`[redacted]`) — for example
+`{"env":{"AWS_SECRET_ACCESS_KEY":"[redacted]"}}` — while a benign nested key
+such as `{env:{input_tokens:5}}` survives. A credential key's value is replaced
+without recursing into it, so an object-valued credential leaves no readable
+body.
 
 This is a redactor for the common shapes, **not a hardened secret scanner**.
 Treat a trace as sensitive: tool arguments and results, paths, prompts, and
@@ -191,8 +236,9 @@ output fragments are recorded (clipped to the record budget).
 
 The profiler's own keys — `input_tokens=`, `output_tokens=`, `total_tokens=`,
 `num_tokens=`, `max_tokens=`, `prompt_tokens=`, `completion_tokens=`,
-`tokenizer=` — are spared by a whole-name skip. `INPUT_TOKENS=` is spared too;
-the skip is case-insensitive.
+`tokenizer=` — are spared by a whole-name skip, in the text rule and in the
+object-key test alike. `INPUT_TOKENS=` is spared too; the skip is
+case-insensitive.
 
 See the [reference page](harness-profiler-reference.md#caveats-carried-by-the-adoption)
 for the rule-level detail and the upstream pin's own three patterns.

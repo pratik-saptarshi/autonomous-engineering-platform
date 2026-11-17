@@ -198,6 +198,50 @@ test('E11: with no git repository and no explicit dir, capture writes nothing (f
   fs.rmSync(override, { recursive: true, force: true });
 });
 
+test('E11c: an explicit trace dir inside the repository must be ignored, or capture fails closed', async () => {
+  // `git status` reported `A traces/ses_*.jsonl` for this shape: the explicit
+  // override skipped both git layers, so a trace inside the work tree could be
+  // committed. An explicit destination inside a repository is now accepted only
+  // when `.gitignore` or the common `info/exclude` actually names it.
+  const root = gitRepo();
+  const unignored = path.join(root, 'traces');
+
+  // (a) Inside the work tree and named by neither layer: fail closed.
+  const refused = handle.createState({ cwd: root, env: enabled({ AEP_HARNESS_PROFILE_DIR: unignored }) });
+  const blocked = await feed(refused, fixture('tool-calls.json').events);
+  assert.deepEqual(blocked, [], 'a record was written into an unignored in-repo directory');
+  assert.equal(fs.existsSync(unignored), false, 'the unignored trace directory was created');
+  assert.equal(refused.warnings.length, 1, 'the refusal must be recorded once, not per event');
+  assert.match(refused.warnings[0], /inside the git work tree/i, 'the warning must name the location problem');
+  assert.match(refused.warnings[0], /not ignored/i, 'the warning must name the cause');
+  assert.match(refused.warnings[0], /outside the repository/i, 'the warning must name the first remedy');
+  assert.match(refused.warnings[0], /ignore rule/i, 'the warning must name the second remedy');
+  assert.deepEqual(execFileSync('git', ['-C', root, 'status', '--porcelain', '--', 'traces'], { encoding: 'utf8' }), '', 'the refused capture left a committable trace');
+
+  // (b) Inside the work tree and ignored by the committed layer, using the
+  // anchored form this repository itself ships (`/.harness-profile/`): capture
+  // is allowed, and git agrees the directory is invisible.
+  fs.writeFileSync(path.join(root, '.gitignore'), '/traces/\n');
+  const accepted = handle.createState({ cwd: root, env: enabled({ AEP_HARNESS_PROFILE_DIR: unignored }) });
+  const written = await feed(accepted, fixture('tool-calls.json').events);
+  assert.ok(written.length > 0, 'an ignored in-repo destination wrote nothing');
+  assert.ok(fs.existsSync(path.join(unignored, 'ses_root_tools.jsonl')), 'the trace did not land in the explicit directory');
+  assert.deepEqual(accepted.warnings, [], 'an ignored in-repo destination is not a refusal');
+  assert.deepEqual(execFileSync('git', ['-C', root, 'status', '--porcelain', '--', 'traces'], { encoding: 'utf8' }), '', 'the accepted trace is visible to git');
+
+  // (c) Ignored only by the common info/exclude (the runtime layer): allowed
+  // too, so the check is not limited to `.gitignore`.
+  const captures = path.join(root, 'captures');
+  fs.appendFileSync(path.join(root, '.git', 'info', 'exclude'), 'captures/\n');
+  const viaExclude = handle.createState({ cwd: root, env: enabled({ AEP_HARNESS_PROFILE_DIR: captures }) });
+  const captured = await feed(viaExclude, fixture('tool-calls.json').events);
+  assert.ok(captured.length > 0, 'a destination ignored through info/exclude wrote nothing');
+  assert.ok(fs.existsSync(path.join(captures, 'ses_root_tools.jsonl')), 'the info/exclude destination stayed empty');
+  assert.deepEqual(viaExclude.warnings, [], 'an info/exclude-ignored destination is not a refusal');
+
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test('E11b: an unverifiable exclusion writes no records and warns with the reason', async (t) => {
   // The three shapes the "does a git root exist" guard let through. Each must
   // write nothing and name the reason once.
@@ -459,7 +503,10 @@ test('E13c: capture prunes on its first event, and both bounds are env-overridab
   assert.deepEqual(withWindow.errors, []);
 
   // The byte bound through the handler: age disabled, a 1,000-byte ceiling.
+  // E11c's rule means an explicit destination inside the repository must be
+  // ignored, so the byte-budget directory gets its own committed-layer entry.
   const sized = path.join(root, '.harness-profile-sized');
+  fs.writeFileSync(path.join(root, '.gitignore'), '/.harness-profile-sized/\n');
   fs.mkdirSync(sized);
   const bigOld = touch(sized, 'ses_big_old.jsonl', 3, { body: 'x'.repeat(600) });
   const bigNew = touch(sized, 'ses_big_new.jsonl', 2, { body: 'x'.repeat(600) });

@@ -32,15 +32,16 @@ Adopting it as shipped would deepen the harness coupling the architecture panel 
 
 Read separately, the capture and render halves have different assumptions.
 
-**Render half is harness-neutral.** `tree` consumes records only:
+**Render half is record-shaped, with Claude vocabulary in nesting and visibility.** `tree` consumes records only:
 - `agent_id` / `child_agent_id` establish context parenting (`hp.js:473-495`).
 - `context_tokens` per record; the Claude transcript is read only for records that lack it (`hp.js:269-282`).
 - `tool === "Skill"` marks an inline skill (`hp.js:586`); `SubagentStop` ends a subagent call (`hp.js:489`).
+- nesting and default visibility branch on the Claude tool names in `PARENT_TOOLS` (`hp.js:29`, `visible()` at `hp.js:635-637`); an adapter must map its spawning tools onto `Skill`/`Agent`.
 - `harness` is a plain record field; the render path never branches on it.
 
 **Capture half is Claude-shaped.** `buildRecord` reads `payload.tool_name`, `tool_use_id`, `session_id`, `tool_response.agentId`, `duration_ms`, `transcript_path` (`hp.js:335-375`). Token enrichment parses Claude's undocumented transcript `usage` keys (`hp.js:231-301`).
 
-**Consequence:** an adapter that writes `context_tokens` itself never touches a Claude transcript, and the renderer accepts its records unchanged. The adapter is the whole port.
+**Consequence:** an adapter that writes `context_tokens` itself never touches a Claude transcript and maps its spawning tools onto `Skill`/`Agent`; the renderer then accepts its records unchanged. The adapter is the whole port.
 
 **Opencode supplies the pieces** (v2.3.0, plugin API): `ctx.event.subscribe()`, `ctx.session.context({sessionID})` returning messages, and assistant messages that report `tokens` and `cost` in the same shape `session.generate` returns. Hook payloads do not carry per-call duration, so the adapter measures it between `tool.execute` events itself.
 

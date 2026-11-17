@@ -156,6 +156,59 @@ test('E1b: a credential literal in a tool argument is redacted before the pin se
   assert.equal(record.context_tokens, 10 + 100 + 0);
 });
 
+test('C1: nested structured credentials are masked by key name, not by text shape', () => {
+  // Before this rule `redactSecrets` recursed object values without testing the
+  // key, so the shape a real env/header argument takes leaked end to end: no
+  // `=` or `:` was ever written for the string rule to see.
+  const nested = [
+    { env: { AWS_SECRET_ACCESS_KEY: 'inert1' } },
+    { env: { NEUROSTRATA_API_KEY: 'inert2' } },
+    { headers: { dbPassword: 'inert4' } },
+    { env: { client_secret: 'inert3' } },
+  ];
+  for (const input of nested) {
+    const [outer] = Object.keys(input);
+    const [key] = Object.keys(input[outer]);
+    const out = translate.redactSecrets(input);
+    assert.deepEqual(out, { [outer]: { [key]: '[redacted]' } }, `${key} leaked through the object path`);
+  }
+
+  // The whole value is replaced without descending into it: an object-valued
+  // credential cannot leave its body readable.
+  assert.deepEqual(translate.redactSecrets({ env: { GITHUB_TOKEN: { deep: 'nested' } } }), {
+    env: { GITHUB_TOKEN: '[redacted]' },
+  });
+
+  // A benign nested key survives, including the number the profiler reports.
+  assert.deepEqual(translate.redactSecrets({ env: { input_tokens: 5 } }), { env: { input_tokens: 5 } });
+  assert.deepEqual(translate.redactSecrets({ usage: { output_tokens: 7, tokenizer: 'cl100k' } }), {
+    usage: { output_tokens: 7, tokenizer: 'cl100k' },
+  });
+
+  // Arrays are traversed, so a list of env blocks is covered too.
+  assert.deepEqual(translate.redactSecrets([{ env: { client_secret: 'inert3' } }]), [
+    { env: { client_secret: '[redacted]' } },
+  ]);
+});
+
+test('C1: the four nested credential shapes are gone after buildRecord', () => {
+  // The real exported path: event -> toPayload -> redactSecrets -> the pin's
+  // buildRecord -> `args`. These are object keys, not `KEY=value` text, which
+  // is why E1b's string fixtures never reached them.
+  const { records } = trace('secrets-nested.json');
+  const record = call(records, 'call_secret_nested');
+
+  for (const key of ['AWS_SECRET_ACCESS_KEY', 'NEUROSTRATA_API_KEY', 'client_secret', 'dbPassword']) {
+    assert.ok(
+      record.args.includes(`"${key}":"[redacted]"`),
+      `the nested ${key} value was not redacted: ${record.args}`,
+    );
+  }
+  assert.ok(!/inert[1-4]/.test(record.args), `a nested credential value survived: ${record.args}`);
+  // The benign nested key survives the same traversal.
+  assert.ok(record.args.includes('"input_tokens":5'), `a benign nested token count was redacted: ${record.args}`);
+});
+
 test('redactSecrets covers mixed-case and non-underscore credential names', () => {
   // Round-3's three rules were case-sensitive (env) or demanded an underscore
   // before the word (suffix), so every shape below leaked end to end. One
