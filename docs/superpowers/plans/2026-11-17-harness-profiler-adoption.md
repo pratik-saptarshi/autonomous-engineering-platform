@@ -188,7 +188,7 @@ Eval **E14**: wrapper resolves the repo root by walking up for `reference/harnes
 | E6–E9b | `node --test tools/harness-profile/handle.test.js` | inertness, durations, linkage, dir override, plugin shape |
 | E10–E13 | `node --test tools/harness-profile/hygiene.test.js` | exclusion idempotent, concurrent writes, retention |
 | E14–E14c | `bash scripts/profile-tree.sh` from `scripts/`; `PATH` without node | root resolved, actionable error, help |
-| Upstream | `node --test reference/harness-profiler/test/` (CI `vendor-tests`) | 51/51 |
+| Upstream | `node --test reference/harness-profiler/test/*.test.js` (CI `vendor-tests`, Node 22) | 51/51 |
 | Integrity | `sha256sum -c .github/vendor-harness-profiler.sha256` + unlisted + symlink | all clean |
 | Secrets | `gitleaks detect --source . --no-git` | clean, with the one allowlisted fixture file |
 
