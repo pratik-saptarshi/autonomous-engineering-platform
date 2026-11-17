@@ -19,7 +19,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - run: npx --yes markdownlint-cli2@0.24.0 "**/*.md" "!reference/esf/**/*.md" "!reference/neurostrata/**/*.md" "!reference/neurostrata-ops/**/*.md" "!reference/harness2/**/*.md" "!reference/security-audit-skill/**/*.md" "!reference/ub-mode/**/*.md" "!reference/grim-prompter/**/*.md" "!reference/docs-mcp-server/**/*.md" "!reference/humanizer/**/*.md" "!reference/homebrew-install/**/*.md" "!reference/elephant-goldfish-model/**/*.md" "!skills/archify/**/*.md" "!skills/diagnosing-superpowers/**/*.md" "!skills/neurogenesis/**/*.md" "!skills/overseer/**/*.md" "!skills/retro/**/*.md" "!skills/egm-bootstrap/**/*.md" "!skills/egm-brainstorm/**/*.md" "!skills/egm-draft/**/*.md" "!skills/egm-drift-report/**/*.md" "!skills/egm-resolve/**/*.md" "!skills/egm-review/**/*.md" "!skills/egm-review-loop/**/*.md" "!docs/egm-adoption/**/*.md"
+      - run: npx --yes markdownlint-cli2@0.24.0 "**/*.md" "!reference/esf/**/*.md" "!reference/neurostrata/**/*.md" "!reference/neurostrata-ops/**/*.md" "!reference/harness2/**/*.md" "!reference/security-audit-skill/**/*.md" "!reference/ub-mode/**/*.md" "!reference/grim-prompter/**/*.md" "!reference/docs-mcp-server/**/*.md" "!reference/humanizer/**/*.md" "!reference/homebrew-install/**/*.md" "!reference/elephant-goldfish-model/**/*.md" "!reference/harness-profiler/**/*.md" "!skills/archify/**/*.md" "!skills/diagnosing-superpowers/**/*.md" "!skills/neurogenesis/**/*.md" "!skills/overseer/**/*.md" "!skills/retro/**/*.md" "!skills/egm-bootstrap/**/*.md" "!skills/egm-brainstorm/**/*.md" "!skills/egm-draft/**/*.md" "!skills/egm-drift-report/**/*.md" "!skills/egm-resolve/**/*.md" "!skills/egm-review/**/*.md" "!skills/egm-review-loop/**/*.md" "!docs/egm-adoption/**/*.md"
       - name: Design invariants
         run: |
           python3 scripts/check_design_invariants.py --self-test
@@ -156,10 +156,34 @@ jobs:
           sha256sum -c ../../.github/vendor-homebrew-install.sha256
           comm -23 <(find . -type f | sort) <(cut -d' ' -f3- ../../.github/vendor-homebrew-install.sha256 | sed 's|^\./|./|' | sort) | grep -q . && { echo "ERROR: unlisted files"; exit 1; } || true
           find . -type l | while read -r link; do test -e "$link" || { echo "ERROR: broken symlink $link"; exit 1; }; done
+      - run: |
+          cd reference/harness-profiler
+          sha256sum -c ../../.github/vendor-harness-profiler.sha256
+          comm -23 <(find . -type f | sort) <(cut -d' ' -f3- ../../.github/vendor-harness-profiler.sha256 | sed 's|^\./|./|' | sort) | grep -q . && { echo "ERROR: unlisted files"; exit 1; } || true
+          find . -type l | while read -r link; do test -e "$link" || { echo "ERROR: broken symlink $link"; exit 1; }; done
       - name: Run vendored security-audit validator suites
         run: |
           node --test reference/security-audit-skill/skills/security-audit/validate-findings.test.cjs
           node --test reference/security-audit-skill/skills/security-audit/validate-coverage-ledger.test.cjs
+
+  # Bounded claim: the vendored tree's own unit suite passes under the Node
+  # version AEP's CI runs. No `npm install`: the suite has no runtime
+  # dependencies (playwright is an upstream devDependency of the e2e render
+  # only, which this command does not touch), so the tree the integrity job
+  # hashes is the tree the tests run. Node 22 because 18 and 20 are past
+  # end-of-life as of 2026-11; upstream's floor stays `engines: >=18`.
+  vendor-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - name: Run vendored harness-profiler unit suite
+        run: node --test reference/harness-profiler/test/
 
   # Bounded claim: this gate proves the repo skills/ tree equals the manifest
   # generated from the repo tree immediately after the last sync copied from

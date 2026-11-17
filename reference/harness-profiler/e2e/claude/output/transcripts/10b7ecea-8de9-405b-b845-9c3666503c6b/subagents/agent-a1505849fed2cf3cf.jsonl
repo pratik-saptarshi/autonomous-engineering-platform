@@ -1,0 +1,4 @@
+{"type":"assistant","message":{"id":"msg_011CgvLg8YmpBeSErw8FWoEJ","usage":{"input_tokens":2,"cache_read_input_tokens":20170,"cache_creation_input_tokens":6731,"output_tokens":98},"content":[]}}
+{"type":"assistant","message":{"id":"msg_011CgvLg8YmpBeSErw8FWoEJ","usage":{"input_tokens":2,"cache_read_input_tokens":20170,"cache_creation_input_tokens":6731,"output_tokens":98},"content":[{"type":"tool_use","id":"toolu_01E9eZp54fTEaRVcFZZcmVEo"}]}}
+{"type":"assistant","message":{"id":"msg_011CgvLgFiNcRv1Gc4w6HYVb","usage":{"input_tokens":2,"cache_read_input_tokens":26901,"cache_creation_input_tokens":237,"output_tokens":150},"content":[{"type":"tool_use","id":"toolu_01TUCsTudejhtfJrdzj7GcPx"}]}}
+{"type":"assistant","message":{"id":"msg_011CgvLgPvVHf77oZpGC4bq4","usage":{"input_tokens":32,"cache_read_input_tokens":27138,"cache_creation_input_tokens":222,"output_tokens":72},"content":[]}}
