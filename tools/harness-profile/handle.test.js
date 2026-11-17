@@ -560,3 +560,63 @@ test('E9b: the plugin module has the shape opencode 2.3 accepts', async () => {
     else process.env.AEP_HARNESS_PROFILE_DIR = previousDir;
   }
 });
+
+// D1's operator surface for a capture that quietly writes nothing: the refusal
+// reason lives in `state.warnings`, which no operator can read from outside the
+// long-lived process. The plugin must therefore copy it to stderr — the
+// `opencode serve` log — once per process, not once per event. Without this,
+// E11's no-repository refusal and C2's unverifiable-exclusion refusal are
+// invisible while the session looks healthy and the trace is simply absent.
+test('E14d: the plugin surfaces capture refusals once per process', async () => {
+  const previous = process.env.AEP_HARNESS_PROFILE;
+  const previousDir = process.env.AEP_HARNESS_PROFILE_DIR;
+  const dir = scratch('hp-handle-refusal-');
+  process.env.AEP_HARNESS_PROFILE = '1';
+  delete process.env.AEP_HARNESS_PROFILE_DIR;
+
+  const writes = [];
+  const original = process.stderr.write;
+  process.stderr.write = (chunk) => {
+    writes.push(String(chunk));
+    return true;
+  };
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  try {
+    const module = await import(pathToFileURL(PLUGIN).href);
+    const events = [
+      { type: 'session.created', data: { sessionID: 'ses_refused' } },
+      { type: 'session.created', data: { sessionID: 'ses_refused' } },
+      { type: 'session.created', data: { sessionID: 'ses_refused' } },
+    ];
+    let delivered = 0;
+    const ctx = {
+      directory: dir,
+      event: {
+        subscribe: () => (async function* stream() {
+          for (const event of events) {
+            delivered += 1;
+            yield event;
+          }
+        })(),
+      },
+      session: { get: async ({ sessionID }) => ({ id: sessionID }) },
+    };
+    const dispose = await module.default.setup(ctx);
+    for (let i = 0; i < 100 && delivered < events.length; i += 1) await sleep(10);
+    await sleep(50);
+    await dispose();
+
+    assert.equal(writes.length, 1, `expected one refusal line for three events, got ${writes.length}: ${writes.join('')}`);
+    assert.match(writes[0], /^\[aep-harness-profile\] /, 'the line must name the plugin for the server log');
+    assert.match(writes[0], /trace capture skipped/, 'the line must say capture was skipped');
+    assert.match(writes[0], /AEP_HARNESS_PROFILE_DIR/, 'the line must name the escape hatch');
+    assert.match(writes[0], /no git repository/i, 'the line must carry the refusal reason');
+  } finally {
+    process.stderr.write = original;
+    fs.rmSync(dir, { recursive: true, force: true });
+    if (previous === undefined) delete process.env.AEP_HARNESS_PROFILE;
+    else process.env.AEP_HARNESS_PROFILE = previous;
+    if (previousDir === undefined) delete process.env.AEP_HARNESS_PROFILE_DIR;
+    else process.env.AEP_HARNESS_PROFILE_DIR = previousDir;
+  }
+});

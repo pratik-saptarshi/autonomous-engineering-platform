@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# test_profile_tree.sh — E14/E14b/E14c evals for scripts/profile-tree.sh.
+#
+# The wrapper is the operator entry point for the vendored renderer. These
+# evals pin the three things an operator needs:
+#
+#   E14   run from scripts/, the wrapper walks up to the repository root that
+#         holds reference/harness-profiler/plugin/libexec/hp.js and renders the
+#         trace with it (a throwaway root proves it is not the caller's cwd);
+#   E14b  with no node on PATH it stops with the actionable one-line message
+#         "node 18+ required for profiling; install Node or skip" and a non-zero
+#         exit — never a raw "command not found";
+#   E14c  --help documents both the root walk and the node requirement, and
+#         works without node (help must not require the runtime it describes).
+#
+# The child tree carries a real (empty) .git directory so the pin's own
+# projectDir() resolves the trace to the throwaway root, exactly as it does in
+# the repository.
+set -uo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+SCRIPT="$ROOT/scripts/profile-tree.sh"
+RENDERER="reference/harness-profiler/plugin/libexec/hp.js"
+BASH_BIN="$(command -v bash)"
+SB="$(mktemp -d "${TMPDIR:-/tmp}/test-profile-tree.XXXXXX")"
+FAILURES=0
+
+trap 'rm -rf "$SB"' EXIT
+
+note() { echo "# $*"; }
+ok() { echo "ok - $*"; }
+fail() {
+  echo "FAIL - $*"
+  FAILURES=$((FAILURES + 1))
+}
+
+# --- Child repository: wrapper + renderer + one inert trace. ---
+CHILD="$SB/root"
+mkdir -p "$CHILD/scripts" "$CHILD/reference/harness-profiler/plugin/libexec" \
+  "$CHILD/.git" "$CHILD/.harness-profile"
+cp "$SCRIPT" "$CHILD/scripts/profile-tree.sh"
+cp "$ROOT/$RENDERER" "$CHILD/$RENDERER"
+printf '%s\n' \
+  '{"v":2,"at":"2026-01-01T00:00:00.000Z","session":"ses_eval_tree","agent":"main","tool":"Bash","name":"eval-call"}' \
+  >"$CHILD/.harness-profile/ses_eval_tree.jsonl"
+
+# --- E14: root discovery and renderer invocation from scripts/. ---
+note "E14: from scripts/, walk up to $RENDERER and render the root trace"
+out="$(cd "$CHILD/scripts" && env -u AEP_HARNESS_PROFILE_DIR "$BASH_BIN" ./profile-tree.sh tree --verbose 2>&1)"
+status=$?
+if [ "$status" -ne 0 ]; then
+  fail "E14: wrapper exited $status from scripts/: $out"
+elif ! grep -q 'eval-call' <<<"$out"; then
+  fail "E14: renderer output has no trace content: $out"
+elif grep -qi 'cannot find\|no such file\|not found' <<<"$out"; then
+  fail "E14: wrapper did not resolve the renderer: $out"
+else
+  ok "E14: wrapper resolved the root renderer and rendered the trace"
+fi
+
+# A nested caller (scripts/ is where the eval runs; this is the "anywhere"
+# claim in --help) resolves the same root rather than its own cwd.
+out="$(cd "$CHILD/scripts" && env -u AEP_HARNESS_PROFILE_DIR "$BASH_BIN" "$CHILD/scripts/profile-tree.sh" tree --verbose 2>&1)"
+status=$?
+if [ "$status" -eq 0 ] && grep -q 'eval-call' <<<"$out"; then
+  ok "E14: absolute invocation from scripts/ renders the same root trace"
+else
+  fail "E14: absolute invocation failed ($status): $out"
+fi
+
+# --- E14b: no node on PATH is actionable, non-zero, no raw traceback. ---
+note "E14b: PATH without node prints the actionable message and exits non-zero"
+out="$(cd "$CHILD/scripts" && PATH=/nonexistent AEP_HARNESS_PROFILE_DIR='' "$BASH_BIN" ./profile-tree.sh tree 2>&1)"
+status=$?
+if [ "$status" -eq 0 ]; then
+  fail "E14b: wrapper succeeded without node"
+elif ! grep -q 'node 18+ required for profiling; install Node or skip' <<<"$out"; then
+  fail "E14b: message is not actionable: $out"
+elif grep -qi 'command not found\|^sh: node\|^bash: node' <<<"$out"; then
+  fail "E14b: raw shell traceback leaked: $out"
+else
+  ok "E14b: actionable message, exit $status, no traceback"
+fi
+
+# --- E14c: --help documents root discovery and the node floor. ---
+note "E14c: --help documents the root walk and node 18+ without needing node"
+out="$(cd "$CHILD/scripts" && PATH=/nonexistent "$BASH_BIN" ./profile-tree.sh --help 2>&1)"
+status=$?
+if [ "$status" -ne 0 ]; then
+  fail "E14c: --help exited $status without node: $out"
+elif ! grep -q "$RENDERER" <<<"$out"; then
+  fail "E14c: --help does not name the renderer path it walks up for: $out"
+elif ! grep -q 'node 18+ required' <<<"$out"; then
+  fail "E14c: --help does not document the node requirement: $out"
+elif ! grep -qi 'walk' <<<"$out"; then
+  fail "E14c: --help does not document the root walk: $out"
+else
+  ok "E14c: --help documents root discovery and the node floor"
+fi
+
+echo "# 4 assertions checked, $FAILURES failure(s)"
+[ "$FAILURES" -eq 0 ]

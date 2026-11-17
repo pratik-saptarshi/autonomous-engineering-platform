@@ -10,6 +10,25 @@ const require = createRequire(import.meta.url);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const handle = require(path.join(root, 'tools', 'harness-profile', 'handle.js'));
 
+// A capture refusal (no git root, an unverifiable exclusion, a malformed .git)
+// is recorded in `state.warnings` instead of failing the session, so without
+// this line the trace is simply absent and the reason is unreadable from
+// outside the long-lived process. One line per distinct warning per process:
+// the server log keeps the diagnosis, and a stream of events cannot flood it.
+const reported = new Set();
+
+function reportWarnings(state) {
+  for (const warning of state.warnings) {
+    if (reported.has(warning)) continue;
+    reported.add(warning);
+    try {
+      process.stderr.write(`[aep-harness-profile] ${warning}\n`);
+    } catch {
+      // Logging cannot fail a session either.
+    }
+  }
+}
+
 function directoryOf(ctx) {
   if (typeof ctx?.directory === 'string' && ctx.directory) return ctx.directory;
   if (typeof ctx?.location?.directory === 'string' && ctx.location.directory) return ctx.location.directory;
@@ -31,6 +50,7 @@ export default {
     const consuming = (async () => {
       for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
         await handle.handleEvent(event, state);
+        reportWarnings(state);
       }
     })().catch(() => {});
     return async () => {

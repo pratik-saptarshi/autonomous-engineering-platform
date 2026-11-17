@@ -1,0 +1,214 @@
+# harness-profiler operator guide
+
+How to turn on the opencode session profiler, find its traces, render them, and
+diagnose a capture that wrote nothing. This is the operator page; the pinned
+snapshot, its provenance, and the masking implementation are documented in the
+[harness-profiler reference](harness-profiler-reference.md).
+
+## Scope: development host only
+
+The profiler is a **development-host** tool. It needs three things that the
+shipped image does not have:
+
+- Node 18+ in the process that runs the capture;
+- the vendored `reference/harness-profiler/` tree (the renderer and the record
+  library are read from it, never reimplemented);
+- the `.opencode/plugins/harness-profile.js` plugin loaded by opencode.
+
+The image ships no Node and no `reference/` tree, so neither capture nor
+rendering works there. Do not add the profiler to a deployment; it is not part
+of the runtime contract.
+
+## How capture is wired
+
+- `.opencode/plugins/harness-profile.js` is the opencode 2.3 entry point. It is
+  thin: it subscribes once, forwards every event to
+  `tools/harness-profile/handle.js`, and disposes the subscription.
+- `tools/harness-profile/translate.js` maps the opencode event shapes to the
+  payload the vendored record builder consumes; the pin decides nesting and
+  spend.
+- `reference/harness-profiler/plugin/libexec/hp.js` is the renderer. It is
+  invoked as `node …/hp.js tree …`; nothing executes from the reference tree
+  during capture.
+
+The long-lived `opencode serve` process loads `.opencode/plugins/harness-profile.js`
+from this checkout, so there is no plugin install step. The environment is
+different: see the next section.
+
+## Enable
+
+Capture is **opt-in and inert by default**. Every event returns immediately when
+`AEP_HARNESS_PROFILE` is unset, empty, `0`, `false`, `off`, or `no`.
+
+To enable it:
+
+1. Put `AEP_HARNESS_PROFILE=1` in the environment of the **service** that runs
+   `opencode serve` — the unit, supervisor, or shell that owns that process.
+2. Start the service, or restart it if it is already running, so the process
+   inherits the variable.
+3. Run a session in this repository. Traces appear after the first event.
+
+A shell export in your interactive terminal does **not** reach an already
+running `opencode serve`: that process captured its environment when it
+started. The plugin is loaded from this checkout without an install step; a
+process's environment is fixed at start. Restarting the service is an operator
+action; do it deliberately, outside this repository's tooling.
+
+## Disable
+
+Unset `AEP_HARNESS_PROFILE` (or set it to `0`) in the service environment and
+restart the service. Existing traces stay on disk until retention prunes them;
+disabling capture never deletes the trace directory.
+
+## Trace location and file shape
+
+With no override, traces go to `<git-root>/.harness-profile/`, where the git
+root is found by walking up from the session's working directory:
+
+- `ses_<rootSessionId>.jsonl` — one JSON record per line, mode `0600`, one file
+  per root session;
+- `ses_<rootSessionId>.parentage.json` — a debug sidecar, written only when
+  `AEP_HARNESS_PROFILE_DEBUG` is truthy.
+
+Set `AEP_HARNESS_PROFILE_DIR` to send traces to an explicit directory instead
+(relative values resolve against the session's working directory). The override
+wins even outside a git repository, which is the escape hatch for ad-hoc
+capture. The directory is created if needed; records are appended one complete
+line at a time.
+
+The trace directory is excluded from git through the repository's own
+`.git/info/exclude`. The entry is written on the first event and read back from
+disk before any record is written. A committed `.gitignore` entry is the second
+layer but is not substituted for the runtime check.
+
+## Retention
+
+The first event of each long-lived process bounds the trace directory:
+
+- files older than **14 days** (by modification time) are removed;
+- the directory is held to **32 MiB** by deleting the oldest files first.
+
+Only this handler's own `ses_*.jsonl` and `ses_*.parentage.json` files are
+counted or removed. A shared explicit directory keeps everything else.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `AEP_HARNESS_PROFILE_RETENTION_DAYS` | `14` | age bound in days; `0` disables it |
+| `AEP_HARNESS_PROFILE_MAX_BYTES` | `33554432` (32 MiB) | byte ceiling; `0` disables it |
+
+An invalid value falls back to the default. Pruning runs once per process, so
+growth is bounded across process starts rather than continuously inside one
+long-running service.
+
+## Render a trace
+
+Use the wrapper rather than calling the vendored file by hand:
+
+```bash
+bash scripts/profile-tree.sh tree
+bash scripts/profile-tree.sh tree --verbose
+bash scripts/profile-tree.sh tree --branch docs/harness-profiler-adoption
+bash scripts/profile-tree.sh tree --format html > /tmp/profile.html
+```
+
+The wrapper walks up from its own directory (not your current directory) until
+it finds `reference/harness-profiler/plugin/libexec/hp.js`, then runs that
+renderer from the repository root. It works from `scripts/` or any directory in
+a source checkout, and it never copies or reimplements the renderer. `--help`
+prints the same contract.
+
+`node 18+ required for profiling; install Node or skip` is the wrapper's
+message when no `node` is on `PATH`; it exits non-zero instead of printing a
+shell traceback. `--help` does not need Node.
+
+The pin's renderer reads only `<project>/.harness-profile`. The default
+location and an `AEP_HARNESS_PROFILE_DIR` whose last path component is
+`.harness-profile` are both renderable; a destination with another name is
+rejected by the wrapper rather than silently rendering a different directory.
+
+## When capture writes nothing: refusals are logged
+
+Capture **fails closed**. It writes no record, and never fails the session,
+when the trace cannot be shown to be excluded from git:
+
+- no git repository above the session's working directory, with
+  `AEP_HARNESS_PROFILE_DIR` unset;
+- a `.git` that does not resolve to a real git directory (a malformed pointer,
+  a missing target);
+- an `info/exclude` that cannot be written or read back (for example
+  `EACCES`/`EPERM`, or a redirected path).
+
+On the first refused event, the handler records the reason once, and the plugin
+writes it once per process to the `opencode serve` log:
+
+```text
+[aep-harness-profile] trace capture skipped: <reason>, so the trace could not be excluded from git; set AEP_HARNESS_PROFILE_DIR to capture in an explicit directory
+```
+
+That line is the operator surface. It appears in the service's stderr (the
+service's own log destination — the unit, the pane, or the file that captures
+its output), not in a CLI and not in the trace directory. A quiet absence of
+`ses_*.jsonl` with no such line means either capture is disabled, or no event
+has reached the handler yet.
+
+To diagnose manually, from the session's working directory:
+
+```bash
+git rev-parse --show-toplevel          # is there a repository at all?
+git rev-parse --git-common-dir        # worktrees share info/exclude here
+git check-ignore -v .harness-profile/x
+# expect: .../.git/info/exclude:<line>:.harness-profile/  .harness-profile/x
+ls -ld "$(git rev-parse --git-common-dir)/info"
+test -w "$(git rev-parse --git-common-dir)/info/exclude" && echo writable
+```
+
+If the exclusion cannot be made to work, set `AEP_HARNESS_PROFILE_DIR` to a
+directory you control, restart the service with it, and capture there. Do not
+work around the refusal by pre-creating `.harness-profile/` in an unprotected
+tree: the next `git add -A` would commit it.
+
+## Masking caveats
+
+Records are masked at write time by the pin's `mask`, preceded by the
+translator's bounded credential rule (`tools/harness-profile/translate.js`).
+The rule covers key names containing `SECRET`, `TOKEN`, `PASSWORD`, `PASSWD`,
+`CREDENTIAL`, `ACCESS_KEY`/`ACCESS-KEY`, `API_KEY`/`APIKEY`/`API-KEY` in any
+case, in `KEY=value`, `KEY: value`, and `--flag value` shapes. It keeps the key
+name and separator and replaces only the value.
+
+This is a redactor for the common shapes, **not a hardened secret scanner**.
+Treat a trace as sensitive: tool arguments and results, paths, prompts, and
+output fragments are recorded (clipped to the record budget).
+
+**Accepted over-redactions** (fail-closed by design, not bugs):
+
+- `tokens_per_sec=12` loses its value — the key contains `TOKEN`;
+- `cache_read_tokens=2048` and `cache_write_tokens=512` lose their values, and
+  the hyphenated `input-tokens=5` does too (the sparing rule is underscore-only);
+- a JSON `{"token":"<id>"}` loses the id;
+- an object value is clipped at its first `{` (`{"token":{"x":1}}` leaves the
+  object body), because record fields are strings.
+
+The profiler's own keys — `input_tokens=`, `output_tokens=`, `total_tokens=`,
+`num_tokens=`, `max_tokens=`, `prompt_tokens=`, `completion_tokens=`,
+`tokenizer=` — are spared by a whole-name skip. `INPUT_TOKENS=` is spared too;
+the skip is case-insensitive.
+
+See the [reference page](harness-profiler-reference.md#caveats-carried-by-the-adoption)
+for the rule-level detail and the upstream pin's own three patterns.
+
+## Non-goals
+
+This adoption deliberately does **not** deliver:
+
+- a cost-per-verified-task metric, or any join to `runs.jsonl`;
+- a Codex adapter (upstream documents no skill call and no tool failures
+  there);
+- a Go `aep profile` subcommand (dropped: it cannot work in the shipped image,
+  which has no Node and no `reference/` tree);
+- an upstream pull request for opencode support;
+- `.claude/` hooks, a plugin-marketplace install, or `npx` execution of the
+  profiler.
+
+The capture/render substrate is the deliverable. Promotion to production wiring
+is a separate owner decision.

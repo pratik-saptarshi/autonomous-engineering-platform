@@ -50,4 +50,11 @@ The capture writes into `.harness-profile/` at the git root (or the directory na
 
 ## Operator doc
 
-Enable, disable, trace location, retention, and the masking caveat are documented for operators in the [harness-profiler operator guide](harness-profiler.md), added in Phase D of the adoption plan (`docs/superpowers/plans/2026-11-17-harness-profiler-adoption.md`). This page is the pinned-snapshot reference; that page is how to run it.
+Enable/disable (including the service-restart requirement), trace location, retention, refusal
+visibility, the masking caveat, and the dev-host scope are documented for operators in the
+[harness-profiler operator guide](harness-profiler.md), added in Phase D of the adoption plan
+(`docs/superpowers/plans/2026-11-17-harness-profiler-adoption.md`). Capture refusals are recorded
+once in `state.warnings` and copied by the plugin to the `opencode serve` log with the
+`[aep-harness-profile]` prefix, so an absent trace is diagnosable from the service log rather than
+only from this page. The guide also carries the wrapper contract (`scripts/profile-tree.sh`) and the
+accepted over-redactions. This page is the pinned-snapshot reference; that page is how to run it.
