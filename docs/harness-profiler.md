@@ -73,10 +73,13 @@ root is found by walking up from the session's working directory:
 Set `AEP_HARNESS_PROFILE_DIR` to send traces to an explicit directory instead
 (relative values resolve against the session's working directory). The override
 wins even outside a git repository, which is the escape hatch for ad-hoc
-capture. A destination **inside** a git work tree is accepted only when that
-repository's `.gitignore` or the common `info/exclude` names it; otherwise the
-trace would show up in `git status`, so capture refuses it (see
-[refusals](#when-capture-writes-nothing-refusals-are-logged)). The directory is
+capture. A destination whose **final path** (symlinks resolved) is inside a git
+work tree is accepted only when that repository's root `.gitignore` or the
+common `info/exclude` names it; otherwise the trace would show up in
+`git status`, so capture refuses it (see
+[refusals](#when-capture-writes-nothing-refusals-are-logged)). A symlink is
+judged by its target: a link outside the repository that points into it is
+refused, and a link whose target is outside captures there. The directory is
 created if needed; records are appended one complete line at a time.
 
 The trace directory is excluded from git through the repository's own
@@ -151,9 +154,13 @@ when the trace cannot be shown to be excluded from git:
   a missing target);
 - an `info/exclude` that cannot be written or read back (for example
   `EACCES`/`EPERM`, or a redirected path);
-- an explicit `AEP_HARNESS_PROFILE_DIR` that lies inside a git work tree but is
-  named by neither that repository's `.gitignore` nor its common
-  `info/exclude` — the trace would be committable there.
+- an explicit `AEP_HARNESS_PROFILE_DIR` whose final path (symlinks resolved)
+  lies inside a git work tree but is named by neither that repository's root
+  `.gitignore` nor its common `info/exclude` — the trace would be committable
+  there;
+- an explicit `AEP_HARNESS_PROFILE_DIR` that cannot be resolved to a real path
+  at all (a symlink loop, an unreadable component), since capture cannot then
+  prove which side of the work tree it is on.
 
 On the first refused event, the handler records the reason once, and the plugin
 writes it once per process to the `opencode serve` log:
@@ -200,10 +207,27 @@ wrapper renders only a directory whose final path component is exactly
 `.harness-profile` (`scripts/profile-tree.sh`), so name the destination that
 way — for example `/Users/you/aep-profile/.harness-profile`; any other name
 still captures, but `bash scripts/profile-tree.sh tree` refuses to render it. A
-destination inside the repository must also be named by `.gitignore` or
-`info/exclude`, or capture refuses it. Do not work around the refusal by
-pre-creating `.harness-profile/` in an unprotected tree: the next `git add -A`
-would commit it.
+destination whose resolved path is inside the repository must also be named by
+`.gitignore` or `info/exclude`, or capture refuses it. Do not work around the
+refusal by pre-creating `.harness-profile/` in an unprotected tree: the next
+`git add -A` would commit it.
+
+The in-repository check reads only the repository-**root** `.gitignore` and the
+common `info/exclude`; it does not read nested `.gitignore` files. This is a
+known limitation, not a supported ignore-negation evaluator:
+
+- a path ignored only by a nested `.gitignore` is treated as **not** ignored and
+  capture refuses it (fail closed, no committable trace);
+- a nested negation (`!traces/`) that re-includes a path the root file ignores
+  is **not** seen, so the guard can still allow it and `git status` can show the
+  trace.
+
+The remedy for both shapes is the same: prefer the default destination
+(`<git-root>/.harness-profile/`, protected through `info/exclude`) or point
+`AEP_HARNESS_PROFILE_DIR` at a directory outside the repository. The refusal
+warning names the resolved path when it differs from the configured one, for
+example `AEP_HARNESS_PROFILE_DIR=/tmp/link (resolves to /repo/traces)`, so a
+symlinked destination is not mistaken for an out-of-repo one.
 
 ## Masking caveats
 

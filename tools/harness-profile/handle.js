@@ -42,10 +42,13 @@
 // refusal reason is recorded once in `state.warnings` instead of failing the
 // session. The committed `.gitignore` entry is the second layer: it covers a
 // fresh clone and a runtime write that cannot land. An explicit
-// `AEP_HARNESS_PROFILE_DIR` is honored outside every repository, but when it
-// resolves inside a work tree it must be named by that repository's `.gitignore`
-// or common `info/exclude`; otherwise the trace would be committable and capture
-// refuses it (the reason and both remedies are recorded in `state.warnings`).
+// `AEP_HARNESS_PROFILE_DIR` is honored outside every repository, but when its
+// final path (symlinks resolved) is inside a work tree it must be named by that
+// repository's `.gitignore` or common `info/exclude`; otherwise the trace would
+// be committable and capture refuses it (the reason and both remedies are
+// recorded in `state.warnings`). A symlink is judged by its target, so a link
+// outside the repository that points into it is refused like any in-repo path,
+// and a link whose target is outside is honored.
 
 const fs = require('fs');
 const path = require('path');
@@ -117,6 +120,30 @@ function gitRoot(start) {
     const up = path.dirname(dir);
     if (up === dir) return null;
     dir = up;
+  }
+}
+
+// A destination must be judged by the path it finally lands on: a symlink whose
+// target is inside the work tree would otherwise be judged by its own (outside)
+// path and pass as safe. `fs.realpathSync` resolves every existing component, so
+// a directory that does not exist yet is resolved through its nearest existing
+// ancestor and the missing tail is re-appended. An unresolvable path (a symlink
+// loop, an unreadable component) returns null, and the caller fails closed
+// rather than guessing which side of the work tree it is on.
+function resolvedDestination(dir) {
+  let current = path.resolve(dir);
+  const missing = [];
+  for (;;) {
+    try {
+      const real = fs.realpathSync(current);
+      return missing.length ? path.join(real, ...missing.reverse()) : real;
+    } catch (error) {
+      if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR') return null;
+      const up = path.dirname(current);
+      if (up === current) return null;
+      missing.push(path.basename(current));
+      current = up;
+    }
   }
 }
 
@@ -547,12 +574,14 @@ function hasExplicitDir(state) {
 // destination, so the pin's own capture stays excluded.
 //
 // An explicit `AEP_HARNESS_PROFILE_DIR` is the operator's choice of destination,
-// but it is not a way around the ledger rule: a destination inside a git work
-// tree is honored only when `.gitignore` or the common `info/exclude` names it.
-// Otherwise `git status` would show the trace as untracked (verified: an
-// unignored `<repo>/traces` produced `A traces/ses_*.jsonl`), so capture refuses
-// and names both remedies. A destination outside every repository is honored
-// as before (tests, ad-hoc capture, an operator-controlled directory).
+// but it is not a way around the ledger rule: a destination whose final path
+// (symlinks resolved) is inside a git work tree is honored only when
+// `.gitignore` or the common `info/exclude` names it. Otherwise `git status`
+// would show the trace as untracked (verified: an unignored `<repo>/traces`
+// produced `A traces/ses_*.jsonl`, and a symlink outside the repository pointing
+// at that directory produced the same `?? traces/` with no warning), so capture
+// refuses and names both remedies. A destination outside every repository is
+// honored as before (tests, ad-hoc capture, an operator-controlled directory).
 //
 // The refusal is recorded once per state, naming the reason, so a plugin can
 // surface it; it is not an error and never fails the session.
@@ -564,16 +593,28 @@ function protectedDestination(state) {
   }
   if (hasExplicitDir(state)) {
     const dir = traceDirOf(state);
-    const root = gitRoot(dir);
+    // Judge the final path, not the operator's string: a symlink into the work
+    // tree is inside it for git's purposes, whatever its own path looks like.
+    const resolved = resolvedDestination(dir);
+    if (!resolved) {
+      const warning =
+        `trace capture skipped: ${DIR}=${dir} cannot be resolved to a real path (symlink loop or unreadable component), `
+        + `so the trace cannot be shown to be outside the git work tree; point ${DIR} at a resolvable directory `
+        + '(for example one outside the repository) and retry';
+      if (!state.warnings.includes(warning)) state.warnings.push(warning);
+      return false;
+    }
+    const root = gitRoot(resolved);
     // Outside every work tree: the escape hatch is unchanged.
     if (!root) return true;
-    if (ignoredInsideRepository(root, dir)) return true;
+    if (ignoredInsideRepository(root, resolved)) return true;
     const common = commonGitDir(root);
     const sources = [path.join(root, '.gitignore')];
     if (common) sources.push(path.join(common, 'info', 'exclude'));
-    const rel = relativePath(root, dir) || path.basename(dir);
+    const rel = relativePath(root, resolved) || path.basename(resolved);
+    const shown = resolved === dir ? dir : `${dir} (resolves to ${resolved})`;
     const warning =
-      `trace capture skipped: ${DIR}=${dir} is inside the git work tree at ${root} but not ignored by `
+      `trace capture skipped: ${DIR}=${shown} is inside the git work tree at ${root} but not ignored by `
       + `${sources.join(' or ')}, so the trace would be committable; move the directory outside the repository, `
       + `or add an ignore rule for it (for example \`${rel}/\` in .gitignore) and retry`;
     if (!state.warnings.includes(warning)) state.warnings.push(warning);

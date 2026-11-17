@@ -18,7 +18,9 @@
 //     tested here too. E11b covers the other unprotected shapes: a repository
 //     whose `info/exclude` cannot be written (EACCES) and a malformed `.git`
 //     file. Both must write nothing; the old guard only asked whether a git
-//     root existed, so both wrote a committable trace.
+//     root existed, so both wrote a committable trace. E11c adds the explicit
+//     in-repo rule, and E11d proves it judges the resolved path, so a symlink
+//     into the work tree is refused while one outside it still captures.
 // E12 concurrent writers: two processes append to the same session file. Every
 //     line must be one complete record; a writer that emits the body and the
 //     newline as separate appends interleaves them.
@@ -314,6 +316,45 @@ test('E11b: an unverifiable exclusion writes no records and warns with the reaso
 
   fs.rmSync(dangling, { recursive: true, force: true });
   fs.rmSync(garbage, { recursive: true, force: true });
+});
+
+test('E11d: an explicit trace dir is judged by its resolved path, so a symlink into the work tree is refused', async () => {
+  // Reviewer repro: AEP_HARNESS_PROFILE_DIR pointed at a symlink outside the
+  // work tree whose target was `<repo>/traces`. The path-string check looked
+  // outside, so capture wrote and `git status` showed `?? traces/` with no
+  // warning. The destination must be judged by its final path.
+  const root = gitRepo();
+  const inside = path.join(root, 'traces');
+  fs.mkdirSync(inside);
+  const links = scratch('hp-hygiene-links-');
+  const intoRepo = path.join(links, 'traces-link');
+  fs.symlinkSync(inside, intoRepo, 'dir');
+
+  const refused = handle.createState({ cwd: root, env: enabled({ AEP_HARNESS_PROFILE_DIR: intoRepo }) });
+  const blocked = await feed(refused, fixture('tool-calls.json').events);
+  assert.deepEqual(blocked, [], 'a record was written through a symlink into an unignored in-repo directory');
+  assert.equal(fs.existsSync(path.join(inside, 'ses_root_tools.jsonl')), false, 'the trace landed in the symlink target');
+  assert.equal(refused.warnings.length, 1, 'the refusal must be recorded once, not per event');
+  assert.match(refused.warnings[0], /inside the git work tree/i, 'the warning must name the location problem');
+  assert.match(refused.warnings[0], /not ignored/i, 'the warning must name the cause');
+  assert.match(refused.warnings[0], /resolves to/i, 'the warning must name the resolved path that was judged');
+  assert.equal(execFileSync('git', ['-C', root, 'status', '--porcelain', '--', 'traces'], { encoding: 'utf8' }), '', 'the refused capture left a committable trace');
+
+  // The other direction: a symlink whose target is outside every repository is
+  // still the documented escape hatch, and the records land in the target.
+  const outside = scratch('hp-hygiene-outside-');
+  const outsideLink = path.join(links, 'outside-link');
+  fs.symlinkSync(outside, outsideLink, 'dir');
+  const accepted = handle.createState({ cwd: root, env: enabled({ AEP_HARNESS_PROFILE_DIR: outsideLink }) });
+  const written = await feed(accepted, fixture('tool-calls.json').events);
+  assert.ok(written.length > 0, 'an out-of-repo symlink destination wrote nothing');
+  assert.ok(fs.existsSync(path.join(outside, 'ses_root_tools.jsonl')), 'the trace did not land in the symlink target');
+  assert.deepEqual(accepted.warnings, [], 'an out-of-repo symlink destination is not a refusal');
+  assert.equal(execFileSync('git', ['-C', root, 'status', '--porcelain', '--', 'traces'], { encoding: 'utf8' }), '', 'the accepted trace is visible to git');
+
+  fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(links, { recursive: true, force: true });
+  fs.rmSync(outside, { recursive: true, force: true });
 });
 
 // The two-writer child. It waits for a `go` file so both processes append at
