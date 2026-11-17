@@ -9,9 +9,16 @@
 // the pin's own contextsOf / renderTree / renderHtml / contextSpend.
 //
 // A pass therefore means: two contexts, a child whose parent is `main`, no
-// `parent not recorded` placeholder, an inline Skill marker, and non-zero spend
-// for both contexts — all through the pin, none of it through the translator's
-// assertions.
+// `parent not recorded` placeholder, an inline Skill marker, the child's spend
+// pinned exactly on the spawn record, and the root's spend pinned exactly against
+// the fixture's own step arithmetic — all through the pin, none of it through the
+// translator's assertions.
+//
+// Two parentage sources are covered. The first test binds through a
+// `session.created{parentID}` event; the second runs the same sequence with that
+// event removed and binds through the translator's exported `noteChild`, which is
+// the seam production uses (`ctx.session.get().parentID`; Phase 0 saw
+// `session.created` 0 times in 1,990 events).
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -35,13 +42,23 @@ function fixture() {
 // completion events are buffered per assistant message and flushed at
 // `session.step.ended`; every record goes through translate.writeRecord, so
 // file placement and the pin's serialize run exactly as in production.
-function capture(data, traceDir) {
+//
+// `sessionGet` models `ctx.session.get()`: when the handler meets a session id
+// it has not seen, it asks the API for that session and reports the `parentID`
+// to `noteChild`. That is the production path; it is passed only by the second
+// test, whose fixture has no `session.created` to learn parentage from.
+function capture(data, traceDir, { sessionGet } = {}) {
   const state = translate.createState(data.rootSessionId, { cwd: data.cwd });
   const pending = new Map(); // assistantMessageID -> terminal events not yet built
 
   for (const event of data.events) {
-    translate.ingest(event, state);
     const inner = event.data || {};
+    const sessionId = inner.sessionID;
+    if (sessionGet && sessionId && sessionId !== data.rootSessionId && !state.parents.has(sessionId)) {
+      const session = sessionGet(sessionId);
+      if (session) translate.noteChild(state, sessionId, session.parentID);
+    }
+    translate.ingest(event, state);
 
     if (event.type === 'session.tool.success' || event.type === 'session.tool.failed') {
       const key = inner.assistantMessageID || '';
@@ -152,10 +169,18 @@ test('M2 gate: the pin renders two nested contexts from the trace the translator
     assert.match(text, /general \(agent\) new context ses_ch/, 'the text tree shows the child context');
 
     // Step 5: spend, read by the pin from the file. Child spend rides the Agent
-    // call; root spend rides the SubagentStop event record.
+    // call; root spend rides the SubagentStop event record. Root spend is pinned
+    // exactly to the fixture's three root steps — msg_m1 428 new / 4096 cached /
+    // 40 out, msg_m2 932 / 4600 / 50, msg_m3 500 / 5200 / 70 — so any single
+    // field drifting (a dropped step, a reasoning total, a doubled cache write)
+    // fails. Non-zero would let a bogus spend pass.
     const spend = hp.contextSpend(records);
     nonZeroSpend(spend.get(CHILD), `child ${CHILD}`);
-    nonZeroSpend(spend.get('main'), 'root main');
+    assert.deepEqual(
+      spend.get('main'),
+      { new: 1860, cached: 13896, out: 160, calls: 3 },
+      'root spend is the exact sum of the root session steps',
+    );
 
     // The renderer's own columns must show the child's spend, not just the map.
     const agentLine = text.split('\n').find((line) => line.includes('(agent)'));
@@ -171,9 +196,60 @@ test('M2 gate: the pin renders two nested contexts from the trace the translator
     assert.ok(pageChild, 'the page has the child context');
     assert.equal(pageChild.parent, 'main');
     nonZeroSpend(pageChild.spent, 'html child');
-    nonZeroSpend(page.contexts.find((c) => c.id === 'main').spent, 'html root');
+    assert.deepEqual(
+      page.contexts.find((c) => c.id === 'main').spent,
+      { new: 1860, cached: 13896, out: 160, calls: 3 },
+      'the html root spend is the same exact sum',
+    );
     assert.equal(page.markers.filter((m) => m.kind === 'inline').length, 1);
     assert.ok(page.calls.some((c) => c.ctx === CHILD && c.tool === 'read'), 'the child call is in the page');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('M2 gate: parentage arrives through ctx.session.get().parentID, not session.created', () => {
+  // Phase 0 observed `session.created` 0 times in 1,990 events. Production
+  // resolves a child's parent from `ctx.session.get().parentID` and reports it to
+  // translate.noteChild, so the gate must prove that seam too: every
+  // `session.created` event is stripped, and only the API lookup can build the
+  // tree. Same assertions as the event-driven case.
+  const data = fixture();
+  data.events = data.events.filter((event) => event.type !== 'session.created');
+  assert.equal(data.events.filter((event) => event.type === 'session.created').length, 0, 'no parentage event remains');
+
+  const parents = new Map([[CHILD, ROOT]]);
+  const sessionGet = (id) => (parents.has(id) ? { id, parentID: parents.get(id) } : undefined);
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hp-gate-session-api-'));
+  const traceDir = path.join(dir, translate.TRACE_DIR);
+  try {
+    capture(data, traceDir, { sessionGet });
+    const records = readTrace(path.join(traceDir, `${ROOT}.jsonl`));
+    const spawn = records.find((record) => record.tool_use_id === 'call_gate_spawn');
+    assert.ok(spawn, 'the spawning call was recorded');
+    assert.equal(spawn.child_agent_id, CHILD, 'the open spawn bound to the child the API named');
+
+    const { contexts } = hp.contextsOf(records);
+    assert.equal(contexts.length, 2, `expected main and one child, got ${contexts.map((c) => c.id).join(', ')}`);
+    assert.equal(contexts[0].id, 'main');
+    const child = contexts.find((c) => c.id === CHILD);
+    assert.ok(child, `context ${CHILD} is missing`);
+    assert.equal(child.parent, 'main', 'the API-recalled parent puts the child under main');
+
+    const text = hp.renderTree(records);
+    assert.ok(!text.includes('parent not recorded'), `default tree contains a placeholder:\n${text}`);
+    assert.ok(!hp.renderTree(records, { verbose: true }).includes('parent not recorded'), 'verbose tree is clean too');
+
+    const placeholders = [];
+    const walk = (nodes) => {
+      for (const node of nodes) {
+        if (node.placeholder) placeholders.push(node.agent);
+        walk(node.children);
+      }
+    };
+    walk(hp.buildForest(records));
+    assert.deepEqual(placeholders, [], 'no node renders as parent not recorded');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
