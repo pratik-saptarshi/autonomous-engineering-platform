@@ -570,3 +570,48 @@ test('E13c: capture prunes on its first event, and both bounds are env-overridab
   fs.rmSync(root, { recursive: true, force: true });
   fs.rmSync(kept, { recursive: true, force: true });
 });
+
+test('E10c: an explicit destination governed by a nested .gitignore is refused', async () => {
+  // The guard reads the root .gitignore and the common info/exclude only. A
+  // nested file can negate the root rule (`!.harness-profile/`), so approving
+  // the destination would write a committable trace. Precedence cannot be
+  // verified without re-implementing gitignore, so capture fails closed.
+  const root = gitRepo();
+  const cwd = path.join(root, 'a');
+  fs.mkdirSync(cwd, { recursive: true });
+  fs.mkdirSync(path.join(root, 'nested', '.harness-profile'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.gitignore'), '.harness-profile/\n');
+  fs.writeFileSync(path.join(root, 'nested', '.gitignore'), '!.harness-profile/\n');
+
+  const dest = path.join(root, 'nested', '.harness-profile');
+  const state = handle.createState({ cwd, env: enabled({ AEP_HARNESS_PROFILE_DIR: dest }) });
+  const records = await feed(state, fixture('tool-calls.json').events);
+
+  assert.equal(records.length, 0, 'capture wrote into a destination a nested ignore file re-includes');
+  assert.deepEqual(fs.readdirSync(dest), [], 'a trace file was written');
+  assert.match(state.warnings.join('\n'), /nested/i, 'the refusal does not name the nested ignore file');
+});
+
+test('E10d: a default .harness-profile that is a symlink is judged by its target', async () => {
+  // Excluding the symlink's name does not exclude its target. The default path
+  // must resolve the destination too, not only the explicit one.
+  const root = gitRepo();
+  const cwd = path.join(root, 'a');
+  fs.mkdirSync(cwd, { recursive: true });
+  fs.mkdirSync(path.join(root, 'traces'), { recursive: true });
+  fs.symlinkSync(path.join(root, 'traces'), path.join(root, '.harness-profile'));
+  fs.writeFileSync(path.join(root, '.gitignore'), 'dist/\n');
+
+  const refused = handle.createState({ cwd, env: enabled() });
+  const records = await feed(refused, fixture('tool-calls.json').events);
+  assert.equal(records.length, 0, 'capture wrote through a symlink whose target is committable');
+  assert.deepEqual(fs.readdirSync(path.join(root, 'traces')), [], 'a trace file landed in the symlink target');
+  assert.match(refused.warnings.join('\n'), /resolves|target/i, 'the refusal does not name the resolved target');
+
+  // The same destination is accepted once its target is ignored.
+  fs.writeFileSync(path.join(root, '.gitignore'), 'dist/\ntraces/\n');
+  const accepted = handle.createState({ cwd, env: enabled() });
+  const written = await feed(accepted, fixture('tool-calls.json').events);
+  assert.ok(written.length > 0, 'an ignored symlink target was refused');
+  assert.ok(fs.readdirSync(path.join(root, 'traces')).length > 0, 'no trace landed in the ignored target');
+});

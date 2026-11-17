@@ -193,6 +193,24 @@ function isDirectory(target) {
 // trailing-slash directory patterns, negation) — a shape it cannot evaluate is
 // treated as "not ignored", which refuses the write instead of risking one.
 
+// A nested `.gitignore` can negate the root rule that approved a destination
+// (`!.harness-profile/`), and this guard reads only the root file plus the
+// common `info/exclude`. When an ancestor has its own ignore file, precedence
+// cannot be verified without re-implementing gitignore semantics, so capture
+// fails closed and names the file. The destination's own `.gitignore` governs
+// its contents, not whether the directory is ignored, so it is not included.
+function nestedIgnoreFiles(root, dir) {
+  const rel = relativePath(root, dir);
+  if (!rel) return [];
+  const parts = rel.split('/');
+  const found = [];
+  for (let i = 1; i < parts.length; i += 1) {
+    const file = path.join(root, ...parts.slice(0, i), '.gitignore');
+    if (fs.existsSync(file)) found.push(file);
+  }
+  return found;
+}
+
 function ignoreFiles(root) {
   const files = [path.join(root, '.gitignore')];
   const common = commonGitDir(root);
@@ -658,11 +676,26 @@ function protectedDestination(state) {
     const root = gitRoot(resolved);
     // Outside every work tree: the escape hatch is unchanged.
     if (!root) return true;
-    if (ignoredInsideRepository(root, resolved)) return true;
+    // Compare canonical paths: a repository can be reached through a symlinked
+    // prefix (`/var` -> `/private/var` on macOS), and a spelling mismatch would
+    // read as "outside the work tree" and silently approve the destination.
+    const rootReal = resolvedDestination(root) || root;
+    const nested = nestedIgnoreFiles(rootReal, resolved);
+    if (nested.length) {
+      const shown = resolved === dir ? dir : `${dir} (resolves to ${resolved})`;
+      const warning =
+        `trace capture skipped: ${DIR}=${shown} is governed by a nested ignore file (${nested[0]}); `
+        + 'this guard reads only the repository root .gitignore and the common info/exclude, so a nested '
+        + 'rule (for example a negation) cannot be verified; move the destination outside the repository, '
+        + 'or choose one with no nested .gitignore above it';
+      if (!state.warnings.includes(warning)) state.warnings.push(warning);
+      return false;
+    }
+    if (ignoredInsideRepository(rootReal, resolved)) return true;
     const common = commonGitDir(root);
     const sources = [path.join(root, '.gitignore')];
     if (common) sources.push(path.join(common, 'info', 'exclude'));
-    const rel = relativePath(root, resolved) || path.basename(resolved);
+    const rel = relativePath(rootReal, resolved) || path.basename(resolved);
     const shown = resolved === dir ? dir : `${dir} (resolves to ${resolved})`;
     const warning =
       `trace capture skipped: ${DIR}=${shown} is inside the git work tree at ${root} but not ignored by `
@@ -671,7 +704,52 @@ function protectedDestination(state) {
     if (!state.warnings.includes(warning)) state.warnings.push(warning);
     return false;
   }
-  if (state.protection.ok) return true;
+  if (state.protection.ok) {
+    // The default destination is `<git root>/.harness-profile`, and a symlink
+    // there is judged by its target: excluding the link's name does not exclude
+    // the file it resolves to. An explicit destination already gets this check;
+    // the implicit one must not be the weaker path.
+    const dir = traceDirOf(state);
+    const resolved = resolvedDestination(dir);
+    if (!resolved) {
+      const warning =
+        `trace capture skipped: the default destination ${dir} cannot be resolved to a real path `
+        + '(symlink loop or unreadable component), so the trace cannot be shown to be excluded from git; '
+        + `point ${DIR} at a resolvable directory and retry`;
+      if (!state.warnings.includes(warning)) state.warnings.push(warning);
+      return false;
+    }
+    const root = state.gitRoot;
+    if (!root) return true;
+    // Same canonical comparison as the explicit branch.
+    const rootReal = resolvedDestination(root) || root;
+    const rel = relativePath(rootReal, resolved);
+    if (rel === null) return true; // resolves outside the work tree
+    if (!rel) {
+      const warning =
+        `trace capture skipped: the default destination ${dir} resolves to the repository root ${root}, `
+        + 'so no trace directory can be excluded; point AEP_HARNESS_PROFILE_DIR at a directory and retry';
+      if (!state.warnings.includes(warning)) state.warnings.push(warning);
+      return false;
+    }
+    const nested = nestedIgnoreFiles(rootReal, resolved);
+    if (nested.length) {
+      const warning =
+        `trace capture skipped: the default destination ${dir} resolves to ${resolved}, which is governed `
+        + `by a nested ignore file (${nested[0]}); nested ignore precedence cannot be verified, so the trace `
+        + 'cannot be shown to be excluded from git; point AEP_HARNESS_PROFILE_DIR outside the repository, '
+        + 'or choose a destination with no nested .gitignore above it';
+      if (!state.warnings.includes(warning)) state.warnings.push(warning);
+      return false;
+    }
+    if (ignoredInsideRepository(rootReal, resolved)) return true;
+    const warning =
+      `trace capture skipped: the default destination ${dir} resolves to ${resolved}, which is inside the `
+      + `git work tree at ${root} but not ignored, so the trace would be committable; add an ignore rule for `
+      + `\`${rel}/\` or point ${DIR} at a directory outside the repository and retry`;
+    if (!state.warnings.includes(warning)) state.warnings.push(warning);
+    return false;
+  }
   const warning =
     `trace capture skipped: ${state.protection.reason}, so the trace could not be excluded from git; `
     + `set ${DIR} to capture in an explicit directory`;

@@ -166,7 +166,11 @@ when the trace cannot be shown to be excluded from git:
   there;
 - an explicit `AEP_HARNESS_PROFILE_DIR` that cannot be resolved to a real path
   at all (a symlink loop, an unreadable component), since capture cannot then
-  prove which side of the work tree it is on.
+  prove which side of the work tree it is on;
+- a destination with a nested `.gitignore` anywhere above it, because a nested
+  rule can negate the root rule and this guard does not evaluate precedence;
+- a default `.harness-profile` that is a symlink whose resolved target is inside
+  the work tree and not ignored (the link's name is not what git sees).
 
 ## Service restart and cumulative spend
 
@@ -228,14 +232,11 @@ refusal by pre-creating `.harness-profile/` in an unprotected tree: the next
 `git add -A` would commit it.
 
 The in-repository check reads only the repository-**root** `.gitignore` and the
-common `info/exclude`; it does not read nested `.gitignore` files. This is a
-known limitation, not a supported ignore-negation evaluator:
-
-- a path ignored only by a nested `.gitignore` is treated as **not** ignored and
-  capture refuses it (fail closed, no committable trace);
-- a nested negation (`!traces/`) that re-includes a path the root file ignores
-  is **not** seen, so the guard can still allow it and `git status` can show the
-  trace.
+common `info/exclude`. When any ancestor of the destination has its own
+`.gitignore`, precedence cannot be verified without re-implementing gitignore
+semantics, so capture **refuses the destination** and names the nested file.
+There is no committable-trace case left: both a nested rule that ignores and a
+nested negation that re-includes are refused, not judged.
 
 The remedy for both shapes is the same: prefer the default destination
 (`<git-root>/.harness-profile/`, protected through `info/exclude`) or point
