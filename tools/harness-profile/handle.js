@@ -619,7 +619,22 @@ function protectedDestination(state) {
     // Same canonical comparison as the explicit branch.
     const rootReal = resolvedDestination(root) || root;
     const rel = relativePath(rootReal, resolved);
-    if (rel === null) return true; // resolves outside the work tree
+    if (rel === null) {
+      // Resolved outside this checkout — but a *different* work tree still
+      // commits what it does not ignore. Validate against the repository that
+      // actually contains the target, as the explicit branch does.
+      const destRoot = gitRoot(resolved);
+      if (!destRoot) return true; // outside every work tree
+      const destRootReal = resolvedDestination(destRoot) || destRoot;
+      if (gitIgnored(destRootReal, resolved)) return true;
+      const warning =
+        `trace capture skipped: the default destination ${dir} resolves to ${resolved}, which is inside the `
+        + `git work tree at ${destRoot} but not ignored there, so the trace would be committable in that `
+        + `repository; add an ignore rule for it there, move the link outside every repository, or point `
+        + `${DIR} at a protected directory and retry`;
+      if (!state.warnings.includes(warning)) state.warnings.push(warning);
+      return false;
+    }
     if (!rel) {
       const warning =
         `trace capture skipped: the default destination ${dir} resolves to the repository root ${root}, `

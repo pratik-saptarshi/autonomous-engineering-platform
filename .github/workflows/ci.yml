@@ -217,7 +217,7 @@ jobs:
         # silently skipped (verified on 26: a deleted gate.test.js still exited
         # 0), so the explicit list alone would shrink quietly. The runner's pass
         # count is then asserted: the list and `test -f` catch a deleted FILE,
-        # never a deleted TEST inside one. Four files, 55 tests today.
+        # never a deleted TEST inside one. Four files, 56 tests today.
         run: |
           files=(
             tools/harness-profile/gate.test.js
@@ -228,7 +228,7 @@ jobs:
           for f in "${files[@]}"; do
             test -f "$f" || { echo "ERROR: missing test file $f"; exit 1; }
           done
-          expected=55
+          expected=56
           out=$(node --test "${files[@]}" 2>&1) || { printf '%s\n' "$out"; echo "ERROR: harness-profile suite failed"; exit 1; }
           printf '%s\n' "$out"
           passes=$(printf '%s\n' "$out" | sed -n 's/^[^0-9]*pass \([0-9][0-9]*\)$/\1/p' | tail -n 1)

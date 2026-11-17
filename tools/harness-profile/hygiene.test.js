@@ -738,3 +738,29 @@ test('E13f: a running tool call keeps its session tree from eviction', async () 
   assert.ok(done.some((record) => record.tool_use_id === 'call_shell'), 'the completion produced no record');
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('E10g: a default symlink into another checkout is judged by that checkout', async () => {
+  // Outside *this* repository is not the same as outside every repository: a
+  // link into another checkout writes a trace that repository can commit.
+  const a = gitRepo('hp-hygiene-a-');
+  const b = gitRepo('hp-hygiene-b-');
+  fs.mkdirSync(path.join(a, 'work'), { recursive: true });
+  fs.mkdirSync(path.join(b, 'traces'), { recursive: true });
+  fs.symlinkSync(path.join(b, 'traces'), path.join(a, '.harness-profile'));
+  fs.writeFileSync(path.join(b, '.gitignore'), 'dist/\n');
+
+  const refused = handle.createState({ cwd: path.join(a, 'work'), env: enabled() });
+  const records = await feed(refused, fixture('tool-calls.json').events);
+  assert.equal(records.length, 0, 'capture wrote into another checkout that does not ignore it');
+  assert.deepEqual(fs.readdirSync(path.join(b, 'traces')), [], 'a trace landed in the other checkout');
+  assert.match(refused.warnings.join('\n'), /another|inside the git work tree|not ignored/i);
+
+  // The same link is accepted once the destination repository ignores it.
+  fs.writeFileSync(path.join(b, '.gitignore'), 'dist/\ntraces/\n');
+  const accepted = handle.createState({ cwd: path.join(a, 'work'), env: enabled() });
+  const written = await feed(accepted, fixture('tool-calls.json').events);
+  assert.ok(written.length > 0, 'a destination the other repository ignores was refused');
+  assert.ok(fs.readdirSync(path.join(b, 'traces')).length > 0, 'nothing was written to the ignored target');
+  fs.rmSync(a, { recursive: true, force: true });
+  fs.rmSync(b, { recursive: true, force: true });
+});
