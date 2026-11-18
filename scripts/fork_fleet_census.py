@@ -488,8 +488,17 @@ def build_rows(census, prev_rows, sync_record, verified_at):
                     applied = record_repos.get(row["repo"], {}).get(
                         "last_applied_at"
                     )
-                    if applied and _after(
-                        applied, str(prev[COL_VERIFIED]).strip()
+                    # The record is evidence only if it is new: after
+                    # the row's verification stamp AND after the last
+                    # sync already recorded in column M. M is the
+                    # consumption watermark -- a partial row's frozen
+                    # stamp must not let an already-attributed sync be
+                    # reused for a later, external movement.
+                    prev_sync = str(prev[COL_LAST_SYNC]).strip()
+                    if (
+                        applied
+                        and _after(applied, str(prev[COL_VERIFIED]).strip())
+                        and (not prev_sync or _after(applied, prev_sync))
                     ):
                         actor = "fork-sync"
                         last_sync = applied

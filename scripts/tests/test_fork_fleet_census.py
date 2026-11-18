@@ -545,3 +545,26 @@ class CodexRegressionTests(unittest.TestCase):
             census_doc([census_row(mirror_head=SHA_D, mirror_behind=2)]),
             rows2, record, "2026-11-18T09:00:00-06:00")
         self.assertEqual(rows3[0][13], "fork-sync")
+
+    def test_consumed_sync_record_is_not_reused(self):
+        # Night 2 attributes a sync during a develop failure (stamp
+        # frozen, M set). Night 3: an EXTERNAL push moves the mirror
+        # again. The same record still postdates the frozen stamp,
+        # but it was already consumed -- M is the watermark -- so the
+        # external movement must not be re-attributed to fork-sync.
+        t1 = "2026-11-16T09:00:00-06:00"
+        rows1, _ = ffc.build_rows(census_doc([census_row()]), [], {}, t1)
+        record = {"repos": {"pratik-saptarshi/x": {"last_applied_at": "2026-11-17T08:00:00-06:00"}}}
+        partial = census_row(
+            mirror_head=SHA_D, mirror_behind=2,
+            develop_status="unknown", develop_behind=None,
+            develop_fork_local=None, develop_head=None,
+            error="develop-compare: HTTP 500",
+        )
+        rows2, _ = ffc.build_rows(census_doc([partial]), rows1, record, "2026-11-17T09:00:00-06:00")
+        self.assertEqual(rows2[0][13], "fork-sync")
+        self.assertEqual(rows2[0][12], "2026-11-17T08:00:00-06:00")
+        external = census_row(mirror_head="e" * 40, mirror_behind=1)
+        rows3, _ = ffc.build_rows(census_doc([external]), rows2, record, "2026-11-18T09:00:00-06:00")
+        self.assertEqual(rows3[0][13], "unknown (external change)")
+        self.assertEqual(rows3[0][12], "2026-11-17T08:00:00-06:00")  # M kept
