@@ -501,3 +501,21 @@ class CodexRegressionTests(unittest.TestCase):
         rows3, _ = ffc.build_rows(doc3, rows2, record, "2026-11-18T09:00:00-06:00")
         self.assertEqual(rows3[0][13], "fork-sync")
         self.assertEqual(rows3[0][12], "2026-11-17T08:00:00-06:00")
+
+    def test_consistency_failed_row_preserves_attribution(self):
+        # A consistency-failed observation has unknown statuses but
+        # non-null (rejected) heads. Attribution must not run on
+        # rejected measurements: previous M/N stand.
+        rows1, _ = ffc.build_rows(census_doc([census_row()]), [], {}, "2026-11-16T09:00:00-06:00")
+        rejected = census_row(
+            mirror_status="unknown", develop_status="unknown",
+            mirror_behind=None, mirror_unique=None,
+            develop_behind=None, develop_fork_local=None,
+            mirror_head=SHA_D, upstream_head=None, develop_head=SHA_D,
+            error="mirror-head mismatch between compares",
+        )
+        record = {"repos": {"pratik-saptarshi/x": {"last_applied_at": "2026-11-17T08:00:00-06:00"}}}
+        rows2, _ = ffc.build_rows(census_doc([rejected]), rows1, record, "2026-11-17T09:00:00-06:00")
+        self.assertEqual(rows2[0][13], "fork-fleet-census")  # N preserved
+        self.assertEqual(rows2[0][12], "")  # M not stamped from the record
+        self.assertEqual(rows2[0][6], SHA_A[:12])  # baseline head preserved
