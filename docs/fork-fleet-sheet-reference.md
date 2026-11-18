@@ -64,6 +64,9 @@ A closed vocabulary: a bot `GHG_ACTOR` or `unknown (external
 change)`. Mirror movements are attributable to `fork-sync` (the only
 automation that moves mirrors) when its JSON run record shows an
 APPLIED sync for the repo after the row's previous verification.
+Run-record timestamps are ISO 8601 with a UTC offset (fork-sync
+writes America/Chicago local time); the census compares them as
+datetimes, never as bare strings.
 First-observation rows are stamped `fork-fleet-census`. Develop
 movements are not bot-made today, so a develop change with no
 recorded bot action is `unknown (external change)` — a person is
@@ -82,10 +85,11 @@ the writer, through the Sheets connector:
    --sync-record <lane>/files/sync-run-record.json`, where
    `<prev.json>` is the sheet's current A:P range as JSON and
    `<lane>` is `~/workspace/aep-vendored-repo-maintenance`.
-2. Exit 2 (budget denial / gateway failure / repo-list failure):
-   stop. The sheet stays untouched; report the stage. Exit 1 is a
-   partial census (some rows `unknown`) and still writes. Exit 0 is
-   complete.
+2. Exit 2 (budget denial / gateway failure / repo-list failure /
+   input or output I/O failure): stop. The sheet stays untouched;
+   report the stage. Exit 1 is a partial census (some rows `unknown`
+   or partially measured, e.g. an unreadable upstream head) and
+   still writes. Exit 0 is complete.
 3. Validate before writing: `python3 scripts/fork_fleet_census.py
    --check <census.json>`.
 4. Write only what changed: the rows flagged in `<rows.json>` (one
