@@ -36,7 +36,7 @@ the plan in `docs/plans/2026-11-18-fork-fleet-sheet-plan.html`.
 | L | Develop head SHA |
 | M | Last sync applied at (from fork-sync's JSON run record) |
 | N | Last updated by (bot name; attribution rules below) |
-| O | Row last verified at (the census run's timestamp) |
+| O | Row last verified at — advances only when the run actually measured the row; a failed observation keeps the last verified stamp |
 | P | Machine notes (error class for `unknown` rows, retired date) |
 
 Mirror status: `current` (mirror head == upstream head), `behind`
@@ -66,7 +66,11 @@ automation that moves mirrors) when its JSON run record shows an
 APPLIED sync for the repo after the row's previous verification.
 Run-record timestamps are ISO 8601 with a UTC offset (fork-sync
 writes America/Chicago local time); the census compares them as
-datetimes, never as bare strings.
+datetimes, never as bare strings. An axis that fails to measure
+keeps its last measured head as the baseline in the sheet (counts
+blank, status `unknown`, verification stamp not advanced), so a
+sync applied during a failed observation is still attributable
+when measurement recovers.
 First-observation rows are stamped `fork-fleet-census`. Develop
 movements are not bot-made today, so a develop change with no
 recorded bot action is `unknown (external change)` — a person is

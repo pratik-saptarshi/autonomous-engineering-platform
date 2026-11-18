@@ -32,6 +32,11 @@ exit <strong>1</strong> covers any repo with an <code>unknown</code>/<code>skip<
 repo-list failure is exit <strong>2</strong> (fatal) only — it is not also an exit-1 case.
 Separately, §2.1's column-H source assumed a <code>head_commit</code> field the compare payload does not carry:
 the upstream head is read from a <code>branches</code> call on the upstream repo (skipped when the mirror compare is identical, where H == G), adding at most ~1 call per non-identical fork to the §4.4 estimate.</p>
+<p>Second errata (2026-11-18, Codex review of the P1 PR): §2.1's column-O rule ("updated for every row each run") is refined —
+the stamp advances only for rows the run actually measured. An axis that fails to measure keeps its last measured head as the baseline
+in the sheet row (counts blank, status <code>unknown</code>), so the failed observation neither erases the baseline nor moves the
+attribution window past a sync that landed that night. The upstream-head lookup is likewise validated against the mirror compare's
+own permalink prefix; a disagreement (upstream moved mid-measurement) marks the mirror axis <code>unknown</code>.</p>
 
 <h2>1. Grounding — what exists today</h2>
 <ul>
