@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fork Fleet Tracking Sheet + Census Batch — Plan</title>
+<style>
+  body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;max-width:880px;margin:2rem auto;padding:0 1.2rem;line-height:1.55;color:#1a1a2e;background:#fdfdfd}
+  h1{font-size:1.55rem;margin-bottom:.2rem} h2{font-size:1.2rem;margin-top:2rem;border-bottom:2px solid #4a6fa5;padding-bottom:.25rem}
+  h3{font-size:1.02rem;margin-top:1.3rem}
+  .meta{color:#666;font-size:.9rem}
+  table{border-collapse:collapse;width:100%;margin:.8rem 0;font-size:.92rem}
+  th,td{border:1px solid #c9d2e0;padding:.4rem .55rem;text-align:left;vertical-align:top}
+  th{background:#eef2f8}
+  .none{color:#b00020;font-weight:600}.on{color:#1e7d32;font-weight:600}.warn{color:#b26a00;font-weight:600}
+  .callout{background:#eef2f8;border-left:4px solid #4a6fa5;padding:.7rem 1rem;margin:1rem 0}
+  .risk{background:#fdeeee;border-left:4px solid #b00020;padding:.7rem 1rem;margin:1rem 0}
+  code{background:#eef2f8;padding:.1rem .3rem;border-radius:3px;font-size:.88em}
+  li{margin:.3rem 0}
+</style>
+</head>
+<body>
+<h1>Fork fleet tracking sheet + census batch — plan</h1>
+<p class="meta">AEP vendored repo maintenance lane · Author: Musebot-Astro · Date: 2026-11-18 · Status: <strong>plan only — no sheet created, no code written, no repo changed</strong><br>
+Owner request (2026-11-18): "start maintaining a google sheet, for each fork repo, its upstream branch, sync status on upstream default to branch of same name, develop sync status and last updated by 'bot name'. We want to create a batch job and add it to AEP."</p>
+
+<h2>Executive takeaway</h2>
+<p>The fleet's standing record is currently re-derived from the daily sync's text log — and that record has already been caught wrong: for orca the log said 0 commits of develop lag, the 2026-11-16 fleet plan said 1,658, and a direct compare said 258. A tracking sheet is only worth keeping if every figure in it comes from a live compare taken at census time, so this plan builds exactly that: a read-only census script in AEP's <code>scripts/</code> family that reuses fork-sync's discovery and compare pattern, emits a JSON census with an explicit <em>unknown</em> state (never a silent zero), and a nightly agent-run batch — after the 19:00 sync — that diffs the census against a Google Sheet and writes only the rows that changed, in machine-owned columns only, leaving a human annotation zone untouched. Attribution ("last updated by") uses a closed vocabulary of bot actors and admits <em>unknown (external change)</em> where no bot action is recorded, rather than guessing. <strong>Recommended shape: one spreadsheet, two tabs, one new AEP script with tests, one local cron in the existing fork-sync pattern — phased P0–P3 with a fixture-checked first census, and the Monday sweep re-pointed at the sheet only as a separately approved follow-up.</strong></p>
+
+<h2>1. Grounding — what exists today</h2>
+<ul>
+<li><strong>fork-sync.py</strong> (lane script, run nightly by cron as <code>fork-upstream-sync-daily</code>, <code>GHG_ACTOR=fork-sync</code>) discovers eligible forks — <code>isFork</code> AND default branch <code>develop</code> — then per fork makes three ghg calls: repo info (whose <code>parent</code> block names the upstream repo and its default branch, which is the fork's mirror branch name), a mirror-vs-upstream compare, and a mirror-vs-develop compare. It classifies mirrors as SYNC-NOOP / SYNC-FF / BLOCKED / SKIP and prints human-readable text to a log. It never modifies <code>develop</code>.</li>
+<li><strong>The measurement lesson (2026-11-17/18, verified live).</strong> Figures parsed from that text log are unreliable — compare direction and timing produced 0 vs 1,658 vs 258 for the same repo within two days, with no forward-merge in between. Direct compares taken at census time are the only trustworthy source. This plan therefore forbids log parsing for every figure in the sheet; the log is used for exactly one metadata purpose (sync attribution, §3) and even that gets a cleaner replacement in P1.</li>
+<li><strong>The 2026-11-16 fleet plan</strong> (Eng — AEP / Defense Factory lane) categorised the fleet from a log parse: (a1) 67 clean repos, (a2) 8 fork-local, (b) 5 blocked/missing mirrors, 64 no-action, with esf, docs-mcp-server, harness2, install and NeuroStrata excluded from bulk handling. This sheet supersedes that plan's category (a) census as the standing record; the plan's procedures and sequencing are unaffected.</li>
+<li><strong>Google Sheets connector.</strong> All Sheets access goes through the agent-mediated wrapper (<code>hatch_gws_cli sheets …</code>); authentication stays inside the wrapper and credential files are forbidden. A scheduled <em>agent</em> run can use it; a bare script cannot hold Google OAuth. This single fact decides the write-path design in §4.</li>
+</ul>
+
+<h2>2. Sheet design</h2>
+<p>One new spreadsheet, created under the owner's Google account via the connector, working title <strong>"Fork fleet — sync status"</strong> (Decision D1). Two tabs:</p>
+<ul>
+<li><strong><code>Fleet status</code></strong> — one row per eligible fork (~147), stable alphabetical order by fork repo, header row frozen, filter enabled. The batch never re-sorts: the owner sorts/filters ad hoc in the UI, and stable row positions are what make the human annotation zone safe (§2.2).</li>
+<li><strong><code>Summary</code></strong> — fully machine-owned, rewritten each run: census timestamp, counts by mirror/develop status, the blocked list, top develop lags, and the definitions of every status and of the attribution column. This is the blocked-first view, so the data tab doesn't need severity ordering.</li>
+</ul>
+
+<h3>2.1 Schema — machine-owned columns A:P</h3>
+<table>
+<tr><th>Col</th><th>Name</th><th>Source (ghg / API call)</th><th>Notes</th></tr>
+<tr><td>A</td><td>Fork repo</td><td><code>gh repo list pratik-saptarshi --limit 300 --json nameWithOwner,isFork,defaultBranchRef</code>, filtered to isFork + default <code>develop</code> (fork-sync's eligibility rule, reused verbatim)</td><td>Row key. New forks append; departed forks are marked <em>retired</em>, never deleted (preserves annotations and history).</td></tr>
+<tr><td>B</td><td>Upstream repo</td><td><code>gh api repos/{fork}</code> → <code>parent.full_name</code></td><td>Absent parent ⇒ row status <em>skip</em> with note (fork-sync's SKIP case).</td></tr>
+<tr><td>C</td><td>Upstream default branch (mirror branch)</td><td>Same call → <code>parent.default_branch</code></td><td>The fork's mirror branch has this same name — the "upstream default to branch of same name" axis.</td></tr>
+<tr><td>D</td><td>Mirror status</td><td>Derived from the mirror compare (below)</td><td>Closed vocabulary: <code>current</code> / <code>behind</code> / <code>blocked-diverged</code> / <code>no-mirror</code> / <code>unknown</code> / <code>retired</code>.</td></tr>
+<tr><td>E</td><td>Mirror behind (commits)</td><td><code>gh api repos/{fork}/compare/{mirror}...{upstream_owner}:{mirror}</code> → <code>ahead_by</code> (upstream commits the mirror lacks — fork-sync's compare direction, reused)</td><td>Blank when status is <code>unknown</code> / <code>no-mirror</code> — never a fabricated 0.</td></tr>
+<tr><td>F</td><td>Mirror unique (commits)</td><td>Same compare → <code>behind_by</code> (commits unique to the mirror)</td><td>&gt;0 ⇒ <code>blocked-diverged</code> (e.g. paperthin 197 unique / 266 new at last census).</td></tr>
+<tr><td>G</td><td>Mirror head SHA</td><td>Same compare → <code>base_commit.sha</code> (short form displayed, full SHA in the census JSON)</td><td>Makes every figure auditable to exact commits.</td></tr>
+<tr><td>H</td><td>Upstream head SHA</td><td>Same compare → <code>head_commit.sha</code></td><td>G == H ⇔ mirror current.</td></tr>
+<tr><td>I</td><td>Develop status</td><td>Derived from the develop compare (below)</td><td>Closed vocabulary: <code>current</code> / <code>ff-ready</code> / <code>fork-local</code> / <code>unknown</code> / <code>retired</code>.</td></tr>
+<tr><td>J</td><td>Develop behind mirror (commits)</td><td><code>gh api repos/{fork}/compare/develop...{mirror}</code> → <code>ahead_by</code> (mirror commits not in develop)</td><td>This is the develop-lag figure — from a live compare at census time, per the measurement lesson.</td></tr>
+<tr><td>K</td><td>Develop fork-local (commits)</td><td>Same compare → <code>behind_by</code> (develop commits the mirror lacks)</td><td>J&gt;0, K=0 ⇒ <code>ff-ready</code>; K&gt;0 ⇒ <code>fork-local</code>; J=K=0 ⇒ <code>current</code>.</td></tr>
+<tr><td>L</td><td>Develop head SHA</td><td>Same compare → <code>base_commit.sha</code></td><td>Consistency check: this compare's <code>head_commit.sha</code> (mirror head) must equal column G from the mirror compare; a mismatch marks the row <code>unknown</code> with a note rather than publishing two disagreeing figures.</td></tr>
+<tr><td>M</td><td>Last sync applied at</td><td>Sync run record (§3) — timestamp of the most recent run in which fork-sync recorded an APPLIED sync for this repo</td><td>Blank if no sync has been applied since records began. Metadata only; never a source of figures.</td></tr>
+<tr><td>N</td><td>Last updated by (bot name)</td><td>Attribution rule, §3</td><td>Closed vocabulary: a bot's <code>GHG_ACTOR</code> (today: <code>fork-sync</code>), <code>fork-fleet-census</code> for census-first-observed rows, or <code>unknown (external change)</code>.</td></tr>
+<tr><td>O</td><td>Row last verified at</td><td>The census run's timestamp</td><td>Updated for every row each run via a single-column write (§2.2), so verification freshness never goes stale silently.</td></tr>
+<tr><td>P</td><td>Machine notes</td><td>Census</td><td>Error class for <code>unknown</code> rows, consistency flags, retired date. Machine-written; keep terse.</td></tr>
+</table>
+
+<h3>2.2 Human zone, ordering, and write mechanics</h3>
+<ul>
+<li><strong>Human-owned columns Q:R</strong> — <code>Owner notes</code> and <code>Decision</code>. The batch <em>never</em> writes Q:R, never clears them, and never moves them: rows are never re-sorted or deleted by the batch, so an annotation stays attached to its fork. Any future need to reorder is a manual, owner-side operation.</li>
+<li><strong>Diff-update, not full rewrite.</strong> Each run: read the machine range once, diff against the census by row key, and write only changed rows (one <code>values batchUpdate</code> with per-row ranges), plus the single-column O update for all verified rows and the Summary tab rewrite. Rationale: 147 rows is small enough that a full rewrite would be cheap in API terms, but a full rewrite would churn every cell nightly, erase the meaning of "last updated", and widen the window for clobbering a concurrent human edit inside the machine range. Diff-update makes a no-change re-run produce <em>no</em> state writes at all (idempotency, §4.3).</li>
+<li><strong>RAW values.</strong> All writes use <code>valueInputOption=RAW</code>; timestamps are ISO 8601 text (America/Chicago offset), counts are plain integers, SHAs literal — Sheets never re-interprets a value.</li>
+<li><strong>Read-back verification.</strong> After writing, the batch reads back the written ranges and the Summary timestamp before reporting success (the connector's own rule: an accepted write is not proof the sheet reads correctly).</li>
+<li><strong>Ownership &amp; discoverability.</strong> The spreadsheet lives in the owner's Google account; its ID and link are recorded in the lane MEMORY.md and in an AEP doc page added by the build PR, so the sheet is findable from both sides.</li>
+</ul>
+
+<h2>3. Attribution — what "last updated by" can honestly mean</h2>
+<p>The column records the automation identity (<code>GHG_ACTOR</code>) responsible for the last <em>state change</em> a row reflects. What is knowable, stated plainly:</p>
+<ul>
+<li><strong>Mirror movements are attributable.</strong> fork-sync is the only automation that moves mirrors, and it runs as <code>GHG_ACTOR=fork-sync</code>. When a row's mirror SHA advances and the sync run record shows an APPLIED sync for that repo, the change is stamped <code>fork-sync</code> and column M takes that run's timestamp. To make this robust, P1 adds a small machine-readable run record to fork-sync (a JSON sibling of the text log: run timestamp, actor, per-repo applied list). Until that lands, the batch reads the same facts from the log's APPLIED lines and run headers — attribution metadata only, never figures.</li>
+<li><strong>Develop movements are not bot-made today.</strong> No automation merges into <code>develop</code>; the fleet plan's forward-merges will be human-approved, per-action events. A develop SHA that changes between censuses with no recorded bot action is stamped <code>unknown (external change)</code>. The batch deliberately does <em>not</em> infer a person from commit authorship: the pusher of a merge is not recoverable from the compare API, and author ≠ actor for bot-assisted merges. Guessing a name would make the column a false record.</li>
+<li><strong>Convention going forward.</strong> Any future automation that moves a tracked branch must run under a named <code>GHG_ACTOR</code> and leave a run record; the census then attributes from that record. This is stated in the Summary tab so the column's semantics are printed next to its data.</li>
+<li><strong>First-observation rows</strong> (new fork, or a row whose prior state is unavailable) are stamped <code>fork-fleet-census</code> — the census is the actor that brought the row into the record, which is the only claim being made.</li>
+</ul>
+
+<h2>4. Batch job design</h2>
+<h3>4.1 Shape: an AEP script + a local cron agent run</h3>
+<ul>
+<li><strong>Script:</strong> <code>scripts/fork_fleet_census.py</code> in AEP, alongside <code>check_policy_delta.py</code> and <code>mechanical_verify.py</code> — stdlib-only, batch, no daemon. It performs discovery and all compares through ghg, and emits a census JSON (full SHAs, raw counts, per-repo status, error classes) plus a run summary. CLI in the family pattern: a default census mode writing the JSON to a named output path, and a <code>--check</code> mode that validates a census file against the schema (used by tests and by the agent run before any sheet write).</li>
+<li><strong>Exit codes:</strong> 0 = census complete (rows marked <code>unknown</code> are reported in the summary but do not fail the run); 1 = partial census (the repo list or a whole compare class failed — sheet is still updated for the repos that did measure, with the rest carried as <code>unknown</code>); 2 = fatal (ghg budget denial / gateway failure / repo list failure — <em>no sheet write occurs</em>). A ghg exit 75 anywhere stops the run at that stage and is reported as a budget denial, per the standing gateway rule — never retried around, never bypassed.</li>
+<li><strong>Runner: local cron, not GitHub Actions.</strong> A nightly cron job (<code>fork-fleet-census-nightly</code>) in the same pattern as <code>fork-upstream-sync-daily</code>, running as an agent job with <code>GHG_ACTOR=fork-fleet-census</code>, delivering its report to the AEP vendored repo maintenance chat. Actions is rejected for three reasons: every GitHub call must go through the local ghg gateway and its budget accounting (Actions would bypass it); the fleet compares need the gateway for the same reason; and Google write access from Actions would require a stored Google credential, against the vault posture (§4.2). Nothing about the job needs PR-triggered or in-repo execution.</li>
+<li><strong>Cadence &amp; ordering:</strong> nightly at ~19:45 America/Chicago, after the 19:00 daily sync has finished, so mirror columns reflect post-sync state and column M/N attribution lines up with that evening's sync record. The census measures live state whenever it runs, so a missed or denied sync does not corrupt it — the sheet simply shows the pre-sync figures with that night's verification timestamp. The Monday weekly sweep re-pointing at the sheet is recommended but is a <em>separate follow-up task</em> (it rewrites the sweep's instructions), not part of this build (Decision D4).</li>
+</ul>
+
+<h3>4.2 Google write path — agent-mediated, by design</h3>
+<p>The Sheets connector is agent-mediated: its wrapper holds authentication internally and credential files are forbidden. A bare script therefore <em>cannot</em> write to Sheets, and this plan does not try to make it one. The nightly agent run is the writer:</p>
+<ol>
+<li>Run <code>fork_fleet_census.py</code> (ghg discipline, actor <code>fork-fleet-census</code>) → census JSON on disk.</li>
+<li>Validate the census (<code>--check</code>); on exit 2, stop — sheet untouched, report the stage.</li>
+<li>Read the sheet's machine range via the connector; compute the row diff (changed rows, new rows, retirements) against the census + sync run record (for columns M/N).</li>
+<li>Write: changed rows via one values batchUpdate (columns A:P only), the column-O verification update, and the Summary tab rewrite — all RAW.</li>
+<li>Read back the written ranges; report counts (rows changed / new / retired / unknown) to the lane chat.</li>
+</ol>
+<p><strong>Alternative considered and not recommended:</strong> a Google service account whose key the script uses directly. It would make the batch a pure script, but it means a standing Google credential stored under the vault rules (write-only, awkward to consume from a script), sharing the sheet to a non-owner identity, and stepping outside the connector — the sanctioned route. It stays documented here as the fallback if a future requirement demands unattended non-agent execution; adopting it is Decision D2's alternative, not the default.</p>
+
+<h3>4.3 Failure behaviour and idempotency</h3>
+<ul>
+<li><strong>Partial census:</strong> individual compare failures mark only that repo's affected axis <code>unknown</code> (with the error class in column P); the run still writes. A failed mirror compare also forces the develop axis to be interpreted cautiously: the develop compare is independent, so it still publishes — but if the two compares' mirror-head SHAs disagree, the row goes <code>unknown</code> (the §2.1 consistency check).</li>
+<li><strong>ghg budget denial (exit 75):</strong> stop at the stage reached, sheet untouched, report to the lane chat. The census is read-only, so a lost night loses nothing — the next night re-measures everything.</li>
+<li><strong>Sheet write failure:</strong> the census JSON and the computed diff are retained on disk (dated, under the goal's hidden_files) so the next run — or a manual re-run — can apply them; the failure is reported with the stage (read / diff / write / verify).</li>
+<li><strong>Idempotency:</strong> a "change" is any difference in tracked state fields (statuses, counts, SHAs, attribution). Re-running with no state change produces no row writes beyond the column-O verification stamp and the Summary timestamp — and if even those are unchanged in substance, the run reports "no changes" and writes nothing but the Summary run line. Verified-at churn is confined to column O by construction.</li>
+</ul>
+
+<h3>4.4 Cost per run</h3>
+<table>
+<tr><th>Item</th><th>Estimate</th><th>Basis</th></tr>
+<tr><td>ghg calls</td><td><strong>≈ 450</strong></td><td>1 repo-list call + 147 forks × 3 (repo info, mirror compare, develop compare) = 442, plus a fallback <code>branches/{mirror}</code> probe only for repos whose mirror compare failed (≈ 6 today: 4 blocked are fine — their compares succeed; the SKIP/no-mirror class) → ≈ 445–450. Same order as fork-sync's own nightly ≈ 442.</td></tr>
+<tr><td>Runtime</td><td>≈ 15–30 min</td><td>Sequential ghg subprocess calls are the bottleneck, as in fork-sync (19:00 start, results land ~19:15–19:30). Bounded parallelism is explicitly out of scope — it would fight the gateway's budget discipline.</td></tr>
+<tr><td>Google Sheets API calls</td><td>≈ 5</td><td>1 values read (machine range), 1 values batchUpdate (changed rows), 1 column-O update, 1 Summary rewrite, 1–2 read-back verifications. Negligible against Sheets quotas.</td></tr>
+<tr><td>Storage</td><td>One census JSON (~100 KB) per run, retained in hidden_files</td><td>Also the retry artefact on write failure.</td></tr>
+</table>
+
+<h2>5. Reused vs new — exactly</h2>
+<table>
+<tr><th>Piece</th><th>Disposition</th></tr>
+<tr><td>Eligibility discovery (repo list + isFork/develop filter)</td><td><strong>Reused</strong> — same call, same filter as fork-sync.py.</td></tr>
+<tr><td>Upstream/mirror identification (<code>parent</code> block)</td><td><strong>Reused</strong> — same call, same fields.</td></tr>
+<tr><td>Mirror compare (direction, ahead/behind semantics, BLOCKED/SKIP taxonomy)</td><td><strong>Reused</strong> — fork-sync's compare and classification, mapped onto the sheet's status vocabulary.</td></tr>
+<tr><td>Develop compare</td><td><strong>Reused with the direction made explicit</strong> — the batch uses <code>develop...{mirror}</code> (ahead_by = lag, behind_by = fork-local) and the schema pins those semantics in tests, including a transposition fixture, so the log-era confusion cannot recur silently.</td></tr>
+<tr><td>ghg subprocess wrapper + actor discipline</td><td><strong>Reused</strong> — same pattern, new actor name <code>fork-fleet-census</code>.</td></tr>
+<tr><td>JSON census output, head-SHA extraction, <code>unknown</code> state, cross-compare consistency check</td><td><strong>New</strong> — fork-sync prints text only and has no unknown state for the develop axis.</td></tr>
+<tr><td>fork-sync JSON run record (for columns M/N)</td><td><strong>New, small</strong> — a JSON sibling to the text log; the only change to fork-sync itself.</td></tr>
+<tr><td>Sheet diff/write/verify layer</td><td><strong>New</strong> — lives in the agent run's procedure, not in the AEP script (the script never sees Google).</td></tr>
+<tr><td>Cron job <code>fork-fleet-census-nightly</code></td><td><strong>New</strong> — same shape as <code>fork-upstream-sync-daily</code>.</td></tr>
+</table>
+
+<h2>6. Build phases and gates</h2>
+<table>
+<tr><th>Phase</th><th>Work</th><th>Gate</th></tr>
+<tr><td><strong>P0 — Sheet + manual first census</strong></td><td>Create the spreadsheet and tabs via the connector; run the census procedure by hand (script prototype or manual ghg calls) and populate the sheet once.</td><td><strong>Acceptance fixtures:</strong> the sheet's develop figures must match live compares re-derived at P0 time for the three known-truth samples — orca (258 behind / 0 local), rea (90 / 0), ECC (659 / 0), as measured 2026-11-18 00:46 CST. The invariant is <em>sheet == live compare at that moment</em>; the recorded values are sanity anchors (they only grow if upstream moves in between, and by exactly the moved amount). Any other mismatch stops the plan for a semantics fix before anything is automated.</td></tr>
+<tr><td><strong>P1 — Census script in AEP</strong></td><td><code>scripts/fork_fleet_census.py</code> + <code>scripts/tests/test_fork_fleet_census.py</code> (TDD per the repo's script-test family: classification unit tests, the compare-transposition fixture, unknown-never-zero test, consistency-check test, idempotent-diff test) via the feature-to-PR pipeline, targeting <code>develop</code>. Includes the fork-sync JSON run record. The plan document ships in this PR under <code>docs/plans/</code> per the owner's rule.</td><td>Tests green incl. fixtures; script output on a live run reproduces the P0 sheet figures exactly (modulo genuine upstream movement, explained commit-for-commit).</td></tr>
+<tr><td><strong>P2 — Sheet writer in the agent run</strong></td><td>The read/diff/write/verify procedure of §4.2, first in dry-run form (prints the diff, writes nothing), then live.</td><td>Dry-run diff on a day with known changes (e.g. a blocked mirror's counts moving) matches expectations row-for-row; live write verified by read-back; annotation columns demonstrably untouched (seed a test note in Q:R first, confirm it survives).</td></tr>
+<tr><td><strong>P3 — Nightly cron</strong></td><td>Schedule <code>fork-fleet-census-nightly</code> (~19:45 CT, after the sync), delivering to the vendored lane chat.</td><td>Two consecutive unattended runs complete clean; a deliberate no-change re-run produces no state writes (idempotency proven in production, not just in tests).</td></tr>
+<tr><td><strong>P4 — Follow-up (separate approval)</strong></td><td>Re-point the Monday weekly sweep to read the sheet (spot-checking the four vendored forks against live compares) instead of re-deriving.</td><td>Not part of this build; scheduled only on Decision D4 = yes.</td></tr>
+</table>
+
+<h2>7. Risks and mitigations</h2>
+<div class="risk"><strong>R1 — False precision: the sheet becomes a polished record of wrong numbers</strong> (the orca 0/1,658/258 incident is exactly this failure, pre-sheet). Mitigations: (1) direct compares at census time only — log parsing for figures is forbidden by the schema's design, not by convention; (2) an explicit <code>unknown</code> state with blank counts, plus the cross-compare SHA consistency check, so a measurement problem surfaces as <em>unknown</em> instead of a confident wrong figure; (3) P0 acceptance fixtures and per-figure SHAs (columns G/H/L) make any number auditable to the exact commits it was derived from.</div>
+<div class="risk"><strong>R2 — The batch clobbers human input or fights concurrent edits.</strong> Mitigations: (1) writes are confined to machine columns A:P by range — Q:R annotations are outside every write the batch can express; (2) stable alphabetical row order, no batch re-sorts, departed forks retired rather than deleted, and diff-update (not full rewrite) so untouched rows are never rewritten; (3) read-back verification after every write, with the P2 gate explicitly proving a seeded annotation survives.</div>
+<div class="risk"><strong>R3 — Attribution overclaim:</strong> "last updated by" reads as if it identifies who changed a branch, when develop changes are largely unattributable. Mitigations: (1) a closed vocabulary (<code>fork-sync</code> / <code>fork-fleet-census</code> / <code>unknown (external change)</code>) — the column can only ever name a bot actor with a run record, or admit ignorance; (2) the column's definition is printed in the Summary tab, and author-inference is explicitly forbidden in the procedure, so the overclaim cannot creep back in as a "helpful" enhancement.</div>
+<div class="risk"><strong>R4 — Gateway budget pressure:</strong> the census adds ≈450 ghg calls/night on top of the sync's ≈442. Mitigations: (1) exit-75 discipline — a denied census stops with the sheet untouched and loses nothing (read-only, next night catches up); (2) a distinct actor (<code>fork-fleet-census</code>) so the cost is separately visible in gateway accounting, and the run is placed after the sync in one evening window rather than competing with daytime work; (3) no parallelism and no extra metadata calls beyond the counted set — the fallback branch probe fires only on compare failure.</div>
+<div class="risk"><strong>R5 — Silent staleness:</strong> the cron dies or is denied for days and the sheet keeps looking authoritative. Mitigations: (1) the Summary tab carries the census timestamp prominently and every run reports to the lane chat (a missing report is itself a signal, like the sync's); (2) a stated staleness rule — a census timestamp older than 48 hours means the sheet is treated as stale and figures are re-derived live before any decision uses them; (3) the P4 sweep re-point keeps a spot-check of the four vendored forks against live compares, so even the sheet's consumers verify it weekly.</div>
+<div class="risk"><strong>R6 — Scope creep from tracking into acting:</strong> a sheet that knows exactly which repos are ff-ready invites the batch to start merging them. Mitigations: (1) the batch is read-only by construction — the script contains no sync, merge, or push calls, and the agent procedure's only writes are to the sheet; (2) forward-merges stay governed by the fleet plan's per-action approvals, unchanged; the sheet informs those decisions, it does not execute them.</div>
+
+<h2>8. Decisions for the owner</h2>
+<table>
+<tr><th>#</th><th>Decision</th><th>Recommendation</th></tr>
+<tr><td>D1</td><td>Sheet name and ownership</td><td>"Fork fleet — sync status", created under the owner's Google account via the connector; ID/link recorded in lane MEMORY.md and the AEP build PR's doc page.</td></tr>
+<tr><td>D2</td><td>Google write path</td><td>Agent-mediated via the Sheets connector (the nightly agent run writes). Alternative — a service account for a pure-script batch — documented in §4.2, not recommended.</td></tr>
+<tr><td>D3</td><td>Cadence</td><td>Nightly ~19:45 America/Chicago, after the daily sync. (Weekly-only would halve freshness for the same build cost.)</td></tr>
+<tr><td>D4</td><td>Re-point the Monday weekly sweep at the sheet?</td><td>Yes — as the separate P4 follow-up, after P3's gate passes; the sweep keeps a live spot-check of the four vendored forks.</td></tr>
+<tr><td>D5</td><td>"Last updated by" scope</td><td>Bot actors only, with <code>unknown (external change)</code> for unattributed develop movements. Explicitly not human attribution (pusher is not recoverable; author ≠ actor).</td></tr>
+<tr><td>D6</td><td>Does the census batch ever apply syncs or merges itself?</td><td>No. fork-sync applies mirror syncs; the fleet plan's merges stay per-action approvals. The census only observes and records.</td></tr>
+</table>
+
+<h2>Sources consulted</h2>
+<ul>
+<li><code>~/workspace/aep-vendored-repo-maintenance/fork-sync.py</code> — discovery, compare pattern, classification taxonomy, call counts.</li>
+<li>Google Sheets connector doc (<code>/opt/hatch/connectors/google_sheets/CONNECTOR.md</code>) — agent-mediated CLI route, RAW/USER_ENTERED semantics, read-back verification rule, credential-file prohibition.</li>
+<li><code>2026-11-16-fork-fleet-develop-lag-plan.html</code> (Eng — AEP / Defense Factory lane) — fleet categories, exclusions, sequencing this sheet's census supersedes.</li>
+<li>Live verification, 2026-11-18 00:46 CST (this lane): direct ghg compares for orca (258/0), rea (90/0), ECC (659/0) — the P0 acceptance fixtures.</li>
+<li>Lane records: daily sync run log (<code>files/sync-run-log.txt</code>) for run timing, blocked set, and fork-sync's actor/attribution facts.</li>
+</ul>
+</body>
+</html>
