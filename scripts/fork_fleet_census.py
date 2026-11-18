@@ -51,10 +51,11 @@ record; ``fork-fleet-census`` for first-observation rows) or
 no person is ever inferred from commit authorship.
 
 Exit codes: 0 = census complete, every repo measured; 1 = census
-complete but at least one repo has an unknown/skip axis (the sheet is
-still updated for what measured); 2 = fatal (repo list failure, ghg
-budget denial at any stage, or an I/O failure) -- no sheet write may
-be made from a run that exits 2.
+complete but at least one repo has an unknown/skip axis or a partial
+measurement (e.g. the upstream head could not be read) -- the sheet
+is still updated for what measured; 2 = fatal (repo list failure,
+ghg budget denial at any stage, or an I/O failure) -- no sheet write
+may be made from a run that exits 2.
 """
 
 from __future__ import annotations
@@ -168,6 +169,7 @@ def _blank_row(repo: str) -> dict:
         "develop_fork_local": None,
         "develop_head": None,
         "error": None,
+        "partial": False,
     }
 
 
@@ -202,11 +204,16 @@ def census_repo(repo: str, runner) -> dict:
         runner, ("api", f"repos/{repo}/compare/{mirror}...{upstream_owner}:{mirror}")
     )
     if cmp_up is None:
-        # Distinguish a missing mirror branch from a failed compare.
-        _probe, _perr, prc = _call(runner, ("api", f"repos/{repo}/branches/{mirror}"))
-        if prc != 0:
+        # Distinguish a missing mirror branch from a failed compare:
+        # only a 404 from the branch probe means no-mirror; any other
+        # probe failure is transient and leaves the axis unknown.
+        _probe, perr, prc = _call(runner, ("api", f"repos/{repo}/branches/{mirror}"))
+        if prc != 0 and ("404" in (perr or "") or "Not Found" in (perr or "")):
             row["mirror_status"] = "no-mirror"
-            row["error"] = f"no-mirror: compare failed ({err_up}); branch probe 404"
+            row["error"] = (
+                f"no-mirror: no branch named {mirror} on the fork "
+                f"(compare: {err_up})"
+            )
         else:
             row["error"] = f"mirror-compare: {err_up}"
     else:
@@ -223,6 +230,7 @@ def census_repo(repo: str, runner) -> dict:
             if up_branch is not None:
                 row["upstream_head"] = up_branch["commit"]["sha"]
             else:
+                row["partial"] = True
                 row["error"] = f"upstream-head: {err_b}"
 
     cmp_dev, err_dev, _ = _call(
@@ -288,9 +296,11 @@ def run_census(runner) -> dict:
 
 def census_exit_code(census: dict) -> int:
     for row in census["repos"]:
-        if row["mirror_status"] in ("unknown", "skip") or row[
-            "develop_status"
-        ] in ("unknown", "skip"):
+        if (
+            row["mirror_status"] in ("unknown", "skip")
+            or row["develop_status"] in ("unknown", "skip")
+            or row.get("partial")
+        ):
             return 1
     return 0
 
@@ -351,6 +361,23 @@ def _canon(row) -> list[str]:
     return [str(v).strip() for v in row]
 
 
+def _after(later: str, earlier: str) -> bool:
+    """True if ISO timestamp `later` is after `earlier`.
+
+    Both writers (fork-sync's run record, this census) emit ISO 8601
+    with a UTC offset; parse and compare as datetimes so a DST offset
+    change cannot misorder the comparison. An empty `earlier` (no
+    previous verification) counts as before everything. Unparseable
+    values fall back to string order.
+    """
+    if not earlier:
+        return True
+    try:
+        return datetime.fromisoformat(later) > datetime.fromisoformat(earlier)
+    except ValueError:
+        return later > earlier
+
+
 def build_rows(census, prev_rows, sync_record, verified_at):
     """Derive sheet rows (A:P) from a census + previous sheet state.
 
@@ -364,11 +391,16 @@ def build_rows(census, prev_rows, sync_record, verified_at):
     """
     record_repos = (sync_record or {}).get("repos", {})
     prev_by_repo = {}
+    prev_order = []
     for prow in prev_rows:
         if prow and str(prow[COL_REPO]).strip():
-            prev_by_repo[str(prow[COL_REPO]).strip()] = list(prow) + [""] * (
-                ROW_FIELDS - len(prow)
-            )
+            repo = str(prow[COL_REPO]).strip()
+            if repo not in prev_by_repo:
+                prev_order.append(repo)
+            # Normalize to exactly the machine range: pad short rows,
+            # truncate wide ones -- a caller that hands over Q:R must
+            # never see them carried into the output.
+            prev_by_repo[repo] = (list(prow) + [""] * ROW_FIELDS)[:ROW_FIELDS]
     census_by_repo = {r["repo"]: r for r in census["repos"]}
     rows: list[list] = []
     changed: list[int] = []
@@ -387,18 +419,25 @@ def build_rows(census, prev_rows, sync_record, verified_at):
         if prev is not None:
             last_sync = prev[COL_LAST_SYNC]
             actor = prev[COL_ACTOR] or actor
-            fork_heads_moved = (
-                _short(row["mirror_head"]) != str(prev[6]).strip()
-                or _short(row["develop_head"]) != str(prev[11]).strip()
-            )
-            if fork_heads_moved:
-                applied = record_repos.get(row["repo"], {}).get("last_applied_at")
-                prev_verified = str(prev[COL_VERIFIED]).strip()
-                if applied and (not prev_verified or applied > prev_verified):
-                    actor = "fork-sync"
-                    last_sync = applied
-                else:
-                    actor = "unknown (external change)"
+            # Attribution runs only on measured heads: on an unknown
+            # row the heads are None, nothing is known to have moved,
+            # and the previous attribution stands.
+            if row["mirror_head"] is not None and row["develop_head"] is not None:
+                mirror_moved = _short(row["mirror_head"]) != str(prev[6]).strip()
+                develop_moved = _short(row["develop_head"]) != str(prev[11]).strip()
+                if mirror_moved or develop_moved:
+                    applied = record_repos.get(row["repo"], {}).get(
+                        "last_applied_at"
+                    )
+                    # fork-sync moves mirrors only. A develop-only move
+                    # is never attributed to it (plan S3 / risk R3).
+                    if mirror_moved and applied and _after(
+                        applied, str(prev[COL_VERIFIED]).strip()
+                    ):
+                        actor = "fork-sync"
+                        last_sync = applied
+                    else:
+                        actor = "unknown (external change)"
         else:
             applied = record_repos.get(row["repo"], {}).get("last_applied_at")
             if applied:
@@ -424,14 +463,21 @@ def build_rows(census, prev_rows, sync_record, verified_at):
         ]
 
     seen = set()
-    for prow in prev_rows:
-        if not prow or not str(prow[COL_REPO]).strip():
-            continue
-        repo = str(prow[COL_REPO]).strip()
+    for repo in prev_order:
         seen.add(repo)
         prev = prev_by_repo[repo]
         if repo in census_by_repo:
             emit(repo, census_sheet_row(census_by_repo[repo], prev), prev)
+        elif (
+            prev[COL_MIRROR_STATUS] == "retired"
+            and prev[COL_DEVELOP_STATUS] == "retired"
+        ):
+            # Already retired: keep the original mark and date; only
+            # the verification stamp moves, so the row is not "changed"
+            # again on every subsequent run.
+            still = list(prev)
+            still[COL_VERIFIED] = verified_at
+            emit(repo, still, prev)
         else:
             retired = list(prev)
             retired[COL_MIRROR_STATUS] = "retired"
@@ -491,6 +537,29 @@ def main(argv=None) -> int:
         print(f"--check: {args.check} is a valid census")
         return 0
 
+    # Read inputs before any ghg call: an I/O failure is fatal (2),
+    # never a traceback the agent procedure would read as "partial".
+    prev_rows = []
+    if args.prev_rows:
+        try:
+            prev_rows = json.loads(Path(args.prev_rows).read_text())
+        except (OSError, ValueError) as exc:
+            print(f"FATAL: cannot read --prev-rows: {exc}", file=sys.stderr)
+            return 2
+    sync_record = {}
+    if args.sync_record:
+        try:
+            sync_record = json.loads(Path(args.sync_record).read_text())
+        except FileNotFoundError:
+            # No record yet (fork-sync has not applied a run since
+            # records began): attribution degrades to first-observation
+            # rules, per plan S3. A record that exists but does not
+            # parse is fatal instead of silently degrading.
+            sync_record = {}
+        except (OSError, ValueError) as exc:
+            print(f"FATAL: cannot read --sync-record: {exc}", file=sys.stderr)
+            return 2
+
     try:
         census = run_census(ghg_runner)
     except BudgetDenied as exc:
@@ -503,24 +572,19 @@ def main(argv=None) -> int:
     code = census_exit_code(census)
     census["exit_status"] = "complete" if code == 0 else "partial"
     census["summary"] = summarize(census)
-    if args.output:
-        Path(args.output).write_text(json.dumps(census, indent=1))
-    if args.rows_output:
-        prev_rows = []
-        if args.prev_rows:
-            prev_rows = json.loads(Path(args.prev_rows).read_text())
-        sync_record = {}
-        if args.sync_record:
-            try:
-                sync_record = json.loads(Path(args.sync_record).read_text())
-            except (OSError, ValueError):
-                sync_record = {}
-        rows, changed = build_rows(
-            census, prev_rows, sync_record, census["generated_at"]
-        )
-        Path(args.rows_output).write_text(
-            json.dumps({"rows": rows, "changed": changed}, indent=1)
-        )
+    try:
+        if args.output:
+            Path(args.output).write_text(json.dumps(census, indent=1))
+        if args.rows_output:
+            rows, changed = build_rows(
+                census, prev_rows, sync_record, census["generated_at"]
+            )
+            Path(args.rows_output).write_text(
+                json.dumps({"rows": rows, "changed": changed}, indent=1)
+            )
+    except OSError as exc:
+        print(f"FATAL: cannot write output: {exc}", file=sys.stderr)
+        return 2
     print(json.dumps(census["summary"]))
     return code
 

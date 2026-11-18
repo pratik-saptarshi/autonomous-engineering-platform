@@ -360,3 +360,82 @@ class CliTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReviewRegressionTests(unittest.TestCase):
+    """Regressions pinned by the independent whole-branch review."""
+
+    def census_one(self, table):
+        return ffc.census_repo("pratik-saptarshi/x", FakeRunner(table))
+
+    def test_retired_is_idempotent(self):
+        rows1, _ = ffc.build_rows(census_doc([census_row()]), [], {}, "2026-11-18T09:00:00-06:00")
+        rows2, changed1 = ffc.build_rows(census_doc([]), rows1, {}, "2026-11-19T09:00:00-06:00")
+        self.assertEqual(changed1, [0])
+        rows3, changed2 = ffc.build_rows(census_doc([]), rows2, {}, "2026-11-20T09:00:00-06:00")
+        self.assertEqual(changed2, [])
+        self.assertEqual(rows3[0][15], rows2[0][15])  # note not re-appended
+
+    def test_attribution_develop_only_move_is_not_fork_sync(self):
+        rows1, _ = ffc.build_rows(census_doc([census_row()]), [], {}, "2026-11-18T09:00:00-06:00")
+        doc2 = census_doc([census_row(develop_head=SHA_D, develop_behind=4)],
+                          generated_at="2026-11-19T09:00:00-06:00")
+        record = {"repos": {"pratik-saptarshi/x": {"last_applied_at": "2026-11-19T08:00:00-06:00"}}}
+        rows2, _ = ffc.build_rows(doc2, rows1, record, "2026-11-19T09:00:00-06:00")
+        self.assertEqual(rows2[0][13], "unknown (external change)")
+        self.assertEqual(rows2[0][12], rows1[0][12])  # M untouched
+
+    def test_attribution_unknown_row_keeps_actor(self):
+        rows1, _ = ffc.build_rows(census_doc([census_row()]), [], {}, "T1")
+        doc2 = census_doc([census_row(mirror_status="unknown", develop_status="unknown",
+                                      mirror_behind=None, mirror_unique=None,
+                                      develop_behind=None, develop_fork_local=None,
+                                      mirror_head=None, upstream_head=None,
+                                      develop_head=None, error="mirror-compare: HTTP 500")])
+        rows2, _ = ffc.build_rows(doc2, rows1, {}, "T2")
+        self.assertEqual(rows2[0][13], "fork-fleet-census")
+
+    def test_upstream_head_failure_is_partial(self):
+        table = good_table()
+        table[branch_args("up/x")] = (None, "HTTP 500", 1)
+        row = self.census_one(table)
+        self.assertEqual(row["mirror_status"], "behind")
+        self.assertIsNone(row["upstream_head"])
+        self.assertTrue(row.get("partial"))
+        self.assertEqual(ffc.census_exit_code(census_doc([row])), 1)
+
+    def test_no_mirror_requires_a_404_probe(self):
+        table = good_table()
+        table[mirror_args()] = (None, "HTTP 500", 1)
+        table[branch_args("pratik-saptarshi/x")] = (None, "HTTP 500", 1)
+        table[develop_args()] = (None, "HTTP 500", 1)
+        row = self.census_one(table)
+        self.assertEqual(row["mirror_status"], "unknown")
+
+    def test_build_rows_truncates_wide_prev_rows(self):
+        wide = ["pratik-saptarshi/x"] + ["v"] * 17  # 18 columns incl. Q:R
+        rows, _ = ffc.build_rows(census_doc([]), [wide], {}, "T1")
+        self.assertEqual(len(rows[0]), 16)
+        rows, _ = ffc.build_rows(census_doc([census_row()]), [wide], {}, "T1")
+        self.assertEqual(len(rows[0]), 16)
+
+
+class CliIoFailureTests(unittest.TestCase):
+    def run_cli(self, *argv):
+        return subprocess.run(
+            [sys.executable, str(SCRIPT), *argv],
+            capture_output=True, text=True, timeout=30,
+        )
+
+    def test_missing_prev_rows_is_exit_2(self):
+        result = self.run_cli("--prev-rows", "/nonexistent/prev.json",
+                              "--rows-output", "/tmp/rows-out.json")
+        self.assertEqual(result.returncode, 2)
+
+    def test_corrupt_sync_record_is_exit_2(self):
+        with tempfile.TemporaryDirectory() as td:
+            bad = Path(td) / "record.json"
+            bad.write_text("{not json")
+            result = self.run_cli("--sync-record", str(bad),
+                                  "--rows-output", "/tmp/rows-out.json")
+            self.assertEqual(result.returncode, 2)
