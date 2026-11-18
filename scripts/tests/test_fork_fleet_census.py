@@ -519,3 +519,29 @@ class CodexRegressionTests(unittest.TestCase):
         self.assertEqual(rows2[0][13], "fork-fleet-census")  # N preserved
         self.assertEqual(rows2[0][12], "")  # M not stamped from the record
         self.assertEqual(rows2[0][6], SHA_A[:12])  # baseline head preserved
+
+    def test_mirror_attribution_independent_of_develop_failure(self):
+        # Mirror measured and moved; develop compare failed. The
+        # mirror movement is attributable on its own axis: fork-sync
+        # moves mirrors only, so the develop failure must not defer
+        # (and thereby permanently lose) the attribution.
+        t1 = "2026-11-16T09:00:00-06:00"
+        rows1, _ = ffc.build_rows(census_doc([census_row()]), [], {}, t1)
+        partial = census_row(
+            mirror_head=SHA_D, mirror_behind=2,
+            develop_status="unknown", develop_behind=None,
+            develop_fork_local=None, develop_head=None,
+            error="develop-compare: HTTP 500",
+        )
+        record = {"repos": {"pratik-saptarshi/x": {"last_applied_at": "2026-11-17T08:00:00-06:00"}}}
+        rows2, _ = ffc.build_rows(census_doc([partial]), rows1, record, "2026-11-17T09:00:00-06:00")
+        self.assertEqual(rows2[0][6], SHA_D[:12])  # G advances
+        self.assertEqual(rows2[0][13], "fork-sync")  # attributed tonight
+        self.assertEqual(rows2[0][12], "2026-11-17T08:00:00-06:00")
+        self.assertEqual(rows2[0][8], "unknown")  # develop axis placeholder
+        self.assertEqual(rows2[0][14], t1)  # stamp frozen (an axis failed)
+        # Recovery night: nothing moves; attribution must not flip.
+        rows3, _ = ffc.build_rows(
+            census_doc([census_row(mirror_head=SHA_D, mirror_behind=2)]),
+            rows2, record, "2026-11-18T09:00:00-06:00")
+        self.assertEqual(rows3[0][13], "fork-sync")

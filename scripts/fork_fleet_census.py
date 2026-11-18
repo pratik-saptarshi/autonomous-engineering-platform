@@ -471,32 +471,37 @@ def build_rows(census, prev_rows, sync_record, verified_at):
                 d_behind, d_local, d_head = "", "", prev[11]
             if "unknown" in (row["mirror_status"], row["develop_status"]):
                 verified = prev[COL_VERIFIED] or verified_at
-            # Attribution runs only on measured axes. An unknown axis
-            # means nothing is known to have moved and the previous
-            # attribution stands -- including the consistency-failure
-            # shape, where the statuses are unknown but the rejected
-            # heads are non-null and must not drive attribution.
-            if (
-                row["mirror_status"] != "unknown"
-                and row["develop_status"] != "unknown"
-                and row["mirror_head"] is not None
-                and row["develop_head"] is not None
-            ):
+            # Attribution is per-axis. The mirror axis is attributable
+            # on its own measurement: fork-sync moves mirrors only,
+            # so a develop-axis failure must not defer (and thereby
+            # permanently lose) a mirror attribution -- once the
+            # moved head is written, later runs see no movement. An
+            # unknown mirror axis (including the consistency-failure
+            # shape, whose rejected heads are non-null) preserves the
+            # previous attribution untouched.
+            mirror_measured = (
+                row["mirror_status"] != "unknown" and row["mirror_head"] is not None
+            )
+            if mirror_measured:
                 mirror_moved = _short(row["mirror_head"]) != str(prev[6]).strip()
-                develop_moved = _short(row["develop_head"]) != str(prev[11]).strip()
-                if mirror_moved or develop_moved:
+                if mirror_moved:
                     applied = record_repos.get(row["repo"], {}).get(
                         "last_applied_at"
                     )
-                    # fork-sync moves mirrors only. A develop-only move
-                    # is never attributed to it (plan S3 / risk R3).
-                    if mirror_moved and applied and _after(
+                    if applied and _after(
                         applied, str(prev[COL_VERIFIED]).strip()
                     ):
                         actor = "fork-sync"
                         last_sync = applied
                     else:
                         actor = "unknown (external change)"
+                elif (
+                    row["develop_status"] != "unknown"
+                    and row["develop_head"] is not None
+                    and _short(row["develop_head"]) != str(prev[11]).strip()
+                ):
+                    # A develop-only move is never bot-made.
+                    actor = "unknown (external change)"
         else:
             applied = record_repos.get(row["repo"], {}).get("last_applied_at")
             if applied:
