@@ -439,3 +439,65 @@ class CliIoFailureTests(unittest.TestCase):
             result = self.run_cli("--sync-record", str(bad),
                                   "--rows-output", "/tmp/rows-out.json")
             self.assertEqual(result.returncode, 2)
+
+
+class CodexRegressionTests(unittest.TestCase):
+    """Regressions pinned by the Codex review of PR #167."""
+
+    def census_one(self, table):
+        return ffc.census_repo("pratik-saptarshi/x", FakeRunner(table))
+
+    def test_gateway_launch_failure_is_fatal(self):
+        # A missing gateway executable raises OSError inside
+        # subprocess.run; it must surface as CensusFatal (exit 2),
+        # not a traceback the agent reads as a partial census.
+        original = ffc.GHG
+        ffc.GHG = "/nonexistent/ghg"
+        try:
+            with self.assertRaises(ffc.CensusFatal):
+                ffc.ghg_runner(("api", "repos/pratik-saptarshi/x"))
+        finally:
+            ffc.GHG = original
+
+    def test_upstream_head_must_match_compare_permalink(self):
+        # The branches lookup races the compare: if upstream moved
+        # in between, the returned head does not match the compare's
+        # permalink prefix and the mirror axis must go unknown
+        # rather than publish counts against the wrong SHA.
+        table = good_table()
+        table[branch_args("up/x")] = ({"commit": {"sha": SHA_D}}, None, 0)
+        row = self.census_one(table)
+        self.assertEqual(row["mirror_status"], "unknown")
+        self.assertIsNone(row["mirror_behind"])
+        self.assertIsNone(row["mirror_unique"])
+        self.assertIsNone(row["upstream_head"])
+        self.assertEqual(row["mirror_head"], SHA_A)  # fork tip still known
+        self.assertEqual(row["develop_status"], "ff-ready")  # axis intact
+        self.assertIn("moved during measurement", row["error"])
+
+    def test_unknown_placeholder_preserves_attribution_baseline(self):
+        # Night 1: measured. Night 2: measurement fails (unknown) --
+        # the placeholder must keep the measured heads and the
+        # verification stamp, so a sync applied that night is still
+        # attributable on night 3's recovery.
+        t1 = "2026-11-16T09:00:00-06:00"
+        rows1, _ = ffc.build_rows(census_doc([census_row()]), [], {}, t1)
+        unknown = census_row(
+            mirror_status="unknown", develop_status="unknown",
+            mirror_behind=None, mirror_unique=None,
+            develop_behind=None, develop_fork_local=None,
+            mirror_head=None, upstream_head=None, develop_head=None,
+            error="mirror-compare: HTTP 500",
+        )
+        rows2, _ = ffc.build_rows(census_doc([unknown]), rows1, {}, "2026-11-17T09:00:00-06:00")
+        self.assertEqual(rows2[0][3], "unknown")
+        self.assertEqual(rows2[0][4], "")  # counts blank
+        self.assertEqual(rows2[0][6], SHA_A[:12])  # baseline head kept
+        self.assertEqual(rows2[0][14], t1)  # verification stamp NOT advanced
+        # Night 3: recovered, mirror moved, sync applied on night 2.
+        doc3 = census_doc([census_row(mirror_head=SHA_D, mirror_behind=2)],
+                          generated_at="2026-11-18T09:00:00-06:00")
+        record = {"repos": {"pratik-saptarshi/x": {"last_applied_at": "2026-11-17T08:00:00-06:00"}}}
+        rows3, _ = ffc.build_rows(doc3, rows2, record, "2026-11-18T09:00:00-06:00")
+        self.assertEqual(rows3[0][13], "fork-sync")
+        self.assertEqual(rows3[0][12], "2026-11-17T08:00:00-06:00")

@@ -48,7 +48,12 @@ Attribution ("last updated by", column N) uses a closed vocabulary --
 a bot GHG_ACTOR (``fork-sync`` for mirror syncs, from its JSON run
 record; ``fork-fleet-census`` for first-observation rows) or
 ``unknown (external change)``. Develop movements are not bot-made;
-no person is ever inferred from commit authorship.
+no person is ever inferred from commit authorship. An axis that
+fails to measure keeps its last measured head as the baseline in
+the derived sheet row (counts blank, status ``unknown``) and the
+row's verification stamp does not advance, so a sync applied
+during a failed observation is still attributable when measurement
+recovers.
 
 Exit codes: 0 = census complete, every repo measured; 1 = census
 complete but at least one repo has an unknown/skip axis or a partial
@@ -141,9 +146,15 @@ def permalink_head(url: str) -> str | None:
 def ghg_runner(args):
     """Default runner: one ghg call. Returns (obj, err, rc)."""
     env = {**os.environ, "GHG_ACTOR": ACTOR}
-    proc = subprocess.run(
-        [GHG, "run", "--", *args], capture_output=True, text=True, env=env
-    )
+    try:
+        proc = subprocess.run(
+            [GHG, "run", "--", *args], capture_output=True, text=True, env=env
+        )
+    except OSError as exc:
+        # A gateway that cannot even launch (missing executable,
+        # permissions) is a fatal gateway failure, not a partial
+        # census: nothing was measured.
+        raise CensusFatal(f"cannot launch ghg ({GHG}): {exc}") from exc
     if proc.returncode == 75:
         raise BudgetDenied(f"ghg budget denial on: {' '.join(args)}")
     if proc.returncode != 0:
@@ -228,7 +239,25 @@ def census_repo(repo: str, runner) -> dict:
                 runner, ("api", f"repos/{upstream}/branches/{mirror}")
             )
             if up_branch is not None:
-                row["upstream_head"] = up_branch["commit"]["sha"]
+                sha = up_branch["commit"]["sha"]
+                # The lookup races the compare: validate the returned
+                # head against the upstream head the compare itself
+                # measured (its permalink prefix). A disagreement
+                # means upstream moved mid-measurement -- the counts
+                # describe a tip we can no longer name, so the mirror
+                # axis goes unknown instead of publishing an
+                # inconsistent row.
+                abbrev = permalink_head(cmp_up.get("permalink_url", ""))
+                if abbrev is None or not sha.startswith(abbrev):
+                    row["mirror_status"] = "unknown"
+                    row["mirror_behind"] = None
+                    row["mirror_unique"] = None
+                    note = "upstream head moved during measurement"
+                    row["error"] = (
+                        f"{row['error']}; {note}" if row["error"] else note
+                    )
+                else:
+                    row["upstream_head"] = sha
             else:
                 row["partial"] = True
                 row["error"] = f"upstream-head: {err_b}"
@@ -416,9 +445,32 @@ def build_rows(census, prev_rows, sync_record, verified_at):
     def census_sheet_row(row: dict, prev: list | None) -> list:
         last_sync = ""
         actor = "fork-fleet-census"
+        verified = verified_at
+        m_behind, m_unique, m_head = (
+            _cell(row["mirror_behind"]),
+            _cell(row["mirror_unique"]),
+            _short(row["mirror_head"]),
+        )
+        d_behind, d_local, d_head = (
+            _cell(row["develop_behind"]),
+            _cell(row["develop_fork_local"]),
+            _short(row["develop_head"]),
+        )
         if prev is not None:
             last_sync = prev[COL_LAST_SYNC]
             actor = prev[COL_ACTOR] or actor
+            # Placeholder rule: an axis that failed to measure keeps
+            # the last measured head as its baseline (counts blank,
+            # status unknown), and the row's verification stamp only
+            # advances when both axes measured -- a failed observation
+            # must not erase the baseline a later recovery is
+            # attributed against.
+            if row["mirror_status"] == "unknown":
+                m_behind, m_unique, m_head = "", "", prev[6]
+            if row["develop_status"] == "unknown":
+                d_behind, d_local, d_head = "", "", prev[11]
+            if "unknown" in (row["mirror_status"], row["develop_status"]):
+                verified = prev[COL_VERIFIED] or verified_at
             # Attribution runs only on measured heads: on an unknown
             # row the heads are None, nothing is known to have moved,
             # and the previous attribution stands.
@@ -448,17 +500,17 @@ def build_rows(census, prev_rows, sync_record, verified_at):
             row["upstream"] or "",
             row["mirror_branch"] or "",
             row["mirror_status"],
-            _cell(row["mirror_behind"]),
-            _cell(row["mirror_unique"]),
-            _short(row["mirror_head"]),
+            m_behind,
+            m_unique,
+            m_head,
             _short(row["upstream_head"]),
             row["develop_status"],
-            _cell(row["develop_behind"]),
-            _cell(row["develop_fork_local"]),
-            _short(row["develop_head"]),
+            d_behind,
+            d_local,
+            d_head,
             last_sync,
             actor,
-            verified_at,
+            verified,
             notes,
         ]
 
