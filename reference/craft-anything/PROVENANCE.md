@@ -89,3 +89,5 @@ This snapshot (with the protocol skill) is removed via a removal PR owned by the
 ## Issues
 
 Issues about Craft Anything itself — defects, questions, requests — are filed on the fork or upstream (`pratik-saptarshi/craft-anything` / `storytold/craft-anything`), never on AEP. AEP issues are for AEP's own vendoring machinery (manifest, CI step, this provenance record).
+
+<!-- vendor-freshness: {"branch": "develop", "decision_date": "2026-11-19", "parent": "storytold/craft-anything", "parent_branch": "main", "pin": "2e4afc5", "policy": "keep", "repo": "pratik-saptarshi/craft-anything", "review_due": "2026-11-19", "tree": "craft-anything"} -->

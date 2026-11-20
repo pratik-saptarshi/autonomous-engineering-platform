@@ -70,3 +70,5 @@ Re-copy the live files over the kit paths, re-apply the one noted generalization
 regenerate `.github/vendor-neurostrata-ops.sha256` from inside this directory
 (`find . -type f | sort | xargs sha256sum`), update the snapshot date, and commit
 with the change that motivated the refresh.
+
+<!-- vendor-freshness: {"branch": null, "decision_date": null, "parent": null, "parent_branch": null, "pin": null, "policy": "local", "repo": null, "review_due": null, "tree": "neurostrata-ops"} -->

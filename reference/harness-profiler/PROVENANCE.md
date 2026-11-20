@@ -25,3 +25,5 @@ Secret scan: gitleaks v8.24.3 with the default rules — the same engine and ver
 2. `test/capture.test.js:160` — `generic-api-key`: a fake `token=` value (12 characters) in a `tool_response` used to assert the record's `result` is masked.
 
 Neither is a credential; both exist to prove the masker works. No other file in the snapshot is allowlisted, and no credential files exist in the tree. The `test/capture.test.js` file also contains a fake PAT-shaped string in the same masking test; gitleaks v8.24.3's default rules do not flag that line, so the two findings above are the complete set.
+
+<!-- vendor-freshness: {"branch": "main", "decision_date": "2026-11-19", "parent": null, "parent_branch": null, "pin": "847bd8f", "policy": "repin", "repo": "afurmanov/harness-profiler", "review_due": "2026-12-19", "tree": "harness-profiler"} -->

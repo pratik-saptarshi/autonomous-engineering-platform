@@ -16,3 +16,5 @@ Branch note: the source repo's default branch is `develop`; this snapshot is the
 ## Secret-scan annotation (2026-11-09)
 
 Secret scan (gitleaks v8.24.3, default rules — the same configuration the repo CI security job runs — over the full pinned tree, ~4.03 MB scanned): **no leaks found**. A supplementary credential-pattern grep (GitHub/AWS token shapes, private-key headers, `sk-` keys, password/key assignments) also found no hits. No credential files exist in the tree; the only env-shaped file is the source's `.env.example` template with empty placeholder values. Nothing in this snapshot is allowlisted in `.gitleaks.toml`; no allowlist change was needed.
+
+<!-- vendor-freshness: {"branch": "develop", "decision_date": "2026-11-19", "parent": "google-research/harness2", "parent_branch": "main", "pin": "e5cda48", "policy": "keep", "repo": "pratik-saptarshi/harness2", "review_due": "2026-12-19", "tree": "harness2"} -->

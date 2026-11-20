@@ -17,3 +17,5 @@ Branch note: the fork's default branch is `develop`, while upstream's default is
 ## Secret-scan annotation (2026-10-26)
 
 Clean. A credential-pattern grep over the pinned tree matched nothing, and a gitleaks scan of the tree (~323 KB) reported no leaks. The skill's prose discusses credentials, tokens, and attack classes extensively — that is its subject matter — but it contains no credential-shaped values, fixtures included. No `.gitleaks.toml` allowlist entries were needed for this tree.
+
+<!-- vendor-freshness: {"branch": "develop", "decision_date": "2026-11-19", "parent": "cloudflare/security-audit-skill", "parent_branch": "main", "pin": "c1c8a8c", "policy": "repin", "repo": "pratik-saptarshi/security-audit-skill", "review_due": "2026-12-19", "tree": "security-audit-skill"} -->

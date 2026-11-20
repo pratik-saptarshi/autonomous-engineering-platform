@@ -17,3 +17,5 @@ Branch note: the fork's default branch is `develop`, while upstream's default is
 ## Secret-scan annotation (2026-11-04)
 
 Clean. A credential-pattern grep over the pinned tree matched nothing. The tree is Markdown prose, plugin JSON manifests, issue templates, and one stdlib-only Python validator; it contains no credential-shaped values. No `.gitleaks.toml` allowlist entries were needed for this tree.
+
+<!-- vendor-freshness: {"branch": "develop", "decision_date": "2026-11-19", "parent": "blader/humanizer", "parent_branch": "main", "pin": "0ef9fe5", "policy": "repin", "repo": "pratik-saptarshi/humanizer", "review_due": "2026-12-19", "tree": "humanizer"} -->

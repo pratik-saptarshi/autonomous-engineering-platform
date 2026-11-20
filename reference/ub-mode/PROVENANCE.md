@@ -17,3 +17,5 @@ Branch note: the fork's default branch is `develop`, while upstream's default is
 ## Secret-scan annotation (2026-10-27)
 
 Clean. A credential-pattern grep over the pinned tree matched nothing, and a gitleaks scan (v8.24.3, this repo's CI version and config) of the tree (~6.2 KB) reported no leaks. The tree is two Markdown files of engineering-practice prose; it contains no credential-shaped values. No `.gitleaks.toml` allowlist entries were needed for this tree.
+
+<!-- vendor-freshness: {"branch": "develop", "decision_date": "2026-11-19", "parent": "unclebob/ub-mode", "parent_branch": "master", "pin": "57a8bdd", "policy": "repin", "repo": "pratik-saptarshi/ub-mode", "review_due": "2026-12-19", "tree": "ub-mode"} -->

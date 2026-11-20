@@ -48,6 +48,8 @@ jobs:
         with:
           go-version: '1.27.2'
       - run: python3 -m unittest discover -s scripts/tests -v
+      - name: Vendor freshness blocks (13 provenance files, no live API)
+        run: python3 scripts/vendor_graph.py --root . --no-live --strict
       - run: bash scripts/lane-coord.sh --self-test
       - run: bash scripts/boot-gate.sh --self-test --offline
       - run: bash scripts/tests/test_watchdog.sh

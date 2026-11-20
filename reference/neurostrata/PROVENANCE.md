@@ -77,3 +77,5 @@ flags three paths in this tree — all three allowlisted:
 The committed LanceDB store under `.neurostrata/` remains part of the
 snapshot and was included in the scan: no credential patterns. No other
 files in the vendored tree match the credential patterns.
+
+<!-- vendor-freshness: {"branch": "develop", "decision_date": "2026-11-19", "parent": "Cognilogical/NeuroStrata", "parent_branch": "main", "pin": "0754125", "policy": "keep", "repo": "pratik-saptarshi/NeuroStrata", "review_due": "2027-02-19", "tree": "neurostrata"} -->

@@ -19,3 +19,5 @@ Maturity note: upstream's initial release was 2026-10-28, the same day as this s
 ## Secret-scan annotation (2026-10-28)
 
 Clean. A gitleaks scan (v8.24.3, this repo's CI version and config) of the pinned tree and of the full clone history reported no leaks, and a credential-pattern grep over the tree matched nothing. The library's prose discusses credentials, tokens, and tool-poisoning extensively — that is its subject matter — but it contains no credential-shaped values. No `.gitleaks.toml` allowlist entries were needed for this tree.
+
+<!-- vendor-freshness: {"branch": "develop", "decision_date": "2026-11-19", "parent": "jmanico/grim-prompter", "parent_branch": "main", "pin": "076ec0d", "policy": "repin", "repo": "pratik-saptarshi/grim-prompter", "review_due": "2026-12-19", "tree": "grim-prompter"} -->

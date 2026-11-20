@@ -29,3 +29,5 @@ documentation example key `AKIAIOSFODNN7EXAMPLE`. Each appears as both the `inpu
 and the `mustNotSee` value of its test case (self-consistent fixture), and the file
 carries a `gitleaks:allow -- synthetic redaction fixture` annotation. No other files
 in the vendored tree match the credential patterns.
+
+<!-- vendor-freshness: {"branch": "develop", "decision_date": "2026-11-19", "parent": "mitkox/esf", "parent_branch": "master", "pin": "388583d", "policy": "sync-then-repin", "repo": "pratik-saptarshi/esf", "review_due": "2026-12-19", "tree": "esf"} -->

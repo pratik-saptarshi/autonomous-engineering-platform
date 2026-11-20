@@ -12,3 +12,5 @@
 ## Updating this snapshot
 
 This tree changes only by re-vendoring: replace it wholesale with a new pinned upstream snapshot and regenerate `.github/vendor-elephant-goldfish-model.sha256` in the same change. Code or dependency edits made in place are closed, not merged: a merged edit would leave the tree matching no upstream commit and falsify the provenance pinned above.
+
+<!-- vendor-freshness: {"branch": "develop", "decision_date": "2026-11-19", "parent": "google/elephant-goldfish-model", "parent_branch": "main", "pin": "e9e1f06", "policy": "repin", "repo": "pratik-saptarshi/elephant-goldfish-model", "review_due": "2026-12-19", "tree": "elephant-goldfish-model"} -->

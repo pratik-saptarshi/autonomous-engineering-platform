@@ -13,3 +13,5 @@
 This tree changes only by re-vendoring: replace it wholesale with a new pinned snapshot and regenerate `.github/vendor-homebrew-install.sha256` in the same change. Code edits made in place are closed, not merged: a merged edit would leave the tree matching no source commit and falsify the provenance pinned above.
 
 Branch note: the fork (`pratik-saptarshi/install`) currently carries a single branch, `main`, which is a pristine upstream mirror — at this pin it is identical to upstream `main` at `7986efa`. Upstream updates are pulled into the fork's `main` (`gh repo sync --branch main`); if the fork ever carries its own changes, they land fork-first (a `develop` branch on the fork, per the pattern used for the NeuroStrata and ESF forks) and a re-vendor pins that state instead, with the delta recorded here.
+
+<!-- vendor-freshness: {"branch": "main", "decision_date": "2026-11-19", "parent": "Homebrew/install", "parent_branch": "main", "pin": "7986efa", "policy": "sync-then-repin", "repo": "pratik-saptarshi/install", "review_due": "2026-12-19", "tree": "homebrew-install"} -->
