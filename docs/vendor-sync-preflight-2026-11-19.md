@@ -91,6 +91,14 @@ The pre-sync SHAs above are also held by the mirror-clone tags and inside the bu
 
 **Classify-and-skip log:** the only no-op is `humanizer` (recorded above). No mirror is behind upstream except `install`; docs-mcp-server and esf need no `gh repo sync` because their mirrors are already identical to upstream. This log is the evidence that no no-op sync was performed.
 
+## Mutation results
+
+| Task | Fork | Action | New head | Verification |
+|---|---|---|---|---|
+| 3 | install | `gh repo sync --branch main --source Homebrew/install` | `3ef3676f8028811d38eae05d3b3b4f97d72a0f61` | fork `main` == upstream `main` (0 behind, 0 ahead) |
+| 4 | docs-mcp-server | pending | — | — |
+| 5 | esf | pending | — | — |
+
 ## Sign-off
 
 The owner decision recorded in the plan is "sync the forks first." Task 2 re-runs `verify-target` immediately before each mutation; any mismatch with the classification above stops that task rather than acting on stale data.
