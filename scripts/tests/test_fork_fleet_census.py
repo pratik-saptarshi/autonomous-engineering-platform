@@ -997,6 +997,69 @@ class CodexRegressionTests(unittest.TestCase):
         self.assertEqual(rows1[0][12], "2026-11-18T09:59:00-06:00")
         self.assertEqual(rows1[0][13], "fork-fleet-census")
 
+    def test_duplicate_prev_row_keeps_first_occurrence_baseline(self):
+        # Duplicate repository keys in the previous sheet rows: only
+        # the first occurrence is emitted (at its physical index);
+        # later occurrences become placeholders. The comparison
+        # baseline must be the FIRST occurrence's row. If the scan
+        # keeps the last occurrence's values as the baseline, a
+        # stale first row whose duplicate happens to match the
+        # measurement produces an empty `changed` list -- and since
+        # the diff writer only writes changed rows, the stale value
+        # (E=999 here, against a measured 5) stays in the sheet
+        # indefinitely.
+        first, _ = ffc.build_rows(
+            census_doc([census_row(mirror_behind=999)]), [], {}, "T1"
+        )
+        dupe, _ = ffc.build_rows(
+            census_doc([census_row(mirror_behind=5)]), [], {}, "T1"
+        )
+        prev = [first[0], dupe[0]]
+        rows, changed = ffc.build_rows(
+            census_doc([census_row(mirror_behind=5)]), prev, {}, "T2"
+        )
+        self.assertEqual(changed, [0])  # first row corrected 999 -> 5
+        self.assertEqual(rows[0][4], 5)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[1], dupe[0])  # duplicate slot: placeholder
+        self.assertNotIn(1, changed)
+
+    def test_deferred_sync_metadata_reconciles_on_unchanged_observation(self):
+        # A sync lands inside a newly discovered repo's first
+        # observation window (10:00-10:01) at 10:00:30, and the
+        # compares already measure the synced head: the in-window
+        # record stays unconsumed on first observation (M blank --
+        # the deferral itself is correct). On the next census the
+        # head is unchanged, so the movement path never examines the
+        # record; without reconciliation, column O advances past it
+        # and the last-applied sync timestamp is lost permanently
+        # despite successful measurements. A later unchanged
+        # observation must reconcile column M from the deferred
+        # record.
+        record = {"repos": {"pratik-saptarshi/x": {"last_applied_at": "2026-11-18T10:00:30-06:00"}}}
+        first = census_row(
+            mirror_head=SHA_D, mirror_behind=2,
+            observed_from="2026-11-18T10:00:00-06:00",
+            measured_at="2026-11-18T10:01:00-06:00",
+        )
+        rows1, _ = ffc.build_rows(
+            census_doc([first], generated_at="2026-11-18T10:05:00-06:00"),
+            [], record, "2026-11-18T10:05:00-06:00",
+        )
+        self.assertEqual(rows1[0][6], SHA_D[:12])  # synced head measured
+        self.assertEqual(rows1[0][12], "")  # in-window sync deferred
+        again = census_row(
+            mirror_head=SHA_D, mirror_behind=2,
+            observed_from="2026-11-19T10:00:00-06:00",
+            measured_at="2026-11-19T10:01:00-06:00",
+        )
+        rows2, changed = ffc.build_rows(
+            census_doc([again], generated_at="2026-11-19T10:05:00-06:00"),
+            rows1, record, "2026-11-19T10:05:00-06:00",
+        )
+        self.assertEqual(rows2[0][12], "2026-11-18T10:00:30-06:00")  # M reconciled
+        self.assertEqual(changed, [0])
+
 
 class BlankRowPositionTests(unittest.TestCase):
     """Round-12 regressions: blank prev rows keep physical positions.

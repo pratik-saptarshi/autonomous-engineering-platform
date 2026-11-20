@@ -95,7 +95,17 @@ predating a newly discovered repo's first observation is copied
 into column M (it is already reflected in the measured head),
 while a record landing inside that first window is ambiguous —
 the compares may have snapshotted the old head before it — and
-stays unconsumed until a later census observes its movement. When a mirror sync and a develop movement
+stays unconsumed until a later census observes its movement.
+One exception: when the first observation's compares already
+measured the synced head, the movement never appears as a
+movement at all, so a later unchanged observation reconciles
+the deferred record into column M (column N's attribution is
+unchanged — no movement was observed). Reconciliation requires
+the record to fall inside the window of the observation that
+established the baseline head; a record landing between
+observations is never reconciled, because against an
+already-established baseline an unchanged head means the sync
+explains nothing the sheet tracks. When a mirror sync and a develop movement
 are observed in the same census, column M still records the sync,
 but column N reads `unknown (external change)`: fork-sync never
 touches `develop`, so the bot cannot be credited with the last

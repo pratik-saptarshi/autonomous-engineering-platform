@@ -69,7 +69,11 @@ copied into column M (it is already reflected in the measured
 head); a record landing inside the observation window is
 ambiguous -- the compares may have snapshotted the old head
 before it -- so it stays unconsumed until a later census observes
-its movement.
+its movement, or, when the compares already measured the synced
+head and the head never moves again, reconciles it into column M
+on an unchanged observation (the record must fall inside the
+window of the observation that established the baseline head;
+records landing between observations are never reconciled).
 
 Exit codes: 0 = census complete, every repo measured; 1 = census
 complete but at least one repo has an unknown/skip axis or a partial
@@ -87,7 +91,7 @@ import os
 import re
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -458,6 +462,29 @@ def _after(later: str, earlier: str) -> bool:
         return later > earlier
 
 
+# Ceiling on the length of a single repo's observation window, used
+# only to recognise a sync record that landed inside the observation
+# that established the current baseline head (see the deferred
+# reconciliation in build_rows). Real windows are seconds to minutes
+# (the whole 147-repo census completes in ~25 minutes); an hour is a
+# generous ceiling, and the gap between nightly observations is ~24
+# hours, so no between-observations record can fall inside it.
+DEFERRED_RECONCILE_LIMIT = timedelta(hours=1)
+
+
+def _within_deferred_window(applied: str, window_start: str) -> bool:
+    """True if `applied` falls within DEFERRED_RECONCILE_LIMIT after
+    `window_start`. Unparseable stamps never reconcile: the deferred
+    records this recognises always carry real ISO timestamps."""
+    try:
+        return (
+            datetime.fromisoformat(applied)
+            <= datetime.fromisoformat(window_start) + DEFERRED_RECONCILE_LIMIT
+        )
+    except ValueError:
+        return False
+
+
 def build_rows(census, prev_rows, sync_record, verified_at):
     """Derive sheet rows (A:P) from a census + previous sheet state.
 
@@ -484,11 +511,17 @@ def build_rows(census, prev_rows, sync_record, verified_at):
             if repo not in prev_by_repo:
                 prev_order.append(repo)
                 prev_index[repo] = position
+                # The baseline is the FIRST occurrence's row: it is
+                # the row emitted at prev_index[repo], so comparing
+                # (and diff-writing) against a later duplicate's
+                # values would leave a stale first row uncorrected
+                # whenever the duplicate happens to match the new
+                # measurement (empty `changed`, stale value kept).
+                prev_by_repo[repo] = normalized
             else:
                 # Duplicate occurrence: only the first occurrence is
                 # emitted; this physical position holds a placeholder.
                 placeholders[position] = normalized
-            prev_by_repo[repo] = normalized
         else:
             # A blank row produces no emit, but its physical position
             # must be preserved: the sheet writer treats each index
@@ -638,6 +671,50 @@ def build_rows(census, prev_rows, sync_record, verified_at):
             elif develop_moved:
                 # A develop-only move is never bot-made.
                 actor = "unknown (external change)"
+            if not mirror_moved and mirror_measured:
+                # Reconcile deferred sync metadata: a record left
+                # unconsumed by the observation that established the
+                # current baseline head (an in-window sync on first
+                # observation, whose head the compares already
+                # measured) is never re-examined by the movement
+                # path once the head stops moving, and column O
+                # would advance past it, losing the last-applied
+                # sync timestamp permanently. Such a record is
+                # reconciled into column M on a later unchanged
+                # measured observation. Only M moves: no head
+                # movement was observed, so column N's attribution
+                # stands.
+                #
+                # The record must fall inside the establishing
+                # observation's window: after its start watermark
+                # (the previous row's column O) and within
+                # DEFERRED_RECONCILE_LIMIT of it -- the window's end
+                # is not persisted, and an observation window is
+                # minutes at most, so the limit is a generous
+                # ceiling, far below the inter-observation gap. A
+                # record landing BETWEEN observations is not
+                # reconciled: against an already-established
+                # baseline, an unchanged head means that sync
+                # explains nothing the sheet tracks (prior rounds
+                # pin this: a stale record is never consumed, and a
+                # develop-only movement leaves M untouched). The
+                # consumption watermark (M) still applies, and a
+                # record inside THIS observation's window stays
+                # deferred, exactly as on first observation.
+                applied = record_repos.get(row["repo"], {}).get(
+                    "last_applied_at"
+                )
+                prev_sync = str(prev[COL_LAST_SYNC]).strip()
+                if (
+                    applied
+                    and _after(applied, str(prev[COL_VERIFIED]).strip())
+                    and (not prev_sync or _after(applied, prev_sync))
+                    and not _after(applied, verified)
+                    and _within_deferred_window(
+                        applied, str(prev[COL_VERIFIED]).strip()
+                    )
+                ):
+                    last_sync = applied
         else:
             applied = record_repos.get(row["repo"], {}).get("last_applied_at")
             # Only a record that predates this first observation
