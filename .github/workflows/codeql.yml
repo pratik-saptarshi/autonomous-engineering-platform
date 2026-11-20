@@ -10,11 +10,13 @@
 # in force at switch time (state=configured, query_suite=default,
 # threat_model=remote, schedule=weekly, runner=standard): the same analyzed
 # languages, producing the same "Analyze (<language>)" check names, with
-# one exception — Ruby is dropped from the matrix because the repository's
-# only Ruby source is reference/homebrew-install/tests/test_install.rb,
-# inside the ignored tree, so an Analyze (ruby) job would have no source
-# and fail database finalization on every run. Landed coverage is therefore
-# 7 languages, not 8. The only other behavioural delta is the config file's
+# two exceptions — Ruby and Rust are dropped from the matrix because
+# their only sources are inside the ignored tree: the repository's only
+# Ruby source is reference/homebrew-install/tests/test_install.rb, and
+# all Rust sources and Cargo manifests are likewise inside reference/**,
+# so an Analyze (ruby) or Analyze (rust) job would have no source and
+# fail database finalization on every run. Landed coverage is therefore
+# 6 languages, not 8. The only other behavioural delta is the config file's
 # paths-ignore of
 # reference/** (pinned vendored snapshots; fixes land fork-first, never in
 # the tree).
@@ -55,8 +57,6 @@ jobs:
           - language: javascript-typescript
             build-mode: none
           - language: python
-            build-mode: none
-          - language: rust
             build-mode: none
     steps:
       - name: Checkout repository
