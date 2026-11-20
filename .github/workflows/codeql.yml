@@ -1,0 +1,83 @@
+# CodeQL advanced setup.
+#
+# This workflow replaces CodeQL default setup, which cannot express path
+# filters (the default-setup update API rejects "paths-ignore" as not a
+# permitted key — probed 2026-11-19). It landed together with default setup
+# being turned off in Settings > Code scanning (leaving both on makes
+# analyses fail as duplicates); from then on the code-scanning results the
+# "default-set" ruleset requires on PR heads come from this workflow instead
+# of default setup. The matrix below mirrors the default-setup configuration
+# in force at switch time (state=configured, query_suite=default,
+# threat_model=remote, schedule=weekly, runner=standard): the same 8
+# analyzed languages, producing the same "Analyze (<language>)" check
+# names. The only behavioural delta is the config file's paths-ignore of
+# reference/** (pinned vendored snapshots; fixes land fork-first, never in
+# the tree).
+
+name: "CodeQL"
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["develop", "main"]
+  pull_request:
+    branches: ["develop", "main"]
+  schedule:
+    # Weekly, mirroring default setup's weekly schedule.
+    - cron: "0 6 * * 1"
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      packages: read
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: actions
+            build-mode: none
+          - language: c-cpp
+            build-mode: autobuild
+          - language: go
+            build-mode: autobuild
+          - language: java-kotlin
+            build-mode: autobuild
+          - language: javascript-typescript
+            build-mode: none
+          - language: python
+            build-mode: none
+          - language: ruby
+            build-mode: none
+          - language: rust
+            build-mode: autobuild
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          config-file: ./.github/codeql/codeql-config.yml
+
+      - name: Run manual build steps
+        if: matrix.build-mode == 'manual'
+        shell: bash
+        run: |
+          echo 'If you are using a "manual" build mode for one or more of the' \
+            'languages you are analyzing, replace this with the commands to' \
+            'build your code, for example:'
+          echo '  make bootstrap'
+          echo '  make release'
+          exit 1
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4
+        with:
+          category: "/language:${{ matrix.language }}"
