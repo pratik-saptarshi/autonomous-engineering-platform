@@ -9,7 +9,7 @@ Vendored snapshot: [PROVENANCE.md](../reference/openchamber/PROVENANCE.md) — u
 ## Mapping to the AEP loop
 
 | OpenChamber | AEP (this environment) |
-|---|---|
+| --- | --- |
 | managed/external `opencode serve` lifecycle | the OpenCode background service on 127.0.0.1:49374, driven through its API |
 | worktree-per-session isolation | one git worktree per task/branch in the feature-to-PR workflow |
 | permission safety net — classifier-mediated approvals that fail closed | approval cards and the ghg pre-flight gate for GitHub effects |
