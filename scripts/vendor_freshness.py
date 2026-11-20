@@ -20,6 +20,10 @@ MARKER = "<!-- vendor-freshness-report -->"
 
 def _problem_finding(problem):
     why = problem.get("why", "")
+    # Compare failures are reported once, as compare-error, from the entry
+    # error fields in build() below — never reclassified here.
+    if why.startswith("compare failed"):
+        return None
     kind = "missing-block" if "no vendor-freshness block" in why or "no PROVENANCE" in why else "malformed-block"
     return {"kind": kind, "tree": problem.get("tree"), "why": why}
 
@@ -28,7 +32,7 @@ def build(root=".", today=None):
     """Return {'entries': [...], 'findings': [...]} for one live pass."""
     today = today or date.today().isoformat()
     raw = vendor_graph.build(root, findings=True, live=True)
-    findings = [_problem_finding(p) for p in raw["findings"]]
+    findings = [f for f in (_problem_finding(p) for p in raw["findings"]) if f is not None]
     for e in raw["entries"]:
         if e.get("policy") == "local" or not e.get("pin"):
             continue
