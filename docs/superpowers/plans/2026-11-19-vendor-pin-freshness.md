@@ -2,246 +2,199 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Bring the four AEP-owned forks that trail their true upstreams up to date, re-vendor the affected pins (plus the pins that trail a current fork), make provenance able to answer "is this pin current?", and add a non-gating weekly freshness check so the answer stays true.
+**Goal:** Bring the AEP-owned forks that trail their true upstreams up to date, re-vendor the affected pins, and make drift *detectable within seven days by an owned issue* — not merely "measured once." This plan does not promise permanent currency: upstream can move after any sync, and the weekly detector reports that drift rather than fixing it.
 
-**Architecture:** Two layers. (1) A one-time migration: sync four forks fork-first (pristine mirror branch ← upstream, then merge forward into the fork's `develop`/`main` preserving fork-only commits), then re-vendor each affected `reference/<tree>/` snapshot wholesale at the new fork head, regenerate its manifest, re-apply dispositions, and rewrite provenance. (2) A durable guard: a machine-readable source-of-truth file plus a weekly scheduled workflow that compares every pin to both its fork head and its true upstream head and opens/updates an issue when behind. Vendored trees are never edited in place.
+**Architecture:** Single source of truth. Each `reference/<tree>/PROVENANCE.md` gains a one-line machine-readable `vendor-freshness` block holding its pin/repo/branch/upstream/policy. A stdlib Python script enumerates those blocks, derives the graph *at execution time* (no frozen numbers), calls the GitHub compare API, and emits a deterministic report. The one-time migration side: back up each fork, perform only the syncs that are real at execution time, merge upstream forward into the working branch preserving fork-only content, re-vendor each affected tree wholesale with a quarantine/disposition gate, and rewrite its provenance (which updates the freshness block in the same PR). A weekly non-gating workflow opens or updates one owned tracking issue.
 
-**Tech Stack:** GitHub CLI (`gh repo sync`, `gh api`), git, bash, Python 3 (stdlib), Node 18+ only where existing gates require it, GitHub Actions.
+**Tech Stack:** GitHub CLI (`gh repo sync`, `gh api`), git, bash, Python 3 (stdlib), GitHub Actions.
 
-**Spec:** the audit in the 2026-11-19 session (13 vendor manifests on `origin/develop@d34bf26`) plus each `reference/<tree>/PROVENANCE.md`. Ground truth was re-verified with `gh api` this session; numbers below are from that check and must be re-read at execution time.
+**Spec:** the 2026-11-19 audit (13 vendor manifests on `origin/develop@d34bf26`) plus `reference/<tree>/PROVENANCE.md`. All numbers in this plan are *the state at drafting* and must be re-derived at execution time by Task 1 — the audit was already stale within one session (humanizer moved from 8 behind to 0 behind; craft-anything's fork moved from pristine to 3 behind upstream).
 
 ## Global Constraints
 
-- **Owner decision (2026-11-19): sync the forks first.** For `esf`, `humanizer`, `install`, `docs-mcp-server`, pull upstream into the fork, then pin the re-vendor at the synced fork head. Do not pin the forks as they stand today.
-- **Fork-first discipline:** upstream changes land on the pristine mirror branch first (`master`/`main`), then merge forward into the fork's working branch (`develop`/`main`). Fork-only commits must remain ancestors of the new working-branch head. No force-push to a working branch.
-- **Byte-fidelity:** a vendored tree matches exactly one pinned commit, minus documented exclusions. Regenerate the manifest from the final tree in the same change. Never edit a vendored file in place — such edits are closed, not merged.
-- **Dispositions preserved:** per-tree exclusions (e.g. `neurostrata` symlink, `elephant-goldfish-model` subset), quarantines (`craft-anything`), and gitleaks path allowlists survive re-vendoring. A new snapshot's secret scan must be clean or allowlisted by path with rationale.
-- **No unrelated scope:** no in-place dependency edits, no executing/installing vendored code, no license renegotiation, no Dependabot scoping changes, no re-pinning `craft-anything` or `neurostrata`.
-- **Signing:** all PR titles, bodies and issue/comment text signed `— Terminator3000-DarkCrouton` per `AGENTS.md`.
+- **Owner decision (2026-11-19): sync the forks first.** Where a fork genuinely trails its upstream, pull upstream in, then pin the re-vendor at the synced fork head. Do not pin a trailing fork as-is. A fork already at upstream head is re-pinned as-is (no no-op sync theater).
+- **Single source of truth:** `PROVENANCE.md` per tree. No parallel JSON/SSOT file. The freshness block lives *inside* the provenance file that every re-vendor already rewrites, so it cannot be born stale.
+- **Execution-time derivation:** the script computes pin/fork/upstream/divergence from GitHub, not from numbers copied into this plan. Frozen numbers are illustrative only.
+- **Fork-first, non-destructive:** mirror branch (`master`/`main`) ← upstream via `gh repo sync` (identical names only); then `--no-ff` merge forward into the working branch (`develop`/`main`). No force-push to any working branch. Before any external mutation: preserve objects (mirror clone or bundle + timestamped backup tag) and re-run the compare as a last-second guard.
+- **Substantive preservation:** a merge passes only if every pre-existing fork-only remediation is present *by content at the higher version* (e.g. esf: filelock 4.2.9, certifi 2026.10.23, vite 8.3.5, undici 8.12.3; docs-mcp-server: follow-redirects 1.16.2, minimatch `^11.0.5`, lockfile 3.4.1). Ancestry alone is not evidence.
+- **Disposition on re-vendor:** enumerate instruction surfaces (`AGENTS.md`, `CLAUDE.md`, `.claude/`, `.githooks/`, `.github/workflows/`, plugin manifests, deps with lifecycle scripts), quarantine per `craft-anything`'s definition, document each, and exclude consistently from the manifest. A new secret-shaped hit must be proven synthetic (input-and-assertion fixture, annotated) before a path allowlist — never allowlist by convenience.
+- **Byte-fidelity:** a vendored tree matches exactly one pinned commit minus documented exclusions; regenerate the manifest from the final tree in the same change. Never edit a vendored file in place.
+- **Durability claim bounded:** detection + an owned issue with a 7-day SLA; the workflow is non-gating and never auto-syncs. Owner of the tracking issue: the AEP maintainer (repo owner), recorded in the issue body.
+- **Signing:** all PR titles/bodies and issue/comment text signed `— Terminator3000-DarkCrouton` per `AGENTS.md`.
 
 ## Review Focus
 
-1. **Losing fork-only commits during sync** — a merge that drops the 11 `esf` / 10 `docs-mcp-server` / 9 `grim-prompter`-style fork commits silently reverts AEP-maintained remediation. Task 1 records pre-sync SHAs and gates on ancestry before and after; tasks 2–5 assert the same.
-2. **Syncing the wrong branch** — syncing `develop` directly from a differently-named upstream branch can corrupt the mirror pattern. Task 1 encodes the per-fork mirror/working branch pair verified by API.
-3. **A re-vendor that is not byte-identical to its pin** — a stale manifest makes `vendor-integrity` lie. Every re-vendor task regenerates the manifest and verifies tree↔commit fidelity, not just manifest↔tree.
-4. **A freshness check that always reports green** — if it parses prose or silently skips missing metadata, it never opens an issue. Task 7 mutation-tests the checker (stale pin, stale parent, missing source) and count-asserts the suite.
-5. **New upstream commits landing during the migration** — a fork synced at T0 can be behind again at T1. Task 8 records a freshness baseline at merge time and the weekly check owns subsequent drift; the plan does not promise perpetual currency.
+1. **Content loss during merge** — a conflict resolution can keep a fork-only commit as an ancestor while dropping its patch. Tasks 3–4 diff remediation versions before/after; Acceptance Criteria gate on content, not ancestry.
+2. **Irreversible external mutation** — a mis-aimed sync destroys public fork commits. Task 1 preserves objects and emits an executable rollback runbook before any mutation; Task 2 pre-flights every target.
+3. **New upstream content as instruction/secret surface** — incoming AGENTS.md/hooks/workflows could govern AEP if left live. Tasks 5–8 include a disposition gate and synthetic-fixture verification before any allowlist.
+4. **A detector that silently skips** — missing metadata, a changed repo/branch, or a removed tree must produce a finding. Task 10 enumerates expected trees from `reference/*/` and mutation-tests each failure path in CI (`--self-test`).
+5. **Stale-at-birth data** — humanizer and craft-anything moved during the audit. Task 1 re-derives everything live; no task trusts a froze-table value.
 
 ---
 
-## Phase A — Ground truth and source-of-truth (before any mutation)
+## Phase 0 — Execution-time ground truth and safety harness (no external writes)
 
-### Task 1: Record the pin/fork/upstream graph as machine-readable SSOT
-
-**Files:**
-- Create: `.github/vendor-sources.json`
-- Modify: `.github/workflows/ci.yml` (validate SSOT against provenance)
-- Test: `scripts/tests/test_vendor_sources.py`
-
-**Verified graph (re-read at execution time):**
-
-| Tree | Pinned commit | Referenced repo | Ref branch | True upstream | Upstream branch | Ref-branch vs upstream |
-|---|---|---|---|---|---|---|
-| craft-anything | `2e4afc535ceb…` | `pratik-saptarshi/craft-anything` | develop | `storytold/craft-anything` | main | fork 1354 ahead of pin; pin 1391 behind upstream main |
-| docs-mcp-server | `506f27b` | `pratik-saptarshi/docs-mcp-server` | develop | `arabold/docs-mcp-server` | main | 4 behind / 10 ahead |
-| elephant-goldfish-model | `e9e1f06aa4e2…` | `pratik-saptarshi/elephant-goldfish-model` | develop | `google/elephant-goldfish-model` | main | 0/0, pin 45 behind fork head |
-| esf | `388583d` | `pratik-saptarshi/esf` | develop | `mitkox/esf` | master | 57 behind / 11 ahead |
-| grim-prompter | `076ec0d32c9e…` | `pratik-saptarshi/grim-prompter` | develop | `jmanico/grim-prompter` | main | 0/0, pin 9 behind fork head |
-| harness-profiler | `847bd8f6ab2a…` | `afurmanov/harness-profiler` | main | — (third party) | — | pin = head |
-| harness2 | `e5cda48c48d1…` | `pratik-saptarshi/harness2` | develop | `google-research/harness2` | main | 0 behind / 2 ahead, pin = fork head |
-| homebrew-install | `7986efa` | `pratik-saptarshi/install` | main | `Homebrew/install` | main | 6 behind / 0 ahead |
-| humanizer | `0ef9fe5bc357…` | `pratik-saptarshi/humanizer` | develop | `blader/humanizer` | main | 8 behind / 0 ahead |
-| neurostrata | `0754125bd0c7…` | `pratik-saptarshi/NeuroStrata` | develop | `Cognilogical/NeuroStrata` | main | 170 behind / 604 ahead (intentional) |
-| security-audit-skill | `c1c8a8c14710…` | `pratik-saptarshi/security-audit-skill` | develop | `cloudflare/security-audit-skill` | main | 0/0, pin = fork head |
-| ub-mode | `57a8bdd28e45…` | `pratik-saptarshi/ub-mode` | develop | `unclebob/ub-mode` | master | 0/0, pin 1 behind fork head |
-| neurostrata-ops | — | local `~/workspace/neurostrata/` | — | — | — | no commit pin (explicitly excluded from freshness checks) |
-
-Each entry: `tree`, `pin`, `repo`, `branch`, `parent` (nullable), `parent_branch`, `policy` (`sync-then-repin` | `repin` | `keep`), `rationale`.
-
-- [ ] **Step 1:** Write a failing test that loads `.github/vendor-sources.json` and asserts: 13 entries; every entry has the required keys; the 4 sync-first trees have `policy: sync-then-repin`; `craft-anything` and `neurostrata` have `policy: keep` with a non-empty rationale; `neurostrata-ops` is absent.
-- [ ] **Step 2:** Run it; confirm it fails on the missing file.
-- [ ] **Step 3:** Create `.github/vendor-sources.json` from the table above.
-- [ ] **Step 4:** Run the test; confirm it passes.
-- [ ] **Step 5:** Add a CI step validating that every tree with a manifest has an SSOT entry and vice versa (count-asserted), and that `pin` matches the 40-hex/7-hex commit in that tree's `PROVENANCE.md`.
-- [ ] **Step 6:** Commit.
-
-### Task 2: Snapshot pre-sync state and prove fork-only commits are identifiable
+### Task 1: Derive the live graph and record a rollback harness
 
 **Files:**
-- Create: `scripts/vendor-sync.sh` (shared helpers: `snapshot`, `mirror`, `merge-forward`, `verify-ancestry`)
-- Test: `scripts/tests/test_vendor_sync.sh`
+- Create: `scripts/vendor_graph.py` (stdlib; prints JSON of tree→{pin, repo, branch, parent, parent_branch, divergence, policy})
+- Create: `docs/vendor-sync-preflight-2026-11-19.md` (generated report + rollback runbook)
+- Modify: `.github/workflows/ci.yml` (validate freshness blocks)
+- Test: `scripts/tests/test_vendor_graph.py`
 
-- [ ] **Step 1:** Write a failing test that, given a local fixture fork (mirror branch + working branch with a synthetic "fork-only" commit) and a synthetic upstream with new commits, runs the helpers and asserts: the working branch contains the fork-only commit and the upstream commits; the mirror branch equals upstream head; a deliberately dropped fork-only commit fails the ancestry gate.
-- [ ] **Step 2:** Run it; confirm it fails.
-- [ ] **Step 3:** Implement `snapshot` (print `{repo,branch,sha}` for mirror, working, upstream), `merge-forward` (merge mirror into working with `--no-ff`, never force), and `verify-ancestry` (assert every pre-sync working-only commit is an ancestor of the post-sync head).
-- [ ] **Step 4:** Run the test; confirm it passes.
-- [ ] **Step 5:** Run `snapshot` against all 4 real forks and save output to `docs/vendor-sync-snapshot-2026-11-19.md` (the rollback record).
+- [ ] **Step 1:** Write a failing test that, with mocked `gh api` responses, asserts the parser reads the `vendor-freshness` block from every `reference/*/PROVENANCE.md` (13 top-level files) and returns exactly 13 entries, with `neurostrata-ops` as `{"pin":null,"policy":"local"}` and the 3 nested `harness2/third_party/*/PROVENANCE.md` files ignored.
+- [ ] **Step 2:** Run it; confirm failure on the missing module/blocks.
+- [ ] **Step 3:** Implement `vendor_graph.py`: glob `reference/*/PROVENANCE.md`; parse a one-line HTML comment `<!-- vendor-freshness: {…} -->` with `json.loads`; fields `tree, pin, repo, branch, parent, parent_branch, policy, decision_date, review_due`. For each entry with a `pin`, call `gh api repos/<repo>/compare/<pin>...<branch>` (pin vs fork head) and, when `parent` is set, `gh api repos/<parent>/compare/<parent_branch>...<owner>:<branch>` (fork vs upstream). Output deterministic JSON.
+- [ ] **Step 4:** Run the test; confirm it passes. Add a test that a malformed or missing block produces a finding (not a skip).
+- [ ] **Step 5:** Run `vendor_graph.py` **live** and commit its output as `docs/vendor-sync-preflight-2026-11-19.md`. This is the authoritative starting state; if it disagrees with this plan's tables, the live output wins and Task 2 reclassifies accordingly.
+- [ ] **Step 6:** For each fork that will be mutated, preserve objects: `git clone --mirror <fork> /tmp/vendor-backup-<tree>-2026-11-19.git` and `git -C <clone> tag backup/pre-sync-2026-11-19 <working-sha> <mirror-sha>`; record the commands and resulting SHAs in the preflight doc. Write the executable rollback runbook (revert the merge commit on the working branch; separately-authorized restore of a mirror from the bundle) into that doc.
+- [ ] **Step 7:** Add a CI step validating that every `reference/*/PROVENANCE.md` has a parseable freshness block and that its `pin` matches the commit named in the prose. Count-assert 13 entries and assert the presence of the `local` entry — content, not just counts.
+- [ ] **Step 8:** Commit.
+
+### Task 2: Pre-flight each fork and classify actions
+
+**Files:**
+- Create: `scripts/vendor_sync.sh` (helpers: `verify-target`, `merge-forward`, `assert-content`, `rollback-plan`)
+- Test: `scripts/tests/test_vendor_sync.sh` (wired into `script-tests` in `ci.yml`)
+
+- [ ] **Step 1:** Write failing fixture tests (local git repos, no network): mirror FF from upstream; `--no-ff` forward merge preserving a fork-only commit; `assert-content` failing when a remediation version is downgraded; `verify-target` failing when a branch/SHA does not match the preflight.
+- [ ] **Step 2:** Run them; confirm failures.
+- [ ] **Step 3:** Implement the helpers. `verify-target` re-runs the compare API and refuses to act if the live state differs from the preflight. `merge-forward`: clone fork, add upstream remote, fetch mirror + working, `git checkout <working> && git merge --no-ff upstream/<mirror>`, assert every pre-sync fork-only SHA is an ancestor, then `assert-content`, then push. `rollback-plan` prints the runbook commands for the target.
+- [ ] **Step 4:** Make the tests pass. Wire `bash scripts/tests/test_vendor_sync.sh` explicitly into the `script-tests` job in `.github/workflows/ci.yml` (that job enumerates scripts; there is no auto-discovery for `.sh`).
+- [ ] **Step 5:** Run `verify-target` for all four candidate forks and record the action classification in the preflight doc. Expected shape (re-derived live): `install` → real FF of `main` + no working merge (mirror == working); `docs-mcp-server` and `esf` → mirror already == upstream, so **forward merge only**; `humanizer` → fork == upstream and == working, so **no sync**, reclassify to `repin` (pin ~27 behind fork head).
 - [ ] **Step 6:** Commit.
 
 ---
 
-## Phase B — Sync the four forks (owner decision: sync first)
+## Phase A — Fork mutations (only the actions Task 2 proves are real)
 
-For each fork, branch pairs verified this session:
-
-| Fork | Mirror branch | Working branch (default) | Upstream / branch | Fork-only commits to preserve |
-|---|---|---|---|---|
-| `pratik-saptarshi/install` | `main` | `main` | `Homebrew/install/main` | 0 |
-| `pratik-saptarshi/humanizer` | `main` | `develop` | `blader/humanizer/main` | 0 (amendments live on `feat/scope-and-file-mode-amendments` — leave untouched) |
-| `pratik-saptarshi/docs-mcp-server` | `main` | `develop` | `arabold/docs-mcp-server/main` | 10 |
-| `pratik-saptarshi/esf` | `master` | `develop` | `mitkox/esf/master` | 11 |
-
-Each task: (1) verify mirror is pristine and snapshot heads; (2) sync mirror from upstream; (3) merge mirror into working; (4) assert upstream head reachable and every fork-only commit still ancestor; (5) inspect content delta; (6) record new head. A conflict that cannot be resolved without dropping a fork commit **stops the task** and reports back — no silent force push.
+Each task: re-run `verify-target`; back up; perform the classified action; run `assert-content`; record the new head. A missing remediation or an unresolved conflict **stops the task** and reports back — no silent resolution.
 
 ### Task 3: Sync `pratik-saptarshi/install`
 
-- [ ] **Step 1:** Snapshot `main` SHA (fork) and `Homebrew/install/main` SHA.
-- [ ] **Step 2:** `gh repo sync pratik-saptarshi/install --branch main --source Homebrew/install`.
-- [ ] **Step 3:** Assert fork `main` == upstream head; 0 fork-only commits before/after.
-- [ ] **Step 4:** Record new `main` SHA in the snapshot doc.
-- [ ] **Step 5:** Commit the doc update.
+- [ ] **Step 1:** `verify-target` (fork `main` behind `Homebrew/install/main`); confirm 0 fork-only commits.
+- [ ] **Step 2:** `gh repo sync pratik-saptarshi/install --branch main --source Homebrew/install` (mirror == working, so no separate merge).
+- [ ] **Step 3:** Assert fork `main` == upstream head; record new SHA.
 
-### Task 4: Sync `pratik-saptarshi/humanizer`
+### Task 4: Forward-merge upstream into `pratik-saptarshi/docs-mcp-server@develop`
 
-- [ ] **Step 1:** Snapshot fork `main`, fork `develop`, upstream `main`, and the amendments branch SHAs.
-- [ ] **Step 2:** Sync fork `main` from `blader/humanizer/main`.
-- [ ] **Step 3:** Merge `main` into `develop` (`--no-ff`); assert upstream head is an ancestor of `develop`.
-- [ ] **Step 4:** Assert `feat/scope-and-file-mode-amendments` SHA unchanged.
-- [ ] **Step 5:** Record new `develop` SHA. Commit.
+- [ ] **Step 1:** `verify-target`; confirm fork `main` already == `arabold/main`, and list the 10 fork-only commits on `develop`.
+- [ ] **Step 2:** `merge-forward` (merge fork `main` into `develop` with `--no-ff`). No mirror sync needed.
+- [ ] **Step 3:** `assert-content`: follow-redirects 1.16.2, minimatch `^11.0.5`, `patternMatcher.ts` off the removed `makeRe` API, lockfile root 3.4.1 must all still be present at >= their pre-sync versions. Record the resolution log.
+- [ ] **Step 4:** Assert all 10 fork-only SHAs and the upstream head are ancestors. **Stop if any is missing.**
 
-### Task 5: Sync `pratik-saptarshi/docs-mcp-server`
+### Task 5: Forward-merge upstream into `pratik-saptarshi/esf@develop`
 
-- [ ] **Step 1:** Snapshot fork `main`, fork `develop`, upstream `main`; list the 10 fork-only commits on `develop`.
-- [ ] **Step 2:** Sync fork `main` from `arabold/docs-mcp-server/main`.
-- [ ] **Step 3:** Merge `main` into `develop` (`--no-ff`); resolve conflicts by keeping both sides where they touch different files; where the fork's dependency bump and upstream's touch the same manifest, keep the higher version and record the choice.
-- [ ] **Step 4:** Assert all 10 recorded fork-only SHAs are ancestors of new `develop`; assert upstream head is an ancestor. **Stop and report if any is missing.**
-- [ ] **Step 5:** Record new `develop` SHA and conflict resolutions. Commit.
-
-### Task 6: Sync `pratik-saptarshi/esf`
-
-- [ ] **Step 1:** Snapshot fork `master`, fork `develop`, upstream `master`; list the 11 fork-only commits on `develop`.
-- [ ] **Step 2:** Sync fork `master` from `mitkox/esf/master`.
-- [ ] **Step 3:** Merge `master` into `develop` (`--no-ff`). 57 upstream commits carry real conflict risk: review every conflict, keep fork security remediations (filelock/litellm/vite/certifi) at their higher version, and record each resolution.
-- [ ] **Step 4:** Assert all 11 fork-only SHAs and the upstream head are ancestors of new `develop`. **Stop and report if any is missing.**
-- [ ] **Step 5:** Record new `develop` SHA and resolution log. Commit.
+- [ ] **Step 1:** `verify-target`; confirm fork `master` already == `mitkox/master`, and list the 11 fork-only commits on `develop`.
+- [ ] **Step 2:** `merge-forward` (57 incoming upstream commits). Review every conflict; keep fork remediations at the higher version.
+- [ ] **Step 3:** `assert-content`: filelock 4.2.9, certifi 2026.10.23, vite 8.3.5, undici 8.12.3, litellm 1.108.3 present at >= pre-sync versions. Record each conflict resolution.
+- [ ] **Step 4:** Assert all 11 fork-only SHAs and the upstream head are ancestors. **Stop if any is missing.**
 
 ---
 
-## Phase C — Re-vendor at the synced heads
+## Phase B — Re-vendor the affected trees
 
-One PR per tree. Each task is a self-contained deliverable that a reviewer can reject independently.
+One PR per tree. Every task includes the disposition gate and manifest regeneration. Canonical manifest command (from inside the tree): `find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > ../../.github/vendor-<tree>.sha256`, then CI's `sha256sum -c` + unlisted-files `comm` check must pass.
 
-### Task 7: Re-vendor `homebrew-install` at new fork `main`
+### Task 6: Re-vendor `homebrew-install` at synced fork `main`
 
-- [ ] **Step 1:** Fetch the synced fork `main` head; verify full tree is available.
-- [ ] **Step 2:** Replace `reference/homebrew-install/` wholesale with the pinned tree; exclude `.git` only (no symlinks per existing provenance).
-- [ ] **Step 3:** Regenerate `.github/vendor-homebrew-install.sha256` from the final tree.
-- [ ] **Step 4:** Confirm tree matches the pinned commit byte-for-byte (exclusions aside) and `vendor-integrity` passes.
-- [ ] **Step 5:** Update `PROVENANCE.md`: pin, snapshot date, freshness block, note that the fork was synced from `Homebrew/install` first.
-- [ ] **Step 6:** Run gitleaks + docs-lint; confirm clean. Commit, push, open PR, link it.
+- [ ] **Step 1:** Fetch the synced head; enumerate instruction surfaces and secrets in the new tree; quarantine/document per Global Constraints.
+- [ ] **Step 2:** Replace `reference/homebrew-install/` wholesale (exclude `.git`; no symlinks per existing provenance).
+- [ ] **Step 3:** Regenerate `.github/vendor-homebrew-install.sha256`; verify tree↔commit byte-fidelity against a fresh `git archive` of the pin (exclusions aside).
+- [ ] **Step 4:** Rewrite `PROVENANCE.md`: new pin, snapshot date, sync record, freshness block with `policy: repin`. Keep `.env.example`-style faithful content; secret scan clean.
+- [ ] **Step 5:** Run `vendor-integrity`, `security`, `docs-lint`. Commit, push, open PR, link it.
 
-### Task 8: Re-vendor `humanizer` at new fork `develop`
+### Task 7: Re-vendor `humanizer` at fork head (reclassified `repin`, no sync)
 
-- [ ] **Step 1–6:** as Task 7, for `humanizer`. Preserve the note that AEP's `skills/humanizer/` carries local amendments and that those never land in the reference tree. Verify `skills/humanizer/` is untouched.
+- [ ] **Step 1–5:** as Task 6. Preserve the note that AEP's `skills/humanizer/` carries local amendments that never land in the reference tree; verify that directory is untouched. Confirm the `feat/scope-and-file-mode-amendments` branch SHA is unchanged.
+- [ ] **Step 6:** Record that the fork is now identical to upstream, so this is a re-pin, not a sync.
 
-### Task 9: Re-vendor `docs-mcp-server` at new fork `develop`
+### Task 8: Re-vendor `docs-mcp-server` at synced fork `develop`
 
-- [ ] **Step 1–6:** as Task 7, for `docs-mcp-server`. Keep `.env.example` (faithful snapshot). Update the branch note to record the sync of fork `main` and merge into `develop`, and list the new dependency deltas vs the previous pin.
+- [ ] **Step 1–5:** as Task 6. Keep `.env.example`. Update the branch note with the forward-merge record and the dependency deltas; verify no dependency was downgraded (`assert-content` output attached to the PR).
 
-### Task 10: Re-vendor `esf` at new fork `develop`
+### Task 9: Re-vendor `esf` at synced fork `develop`
 
-- [ ] **Step 1:** Fetch the synced head.
-- [ ] **Step 2:** Replace `reference/esf/` wholesale; exclude `.git` and `bin/` (per existing provenance).
-- [ ] **Step 3:** Regenerate `.github/vendor-esf.sha256`.
-- [ ] **Step 4:** Verify byte-fidelity and `vendor-integrity`.
-- [ ] **Step 5:** Update `PROVENANCE.md` with the new pin, sync record, and the update-history entry (57 upstream commits merged).
-- [ ] **Step 6:** Re-run the secret scan. The allowlisted synthetic fixtures in `internal/factory/redact_test.go` / `evidence_test.go` must still be the only hits; any new finding gets a path allowlist with rationale. Commit, push, open PR, link it.
+- [ ] **Step 1:** Fetch the synced head; disposition gate (instruction surfaces, lifecycle-script deps).
+- [ ] **Step 2:** Replace `reference/esf/` wholesale; exclude `.git` and `bin/` (current manifest has 0 `bin/` entries).
+- [ ] **Step 3:** Regenerate `.github/vendor-esf.sha256`; verify byte-fidelity.
+- [ ] **Step 4:** Update `PROVENANCE.md` with the new pin, the 57-commit forward-merge record, the update-history entry, and the freshness block.
+- [ ] **Step 5:** Re-run the secret scan. The allowlisted synthetic fixtures in `internal/factory/redact_test.go` / `evidence_test.go` must still be the only hits; any new hit must be proven synthetic (input-and-assertion, annotated) before a path allowlist. Commit, push, PR, link.
 
----
+### Task 10: Re-pin pins that trail a current fork (no sync needed)
 
-## Phase D — Re-pin the pins that trail a current fork (no sync needed)
+**Files:** `reference/elephant-goldfish-model/`, `reference/grim-prompter/`, `reference/ub-mode/` (+ manifests + provenance).
 
-These forks are already at their upstream heads (0 behind); only the vendored pin is stale. Re-pin at the current fork head.
-
-### Task 11: Re-pin `elephant-goldfish-model` (45 commits behind fork head)
-
-- [ ] **Step 1:** Confirm fork `develop` == upstream `main` at execution time (re-run compare; if drift appeared, stop and route to the sync path).
-- [ ] **Step 2:** Re-vendor the documented subset (`skills/`, `agents/`, `resources/`, `docs/`, `LICENSE`, `plugin.json`), regenerate `.github/vendor-elephant-goldfish-model.sha256`.
-- [ ] **Step 3:** Update `PROVENANCE.md` (new pin, date, freshness block), preserving the "pure mirror" note only if still true.
-- [ ] **Step 4:** Verify byte-fidelity, `vendor-integrity`, gitleaks, docs-lint. Commit, push, PR, link.
-
-### Task 12: Re-pin `grim-prompter` (9 commits behind fork head)
-
-- [ ] **Step 1–4:** as Task 11. All-Markdown tree; re-confirm the secret-scan annotation is still accurate.
-
-### Task 13: Re-pin `ub-mode` (1 commit behind fork head)
-
-- [ ] **Step 1–4:** as Task 11. Re-confirm the "License: NONE" note is still accurate at the new head; if a license appeared upstream, stop and report rather than silently leaving the note stale.
+- [ ] **Step 1:** For each, re-run the live compare. If a fork has drifted behind upstream since the audit, stop and route it to the sync path instead.
+- [ ] **Step 2:** Re-vendor the documented subset per tree, regenerate manifests, verify byte-fidelity.
+- [ ] **Step 3:** Update `PROVENANCE.md` (new pin, date, sync record, freshness block). `elephant-goldfish-model`: drop the "pure mirror" note only if no longer true. `ub-mode`: re-confirm "License: NONE"; if a license appeared, stop and report rather than leave a stale note. `grim-prompter`: re-confirm the clean secret-scan annotation.
+- [ ] **Step 4:** Run `vendor-integrity`, `security`, `docs-lint` for each. Commit, push, one PR per tree, link each.
 
 ---
 
-## Phase E — Make provenance answer the question, and keep it answered
+## Phase C — Durable detection
 
-### Task 14: Normalize provenance headers and add freshness blocks
+### Task 11: Normalize provenance into the single source of truth
 
-**Files:** modify the 12 `reference/*/PROVENANCE.md` files (skip `neurostrata-ops` or add a local-source note only).
+**Files:** all 13 top-level `reference/*/PROVENANCE.md` (the 3 nested `harness2/third_party/*` files are NOT independently pinned and are out of scope).
 
-- [ ] **Step 1:** Add `**True upstream:** <parent>` to `reference/esf/PROVENANCE.md` and `reference/harness2/PROVENANCE.md` (currently label the fork as "Upstream" without naming `mitkox/esf` / `google-research/harness2`).
-- [ ] **Step 2:** Normalize `craft-anything` to `**Source (fork):** …` while retaining the `storytold/craft-anything` upstream line.
-- [ ] **Step 3:** Add a `## Freshness` block to every provenance file: `Pinned commit`, `Pin date`, `Referenced repo @ pin`, `True upstream @ pin`, `Last freshness check`, `Policy`, and a pointer to `.github/vendor-sources.json`.
-- [ ] **Step 4:** For `craft-anything` and `neurostrata`, state the keep decision verbatim in the freshness block (D2 at boundary; intentional 604-ahead divergence), so a future auditor does not misread them as forgotten.
-- [ ] **Step 5:** Run docs-lint; confirm clean. Commit, push, PR, link.
+- [ ] **Step 1:** Add the one-line `vendor-freshness` block to each of the 13 files. For the 12 pinned trees: `tree, pin, repo, branch, parent, parent_branch, policy, decision_date, review_due`. For `neurostrata-ops`: `{"tree":"neurostrata-ops","pin":null,"policy":"local"}`.
+- [ ] **Step 2:** Add `**True upstream:** <parent>` to `reference/esf/PROVENANCE.md` and `reference/harness2/PROVENANCE.md` (they currently label the fork as "Upstream" without naming `mitkox/esf` / `google-research/harness2`). Normalize `craft-anything` to `**Source (fork):** …` while retaining the `storytold` upstream line.
+- [ ] **Step 3:** Add a `## Freshness` section explaining the block, the owner (repo maintainer), and the 7-day SLA. For `craft-anything`, record that the D2 keep decision is **due for review now** (fork is no longer a pristine mirror — it moved 3 behind upstream mid-audit): `policy: keep` with `review_due: 2026-11-19`, not a silent permanent exemption. For `neurostrata`, record the intentional 604-ahead divergence with a quarterly `review_due`.
+- [ ] **Step 4:** Run the Task 1 CI validator; confirm 13 parseable blocks. docs-lint clean. Commit, push, PR, link.
 
-### Task 15: Add the weekly freshness check (non-gating)
+### Task 12: Add the weekly detector (non-gating, issues: write)
 
 **Files:**
 - Create: `scripts/vendor_freshness.py`
 - Create: `.github/workflows/vendor-freshness.yml`
 - Test: `scripts/tests/test_vendor_freshness.py`
 
-- [ ] **Step 1:** Write failing tests: (a) stale pin → reported behind by N; (b) fork behind parent → reported; (c) missing SSOT entry → reported, not skipped; (d) a current pin → no finding; (e) `neurostrata-ops` ignored; (f) total test count asserted.
+- [ ] **Step 1:** Write failing tests: (a) stale pin → finding with behind count; (b) fork behind parent → finding; (c) a tree in `reference/*/` with no freshness block → finding, not skip; (d) current pin → no finding; (e) `local` entry ignored; (f) `policy: keep` past `review_due` → "decision due" finding, not silent pass; (g) total test count asserted.
 - [ ] **Step 2:** Run them; confirm failures.
-- [ ] **Step 3:** Implement `vendor_freshness.py`: read `.github/vendor-sources.json`; for each entry with a `pin` and `repo`, call `gh api repos/<repo>/compare/<pin>...<branch>` for pin-vs-fork-head and, when `parent` is set, `gh api repos/<parent>/compare/<parent_branch>...<owner>:<branch>` for fork-vs-upstream. Emit a deterministic JSON report plus a Markdown issue body. `policy: keep` entries are reported as "recorded keep", not as failures.
-- [ ] **Step 4:** Make the tests pass, including the mutation cases. Remove the checker's SSOT entry and confirm the test that expects a finding fails — proving the checker does not silently skip.
-- [ ] **Step 5:** Add `.github/workflows/vendor-freshness.yml`: `schedule: cron` weekly, `workflow_dispatch`, read-only `GITHUB_TOKEN`, no required check, opens or updates one tracking issue keyed by a stable marker. No auto-merge, no PR creation.
-- [ ] **Step 6:** actionlint the workflow; run the full test suite; commit, push, PR, link.
+- [ ] **Step 3:** Implement `vendor_freshness.py` using `vendor_graph.py` for live data. Emit deterministic JSON + a Markdown issue body with a stable marker. `--self-test` runs all mutation cases in CI.
+- [ ] **Step 4:** Make all tests pass, including the missing-block mutation. Deleting a provenance block must produce a finding — prove it in the test.
+- [ ] **Step 5:** Add `.github/workflows/vendor-freshness.yml`: `schedule: cron` weekly + `workflow_dispatch`; **permissions: `contents: read` and `issues: write` (and nothing else)** — the repo's `dependabot-reference-guard.yml` and `actionlint.yml` use this exact pattern because issue creation is a write; a read-only token would 403 and the non-gating job would silently die. Opens or updates one tracking issue keyed by a stable marker; reopens a closed issue; concurrency group prevents duplicate runs. No required check, no auto-merge, no PR creation.
+- [ ] **Step 6:** actionlint the workflow. Verify by `workflow_dispatch`: first run creates the issue, second updates the same issue. Commit, push, PR, link.
 
 ---
 
-## Phase F — Close out
+## Phase D — Close out
 
-### Task 16: Record the freshness baseline and verify everything
+### Task 13: Baseline and verify
 
-- [ ] **Step 1:** After all re-vendor PRs merge, run `vendor_freshness.py` against `develop` and save the report to `docs/vendor-freshness-baseline-2026-11-19.md`.
-- [ ] **Step 2:** Verify every sync target's working branch contains the pre-sync fork-only commits and the upstream head (Task 2's helper, read-only mode).
-- [ ] **Step 3:** Verify all 13 manifests match their trees (`vendor-integrity`) and all pinned trees match their commits.
-- [ ] **Step 4:** Run the full AEP required-check set on each PR before merge; do not merge any PR with an unresolved review thread.
-- [ ] **Step 5:** File follow-up issues for anything deliberately deferred (e.g. a fork that drifted again during the migration).
+- [ ] **Step 1:** After all PRs merge, run `vendor_freshness.py` on `develop` and save `docs/vendor-freshness-baseline-2026-11-19.md`.
+- [ ] **Step 2:** Verify the post-sync content assertions (Tasks 3–5) still hold on each fork's working branch, read-only.
+- [ ] **Step 3:** Verify all 13 manifests match their trees and all 12 pinned trees match their commits.
+- [ ] **Step 4:** Every PR merges only with required checks green and all review threads resolved; all text signed per `AGENTS.md`.
+- [ ] **Step 5:** File follow-up issues for deferred items (e.g. `craft-anything` D2 re-review; any fork that drifted again during the migration).
 
 ---
 
 ## Test Plan
 
-- **Fixture-based sync tests** (Task 2): local git repos, no network; prove mirror sync, forward merge, fork-commit preservation, and the ancestry gate's failure case.
-- **Byte-fidelity checks** (Tasks 7–13): manifest regenerated from the final tree, then compare the tree to a fresh `git archive` of the pinned commit (excluding documented exclusions). A stale manifest is a failure even if `vendor-integrity` passes.
-- **Freshness checker tests** (Task 15): 6 cases including two mutations (stale pin, missing SSOT) and one negative (current pin). Count-asserted so deleting a test cannot make the suite pass.
-- **CI gates** (Tasks 1, 7–15): `vendor-integrity`, `security`, `docs-lint`, `shell-lint`, `script-tests`, `actionlint` on every PR; the new freshness workflow is scheduled and never required.
-- **Manual gates** (Tasks 5, 6): conflict-resolution logs reviewed before a synced fork is trusted; fork-only SHA ancestry asserted mechanically.
+- **Fixture-based sync tests (Task 2):** local repos; mirror FF, forward merge, fork-commit preservation, `assert-content` downgrade failure, `verify-target` mismatch failure. Wired explicitly into `script-tests`.
+- **Graph/parse tests (Task 1):** 13 top-level blocks parsed, nested files ignored, malformed/missing block → finding.
+- **Content gates (Tasks 3–5):** explicit version assertions for every known remediation; a downgrade fails the merge even when ancestry passes.
+- **Byte-fidelity (Tasks 6–10):** manifest regenerated from the final tree, then compare to a fresh `git archive` of the pin (exclusions aside). CI's `vendor-integrity` must pass.
+- **Detector tests (Task 12):** 7 cases incl. missing-block, keep-past-due, and a count assertion; run as CI `--self-test`, not a one-off manual mutation.
+- **Workflow smoke (Task 12):** real `workflow_dispatch` proves issue create + update with `issues: write`.
 
 ## Acceptance Criteria
 
-1. `.github/vendor-sources.json` exists, covers all 12 pinned trees, and matches each provenance pin.
-2. `esf`, `humanizer`, `install`, `docs-mcp-server` working branches contain their true upstream head and 100% of their pre-sync fork-only commits (11, 0, 0, 10 respectively).
-3. The 7 re-vendored trees (`esf`, `humanizer`, `install`, `docs-mcp-server`, `elephant-goldfish-model`, `grim-prompter`, `ub-mode`) each match a single pinned commit byte-for-byte (exclusions aside), with regenerated manifests and passing `vendor-integrity`.
-4. All 12 provenance files carry a `## Freshness` block; `esf` and `harness2` name their true upstreams; `craft-anything` and `neurostrata` record keep decisions.
-5. `vendor_freshness.py` passes its 6 tests, including mutations; the scheduled workflow is non-gating and opens/updates one issue when drift is detected.
-6. No PR merges with an unresolved review thread or a failing required check; every PR body and comment is signed per `AGENTS.md`.
-7. A post-merge baseline report exists and records the freshness state of all 13 trees.
+1. `vendor_graph.py` parses freshness blocks from all 13 top-level provenance files; nested third-party provenances are ignored; `neurostrata-ops` is `policy: local`.
+2. Every fork mutation that Task 2 classified as real is complete; its working branch contains the upstream head **and** all pre-sync fork-only commits **and** all known remediation content at >= prior versions. No-op syncs are not performed.
+3. The re-vendored trees (`homebrew-install`, `humanizer`, `docs-mcp-server`, `esf`, `elephant-goldfish-model`, `grim-prompter`, `ub-mode` — final list per Task 1/2 live data) each match a single pinned commit byte-for-byte (exclusions aside), with regenerated manifests and passing `vendor-integrity`.
+4. All 13 provenance files carry a parseable freshness block; `esf`/`harness2` name their true upstreams; `craft-anything` records `review_due: 2026-11-19` as a decision due, not a permanent keep.
+5. `vendor_freshness.py` passes its 7 tests incl. mutations; the weekly workflow has `issues: write`, is non-gating, and demonstrably creates/updates one owned issue.
+6. No PR merges with an unresolved review thread or failing required check; all PR/issue text signed per `AGENTS.md`.
+7. A post-merge baseline report exists and an executable rollback runbook was committed before any external mutation.
 
 ## Out of Scope
 
-- Editing any `reference/` tree in place, or installing/executing vendored code.
-- Re-pinning `craft-anything` (D2 ACCEPT-STALENESS at its budget boundary) or `neurostrata` (intentional 604-ahead divergence) — both are recorded keep decisions, not forgotten pins.
-- `neurostrata-ops` (local snapshot, no commit pin) — documented as excluded from freshness checks.
-- License changes (notably `ub-mode`'s "License: NONE"), brand-asset policy (`craft-anything`), Dependabot scoping, or CI required-check changes.
-- Promising permanent currency: the weekly checker detects subsequent drift; it does not sync or re-vendor automatically.
+- Editing any `reference/` tree in place; installing/executing vendored code.
+- A parallel SSOT JSON file — provenance is the only source of truth.
+- Re-pinning `craft-anything` or `neurostrata` in this plan: both are recorded keep decisions surfaced as due-for-review findings, not silent exemptions. `craft-anything`'s D2 re-review is explicitly deferred to a follow-up issue.
+- `neurostrata-ops` freshness (local snapshot, no commit pin).
+- License changes (`ub-mode` "License: NONE"), brand-asset policy, Dependabot scoping, required-check changes.
+- Promising permanent currency; the detector reports drift with a 7-day SLA and never auto-fixes.
