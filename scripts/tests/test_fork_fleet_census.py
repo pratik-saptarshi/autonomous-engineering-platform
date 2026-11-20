@@ -1055,6 +1055,24 @@ class BlankRowPositionTests(unittest.TestCase):
         self.assertEqual(rows[2], [""] * ffc.ROW_FIELDS)
         self.assertEqual(rows[3][0], b)
 
+    def test_trailing_blank_row_preserved_before_appending_new_repo(self):
+        # A blank row at the END of prev_rows is still a physical
+        # sheet position: a newly discovered repo must append after
+        # it, not land in its slot (where the writer would associate
+        # it with that position's human-owned Q:R annotations).
+        a = "pratik-saptarshi/a"
+        b = "pratik-saptarshi/b"
+        base = self.prev_rows_for([a])
+        prev = [base[0], []]
+        doc = census_doc([census_row(repo=a), census_row(repo=b)])
+        rows, changed = ffc.build_rows(doc, prev, {}, "T2")
+        self.assertEqual(changed, [2])
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(rows[0][0], a)
+        self.assertEqual(rows[1], [""] * ffc.ROW_FIELDS)  # trailing placeholder
+        self.assertEqual(rows[2][0], b)
+        self.assertNotIn(1, changed)
+
     def test_blank_row_with_no_change_marks_nothing_changed(self):
         # Guard against over-correction: a blank row must not make
         # an unchanged following repo (or the placeholder itself)

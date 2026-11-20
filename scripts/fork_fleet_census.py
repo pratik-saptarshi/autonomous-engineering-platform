@@ -714,6 +714,12 @@ def build_rows(census, prev_rows, sync_record, verified_at):
                 f"{prev[COL_NOTES]}; {note}" if prev[COL_NOTES] else note
             )
             emit(repo, retired, prev)
+    # Trailing prev positions the emit loop never reached (blank
+    # rows or duplicates after the last prev repo) are physical
+    # sheet positions too: pad them out before appending, or a new
+    # repo would land in a trailing blank's slot and inherit that
+    # position's human-owned Q:R annotations.
+    pad_to(len(prev_rows))
     for row in census["repos"]:
         if row["repo"] not in seen:
             emit(row["repo"], census_sheet_row(row, None), None)
