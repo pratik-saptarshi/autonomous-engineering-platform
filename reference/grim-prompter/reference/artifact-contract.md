@@ -2,7 +2,7 @@
 id: reference/artifact-contract
 title: Portable Threat Model Artifact Contract
 shape: reference
-last_reviewed: 2026-10-28
+last_reviewed: 2026-11-07
 sources:
   - https://json-schema.org/draft/2020-12/json-schema-core
   - https://tc39.es/ecma262/multipage/text-processing.html
@@ -104,6 +104,10 @@ A complete handoff needs a nonempty scope description and each collection listed
   }
 }
 ```
+
+## Privacy representation
+
+The [privacy analysis pattern](privacy-analysis-pattern.md) maps privacy inventories, processing activities, regulatory coverage and human-readable assessment matrices onto this version's existing records. It adds no fields or artifact types. Processing activities use system assets; profile topic dispositions use Coverage reasons and supported/proposed Requirements. Facts remain nested in actual Method findings. A privacy profile is not itself a Method execution, and assessed coverage is not legal compliance or passed verification.
 
 ## Evidence and relationships
 
@@ -575,6 +579,23 @@ For a satisfying set, `node_refs` contains leaves only; logical evaluation trave
 | `access` | `read` / `partial` / `skipped` / `unavailable` |
 | `coverage` | string |
 | `reason` | string or null |
+
+The runbook's inspection ledger uses these existing fields; it does not add a schema property or
+change version `1.0`. Include each actually read source file, even when no evidence finding resulted.
+Use `locator` for its safe path and `coverage` for source revision, full or partial read extent and
+current-versus-carried provenance. A partially read file occurs once in `processed_inputs`, with
+the unread extent and reason. Known skipped/unavailable files or bounded areas belong in
+`unprocessed_inputs`; state why and distinguish exclusions from uninspected in-scope material.
+Record discovery limits rather than assuming the inventory enumerates the repository. Preserve
+source inventory across handoffs alongside bundle/predecessor inventory; reading the latter never
+establishes fresh access to its sources.
+
+Include scope-wide Coverage with `lens: inspection-coverage`, null `target_ref` and `method_ref`,
+and a reason describing inspected scope, omissions and provenance. Missing historical inspection
+information requires an open coverage Gap, not an inferred file-read history. Suspected unmapped
+crossings use open topology Gaps with the evidence basis, missing trace and needed evidence;
+`affected_refs` may be empty if no system record is grounded yet. Summarize these inventories and
+gaps near the top of the Markdown report. Inspection coverage does not measure analysis quality.
 
 ### Attachment
 

@@ -15,11 +15,20 @@
 # docs/designs/2026-10-27-ranked-improvement-list.md line 15 is
 # prose ("secret and PII hits, junk/duplicate detection") whose word pair
 # trips the generic-api-key entropy heuristic. Not a credential.
+#
+# The vendored harness-profiler tree (pin 847bd8f6) carries two synthetic
+# fixtures in its masker unit tests, documented in
+# reference/harness-profiler/PROVENANCE.md: test/capture.test.js:155 (a
+# fake "Bearer abcdefghijkl" passed to mask(), flagged curl-auth-header)
+# and :160 (a fake "token=abc123456789" tool_response, flagged
+# generic-api-key). Both are inputs to assertions that mask() redacts
+# them; neither is a credential.
 [extend]
 useDefault = true
 [allowlist]
-description = "Synthetic fixtures in vendored redaction tests (ESF, NeuroStrata)"
+description = "Synthetic fixtures in vendored redaction tests (ESF, NeuroStrata, harness-profiler)"
 paths = ['''reference/esf/internal/factory/redact_test.go''', '''reference/esf/internal/factory/evidence_test.go''',
 '''reference/neurostrata/src/secrets.rs''',
 '''reference/neurostrata/src/buffer.rs''',
-'''reference/neurostrata/docs/designs/2026-10-27-ranked-improvement-list.md''']
+'''reference/neurostrata/docs/designs/2026-10-27-ranked-improvement-list.md''',
+'''reference/harness-profiler/test/capture.test.js''']

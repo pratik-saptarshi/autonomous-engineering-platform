@@ -11,6 +11,18 @@ echo 'export PATH="$HOME/workspace/bin:$PATH"' >> ~/.bashrc
 
 ### beads (issue tracker)
 
+`bd` collects anonymous usage metrics **on by default**, and events are captured from the very first command — so the opt-out config must exist *before* `bd` is ever invoked, including the version check right after install. Pre-seed it with exactly the block `bd metrics off` writes (this config location is bd v1.3.1 behavior; a future version may move it):
+
+```bash
+mkdir -p ~/.config/bd
+cat > ~/.config/bd/config.yaml <<'EOF'
+metrics:
+    disabled: true
+    endpoint: https://gastownhall-eventsapi.com/mp/collect
+    notice_shown: true
+EOF
+```
+
 ```bash
 cd /tmp
 curl -sL -o beads.tar.gz https://github.com/gastownhall/beads/releases/download/v1.3.1/beads_1.3.1_linux_amd64.tar.gz
@@ -18,6 +30,13 @@ curl -sL -o checksums.txt https://github.com/gastownhall/beads/releases/download
 grep linux_amd64 checksums.txt | sha256sum -c -
 tar xzf beads.tar.gz bd && install -m 755 bd ~/workspace/bin/bd
 bd --version   # bd version 1.3.1
+```
+
+Belt and braces: run `bd metrics off` explicitly — it is idempotent, and it covers environments where the pre-seed path differed; the expected status output shows metrics OFF:
+
+```bash
+bd metrics off
+bd metrics   # expect: "Anonymous usage metrics: OFF"
 ```
 
 Verify: `bd ping` returns ok; `bd init` in a scratch git repo, then create/show/close one issue.
@@ -127,6 +146,7 @@ Start on demand (`start.sh`, ~20 s), discover actions (`oc.py list <service>` / 
 ## 8. Verification checklist
 
 - [ ] `bd ping` ok; issue lifecycle (create/show/close) works; per-repo isolation confirmed
+- [ ] `bd` metrics OFF, proven by BOTH signals: `bd metrics` reports OFF, **and** `~/.config/bd/config.yaml` carries `disabled: true` under `metrics:` — assert with `grep -A2 '^metrics:' ~/.config/bd/config.yaml | grep -q 'disabled: true'` (exits non-zero when the flag is absent). If either check fails, setup has FAILED — stop and fix before continuing onboarding. A future bd version that moves the setting or changes the default must break setup visibly here, not silently phone home
 - [ ] `ocr delegate preview` returns a review spec with no API key
 - [ ] `neurostrata-mcp status` healthy; MCP store/search/fetch/archive round-trip passes
 - [ ] `backlog.py next` returns the expected task as JSON

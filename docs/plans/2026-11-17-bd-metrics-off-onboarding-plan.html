@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Plan — bd metrics OFF in environment onboarding (2026-11-17)</title>
+<style>
+  body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; margin: 24px auto; max-width: 920px; padding: 0 16px; line-height: 1.5; color: #1a2332; }
+  h1 { font-size: 1.4rem; } h2 { font-size: 1.12rem; border-bottom: 2px solid #dbe3ee; padding-bottom: 4px; margin-top: 28px; }
+  code { font-family: ui-monospace, Menlo, monospace; font-size: 0.88em; }
+  pre { background: #f4f7fb; border: 1px solid #dbe3ee; border-radius: 6px; padding: 10px 12px; overflow-x: auto; font-size: 0.85rem; }
+  .note { background: #fff7e8; border: 1px solid #ecd9a8; border-radius: 8px; padding: 10px 14px; }
+</style>
+</head>
+<body>
+<h1>Plan — bake <code>bd</code> metrics OFF into environment onboarding</h1>
+<p><b>Decision (Pratik, 2026-11-17, verbatim):</b> "my preferred method are 1+2+3, do all 3 and open a PR for AEP." All three layers land in this PR. Target branch: <code>develop</code> (AEP branch model). Merge remains Pratik's per-PR call.</p>
+
+<h2>Background</h2>
+<p>The <code>bd</code> CLI (Beads v1.3.1) collects anonymous command-usage metrics <b>on by default</b> (opt-out). Each event carries only the command name + bd version + OS, keyed by a machine-derived HMAC ID (no issue content, paths, remotes, or typed text — official Beads FAQ). Events queue in <code>~/.beads/eventsData/*.evtq</code> and POST to <code>https://gastownhall-eventsapi.com/mp/collect</code>. On the current VM it ran unnoticed from install day (2026-10-13) until spotted on 2026-11-17; it has been turned off there and logged in <code>~/workspace/outbound-access-date.log</code>. This PR makes OFF the default for every <em>future</em> environment built from AEP's onboarding runbook (<code>docs/runbook.md</code>, "Runbook — reproducing the environment").</p>
+<p>The off state persists in <code>~/.config/bd/config.yaml</code>, exactly as <code>bd metrics off</code> writes it (this location/format is <b>v1.3.1 behavior</b> — pinned as a note in the runbook text):</p>
+<pre>metrics:
+    disabled: true
+    endpoint: https://gastownhall-eventsapi.com/mp/collect
+    notice_shown: true</pre>
+
+<h2>Global constraints</h2>
+<ul>
+<li>Single file changes behaviour: <code>docs/runbook.md</code> only (plus this plan). No scripts, no CI changes.</li>
+<li>Ordering is the substance of Layer 1: the pre-seed must land <b>before the first <code>bd</code> invocation of any kind</b> — in the current runbook that is <code>bd --version</code> immediately after install. Events are captured from the first command, so a seed placed after install-but-before-use is already too late if any bd command ran.</li>
+<li>Idempotence: running the onboarding steps twice must end in the same state as once (the pre-seed writes identical content; <code>bd metrics off</code> is idempotent). A run interrupted after the pre-seed but before install leaves metrics off — strictly safer than the reverse order, and re-running completes cleanly.</li>
+<li>Conventional Commit subjects; author <code>Musebot-Astro</code>; GitHub calls via ghg only.</li>
+</ul>
+
+<h2>Task 1 — Layers 1+2 in §1 "beads (issue tracker)"</h2>
+<ul>
+<li>Insert a pre-seed step <b>before</b> the beads download/install block: create <code>~/.config/bd/</code> and write <code>config.yaml</code> with the exact metrics block above (heredoc), with one sentence of why (metrics are on by default; events are captured from the first command) and the v1.3.1 location pin.</li>
+<li>Immediately after the install block (after <code>bd --version</code>), add the explicit belt-and-braces step: <code>bd metrics off</code> followed by <code>bd metrics</code> to show the OFF status, noting it is idempotent and covers environments where the pre-seed path differed.</li>
+<li>TDD check (run from /tmp, not committed): a shell script asserting (a) the pre-seed block exists in §1 and appears before the first <code>bd</code> command line of the beads block, (b) a <code>bd metrics off</code> step exists after the install line. Must FAIL on the unmodified runbook (RED) and PASS after the edit (GREEN).</li>
+<li>Behavioural proof (one-off, /tmp): with <code>HOME</code> pointed at a fresh temp dir containing only the pre-seeded config, <code>bd metrics</code> reports OFF; with an empty temp HOME it reports ON (negative control — proves the seed, not the machine's global state, produces OFF).</li>
+</ul>
+
+<h2>Task 2 — Layer 3 in §8 "Verification checklist"</h2>
+<ul>
+<li>Add a checklist item directly after the existing <code>bd ping</code> item: <code>bd metrics</code> reports <b>OFF</b> ("Anonymous usage metrics: OFF") <em>and</em> <code>~/.config/bd/config.yaml</code> carries <code>disabled: true</code> under <code>metrics:</code>. If either check fails, setup has FAILED — stop and fix before proceeding (do not continue onboarding with metrics on). Include the one-line shell assertion an executing agent can run: it exits non-zero when the config lacks <code>disabled: true</code>.</li>
+<li>Word the failure as loud and blocking, matching the brief: a future bd version that moves the setting or changes the default must break setup visibly instead of silently phoning home.</li>
+<li>TDD check: script asserts the §8 item exists, names both signals (status output + config flag), and states the stop/fail consequence. RED before, GREEN after.</li>
+</ul>
+
+<h2>Out of scope</h2>
+<p>The current VM's already-queued <code>.evtq</code> backlog (handled in the WhatsApp lane under the deletion rule), any change to how DAP uses bd, and any AEP code that shells out to bd at runtime (the orch engine's beads integration is unaffected — this is environment onboarding only).</p>
+</body>
+</html>

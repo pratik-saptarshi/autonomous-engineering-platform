@@ -1,0 +1,232 @@
+{
+  "rootSessionId": "ses_root_gate",
+  "cwd": "/tmp/hp-gate",
+  "events": [
+    {
+      "id": "evt_g01",
+      "created": 1794933000100,
+      "type": "session.tool.input.started",
+      "data": {
+        "sessionID": "ses_root_gate",
+        "assistantMessageID": "msg_m1",
+        "id": "call_gate_skill",
+        "name": "skill"
+      }
+    },
+    {
+      "id": "evt_g02",
+      "created": 1794933000200,
+      "type": "session.tool.called",
+      "data": {
+        "sessionID": "ses_root_gate",
+        "assistantMessageID": "msg_m1",
+        "id": "call_gate_skill",
+        "input": { "name": "braindump", "args": "capture the plan" },
+        "executed": false
+      }
+    },
+    {
+      "id": "evt_g03",
+      "created": 1794933000900,
+      "type": "session.tool.success",
+      "data": {
+        "sessionID": "ses_root_gate",
+        "assistantMessageID": "msg_m1",
+        "id": "call_gate_skill",
+        "content": [{ "type": "text", "text": "skill loaded" }],
+        "metadata": { "status": "completed" },
+        "executed": false
+      }
+    },
+    {
+      "id": "evt_g04",
+      "created": 1794933001000,
+      "type": "session.step.ended",
+      "data": {
+        "sessionID": "ses_root_gate",
+        "assistantMessageID": "msg_m1",
+        "finish": "tool-calls",
+        "tokens": { "input": 300, "output": 40, "reasoning": 0, "cache": { "read": 4096, "write": 128 } }
+      }
+    },
+    {
+      "id": "evt_g05",
+      "created": 1794933002000,
+      "type": "session.tool.input.started",
+      "data": {
+        "sessionID": "ses_root_gate",
+        "assistantMessageID": "msg_m2",
+        "id": "call_gate_spawn",
+        "name": "subagent"
+      }
+    },
+    {
+      "id": "evt_g06",
+      "created": 1794933002100,
+      "type": "session.tool.called",
+      "data": {
+        "sessionID": "ses_root_gate",
+        "assistantMessageID": "msg_m2",
+        "id": "call_gate_spawn",
+        "input": {
+          "agent": "general",
+          "description": "inspect the renderer",
+          "prompt": "Inspect the renderer.\nReport findings."
+        },
+        "executed": false
+      }
+    },
+    {
+      "id": "evt_g07",
+      "created": 1794933002500,
+      "type": "session.created",
+      "data": {
+        "sessionID": "ses_child_gate",
+        "parentID": "ses_root_gate",
+        "title": "inspect the renderer",
+        "agent": "general"
+      }
+    },
+    {
+      "id": "evt_g08",
+      "created": 1794933003000,
+      "type": "session.tool.input.started",
+      "data": {
+        "sessionID": "ses_child_gate",
+        "assistantMessageID": "msg_c1",
+        "id": "call_gate_child_read",
+        "name": "read"
+      }
+    },
+    {
+      "id": "evt_g09",
+      "created": 1794933003100,
+      "type": "session.tool.called",
+      "data": {
+        "sessionID": "ses_child_gate",
+        "assistantMessageID": "msg_c1",
+        "id": "call_gate_child_read",
+        "input": { "filePath": "reference/harness-profiler/plugin/libexec/hp.js" },
+        "executed": false
+      }
+    },
+    {
+      "id": "evt_g10",
+      "created": 1794933003900,
+      "type": "session.tool.success",
+      "data": {
+        "sessionID": "ses_child_gate",
+        "assistantMessageID": "msg_c1",
+        "id": "call_gate_child_read",
+        "content": [{ "type": "text", "text": "pin ok" }],
+        "metadata": { "status": "completed" },
+        "executed": false
+      }
+    },
+    {
+      "id": "evt_g11",
+      "created": 1794933004000,
+      "type": "session.step.ended",
+      "data": {
+        "sessionID": "ses_child_gate",
+        "assistantMessageID": "msg_c1",
+        "finish": "tool-calls",
+        "tokens": { "input": 120, "output": 25, "reasoning": 0, "cache": { "read": 8000, "write": 0 } }
+      }
+    },
+    {
+      "id": "evt_g12",
+      "created": 1794933005000,
+      "type": "session.step.ended",
+      "data": {
+        "sessionID": "ses_child_gate",
+        "assistantMessageID": "msg_c2",
+        "finish": "stop",
+        "tokens": { "input": 150, "output": 60, "reasoning": 0, "cache": { "read": 9000, "write": 64 } }
+      }
+    },
+    {
+      "id": "evt_g13",
+      "created": 1794933005500,
+      "type": "session.idle",
+      "data": { "sessionID": "ses_child_gate" }
+    },
+    {
+      "id": "evt_g14",
+      "created": 1794933006000,
+      "type": "session.tool.success",
+      "data": {
+        "sessionID": "ses_root_gate",
+        "assistantMessageID": "msg_m2",
+        "id": "call_gate_spawn",
+        "content": [{ "type": "text", "text": "renderer inspected" }],
+        "metadata": { "status": "completed" },
+        "executed": false
+      }
+    },
+    {
+      "id": "evt_g15",
+      "created": 1794933006500,
+      "type": "session.step.ended",
+      "data": {
+        "sessionID": "ses_root_gate",
+        "assistantMessageID": "msg_m2",
+        "finish": "tool-calls",
+        "tokens": { "input": 420, "output": 50, "reasoning": 0, "cache": { "read": 4600, "write": 512 } }
+      }
+    },
+    {
+      "id": "evt_g16",
+      "created": 1794933007000,
+      "type": "session.tool.input.started",
+      "data": {
+        "sessionID": "ses_root_gate",
+        "assistantMessageID": "msg_m3",
+        "id": "call_gate_resume",
+        "name": "bash"
+      }
+    },
+    {
+      "id": "evt_g17",
+      "created": 1794933007100,
+      "type": "session.tool.called",
+      "data": {
+        "sessionID": "ses_root_gate",
+        "assistantMessageID": "msg_m3",
+        "id": "call_gate_resume",
+        "input": { "command": "npm test", "description": "run the suite" },
+        "executed": false
+      }
+    },
+    {
+      "id": "evt_g18",
+      "created": 1794933008500,
+      "type": "session.tool.success",
+      "data": {
+        "sessionID": "ses_root_gate",
+        "assistantMessageID": "msg_m3",
+        "id": "call_gate_resume",
+        "content": [{ "type": "text", "text": "ok" }],
+        "metadata": { "status": "completed", "exit": 0 },
+        "executed": false
+      }
+    },
+    {
+      "id": "evt_g19",
+      "created": 1794933009000,
+      "type": "session.step.ended",
+      "data": {
+        "sessionID": "ses_root_gate",
+        "assistantMessageID": "msg_m3",
+        "finish": "stop",
+        "tokens": { "input": 500, "output": 70, "reasoning": 0, "cache": { "read": 5200, "write": 0 } }
+      }
+    },
+    {
+      "id": "evt_g20",
+      "created": 1794933009500,
+      "type": "session.idle",
+      "data": { "sessionID": "ses_root_gate" }
+    }
+  ]
+}

@@ -1,0 +1,134 @@
+{
+  "rootSessionId": "ses_root_tools",
+  "events": [
+    {
+      "id": "evt_t01",
+      "created": 1794931110100,
+      "type": "session.tool.input.started",
+      "data": {
+        "sessionID": "ses_root_tools",
+        "assistantMessageID": "msg_a1",
+        "id": "call_shell",
+        "name": "shell"
+      }
+    },
+    {
+      "id": "evt_t02",
+      "created": 1794931110200,
+      "type": "session.tool.called",
+      "data": {
+        "sessionID": "ses_root_tools",
+        "assistantMessageID": "msg_a1",
+        "id": "call_shell",
+        "input": { "command": "echo hi" },
+        "executed": false
+      }
+    },
+    {
+      "id": "evt_t03",
+      "created": 1794931114300,
+      "type": "session.tool.success",
+      "data": {
+        "sessionID": "ses_root_tools",
+        "assistantMessageID": "msg_a1",
+        "id": "call_shell",
+        "content": [{ "type": "text", "text": "hi" }],
+        "metadata": { "status": "completed", "exit": 0 },
+        "executed": false
+      }
+    },
+    {
+      "id": "evt_t04",
+      "created": 1794931114400,
+      "type": "session.step.ended",
+      "data": {
+        "sessionID": "ses_root_tools",
+        "assistantMessageID": "msg_a1",
+        "finish": "tool-calls",
+        "tokens": { "input": 14, "output": 59, "reasoning": 73, "cache": { "read": 109312, "write": 0 } }
+      }
+    },
+    {
+      "id": "evt_t05",
+      "created": 1794931120000,
+      "type": "session.tool.input.started",
+      "data": {
+        "sessionID": "ses_root_tools",
+        "assistantMessageID": "msg_a2",
+        "id": "call_read",
+        "name": "read"
+      }
+    },
+    {
+      "id": "evt_t06",
+      "created": 1794931120010,
+      "type": "session.tool.input.started",
+      "data": {
+        "sessionID": "ses_root_tools",
+        "assistantMessageID": "msg_a2",
+        "id": "call_skill",
+        "name": "skill"
+      }
+    },
+    {
+      "id": "evt_t07",
+      "created": 1794931120100,
+      "type": "session.tool.called",
+      "data": {
+        "sessionID": "ses_root_tools",
+        "assistantMessageID": "msg_a2",
+        "id": "call_read",
+        "input": { "filePath": "./nope.txt", "apiKey": "test-placeholder-value" },
+        "executed": false
+      }
+    },
+    {
+      "id": "evt_t08",
+      "created": 1794931120110,
+      "type": "session.tool.called",
+      "data": {
+        "sessionID": "ses_root_tools",
+        "assistantMessageID": "msg_a2",
+        "id": "call_skill",
+        "input": { "name": "braindump", "args": "notes/" },
+        "executed": false
+      }
+    },
+    {
+      "id": "evt_t09",
+      "created": 1794931120500,
+      "type": "session.tool.failed",
+      "data": {
+        "sessionID": "ses_root_tools",
+        "assistantMessageID": "msg_a2",
+        "id": "call_read",
+        "error": { "type": "not_found", "message": "File not found: ./nope.txt" },
+        "executed": false
+      }
+    },
+    {
+      "id": "evt_t10",
+      "created": 1794931121000,
+      "type": "session.tool.success",
+      "data": {
+        "sessionID": "ses_root_tools",
+        "assistantMessageID": "msg_a2",
+        "id": "call_skill",
+        "content": [{ "type": "text", "text": "loaded braindump" }],
+        "metadata": { "status": "completed" },
+        "executed": false
+      }
+    },
+    {
+      "id": "evt_t11",
+      "created": 1794931121100,
+      "type": "session.step.ended",
+      "data": {
+        "sessionID": "ses_root_tools",
+        "assistantMessageID": "msg_a2",
+        "finish": "tool-calls",
+        "tokens": { "input": 86, "output": 42, "reasoning": 0, "cache": { "read": 109184, "write": 2048 } }
+      }
+    }
+  ]
+}
