@@ -94,11 +94,43 @@ class VendorGraphTest(unittest.TestCase):
         esf = next(e for e in graph if e["tree"] == "esf")
         self.assertEqual(esf["fork_vs_head"]["behind_by"], 57)
 
+    def test_empty_block_is_a_finding(self):
+        # Valid JSON with no fields must not keep the entry count at 13 while
+        # silently disabling freshness checks for that tree.
+        p = self.root / "reference" / "esf" / "PROVENANCE.md"
+        text = p.read_text(encoding="utf-8")
+        import re
+        p.write_text(re.sub(r"vendor-freshness: \{.*?\}", "vendor-freshness: {}", text), encoding="utf-8")
+        with mock.patch.object(vendor_graph, "run_gh", side_effect=self.fake_gh):
+            report = vendor_graph.build(self.root, findings=True)
+        self.assertTrue(any(f.get("tree") == "esf" and "field" in f.get("why", "") for f in report["findings"]))
+        self.assertEqual(len(report["entries"]), 12)
+
+    def test_block_without_repo_is_a_finding_not_a_keyerror(self):
+        p = self.root / "reference" / "esf" / "PROVENANCE.md"
+        text = p.read_text(encoding="utf-8").replace('"repo": "pratik-saptarshi/esf", ', "")
+        p.write_text(text, encoding="utf-8")
+        with mock.patch.object(vendor_graph, "run_gh", side_effect=self.fake_gh):
+            report = vendor_graph.build(self.root, findings=True)
+        self.assertTrue(any(f.get("tree") == "esf" and "repo" in f.get("why", "") for f in report["findings"]))
+        self.assertFalse(any("error" in e for e in report["entries"]))
+
+    def test_local_block_needs_only_tree_and_policy(self):
+        d = self.root / "reference" / "local-only"
+        d.mkdir(parents=True)
+        (d / "PROVENANCE.md").write_text(
+            '<!-- vendor-freshness: {"tree":"local-only","policy":"local"} -->\n',
+            encoding="utf-8",
+        )
+        with mock.patch.object(vendor_graph, "run_gh", side_effect=self.fake_gh):
+            report = vendor_graph.build(self.root, findings=True)
+        self.assertFalse(any(f.get("tree") == "local-only" for f in report["findings"]))
+
     def test_test_count_asserted(self):
         # Count assertion mirrors the repo's CI gate: deleting a test fails this.
         src = Path(__file__).read_text(encoding="utf-8")
         needle = "    def " + "test_"
-        self.assertEqual(src.count(needle), 6)
+        self.assertEqual(src.count(needle), 9)
 
 
 if __name__ == "__main__":

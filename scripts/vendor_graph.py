@@ -48,6 +48,25 @@ def parse_blocks(root):
         except json.JSONDecodeError as exc:
             findings.append({"tree": d.name, "why": f"malformed vendor-freshness block: {exc}"})
             continue
+        if not isinstance(block, dict):
+            findings.append({"tree": d.name, "why": "malformed vendor-freshness block: not an object"})
+            continue
+        # Validate the schema before accepting the entry. Valid JSON with no
+        # fields would otherwise keep the entry count at 13 while silently
+        # disabling freshness checks, and a missing repo/branch raises KeyError
+        # in the live compare, killing the whole weekly report.
+        local = block.get("policy") == "local"
+        required = ["tree", "policy"] if local else [
+            "tree", "pin", "repo", "branch", "parent_branch", "policy", "decision_date", "review_due",
+        ]
+        invalid = [k for k in required if k not in block or block[k] is None and k != "parent_branch"]
+        if local and block.get("pin") is not None:
+            invalid.append("local entry must not carry a pin")
+        if not local and block.get("pin") is not None and not re.fullmatch(r"[0-9a-f]{7,40}", str(block["pin"])):
+            invalid.append("pin")
+        if invalid:
+            findings.append({"tree": d.name, "why": f"malformed vendor-freshness block: invalid field(s): {', '.join(invalid)}"})
+            continue
         found_pin = re.search(r"[0-9a-f]{7,40}", text)
         pin = block.get("pin")
         if pin and found_pin:
