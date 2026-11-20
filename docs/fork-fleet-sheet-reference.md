@@ -66,7 +66,12 @@ automation that moves mirrors) when its JSON run record shows an
 APPLIED sync for the repo after the row's previous verification.
 Run-record timestamps are ISO 8601 with a UTC offset (fork-sync
 writes America/Chicago local time); the census compares them as
-datetimes, never as bare strings. An axis that fails to measure
+datetimes, never as bare strings. The "previous verification" a
+sync record is compared against is the row's own measurement
+time (column O carries the per-repo `measured_at` the census
+recorded), not the run's completion time — a sync applied while
+a census is still measuring later repos postdates that repo's
+compares and stays attributable on the next census. An axis that fails to measure
 keeps its last measured head as the baseline in the sheet (counts
 blank, status `unknown`, verification stamp not advanced), so a
 sync applied during a failed observation is still attributable

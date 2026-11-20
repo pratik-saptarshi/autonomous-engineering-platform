@@ -618,3 +618,26 @@ class CodexRegressionTests(unittest.TestCase):
         rows3, _ = ffc.build_rows(census_doc([partial]), rows2, record, "2026-11-18T09:00:00-06:00")
         self.assertEqual(rows3[0][13], "unknown (external change)")
         self.assertEqual(rows3[0][12], "2026-11-17T08:00:00-06:00")  # M kept
+
+    def test_attribution_window_uses_measurement_time_not_run_completion(self):
+        # fork-sync overlaps the census: the repo is measured at
+        # 19:45, fork-sync applies at 19:50, the run completes at
+        # 20:00. Column O must carry the repo's own measurement
+        # time, not the completion time -- otherwise the 19:50 sync
+        # predates the stamp, fails the next census's window check,
+        # and the recovered movement is mislabeled external.
+        measured1 = census_row(measured_at="2026-11-18T19:45:00-06:00")
+        rows1, _ = ffc.build_rows(
+            census_doc([measured1]), [], {}, "2026-11-18T20:00:00-06:00"
+        )
+        self.assertEqual(rows1[0][14], "2026-11-18T19:45:00-06:00")  # O = measured_at
+        record = {"repos": {"pratik-saptarshi/x": {"last_applied_at": "2026-11-18T19:50:00-06:00"}}}
+        measured2 = census_row(
+            mirror_head=SHA_D, mirror_behind=2,
+            measured_at="2026-11-19T19:45:00-06:00",
+        )
+        rows2, _ = ffc.build_rows(
+            census_doc([measured2]), rows1, record, "2026-11-19T20:00:00-06:00"
+        )
+        self.assertEqual(rows2[0][13], "fork-sync")
+        self.assertEqual(rows2[0][12], "2026-11-18T19:50:00-06:00")

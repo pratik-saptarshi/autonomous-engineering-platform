@@ -314,7 +314,17 @@ def run_census(runner) -> dict:
         for r in repos
         if r.get("isFork") and (r.get("defaultBranchRef") or {}).get("name") == "develop"
     )
-    rows = [census_repo(repo, runner) for repo in eligible]
+    rows = []
+    for repo in eligible:
+        row = census_repo(repo, runner)
+        # Per-repo measurement time. The attribution window is
+        # bounded by when THIS repo was measured, not by when the
+        # whole run finished: a sync fork-sync applies while the
+        # remaining repos are still being measured postdates this
+        # repo's compares, and must stay attributable on the next
+        # census (column O carries this stamp; see build_rows).
+        row["measured_at"] = datetime.now(CHICAGO).isoformat(timespec="seconds")
+        rows.append(row)
     return {
         "version": 1,
         "actor": ACTOR,
@@ -445,7 +455,12 @@ def build_rows(census, prev_rows, sync_record, verified_at):
     def census_sheet_row(row: dict, prev: list | None) -> list:
         last_sync = ""
         actor = "fork-fleet-census"
-        verified = verified_at
+        # Column O is the repo's own measurement time when the
+        # census recorded one (rows from older censuses fall back
+        # to the run-level stamp): the attribution window compares
+        # sync records against it, and a run-completion stamp would
+        # exclude syncs applied while the run was still measuring.
+        verified = row.get("measured_at") or verified_at
         m_behind, m_unique, m_head = (
             _cell(row["mirror_behind"]),
             _cell(row["mirror_unique"]),
