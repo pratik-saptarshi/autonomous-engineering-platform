@@ -70,11 +70,22 @@ mirror-ff)
 backup)
   [ $# -eq 5 ] || usage
   repo=$1 tree=$2 mirror_sha=$3 working_sha=$4 bundle=$5
+  case "$bundle" in /*) ;; *) bundle="$PWD/$bundle" ;; esac
   # Tags BEFORE the bundle: a bundle captures the refs that exist when it is
   # created, and the rollback restore clones from the bundle and resolves
   # these tags -- a bundle made first can never contain them.
-  git -C "$repo" tag "backup/pre-sync-$tree-mirror" "$mirror_sha"
-  git -C "$repo" tag "backup/pre-sync-$tree-working" "$working_sha"
+  for spec in "backup/pre-sync-$tree-mirror $mirror_sha" "backup/pre-sync-$tree-working $working_sha"; do
+    tag=${spec% *}
+    sha=${spec#* }
+    if existing=$(git -C "$repo" rev-parse -q --verify "refs/tags/$tag" 2>/dev/null); then
+      if [ "$existing" != "$sha" ]; then
+        echo "backup: tag $tag already exists at $existing, not $sha; delete it manually to re-backup a different state" >&2
+        exit 1
+      fi
+    else
+      git -C "$repo" tag "$tag" "$sha"
+    fi
+  done
   git -C "$repo" bundle create "$bundle" --all >/dev/null
   heads=$(git bundle list-heads "$bundle")
   for ref in "refs/tags/backup/pre-sync-$tree-mirror" "refs/tags/backup/pre-sync-$tree-working"; do
