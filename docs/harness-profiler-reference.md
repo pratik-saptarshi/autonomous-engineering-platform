@@ -9,7 +9,7 @@ Vendored snapshot: [PROVENANCE.md](../reference/harness-profiler/PROVENANCE.md) 
 ## Mapping to the AEP loop
 
 | harness-profiler | AEP (this environment) |
-|---|---|
+| --- | --- |
 | one record per call, schema `v: 2`, ≤ 4096 bytes, secrets masked at write time | evidence discipline: a trace is a record of what happened, bounded and scrubbed like every other ledger |
 | contexts derived from spawn edges, not from guessed timestamps | claims about "which agent did what" ground in the recorded edge, not in a summary |
 | token spend attributed per context, from `child_spend` / `SubagentStop.spend` or, when the record carries a transcript path, from the transcript via `spentTokens` | cost claims carry the field they came from; a blank column is shown blank, never estimated |
