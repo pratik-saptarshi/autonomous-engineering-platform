@@ -472,15 +472,29 @@ def build_rows(census, prev_rows, sync_record, verified_at):
     record_repos = (sync_record or {}).get("repos", {})
     prev_by_repo = {}
     prev_order = []
-    for prow in prev_rows:
+    prev_index = {}
+    placeholders = {}
+    for position, prow in enumerate(prev_rows):
+        # Normalize to exactly the machine range: pad short rows,
+        # truncate wide ones -- a caller that hands over Q:R must
+        # never see them carried into the output.
+        normalized = (list(prow or []) + [""] * ROW_FIELDS)[:ROW_FIELDS]
         if prow and str(prow[COL_REPO]).strip():
             repo = str(prow[COL_REPO]).strip()
             if repo not in prev_by_repo:
                 prev_order.append(repo)
-            # Normalize to exactly the machine range: pad short rows,
-            # truncate wide ones -- a caller that hands over Q:R must
-            # never see them carried into the output.
-            prev_by_repo[repo] = (list(prow) + [""] * ROW_FIELDS)[:ROW_FIELDS]
+                prev_index[repo] = position
+            else:
+                # Duplicate occurrence: only the first occurrence is
+                # emitted; this physical position holds a placeholder.
+                placeholders[position] = normalized
+            prev_by_repo[repo] = normalized
+        else:
+            # A blank row produces no emit, but its physical position
+            # must be preserved: the sheet writer treats each index
+            # in `changed` as a physical sheet position, so skipping
+            # the row entirely would compact every later index.
+            placeholders[position] = normalized
     census_by_repo = {r["repo"]: r for r in census["repos"]}
     rows: list[list] = []
     changed: list[int] = []
@@ -663,10 +677,21 @@ def build_rows(census, prev_rows, sync_record, verified_at):
             notes,
         ]
 
+    def pad_to(position: int):
+        # Fill positions the prev scan did not emit (blank rows,
+        # duplicate occurrences) with their placeholders, so a
+        # prev-derived row emitted at physical index `position`
+        # lands at that index in `rows`. Placeholders are appended
+        # directly, never via emit: their content does not change,
+        # so they never enter `changed`.
+        while len(rows) < position:
+            rows.append(placeholders.get(len(rows), [""] * ROW_FIELDS))
+
     seen = set()
     for repo in prev_order:
         seen.add(repo)
         prev = prev_by_repo[repo]
+        pad_to(prev_index[repo])
         if repo in census_by_repo:
             emit(repo, census_sheet_row(census_by_repo[repo], prev), prev)
         elif (

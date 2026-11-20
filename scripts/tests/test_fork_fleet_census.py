@@ -996,3 +996,73 @@ class CodexRegressionTests(unittest.TestCase):
         )
         self.assertEqual(rows1[0][12], "2026-11-18T09:59:00-06:00")
         self.assertEqual(rows1[0][13], "fork-fleet-census")
+
+
+class BlankRowPositionTests(unittest.TestCase):
+    """Round-12 regressions: blank prev rows keep physical positions.
+
+    The sheet writer treats each index in ``changed`` as the row's
+    physical sheet position, so a blank row in the previous sheet
+    state must occupy its position in the derived rows (as a
+    placeholder that is never itself changed) instead of compacting
+    every later index down by one.
+    """
+
+    def prev_rows_for(self, repos):
+        rows, _ = ffc.build_rows(
+            census_doc([census_row(repo=r) for r in repos]), [], {}, "T1"
+        )
+        return rows
+
+    def test_blank_row_between_repos_preserves_changed_index(self):
+        a = "pratik-saptarshi/a"
+        b = "pratik-saptarshi/b"
+        base = self.prev_rows_for([a, b])
+        prev = [base[0], [], base[1]]
+        doc = census_doc(
+            [census_row(repo=a), census_row(repo=b, mirror_behind=2)]
+        )
+        rows, changed = ffc.build_rows(doc, prev, {}, "T2")
+        self.assertEqual(changed, [2])
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(rows[0][0], a)
+        self.assertEqual(rows[1], [""] * ffc.ROW_FIELDS)  # blank placeholder
+        self.assertEqual(rows[2][0], b)
+        self.assertEqual(rows[2][4], 2)
+        self.assertNotIn(0, changed)
+
+    def test_blank_row_first_preserves_changed_index(self):
+        a = "pratik-saptarshi/a"
+        base = self.prev_rows_for([a])
+        prev = [[], base[0]]
+        doc = census_doc([census_row(repo=a, mirror_behind=2)])
+        rows, changed = ffc.build_rows(doc, prev, {}, "T2")
+        self.assertEqual(changed, [1])
+        self.assertEqual(rows[0], [""] * ffc.ROW_FIELDS)  # blank placeholder
+        self.assertEqual(rows[1][0], a)
+
+    def test_multiple_blank_rows_preserve_changed_index(self):
+        a = "pratik-saptarshi/a"
+        b = "pratik-saptarshi/b"
+        base = self.prev_rows_for([a, b])
+        prev = [base[0], [], [], base[1]]
+        doc = census_doc(
+            [census_row(repo=a), census_row(repo=b, mirror_behind=2)]
+        )
+        rows, changed = ffc.build_rows(doc, prev, {}, "T2")
+        self.assertEqual(changed, [3])
+        self.assertEqual(rows[1], [""] * ffc.ROW_FIELDS)
+        self.assertEqual(rows[2], [""] * ffc.ROW_FIELDS)
+        self.assertEqual(rows[3][0], b)
+
+    def test_blank_row_with_no_change_marks_nothing_changed(self):
+        # Guard against over-correction: a blank row must not make
+        # an unchanged following repo (or the placeholder itself)
+        # appear in changed, and no index may shift into changed.
+        a = "pratik-saptarshi/a"
+        b = "pratik-saptarshi/b"
+        base = self.prev_rows_for([a, b])
+        prev = [base[0], [], base[1]]
+        doc = census_doc([census_row(repo=a), census_row(repo=b)])
+        _rows, changed = ffc.build_rows(doc, prev, {}, "T2")
+        self.assertEqual(changed, [])
