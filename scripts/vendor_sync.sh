@@ -52,7 +52,8 @@ assert-ancestors)
 assert-content)
   [ $# -eq 4 ] || usage
   repo=$1 working=$2 file=$3 pattern=$4
-  if ! git -C "$repo" show "$working:$file" | grep -Fq -- "$pattern"; then
+  content=$(git -C "$repo" show "$working:$file")
+  if [[ "$content" != *"$pattern"* ]]; then
     echo "assert-content: '$pattern' missing from $file on $working" >&2
     exit 1
   fi
