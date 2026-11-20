@@ -63,7 +63,12 @@ the current observation's own attribution window is still bounded
 above by its measurement-completion time. An axis with no measured baseline yet (blank head cell,
 because every earlier observation of it failed) treats its first
 successful measurement as initialization, not movement: an absent
-baseline is distinguished from a changed head. On a first
+baseline is distinguished from a changed head. On such a recovery,
+column M likewise initializes from the latest sync record
+predating the successful observation (the baseline head already
+reflects it), unbounded by the deferred-reconciliation window --
+the failed observation may be a day old, and once column O
+advances no later observation could recover the record. On a first
 observation, only a sync record predating the observation may be
 copied into column M (it is already reflected in the measured
 head); a record landing inside the observation window is
@@ -705,7 +710,42 @@ def build_rows(census, prev_rows, sync_record, verified_at):
                     "last_applied_at"
                 )
                 prev_sync = str(prev[COL_LAST_SYNC]).strip()
-                if (
+                if not mirror_baseline:
+                    # Blank-baseline initialization: this observation
+                    # establishes the mirror's first measured baseline
+                    # (the previous row's head cell is blank --
+                    # earlier observations never measured the axis,
+                    # e.g. a newly discovered repo whose first census
+                    # failed outright). Initialization is not
+                    # movement, so column N's attribution stands; but
+                    # the baseline head already reflects every sync
+                    # applied before this observation, so column M
+                    # initializes from the latest such record -- the
+                    # existing-row analogue of the first-observation
+                    # rule below. The deferred window must not bound
+                    # this: the failed observation may be a day old,
+                    # and once column O advances past the record no
+                    # later observation could recover it. The bound
+                    # is this observation's own start watermark (the
+                    # pre-freeze value of `verified`, which a partial
+                    # row froze to the previous stamp): records
+                    # inside or after the window stay unconsumed,
+                    # exactly as on first observation. The
+                    # consumption watermark (M) still applies.
+                    # Established baselines never take this branch --
+                    # they use the bounded reconciliation below.
+                    obs_start = (
+                        row.get("observed_from")
+                        or row.get("measured_at")
+                        or verified_at
+                    )
+                    if (
+                        applied
+                        and (not prev_sync or _after(applied, prev_sync))
+                        and not _after(applied, obs_start)
+                    ):
+                        last_sync = applied
+                elif (
                     applied
                     and _after(applied, str(prev[COL_VERIFIED]).strip())
                     and (not prev_sync or _after(applied, prev_sync))

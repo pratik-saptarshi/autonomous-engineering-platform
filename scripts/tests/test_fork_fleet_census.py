@@ -1060,6 +1060,77 @@ class CodexRegressionTests(unittest.TestCase):
         self.assertEqual(rows2[0][12], "2026-11-18T10:00:30-06:00")  # M reconciled
         self.assertEqual(changed, [0])
 
+    def test_blank_baseline_recovery_initializes_sync_metadata(self):
+        # A newly discovered repo's first mirror measurement fails
+        # outright (10:00, blank head cells -- no baseline). A sync
+        # is applied at 12:00, and the next successful census is the
+        # following morning. That recovery establishes the mirror's
+        # FIRST measured baseline: the absent previous head
+        # correctly prevents mirror_moved, but the deferred
+        # reconciliation rejects the 12:00 record because it falls
+        # outside the one-hour window anchored at the failed
+        # observation's stamp -- and once column O advances, no
+        # later observation can recover it, so column M stays blank
+        # permanently despite successful measurements. Recovery is
+        # initialization, not movement: M initializes from records
+        # predating the successful observation, and N must not
+        # classify a movement (or a bot change) where none was
+        # observed.
+        failed = census_row(
+            upstream=None, mirror_branch=None,
+            mirror_status="unknown", develop_status="unknown",
+            mirror_behind=None, mirror_unique=None,
+            develop_behind=None, develop_fork_local=None,
+            mirror_head=None, upstream_head=None, develop_head=None,
+            error="repo-info: HTTP 500",
+        )
+        rows1, _ = ffc.build_rows(
+            census_doc([failed], generated_at="2026-11-18T10:00:00-06:00"),
+            [], {}, "2026-11-18T10:00:00-06:00",
+        )
+        self.assertEqual(rows1[0][6], "")  # no mirror baseline
+        self.assertEqual(rows1[0][12], "")  # M blank
+        record = {"repos": {"pratik-saptarshi/x": {"last_applied_at": "2026-11-18T12:00:00-06:00"}}}
+        rows2, _ = ffc.build_rows(
+            census_doc([census_row()], generated_at="2026-11-19T09:00:00-06:00"),
+            rows1, record, "2026-11-19T09:00:00-06:00",
+        )
+        self.assertEqual(rows2[0][6], SHA_A[:12])  # baseline established
+        self.assertEqual(rows2[0][12], "2026-11-18T12:00:00-06:00")  # M initialized
+        self.assertEqual(rows2[0][13], "fork-fleet-census")  # NOT movement
+        # A later unchanged observation keeps the initialized stamp:
+        # it is never lost once column O advances past the record.
+        rows3, _ = ffc.build_rows(
+            census_doc([census_row()], generated_at="2026-11-20T09:00:00-06:00"),
+            rows2, record, "2026-11-20T09:00:00-06:00",
+        )
+        self.assertEqual(rows3[0][12], "2026-11-18T12:00:00-06:00")
+        self.assertEqual(rows3[0][13], "fork-fleet-census")
+
+    def test_established_baseline_does_not_initialize_from_stale_record(self):
+        # Guard: the blank-baseline initialization must not leak to
+        # established baselines. A repo whose baseline was measured
+        # on night 1, with a sync record landing BETWEEN
+        # observations (12:00, outside the one-hour deferred window
+        # anchored at night 1's stamp) and an unchanged head on
+        # night 2, keeps M blank: against an established baseline an
+        # unchanged head means that sync explains nothing the sheet
+        # tracks, and the existing reconciliation bounds still
+        # apply.
+        rows1, _ = ffc.build_rows(
+            census_doc([census_row()], generated_at="2026-11-18T10:00:00-06:00"),
+            [], {}, "2026-11-18T10:00:00-06:00",
+        )
+        self.assertEqual(rows1[0][6], SHA_A[:12])  # baseline established
+        self.assertEqual(rows1[0][12], "")
+        record = {"repos": {"pratik-saptarshi/x": {"last_applied_at": "2026-11-18T12:00:00-06:00"}}}
+        rows2, _ = ffc.build_rows(
+            census_doc([census_row()], generated_at="2026-11-19T09:00:00-06:00"),
+            rows1, record, "2026-11-19T09:00:00-06:00",
+        )
+        self.assertEqual(rows2[0][12], "")  # M untouched
+        self.assertEqual(rows2[0][13], "fork-fleet-census")
+
 
 class BlankRowPositionTests(unittest.TestCase):
     """Round-12 regressions: blank prev rows keep physical positions.

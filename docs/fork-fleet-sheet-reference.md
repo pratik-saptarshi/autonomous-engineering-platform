@@ -119,7 +119,12 @@ measured successfully (a newly discovered fork's first census
 may have failed outright), its first successful measurement is
 initialization — it establishes the baseline and is not
 classified as a movement, so a recovered repo is not stamped
-`unknown (external change)` for branches that never moved.
+`unknown (external change)` for branches that never moved. On
+such a recovery, column M likewise initializes from the latest
+sync record predating the successful observation (the baseline
+head already reflects it), unbounded by the reconciliation
+window above — that window bounds only established baselines,
+and a failed first observation may be a day old.
 First-observation rows are stamped `fork-fleet-census`. Develop
 movements are not bot-made today, so a develop change with no
 recorded bot action is `unknown (external change)` — a person is
