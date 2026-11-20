@@ -1,0 +1,272 @@
+import React from 'react';
+import type { Session } from '@/lib/opencode/model';
+
+import { Button } from '@/components/ui/button';
+import { MobileOverlayPanel } from '@/components/ui/MobileOverlayPanel';
+import { Switch } from '@/components/ui/switch';
+import { toast } from '@/components/ui';
+import { useI18n } from '@/lib/i18n';
+import { cn } from '@/lib/utils';
+import { normalizePath as normalizePathImpl } from '@/lib/pathNormalization';
+import { canDeleteWorktreeBranch, getWorktreeStatus } from '@/lib/worktrees/worktreeStatus';
+import { getWorktreeDisplayName, removeProjectWorktree, type ProjectRef } from '@/lib/worktrees/worktreeManager';
+import { archiveSessionsThenRemoveWorktree, deleteWithoutTeardownToast } from '@/lib/worktrees/worktreeRemovalFlow';
+import { describeWorktreeKeepError, moveWorktreeSessionsThenRemove } from '@/lib/worktrees/sessionWorktreeMove';
+import { checkoutHoldsDirectory } from '@/lib/worktrees/worktreePaths';
+import { clearWorktreeRemoval, markWorktreeRemoving } from '@/lib/worktrees/worktreeRemovalState';
+import { readSessionsInWorktree, withSessionsNowInWorktree } from '@/lib/worktrees/worktreeUse';
+import { BoundGitNetworkOperationError, GitOperationResultError } from '@/lib/boundGitNetworkOperation';
+import { PendingGitOperationError } from '@/lib/source-control/git-operation-recovery';
+import { useDirectoryStore } from '@/stores/useDirectoryStore';
+import { useGlobalSessionsStore } from '@/stores/useGlobalSessionsStore';
+import { useSessionUIStore } from '@/sync/session-ui-store';
+import { useAllLiveSessions, useSyncRuntime } from '@/sync/sync-context';
+import type { WorktreeMetadata } from '@/types/worktree';
+import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
+
+type MobileDeleteWorktreeDialogProps = {
+  open: boolean;
+  project: ProjectRef;
+  worktree: WorktreeMetadata | null;
+  onClose: () => void;
+  onDeleted?: () => void;
+};
+
+const normalizePath = (value: string | null | undefined): string => normalizePathImpl(value) ?? '';
+
+const getSessionDirectory = (session: Session): string => {
+  const record = session as Session & { directory?: string | null; project?: { worktree?: string | null } | null };
+  return normalizePath(record.directory ?? record.project?.worktree ?? null);
+};
+
+export const MobileDeleteWorktreeDialog: React.FC<MobileDeleteWorktreeDialogProps> = ({
+  open,
+  project,
+  worktree,
+  onClose,
+  onDeleted,
+}) => {
+  const { t } = useI18n();
+  const liveSessions = useAllLiveSessions();
+  const { childStores } = useSyncRuntime();
+  const globalActiveSessions = useGlobalSessionsStore((state) => state.activeSessions);
+  const archiveSessions = useSessionUIStore((state) => state.archiveSessions);
+  const unarchiveSessions = useSessionUIStore((state) => state.unarchiveSessions);
+  const { git, sourceControl } = useRuntimeAPIs();
+
+  const [deleteLocalBranch, setDeleteLocalBranch] = React.useState(false);
+  const [deleteRemoteBranch, setDeleteRemoteBranch] = React.useState(false);
+  const [keepSessions, setKeepSessions] = React.useState(false);
+  const [isDirty, setIsDirty] = React.useState(false);
+  const [remoteName, setRemoteName] = React.useState<string | null>(null);
+  const [isProcessing, setIsProcessing] = React.useState(false);
+
+  const worktreePath = normalizePath(worktree?.path);
+  const [canDeleteBranch, setCanDeleteBranch] = React.useState(false);
+  const worktreeBranch = worktree?.branch ?? '';
+  React.useEffect(() => {
+    setCanDeleteBranch(false);
+    if (!open || !worktreePath) return;
+    let cancelled = false;
+    void canDeleteWorktreeBranch(project.path, { path: worktreePath, branch: worktreeBranch }).then((allowed) => {
+      if (!cancelled) setCanDeleteBranch(allowed);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, project.path, worktreeBranch, worktreePath]);
+
+  const linkedSessions = React.useMemo(() => {
+    if (!worktreePath) return [] as Session[];
+    const merged = new Map<string, Session>();
+    for (const session of [...globalActiveSessions, ...liveSessions]) {
+      const directory = getSessionDirectory(session);
+      if (directory && checkoutHoldsDirectory(worktreePath, directory)) merged.set(session.id, session);
+    }
+    return Array.from(merged.values());
+  }, [globalActiveSessions, liveSessions, worktreePath]);
+
+  const readSessionsNowInWorktree = React.useCallback((path: string): Session[] => readSessionsInWorktree(childStores, path), [childStores]);
+
+  React.useEffect(() => {
+    if (!open) {
+      setDeleteLocalBranch(false);
+      setDeleteRemoteBranch(false);
+      setKeepSessions(false);
+      setIsDirty(false);
+      setRemoteName(null);
+      setIsProcessing(false);
+      return;
+    }
+    if (!worktree?.path) return;
+    let cancelled = false;
+    void getWorktreeStatus(worktree.path)
+      .then((status) => {
+        if (!cancelled) {
+          setIsDirty(Boolean(status?.isDirty));
+          setRemoteName(status?.upstream?.split('/')[0]?.trim() || null);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setIsDirty(Boolean(worktree.status?.isDirty));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, worktree?.path, worktree?.status?.isDirty]);
+
+  const removeWorktree = React.useCallback(async (target: WorktreeMetadata, skipTeardown: boolean): Promise<boolean> => {
+    await removeProjectWorktree(project, target, {
+      deleteRemoteBranch: canDeleteBranch && deleteRemoteBranch,
+      deleteLocalBranch: canDeleteBranch && deleteLocalBranch,
+      remoteName: remoteName ?? undefined,
+      network: {
+        git,
+        sourceControl,
+      },
+      skipTeardown,
+    });
+
+    if (normalizePath(useDirectoryStore.getState().currentDirectory) === worktreePath && normalizePath(project.path)) {
+      useDirectoryStore.getState().setDirectory(normalizePath(project.path), { showOverlay: false });
+    }
+    return true;
+  }, [deleteLocalBranch, deleteRemoteBranch, git, canDeleteBranch, project, remoteName, sourceControl, worktreePath]);
+  const removeWorktreeInBackground = React.useCallback((target: WorktreeMetadata, sessionIds: string[], keepInProject: boolean) => {
+    const name = getWorktreeDisplayName(target);
+    const run = async (skipTeardown: boolean, attemptSessionIds: string[]): Promise<void> => {
+      const toastId = toast.loading(t('sessions.sidebar.sessionDialogs.worktree.removingTitle', { name }));
+      markWorktreeRemoving(target.path);
+      try {
+        if (keepInProject) {
+          const kept = await moveWorktreeSessionsThenRemove({
+            worktreePath: target.path,
+            projectDirectory: project.path,
+            readSessions: () => readSessionsNowInWorktree(target.path),
+            removeWorktree: () => removeWorktree(target, skipTeardown),
+          });
+          if (!kept.removed) {
+            toast.dismiss(toastId);
+            return;
+          }
+          toast.success(canDeleteBranch && deleteRemoteBranch
+            ? t('sessions.sidebar.sessionDialogs.worktree.removedWithRemote')
+            : t('sessions.sidebar.sessionDialogs.worktree.removed'), { id: toastId, description: name });
+          onDeleted?.();
+          return;
+        }
+        const result = await archiveSessionsThenRemoveWorktree({
+          sessionIds: attemptSessionIds,
+          removeWorktree: () => removeWorktree(target, skipTeardown),
+          archiveSessions,
+          restoreSessions: (ids) => unarchiveSessions(ids, { undo: true }),
+        });
+        if (!result.removed) {
+          toast.dismiss(toastId);
+          return;
+        }
+        const { failedIds } = result.archive;
+        if (failedIds.length > 0) {
+          toast.error(
+            failedIds.length === 1
+              ? t('sessions.sidebar.bulkActions.failedArchiveSingle', { count: failedIds.length })
+              : t('sessions.sidebar.bulkActions.failedArchivePlural', { count: failedIds.length }),
+            { id: toastId, description: t('sessions.sidebar.dialogs.deleteResult.tryAgain') },
+          );
+          return;
+        }
+
+        toast.success(canDeleteBranch && deleteRemoteBranch
+          ? t('sessions.sidebar.sessionDialogs.worktree.removedWithRemote')
+          : t('sessions.sidebar.sessionDialogs.worktree.removed'), { id: toastId, description: name });
+        onDeleted?.();
+      } catch (error) {
+        const description = (error instanceof Error ? describeWorktreeKeepError(error, t) : null) ?? (error instanceof GitOperationResultError
+          ? error.message || t('sessions.sidebar.dialogs.deleteResult.tryAgain')
+          : error instanceof PendingGitOperationError || (error instanceof BoundGitNetworkOperationError && !error.message.includes(' '))
+            ? t('gitView.publish.remoteNotGranted')
+            : error instanceof Error ? error.message : t('sessions.sidebar.dialogs.deleteResult.tryAgain'));
+        toast.error(t('sessions.sidebar.sessionDialogs.worktree.errorRemoveTitle'), {
+          id: toastId,
+          description,
+          ...(error instanceof Error
+            ? deleteWithoutTeardownToast(error, t('sessions.sidebar.sessionDialogs.worktree.deleteWithoutTeardown'), () => {
+              void run(true, withSessionsNowInWorktree(attemptSessionIds, target.path));
+            })
+            : undefined),
+        });
+      } finally {
+        clearWorktreeRemoval(target.path);
+      }
+    };
+    void run(false, sessionIds);
+  }, [archiveSessions, deleteRemoteBranch, canDeleteBranch, onDeleted, project.path, readSessionsNowInWorktree, removeWorktree, t, unarchiveSessions]);
+
+  const handleConfirm = () => {
+    if (!worktree || isProcessing) return;
+    removeWorktreeInBackground(worktree, linkedSessions.map((session) => session.id), keepSessions && linkedSessions.length > 0);
+    onClose();
+  };
+
+  if (!worktree) return null;
+
+  const worktreeName = worktree.branch || worktree.label || worktree.path;
+
+  const toggle = (checked: boolean, onChange: (value: boolean) => void, label: string, disabled?: boolean) => (
+    <label className={cn('oc-tile flex min-h-11 items-center justify-between gap-3 rounded-lg px-3', disabled && 'opacity-50')}>
+      <span className="typography-meta font-medium text-foreground">{label}</span>
+      <Switch checked={checked} onCheckedChange={onChange} disabled={disabled} />
+    </label>
+  );
+
+  return (
+    <MobileOverlayPanel
+      open={open}
+      onClose={onClose}
+      title={t('mobile.projectEdit.deleteWorktreeTitle')}
+      footer={
+        <div className="flex gap-2">
+          <Button variant="ghost" className="flex-1" onClick={onClose} disabled={isProcessing}>
+            {t('projectEditDialog.actions.cancel')}
+          </Button>
+          <Button
+            variant="destructive"
+            className="flex-1"
+            onClick={() => void handleConfirm()}
+            disabled={isProcessing}
+          >
+            {t('mobile.projectEdit.deleteWorktreeConfirmButton')}
+          </Button>
+        </div>
+      }
+    >
+      <div className="flex flex-col gap-4 px-1 py-1">
+        <p className="typography-ui-body text-foreground">
+          {t('mobile.projectEdit.deleteWorktreeConfirm', { name: worktreeName })}
+        </p>
+
+        {isDirty ? (
+          <p className="rounded-lg bg-[var(--status-warning-background)] px-3 py-2.5 typography-meta text-foreground">
+            {t('mobile.projectEdit.deleteWorktreeDirty')}
+          </p>
+        ) : null}
+
+        {linkedSessions.length > 0 ? (
+          <p className="typography-meta text-muted-foreground">
+            {keepSessions
+              ? t('mobile.projectEdit.deleteWorktreeKeepNote', { count: linkedSessions.length })
+              : t('mobile.projectEdit.deleteWorktreeArchiveNote', { count: linkedSessions.length })}
+          </p>
+        ) : null}
+
+        {linkedSessions.length > 0 || canDeleteBranch ? (
+          <div className="flex flex-col gap-2">
+            {linkedSessions.length > 0 ? toggle(keepSessions, setKeepSessions, t('sessions.sidebar.sessionDialogs.actions.keepSessions'), isProcessing) : null}
+            {canDeleteBranch ? toggle(deleteLocalBranch, setDeleteLocalBranch, t('mobile.projectEdit.deleteLocalBranch'), isProcessing) : null}
+            {canDeleteBranch ? toggle(deleteRemoteBranch, setDeleteRemoteBranch, t('mobile.projectEdit.deleteRemoteBranch'), isProcessing || !remoteName) : null}
+          </div>
+        ) : null}
+      </div>
+    </MobileOverlayPanel>
+  );
+};

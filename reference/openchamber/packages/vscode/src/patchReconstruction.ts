@@ -1,0 +1,108 @@
+
+type ParsedDiffHunk = {
+  newStart: number;
+  oldLines: string[];
+  newLines: string[];
+};
+
+const parseUnifiedDiffHunks = (patch: string): ParsedDiffHunk[] => {
+  const lines = patch.split(/\r?\n/);
+  const hunks: ParsedDiffHunk[] = [];
+
+  let current: ParsedDiffHunk | null = null;
+
+  for (const line of lines) {
+    const headerMatch = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+    if (headerMatch) {
+      if (current) {
+        hunks.push(current);
+      }
+      current = {
+        newStart: Number(headerMatch[1] || 1),
+        oldLines: [],
+        newLines: [],
+      };
+      continue;
+    }
+
+    if (!current) continue;
+
+    if (line.startsWith('---') || line.startsWith('+++') || line.startsWith('\\ No newline')) {
+      continue;
+    }
+
+    if (line.startsWith('-')) {
+      current.oldLines.push(line.slice(1));
+      continue;
+    }
+
+    if (line.startsWith('+')) {
+      current.newLines.push(line.slice(1));
+      continue;
+    }
+
+    if (line.startsWith(' ')) {
+      const content = line.slice(1);
+      current.oldLines.push(content);
+      current.newLines.push(content);
+    }
+  }
+
+  if (current) {
+    hunks.push(current);
+  }
+
+  return hunks;
+};
+
+const isBlank = (line: string): boolean => line.trim().length === 0;
+
+const detectStrippedIndent = (fileLines: string[], hunks: ParsedDiffHunk[]): string | null => {
+  let prefix: string | null = null;
+  for (const hunk of hunks) {
+    const startIndex = Math.max(0, hunk.newStart - 1);
+    for (let offset = 0; offset < hunk.newLines.length; offset += 1) {
+      const patchLine = hunk.newLines[offset] ?? '';
+      if (isBlank(patchLine)) continue;
+      const fileLine = fileLines[startIndex + offset];
+      if (fileLine === undefined || !fileLine.endsWith(patchLine)) return null;
+      const candidate = fileLine.slice(0, fileLine.length - patchLine.length);
+      if (!isBlank(candidate)) return null;
+      if (prefix === null) {
+        prefix = candidate;
+      } else if (candidate.length !== prefix.length) {
+        return null;
+      }
+    }
+  }
+  return prefix ?? '';
+};
+
+export const isFileDeletionPatch = (patch: string): boolean => {
+  const hunks = parseUnifiedDiffHunks(patch);
+  return hunks.length > 0 && hunks.every((hunk) => hunk.newLines.length === 0);
+};
+
+export const reconstructOriginalContentFromPatch = (modifiedContent: string, patch: string): string | null => {
+  const hunks = parseUnifiedDiffHunks(patch);
+  if (hunks.length === 0) {
+    return null;
+  }
+
+  const lines = modifiedContent.split('\n');
+  const prefix = detectStrippedIndent(lines.map((line) => line.replace(/\r$/, '')), hunks) ?? '';
+  for (let index = hunks.length - 1; index >= 0; index -= 1) {
+    const hunk = hunks[index];
+    if (!hunk) {
+      continue;
+    }
+    const startIndex = Math.max(0, hunk.newStart - 1);
+    const replaceCount = hunk.newLines.length;
+    const oldLines = prefix
+      ? hunk.oldLines.map((line) => (isBlank(line) ? line : prefix + line))
+      : hunk.oldLines;
+    lines.splice(startIndex, replaceCount, ...oldLines);
+  }
+
+  return lines.join('\n');
+};
