@@ -207,6 +207,7 @@ Templates also produce clean formatting. The tell is decoration on every item.
 
 **Problem:** Words are bold for no reason, and every list item has a bold label and a colon. Remove the bold. Turn a labeled list into prose when the labels add nothing. Keep bold for warnings, UI labels and terms the reader must find again.
 **Before:**
+>
 > - **Performance:** Performance has been significantly improved.
 > - **Security:** Security has been strengthened with encryption.
 > - **Usability:** Usability has been enhanced with a new interface.
@@ -217,8 +218,11 @@ Templates also produce clean formatting. The tell is decoration on every item.
 
 **Problem:** Headings Capitalize Every Word, carry emoji or arrows, and a rule separates every section. A heading written for effect ("The decision, on one screen") should name what the section holds ("How the options compare"). Use sentence case. Remove the decoration. A five-sentence answer does not need three headings.
 **Before:**
+
 > ## 🚀 Getting Started With The CLI →
+
 **After:**
+
 > ## Install the CLI
 
 ### §21. Curly quotation marks
@@ -254,16 +258,20 @@ Remove these outright. Nothing here needs rewriting.
 ### §24. A heading repeated in the first sentence
 
 **Problem:** A heading is followed by a one-line paragraph that repeats it. Remove that line.
+<!-- markdownlint-disable MD024 -->
 **Before:**
+
 > ## Security
 >
 > Security is important.
 >
 > The server rejects tokens older than one hour.
 **After:**
+>
 > ## Security
 >
 > The server rejects tokens older than one hour.
+<!-- markdownlint-enable MD024 -->
 
 ### §25. Writing about the document instead of its subject
 

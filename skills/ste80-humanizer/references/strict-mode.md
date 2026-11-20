@@ -2,7 +2,7 @@
 
 Read this file when the user asks for full ASD-STE100 style ("strict", "100%", "full STE", "compliant"), or when the text is a procedure, a safety instruction or maintenance documentation.
 
-These are paraphrases of the ASD-STE100 Issue 9 rule sections. They are not the official text. For real compliance work, the writer needs the official specification and its dictionary (free from https://www.asd-ste100.org), and training. Never say the result "is STE-compliant". Say "written in STE style".
+These are paraphrases of the ASD-STE100 Issue 9 rule sections. They are not the official text. For real compliance work, the writer needs the official specification and its dictionary (free from <https://www.asd-ste100.org>), and training. Never say the result "is STE-compliant". Say "written in STE style".
 
 ## Contents
 

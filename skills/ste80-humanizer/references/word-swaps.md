@@ -1,6 +1,6 @@
 # Word swaps
 
-Plain alternatives for words that STE does not approve, or that make prose heavy. This is a short working list, not the ASD-STE100 dictionary. The official dictionary has about 900 approved words and about 1,200 words that are not approved, each with alternatives. Get it free from https://www.asd-ste100.org.
+Plain alternatives for words that STE does not approve, or that make prose heavy. This is a short working list, not the ASD-STE100 dictionary. The official dictionary has about 900 approved words and about 1,200 words that are not approved, each with alternatives. Get it free from <https://www.asd-ste100.org>.
 
 How to use this list:
 
@@ -24,7 +24,7 @@ How to use this list:
 ## 1. Verbs of doing
 
 | Instead of | Write |
-|---|---|
+| --- | --- |
 | accomplish | do, complete |
 | carry out | do |
 | conduct | do |
@@ -42,7 +42,7 @@ How to use this list:
 ## 2. Verbs of starting, stopping and changing
 
 | Instead of | Write |
-|---|---|
+| --- | --- |
 | begin, commence, initiate | start |
 | terminate, cease | stop |
 | eliminate | remove |
@@ -59,7 +59,7 @@ How to use this list:
 ## 3. Verbs of seeing, showing and finding
 
 | Instead of | Write |
-|---|---|
+| --- | --- |
 | verify, ensure, confirm | make sure |
 | check (as a verb) | make sure, examine, measure (strict); "check" as a noun: "do a check" |
 | inspect | examine |
@@ -74,7 +74,7 @@ How to use this list:
 ## 4. Verbs of getting and giving
 
 | Instead of | Write |
-|---|---|
+| --- | --- |
 | obtain, acquire, achieve, reach | get |
 | receive | get |
 | provide, supply | give |
@@ -84,7 +84,7 @@ How to use this list:
 ## 5. Modal verbs
 
 | Instead of | Write |
-|---|---|
+| --- | --- |
 | shall, should (obligation) | must |
 | should (advice) | we recommend that you ..., or the imperative |
 | may (permission) | can |
@@ -96,7 +96,7 @@ Keep the strength of the original. Do not turn "might" into a certain statement.
 ## 6. Connectors and adverbs
 
 | Instead of | Write |
-|---|---|
+| --- | --- |
 | however | but |
 | therefore, hence | thus, as a result |
 | furthermore, moreover, additionally | also, or start a new sentence |
@@ -112,7 +112,7 @@ Keep the strength of the original. Do not turn "might" into a certain statement.
 ## 7. Prepositions and phrases
 
 | Instead of | Write |
-|---|---|
+| --- | --- |
 | prior to | before |
 | due to | because of |
 | via | through |
@@ -129,7 +129,7 @@ Keep the strength of the original. Do not turn "might" into a certain statement.
 ## 8. Adjectives and quantities
 
 | Instead of | Write |
-|---|---|
+| --- | --- |
 | acceptable | permitted |
 | additional, further | more |
 | adequate | sufficient |
@@ -147,7 +147,7 @@ Keep the strength of the original. Do not turn "might" into a certain statement.
 ## 9. Phrasal verbs
 
 | Instead of | Write |
-|---|---|
+| --- | --- |
 | set up | configure, install, prepare |
 | find out | find, learn |
 | look into | examine |
@@ -168,7 +168,7 @@ Keep the strength of the original. Do not turn "might" into a certain statement.
 These words are not STE words. They are also the words that make text sound machine-written. Remove them or use the plain form.
 
 | Instead of | Write |
-|---|---|
+| --- | --- |
 | delve into, dive into | examine, read about |
 | robust | strong, reliable |
 | seamless, seamlessly | (delete), or say what works without a problem |

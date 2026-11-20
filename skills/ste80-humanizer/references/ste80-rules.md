@@ -7,7 +7,7 @@ These rules paraphrase and simplify ASD-STE100 Issue 9. They are not the officia
 The long-form numbers here (1 to 23) are finer than the S-rules in SKILL.md. They map like this:
 
 | SKILL.md | This file |
-|---|---|
+| --- | --- |
 | S1 One idea per sentence | 1 |
 | S2 Short sentences | 2 |
 | S3 Condition first | 3 |
@@ -107,6 +107,7 @@ In 80% mode, terse fragments are acceptable in tables, headings and short UI lab
 
 **After:**
 > To prevent timeouts, do these steps:
+>
 > 1. Set the flag.
 > 2. Make sure that the cache is warm.
 > 3. Monitor the latency.
@@ -136,7 +137,7 @@ Be careful here. If the source is uncertain, keep the uncertainty. "This might f
 **Rule:** Pick the short, common word. Common swaps:
 
 | Instead of | Write |
-|---|---|
+| --- | --- |
 | utilize, leverage | use |
 | perform, conduct, accomplish, carry out | do |
 | ensure, verify | make sure |
@@ -215,4 +216,3 @@ Be careful here. If the source is uncertain, keep the uncertainty. "This might f
 - **Tone.** Warmth is allowed. A short greeting in an email or a "thanks" stays.
 
 80% mode never relaxes these: one idea per sentence, active voice, simple tenses, no filler, one term per thing, all facts kept.
-
