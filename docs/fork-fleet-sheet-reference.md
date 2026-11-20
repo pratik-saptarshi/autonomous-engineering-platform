@@ -71,7 +71,14 @@ sync record is compared against is the row's own measurement
 time (column O carries the per-repo `measured_at` the census
 recorded), not the run's completion time — a sync applied while
 a census is still measuring later repos postdates that repo's
-compares and stays attributable on the next census. An axis that fails to measure
+compares and stays attributable on the next census. The census
+also re-reads the run record after measurement finishes, so a
+sync recorded while the census was running is not lost to a
+stale pre-census copy. When a mirror sync and a develop movement
+are observed in the same census, column M still records the sync,
+but column N reads `unknown (external change)`: fork-sync never
+touches `develop`, so the bot cannot be credited with the last
+change when an external movement is part of what was observed. An axis that fails to measure
 keeps its last measured head as the baseline in the sheet (counts
 blank, status `unknown`, verification stamp not advanced), so a
 sync applied during a failed observation is still attributable

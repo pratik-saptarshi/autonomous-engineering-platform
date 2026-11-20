@@ -641,3 +641,94 @@ class CodexRegressionTests(unittest.TestCase):
         )
         self.assertEqual(rows2[0][13], "fork-sync")
         self.assertEqual(rows2[0][12], "2026-11-18T19:50:00-06:00")
+
+    def test_simultaneous_develop_move_is_not_stamped_fork_sync(self):
+        # fork-sync advances the mirror and a user advances develop
+        # in the same window. The sync is real -- column M records
+        # it -- but fork-sync never touches develop, so column N
+        # must not claim the bot made the last change: the observed
+        # movements cannot all be attributed to fork-sync, and the
+        # develop movement would otherwise never be stamped at all.
+        t1 = "2026-11-16T09:00:00-06:00"
+        rows1, _ = ffc.build_rows(census_doc([census_row()]), [], {}, t1)
+        record = {"repos": {"pratik-saptarshi/x": {"last_applied_at": "2026-11-17T08:00:00-06:00"}}}
+        both = census_row(mirror_head=SHA_D, mirror_behind=2,
+                          develop_head="e" * 40, develop_behind=1)
+        rows2, _ = ffc.build_rows(census_doc([both]), rows1, record, "2026-11-17T09:00:00-06:00")
+        self.assertEqual(rows2[0][12], "2026-11-17T08:00:00-06:00")  # M records the sync
+        self.assertEqual(rows2[0][13], "unknown (external change)")  # N does not over-claim
+        # A later quiet observation must not revert the stamp.
+        rows3, _ = ffc.build_rows(census_doc([both]), rows2, record, "2026-11-18T09:00:00-06:00")
+        self.assertEqual(rows3[0][13], "unknown (external change)")
+
+    def test_load_sync_record_semantics(self):
+        # Missing file degrades to {} (no record yet, plan S3); a
+        # file that exists but cannot be parsed is fatal, never a
+        # silent degrade that would misattribute the night's syncs.
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            self.assertEqual(ffc._load_sync_record(td / "nope.json"), {})
+            good = td / "record.json"
+            good.write_text('{"repos": {}}')
+            self.assertEqual(ffc._load_sync_record(good), {"repos": {}})
+            bad = td / "bad.json"
+            bad.write_text("{not json")
+            with self.assertRaises(ffc.CensusFatal):
+                ffc._load_sync_record(bad)
+
+    def test_sync_record_is_refreshed_after_measurement(self):
+        # fork-sync overlaps the census: it applies a sync and
+        # updates the record file while the census is measuring.
+        # main must re-read the record after measurement -- the
+        # pre-census copy predates the sync, so the movement would
+        # be labeled external and the stored head advanced past it,
+        # losing the sync attribution permanently.
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            record_path = td / "record.json"
+            record_path.write_text(json.dumps({"repos": {}}))
+            rows1, _ = ffc.build_rows(
+                census_doc([census_row()]), [], {}, "2026-11-18T09:00:00-06:00"
+            )
+            prev_path = td / "prev.json"
+            prev_path.write_text(json.dumps(rows1))
+            out_path = td / "rows.json"
+            census_path = td / "census.json"
+
+            table = good_table()
+            table[("repo", "list", "pratik-saptarshi", "--limit", "300",
+                    "--json", "nameWithOwner,isFork,defaultBranchRef")] = (
+                [{"nameWithOwner": "pratik-saptarshi/x", "isFork": True,
+                  "defaultBranchRef": {"name": "develop"}}], None, 0)
+            # The census measures the mirror at its NEW head: the
+            # sync landed before this repo's compares ran.
+            table[mirror_args()] = (compare(2, 0, SHA_D, "b" * 7), None, 0)
+            table[develop_args()] = (compare(9, 0, SHA_C, "d" * 7), None, 0)
+
+            class SyncDuringCensus(FakeRunner):
+                def __call__(self, args):
+                    result = super().__call__(args)
+                    if tuple(args)[0] == "repo":
+                        # fork-sync's record update lands while the
+                        # census is still running.
+                        record_path.write_text(json.dumps({"repos": {
+                            "pratik-saptarshi/x": {
+                                "last_applied_at": "2026-11-18T09:30:00-06:00"}}}))
+                    return result
+
+            original = ffc.ghg_runner
+            ffc.ghg_runner = SyncDuringCensus(table)
+            try:
+                code = ffc.main([
+                    "--prev-rows", str(prev_path),
+                    "--sync-record", str(record_path),
+                    "--output", str(census_path),
+                    "--rows-output", str(out_path),
+                ])
+            finally:
+                ffc.ghg_runner = original
+            self.assertEqual(code, 0)
+            derived = json.loads(out_path.read_text())
+            row = derived["rows"][0]
+            self.assertEqual(row[13], "fork-sync")
+            self.assertEqual(row[12], "2026-11-18T09:30:00-06:00")

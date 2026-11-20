@@ -192,6 +192,22 @@ def _call(runner, args):
     return obj, err, rc
 
 
+def _load_sync_record(path) -> dict:
+    """Read fork-sync's JSON run record.
+
+    A missing file degrades to {} (fork-sync has not applied a run
+    since records began; plan S3). A file that exists but cannot be
+    read or parsed raises CensusFatal: silently degrading would
+    misattribute that night's syncs as external changes.
+    """
+    try:
+        return json.loads(Path(path).read_text())
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as exc:
+        raise CensusFatal(f"cannot read --sync-record {path}: {exc}") from exc
+
+
 def census_repo(repo: str, runner) -> dict:
     """Measure one fork. `runner` maps ghg args -> (obj, err, rc)."""
     row = _blank_row(repo)
@@ -509,6 +525,9 @@ def build_rows(census, prev_rows, sync_record, verified_at):
             mirror_moved = mirror_measured and (
                 _short(row["mirror_head"]) != str(prev[6]).strip()
             )
+            develop_moved = develop_measured and (
+                _short(row["develop_head"]) != str(prev[11]).strip()
+            )
             if mirror_moved:
                 applied = record_repos.get(row["repo"], {}).get(
                     "last_applied_at"
@@ -527,11 +546,16 @@ def build_rows(census, prev_rows, sync_record, verified_at):
                 ):
                     actor = "fork-sync"
                     last_sync = applied
+                    if develop_moved:
+                        # The sync happened (M records it), but
+                        # fork-sync never touches develop: a develop
+                        # movement in the same window is not the
+                        # bot's, so N must not claim the bot made
+                        # the last change.
+                        actor = "unknown (external change)"
                 else:
                     actor = "unknown (external change)"
-            elif develop_measured and (
-                _short(row["develop_head"]) != str(prev[11]).strip()
-            ):
+            elif develop_moved:
                 # A develop-only move is never bot-made.
                 actor = "unknown (external change)"
         else:
@@ -645,15 +669,9 @@ def main(argv=None) -> int:
     sync_record = {}
     if args.sync_record:
         try:
-            sync_record = json.loads(Path(args.sync_record).read_text())
-        except FileNotFoundError:
-            # No record yet (fork-sync has not applied a run since
-            # records began): attribution degrades to first-observation
-            # rules, per plan S3. A record that exists but does not
-            # parse is fatal instead of silently degrading.
-            sync_record = {}
-        except (OSError, ValueError) as exc:
-            print(f"FATAL: cannot read --sync-record: {exc}", file=sys.stderr)
+            sync_record = _load_sync_record(args.sync_record)
+        except CensusFatal as exc:
+            print(f"FATAL: {exc}", file=sys.stderr)
             return 2
 
     try:
@@ -664,6 +682,19 @@ def main(argv=None) -> int:
     except CensusFatal as exc:
         print(f"FATAL: {exc}", file=sys.stderr)
         return 2
+
+    if args.sync_record:
+        # Refresh the record now that measurement is done: fork-sync
+        # may have applied (and recorded) a sync while this census
+        # was measuring. The pre-census copy would label that
+        # movement external and advance the stored head past it, so
+        # no later run could ever repair the attribution. A failed
+        # refresh is fatal, like the first read.
+        try:
+            sync_record = _load_sync_record(args.sync_record)
+        except CensusFatal as exc:
+            print(f"FATAL: {exc}", file=sys.stderr)
+            return 2
 
     code = census_exit_code(census)
     census["exit_status"] = "complete" if code == 0 else "partial"
