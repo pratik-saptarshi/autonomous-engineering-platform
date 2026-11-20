@@ -8,9 +8,10 @@
 
 **Tech Stack:** GitHub Actions (ubuntu-latest), markdownlint-cli2 (npm), shellcheck, shfmt, gitleaks, bash.
 
-**Spec:** https://github.com/pratik-saptarshi/autonomous-engineering-platform/issues/19
+**Spec:** <https://github.com/pratik-saptarshi/autonomous-engineering-platform/issues/19>
 
 ## Global Constraints
+
 - Conventional Commits for every commit; commit as `Musebot-Astro <6238157+pratik-saptarshi@users.noreply.github.com>`.
 - The repo has no `.gitignore` — use exact-path `git add`, never `git add -A`.
 - Checksum-verified installs are the standard; no unverified binaries.
@@ -18,6 +19,7 @@
 - The workflow must stay green on the PR branch after each task — verify via `gh pr checks`.
 
 ## Review Focus
+
 - A pinned tool version that doesn't exist (e.g. typo'd npm tag) red-bars CI with a confusing install error — the plan pins only fact-checked versions (markdownlint-cli2@0.18.1 and shellcheck v0.10.0 verified to exist 2026-10-19).
 - The `--self-test-stubs` mode must not weaken the real self-test: stub cases must assert the same gate behavior, only the environment is faked.
 - `permissions: contents: read` must not break any job — none of the five jobs write anything, but verify each job's log shows no permission error after the change.
@@ -38,15 +40,18 @@ Each task produces a green CI run on the PR branch as its test.
 ### Task 1: Least-privilege token permissions
 
 **Files:**
+
 - Modify: `.github/workflows/ci.yml` (top level, after the `on:` block)
 
 **Interfaces:**
+
 - Consumes: nothing (first task)
 - Produces: workflow with `permissions: contents: read` — later tasks inherit this; none of them need write access.
 
 - [ ] **Step 1: Add the permissions block**
 
 In `.github/workflows/ci.yml`, after the `on:` block and before `jobs:`, insert:
+
 ```yaml
 permissions:
   contents: read
@@ -64,6 +69,7 @@ git add .github/workflows/ci.yml
 git commit -m "ci: declare least-privilege permissions (contents: read)"
 git push origin feat/ci-platform-gates
 ```
+
 Then: `gh pr checks 12 --watch` — all 5 jobs must pass (no job writes anything, so none should break; if a job fails on permissions, investigate before proceeding).
 
 ---
@@ -71,22 +77,28 @@ Then: `gh pr checks 12 --watch` — all 5 jobs must pass (no job writes anything
 ### Task 2: Pin markdownlint-cli2
 
 **Files:**
+
 - Modify: `.github/workflows/ci.yml` (docs-lint job)
 
 **Interfaces:**
+
 - Consumes: Task 1's permissions block (inherited)
 - Produces: deterministic docs-lint job
 
 - [ ] **Step 1: Pin the version**
 
 Change (preserving every existing `!` exclusion — the vendored trees must stay out of the lint):
+
 ```yaml
       - run: npx --yes markdownlint-cli2 "**/*.md" "!reference/esf/**/*.md"
 ```
+
 to:
+
 ```yaml
       - run: npx --yes markdownlint-cli2@0.18.1 "**/*.md" "!reference/esf/**/*.md"
 ```
+
 (If further `!` exclusions exist at implementation time — e.g. `!skills/archify/**/*.md` — keep them all; only the package spec changes.)
 (`0.18.1` verified to exist on npm 2026-10-19; it is the version the issue suggested and it predates the 0.23.x line, minimizing rule-change risk against the v1 baseline config.)
 
@@ -101,6 +113,7 @@ git add .github/workflows/ci.yml
 git commit -m "ci: pin markdownlint-cli2@0.18.1 for deterministic docs-lint"
 git push origin feat/ci-platform-gates
 ```
+
 Then: `gh pr checks 12 --watch` — docs-lint must pass (if 0.18.1 introduces new findings vs latest, fix them or document why; do not just disable more rules).
 
 ---
@@ -108,24 +121,30 @@ Then: `gh pr checks 12 --watch` — docs-lint must pass (if 0.18.1 introduces ne
 ### Task 3: Pin shellcheck via checksum-verified tarball
 
 **Files:**
+
 - Modify: `.github/workflows/ci.yml` (shell-lint job)
 
 **Interfaces:**
+
 - Consumes: Tasks 1-2 (workflow state)
 - Produces: shell-lint job with pinned, verified shellcheck v0.10.0
 
 - [ ] **Step 1: Replace the apt install with a pinned tarball install**
 
 Change:
+
 ```yaml
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
 ```
+
 to:
+
 ```yaml
           curl -sSL --retry 3 -o /tmp/shellcheck.tar.xz https://github.com/koalaman/shellcheck/releases/download/v0.10.0/shellcheck-v0.10.0.linux.x86_64.tar.xz
           echo "<SHA256>  /tmp/shellcheck.tar.xz" | sha256sum -c -
           tar xJf /tmp/shellcheck.tar.xz -C /tmp && sudo install -m 755 /tmp/shellcheck-v0.10.0/shellcheck /usr/local/bin/shellcheck
 ```
+
 (v0.10.0 and the `shellcheck-v0.10.0.linux.x86_64.tar.xz` asset verified to exist 2026-10-19. Koalaman publishes no checksums file, so: download the tarball over HTTPS, compute `sha256sum`, and embed the hash in place of `<SHA256>` — trust-on-first-use, documented in the step as such. This matches the repo's checksum-verified standard as closely as the upstream allows.)
 
 - [ ] **Step 2: Validate YAML locally**
@@ -139,6 +158,7 @@ git add .github/workflows/ci.yml
 git commit -m "ci: pin shellcheck v0.10.0 via checksum-verified tarball"
 git push origin feat/ci-platform-gates
 ```
+
 Then: `gh pr checks 12 --watch` — shell-lint must pass. If shellcheck 0.10.0 flags new warnings the apt version didn't, fix the script or add a justified `# shellcheck disable=` (same standard as the existing SC2012 disables); do not downgrade the version to silence it.
 
 ---
@@ -146,19 +166,24 @@ Then: `gh pr checks 12 --watch` — shell-lint must pass. If shellcheck 0.10.0 f
 ### Task 4: Add --retry to the gitleaks download
 
 **Files:**
+
 - Modify: `.github/workflows/ci.yml` (security job)
 
 **Interfaces:**
+
 - Consumes: Tasks 1-3 (workflow state)
 - Produces: security job resilient to transient network blips
 
 - [ ] **Step 1: Add --retry to the curl**
 
 Change:
+
 ```yaml
           curl -sSL -o /tmp/gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz
 ```
+
 to:
+
 ```yaml
           curl -sSL --retry 3 --retry-delay 5 -o /tmp/gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz
 ```
@@ -171,6 +196,7 @@ git add .github/workflows/ci.yml
 git commit -m "ci: add --retry to gitleaks download against transient network failures"
 git push origin feat/ci-platform-gates
 ```
+
 Then: `gh pr checks 12 --watch` — security must pass.
 
 ---
@@ -178,10 +204,12 @@ Then: `gh pr checks 12 --watch` — security must pass.
 ### Task 5: Run boot-gate --self-test-stubs in CI
 
 **Files:**
+
 - Modify: `scripts/boot-gate.sh` (add `--self-test-stubs` mode)
 - Modify: `.github/workflows/ci.yml` (shell-lint job, add execution step)
 
 **Interfaces:**
+
 - Consumes: Tasks 1-4 (workflow state)
 - Produces: CI actually executes the boot-gate correctness proof
 
@@ -195,6 +223,7 @@ Expected: FAIL — `--self-test-stubs` is not a recognized flag (usage error, ex
 - [ ] **Step 2: Implement `--self-test-stubs` in `scripts/boot-gate.sh`**
 
 Add a `STUBS_ONLY` variable (default empty). In `self_test()`, when `STUBS_ONLY` is set:
+
 - Skip the real-environment positive case at the end.
 - Stub `bd` and `ocr` as successful no-op commands in `$stubdir` (the `check_binaries` gate requires `neurostrata-mcp bd ocr gh`; without `bd`/`ocr` stubs, every negative case would "pass" by failing at the binary check instead of exercising its claimed behavior).
 - For the `gh-auth-fail` case (empty STUB_CASE), do NOT delegate to the real binary — instead handle a `healthy` stub case in the fake neurostrata-mcp that prints the healthy daemon line and a valid guard listing (3 memories incl. "Destructive GitHub actions"), so the gate passes daemon/guards and fails only on the stubbed `gh`.
@@ -215,6 +244,7 @@ Expected: `SELF-TEST: all ok` (4 stub cases + real-environment positive).
 - [ ] **Step 5: Add the CI step**
 
 In the shell-lint job, after the `shfmt` check, add:
+
 ```yaml
       - run: ./scripts/boot-gate.sh --self-test-stubs
 ```
@@ -227,6 +257,7 @@ git add scripts/boot-gate.sh .github/workflows/ci.yml
 git commit -m "ci: run boot-gate --self-test-stubs in shell-lint"
 git push origin feat/ci-platform-gates
 ```
+
 Then: `gh pr checks 12 --watch` — shell-lint must pass with the new step.
 
 ---
@@ -234,15 +265,18 @@ Then: `gh pr checks 12 --watch` — shell-lint must pass with the new step.
 ### Task 6: SHA-pin third-party actions (hardening)
 
 **Files:**
+
 - Modify: `.github/workflows/ci.yml` (all `uses:` lines)
 
 **Interfaces:**
+
 - Consumes: Tasks 1-5 (final workflow state)
 - Produces: fully pinned action references
 
 - [ ] **Step 1: Look up current SHAs and pin**
 
 For each of `actions/checkout@v4` (5 occurrences: docs-lint, shell-lint, go-checks, security, vendor-integrity) and `actions/setup-go@v5` (2 occurrences):
+
 1. Resolve the tag to its commit SHA at implementation time: `gh api repos/actions/checkout/commits/v4 --jq .sha` (and likewise for setup-go).
 2. Replace `actions/checkout@v4` with `actions/checkout@<sha> # v4` (keep the version as a comment so upgrades remain discoverable).
 3. Final validation: `grep -rn "uses: actions/" .github/workflows/ | grep -v "@[0-9a-f]\{40\}"` must print nothing (no unpinned refs remain).
@@ -255,6 +289,7 @@ git add .github/workflows/ci.yml
 git commit -m "ci: SHA-pin third-party actions against tag-rewrite attacks"
 git push origin feat/ci-platform-gates
 ```
+
 Then: `gh pr checks 12 --watch` — all 5 jobs must pass.
 
 ---

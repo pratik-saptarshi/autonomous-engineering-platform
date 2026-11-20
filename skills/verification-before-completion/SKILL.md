@@ -13,7 +13,7 @@ description: Use when about to claim work is complete, fixed, or passing, before
 
 ## The Iron Law
 
-```
+```text
 NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
 ```
 
@@ -21,7 +21,7 @@ If you haven't run the verification command in this message, you cannot claim it
 
 ## The Gate Function
 
-```
+```text
 BEFORE claiming any status or expressing satisfaction:
 
 1. IDENTIFY: What command proves this claim?
@@ -38,7 +38,7 @@ Skip any step = lying, not verifying
 ## Common Failures
 
 | Claim | Requires | Not Sufficient |
-|-------|----------|----------------|
+| ------- | ---------- | ---------------- |
 | Tests pass | Test command output: 0 failures | Previous run, "should pass" |
 | Linter clean | Linter output: 0 errors | Partial check, extrapolation |
 | Build succeeds | Build command: exit 0 | Linter passing, logs look good |
@@ -61,7 +61,7 @@ Skip any step = lying, not verifying
 ## Rationalization Prevention
 
 | Excuse | Reality |
-|--------|---------|
+| -------- | --------- |
 | "Should work now" | RUN the verification |
 | "I'm confident" | Confidence ≠ evidence |
 | "Just this once" | No exceptions |
@@ -74,31 +74,36 @@ Skip any step = lying, not verifying
 ## Key Patterns
 
 **Tests:**
-```
+
+```text
 ✅ [Run test command] [See: 34/34 pass] "All tests pass"
 ❌ "Should pass now" / "Looks correct"
 ```
 
 **Regression tests (TDD Red-Green):**
-```
+
+```text
 ✅ Write → Run (pass) → Revert fix → Run (MUST FAIL) → Restore → Run (pass)
 ❌ "I've written a regression test" (without red-green verification)
 ```
 
 **Build:**
-```
+
+```text
 ✅ [Run build] [See: exit 0] "Build passes"
 ❌ "Linter passed" (linter doesn't check compilation)
 ```
 
 **Requirements:**
-```
+
+```text
 ✅ Re-read plan → Create checklist → Verify each → Report gaps or completion
 ❌ "Tests pass, phase complete"
 ```
 
 **Agent delegation:**
-```
+
+```text
 ✅ Agent reports success → Check VCS diff → Verify changes → Report actual state
 ❌ Trust agent report
 ```
@@ -106,6 +111,7 @@ Skip any step = lying, not verifying
 ## When To Apply
 
 **ALWAYS before:**
+
 - ANY variation of success/completion claims
 - ANY expression of satisfaction
 - ANY positive statement about work state
@@ -114,6 +120,7 @@ Skip any step = lying, not verifying
 - Delegating to agents
 
 **Rule applies to:**
+
 - Exact phrases
 - Paraphrases and synonyms
 - Implications of success

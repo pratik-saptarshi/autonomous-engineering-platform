@@ -44,30 +44,36 @@
 ## File Structure
 
 **Mechanism 1 — verification receipts (Python, `scripts/`):**
+
 - Create `scripts/mechanical_verify.py` — allowlist discovery, bounded/budgeted execution, receipts append + chain validation, CLI subcommands `verify` and `check-receipts`.
 - Create `scripts/tests/test_mechanical_verify.py`, `scripts/tests/test_receipts.py` — `unittest` suites (26 tests total, named in Tasks 1–2).
 - Modify `skills/subagent-driven-development/SKILL.md` (repo copy) **and** `~/workspace/custom-skills/subagent-driven-development/SKILL.md` (live copy) — the completion step requires controller-run receipts (Task 3).
 
 **Mechanisms 2+3 — lane launcher/coordinator (bash, `scripts/`):**
+
 - Create `scripts/policy.data` — the launch policy data: sensitive-path patterns + env-scrub fragments (Task 5).
 - Create `scripts/lane-coord.sh` — `claim` (the launcher: fence, capacity, worktree, controls, worker spawn) / `release` / `reap` / `status`, embedded `--self-test` (Tasks 4–6).
 - Modify `scripts/boot-gate.sh` — new read-only `policy` integrity check as the fifth check, two new self-test cases (Task 7).
 - Modify `skills/overnight-parallel-lanes/SKILL.md` (repo copy) **and** `~/workspace/custom-skills/overnight-parallel-lanes/SKILL.md` (live copy) — Run Setup step 2 launches lanes through the coordinator (Task 8).
 
 **Cross-cutting (Task 9):**
+
 - Modify `.github/workflows/ci.yml` — add a `script-tests` job (sixth job).
 - Create `docs/deepcode-mechanisms.md` — operator doc: contracts, consumers, runbooks, deviations, activation checklist.
 
 **Runtime state (never committed):** lane state at `${AEP_LANES_DIR:-$HOME/workspace/worktrees/.lanes}/`; lane worktrees under `${AEP_WORKTREES_ROOT:-$HOME/workspace/worktrees}/`; receipts files at controller-chosen paths (SDD: `<workspace>/receipts.jsonl`).
 
 ---
+
 ### Task 1: Mechanical verifier — allowlist discovery, bounded and budgeted execution
 
 **Files:**
+
 - Create: `scripts/mechanical_verify.py`
 - Test: `scripts/tests/test_mechanical_verify.py`
 
 **Interfaces:**
+
 - Consumes: nothing (first task).
 - Produces (names mirror DeepCode `core/verification.py`, verified in source):
   - `VerificationCommand` (frozen dataclass): `id: str`, `label: str`, `argv: tuple[str, ...]`.
@@ -133,10 +139,12 @@ git commit -m "feat(evidence): allowlist mechanical verifier with bounded, budge
 ### Task 2: Verification receipts — the verifier writes the evidence, hash-chained
 
 **Files:**
+
 - Modify: `scripts/mechanical_verify.py` (receipts append on `verify`; new `check-receipts` subcommand)
 - Test: `scripts/tests/test_receipts.py`
 
 **Interfaces:**
+
 - Consumes: Task 1's `run_all` `on_result` hook, `VerificationResult`, exit codes.
 - Produces:
   - **Trust shape (stated here, repeated in Task 9's doc):** a receipt is written only by `mechanical_verify.py` itself, from a result it just produced by executing the command. Receipts are completion evidence **only when the controlling side (reviewer/controller) ran `verify`, or chain-validates a receipts file it generated earlier in the same run.** A receipts file an implementer hands over is an audit artifact, not proof — Task 3's skill text says so verbatim.
@@ -177,6 +185,7 @@ Expected: `Ran 26 tests ... OK` (17 from Task 1 + 9 here).
 - [ ] **Step 5: Smoke the reviewer-side flow end-to-end**
 
 Run:
+
 ```bash
 cd /tmp && rm -rf rcptsmoke && mkdir rcptsmoke && cd rcptsmoke
 printf 'test:\n\tfalse\n' > Makefile
@@ -186,6 +195,7 @@ printf 'test:\n\ttrue\n' > Makefile
 python3 ~/workspace/worktrees/aep-deepcode-impl/scripts/mechanical_verify.py verify --root . --task smoke2 --receipts r.jsonl; echo "verify2 rc=$?"
 python3 ~/workspace/worktrees/aep-deepcode-impl/scripts/mechanical_verify.py check-receipts --receipts r.jsonl --task smoke2; echo "check2 rc=$?"
 ```
+
 Expected: `VERIFY: make-test FAIL ...`, `verify rc=1`; `RECEIPTS: FAIL task smoke: receipt failed: make-test`, `check rc=1`; then `verify2 rc=0`; `check2 rc=0` with the PASS line (the chain validates across both tasks' receipts in one file). This is the negative control: the evidence flow *vetoes* a failing task, not just records it.
 
 - [ ] **Step 6: Commit**
@@ -200,10 +210,12 @@ git commit -m "feat(evidence): verification receipts with hash chain and validat
 ### Task 3: Wire controller-run receipts into the SDD skill — live copy AND repo copy
 
 **Files:**
+
 - Modify: `~/workspace/custom-skills/subagent-driven-development/SKILL.md` (live copy — the file the runtime loads; not in git, edited in place)
 - Modify: `skills/subagent-driven-development/SKILL.md` (repo copy — a *different, condensed* document; edited against its own text)
 
 **Interfaces:**
+
 - Consumes: Task 1/2 CLI contracts (`verify` exit codes 0/1/2/3, `check-receipts` exit codes and lines).
 - Produces: the call site — every SDD task completion in an AEP-driven run requires controller-produced mechanical evidence. The two files get **equivalent, not identical** text (their surrounding documents differ); each insertion is pinned against its own file below.
 
@@ -247,9 +259,11 @@ git commit -m "feat(evidence): require controller-run verification receipts for 
 ### Task 4: Lane coordinator — the launcher: claim, release, status with manifest and launcher-held fence
 
 **Files:**
+
 - Create: `scripts/lane-coord.sh`
 
 **Interfaces:**
+
 - Consumes: nothing. (Task 5 adds the policy-data load, the declared-path check, and env sanitization to `claim`.)
 - Produces:
   - State layout: `LANES_DIR=${AEP_LANES_DIR:-$HOME/workspace/worktrees/.lanes}`, `WT_ROOT=${AEP_WORKTREES_ROOT:-$HOME/workspace/worktrees}`. Per lane `<name>`: manifest `$LANES_DIR/<name>.json`, fence file `$LANES_DIR/<name>.fence`, history log `$LANES_DIR/<name>.log` (append-only, one line per event: `<ISO-8601 UTC> <event> epoch=<n> worker=<id>`).
@@ -313,10 +327,12 @@ git commit -m "feat(lanes): lane coordinator — launcher-held fences, capacity,
 ### Task 5: Launch-point controls — policy data, declared-path check, env sanitization
 
 **Files:**
+
 - Create: `scripts/policy.data`
 - Modify: `scripts/lane-coord.sh` (policy load at claim; declared-path check; env scrub for the worker)
 
 **Interfaces:**
+
 - Consumes: Task 4's claim flow (the check slots in after the capacity transaction, before worktree setup; the scrub applies at worker spawn).
 - Produces:
   - `scripts/policy.data` — the launch policy **data** (the script holds no pattern list). Exact grammar (pinned, Feasibility P2-1 applied to what survives): section headers `[sensitive-paths]` and `[env-scrub]`; one pattern/fragment per line; `#` comments and blank lines ignored; **anything else — unknown section, pattern before any section, empty pattern — is a validation error.** The loader (an embedded `python3` snippet, scan-gate precedent) validates on every claim: a malformed file refuses the claim before anything is created — `LANE: refuse policy data invalid: line <n>: <line>`, exit 1.
@@ -331,7 +347,7 @@ git commit -m "feat(lanes): lane coordinator — launcher-held fences, capacity,
 
 `scripts/policy.data` ships with exactly this content:
 
-```
+```text
 # AEP launch policy data — read by scripts/lane-coord.sh at claim time;
 # integrity-verified by scripts/boot-gate.sh against the committed version.
 # Grammar: [section] headers, one pattern per line, '#' comments, blank
@@ -414,9 +430,11 @@ git commit -m "feat(lanes): launch-point controls — policy data, declared-path
 ### Task 6: Lane takeover, reap, and validated cleanup
 
 **Files:**
+
 - Modify: `scripts/lane-coord.sh` (takeover note in `claim` is Task 4's step 4 — here: `reap`, `release --clean`)
 
 **Interfaces:**
+
 - Consumes: Task 4's manifest schema, fence semantics, exit codes; Task 5's refusal conventions.
 - Produces:
   - `lane-coord.sh reap --name <name>` — settles a claim whose launcher is gone. If the fence probes **held**: print `LANE: reap refused <name>: fence held (launcher alive)`, exit 1. If no manifest: `LANE: refuse reap <name>: no manifest`, exit 1. If `state != "claimed"`: `LANE: refuse reap <name>: state is <state>`, exit 1. Otherwise set `state: "reaped"`, append history events `settled-interrupted` and `reaped`, print `LANE: reaped <name> (claim settled interrupted at epoch <n>)`, exit 0. **Reap signals nothing** — a manifest naming a live innocent PID in `launcher_pid` is settled as bookkeeping while that process runs on untouched (pinned by case 16).
@@ -464,12 +482,15 @@ git commit -m "feat(lanes): takeover settlement, reap, validated cleanup"
 ### Task 7: Boot-gate policy integrity check — committed data is the policy
 
 **Files:**
+
 - Modify: `scripts/boot-gate.sh` (add `check_policy` + two self-test cases)
 
 **Interfaces:**
+
 - Consumes: Task 5's `scripts/policy.data` (committed in Task 5, so `HEAD:scripts/policy.data` exists on this branch).
 - Produces:
   - A fifth check, run last, after `check_gh_auth`. It is **read-only**: it creates nothing, copies nothing, freezes nothing (contrast v1's freeze — deleted, see Non-Goals).
+
     ```bash
     check_policy() {
       local gate_dir policy ref_sha work_sha
@@ -487,6 +508,7 @@ git commit -m "feat(lanes): takeover settlement, reap, validated cleanup"
       ok policy
     }
     ```
+
     Behavior contract: absent policy file → the named **SKIP** line above, loudly printed, and the gate proceeds (boot-gate has no prior SKIP convention — verified against the current script, whose contract is `BOOT-GATE: <name> ok` / `BOOT-GATE: <name> FAIL: <reason>`; the SKIP line follows that naming shape and never prints `ok` for a check that did not run; a SKIP means "mechanism not installed here", not "passed"). Present but different from the committed blob → FAIL (an unreviewed edit is never ratified by running the gate — Risk R7). Present and identical → `BOOT-GATE: policy ok`. If git cannot produce the committed blob → FAIL with the stated reason (fail closed).
   - **Scope statement (binding for this task's code comments, commit message, and Task 9's doc):** this wires the check into `boot-gate.sh` only. Whether and when anything invokes `boot-gate.sh` is issue #17's unexecuted scope; nothing here claims cron enforcement.
 
@@ -531,10 +553,12 @@ git commit -m "feat(policy): boot-gate verifies committed policy data integrity"
 ### Task 8: Wire overnight-parallel-lanes through the coordinator — live copy AND repo copy
 
 **Files:**
+
 - Modify: `~/workspace/custom-skills/overnight-parallel-lanes/SKILL.md` (live copy — not in git, edited in place)
 - Modify: `skills/overnight-parallel-lanes/SKILL.md` (repo copy — its step 2 is a longer, different text than the live one)
 
 **Interfaces:**
+
 - Consumes: Task 4–6 `lane-coord.sh` CLI contract and exit codes (3 busy, 4 capacity, 5 lock timeout).
 - Produces: the call site — unattended lane runs launch through the coordinator, from the skill text the runtime actually reads (live) and the published copy (repo), each edited against its own current text.
 
@@ -574,10 +598,12 @@ git commit -m "feat(lanes): wire overnight-parallel-lanes through the coordinato
 ### Task 9: CI script-tests job and operator documentation
 
 **Files:**
+
 - Modify: `.github/workflows/ci.yml` (add a sixth job)
 - Create: `docs/deepcode-mechanisms.md`
 
 **Interfaces:**
+
 - Consumes: Task 1–2 unittest suites, Task 4–6 `lane-coord.sh --self-test` (both environment-independent by design — no daemon, no network, no real `$HOME` state; fixtures use `mktemp -d` plus the `AEP_*` env overrides).
 - Produces: CI coverage for everything this plan built, and the operator doc.
 
@@ -624,6 +650,7 @@ git commit -m "ci(scripts): run script test suites in CI; document DeepCode mech
 Four suites, all runnable locally and (except the boot-gate's) in CI. Every test named here is defined in its task with exact assertions.
 
 **Unit — Python (Tasks 1–2), `python3 -m unittest discover -s scripts/tests -v` → 26 tests:**
+
 - Verifier (17): discovery for each of the 7 allowlist rules including the negative cases (npm placeholder script, Makefile without `test:`, markdownlint config without the binary → SKIPPED line at CLI level); `*_test.py` globbing; the pytest fallback when test files import no unittest; empty root discovers nothing; `run_verification` pass/fail capture; 1 s timeout against `sleep 5` (killed return code recorded); output capped at 65536 bytes with `output_truncated`; stop-at-first-failure at the CLI; zero-discovery exit 2; memory-refusal exit 3; budget-zero stop.
 - Receipts (9): receipt contains hashes, never output text; chain links across two commands; `check-receipts` PASS / no-receipts / failed-receipt verdicts; tampered field detected at its line; deleted middle line detected at the following line; malformed line reported as corrupt; per-task scoping over one shared chain-valid file.
 
@@ -659,6 +686,7 @@ Each criterion is checkable by running the stated command on the finished branch
 Every P1/HIGH finding and every Devil's Advocate kill from the Phase-2 panel, mapped to its resolution in this rewrite. P2/P3 and MED/LOW findings are included where they changed the design; anything not listed here was checked by the panel and verified correct in v1 (exact DeepCode values, integration points, counts) and carries over unchanged unless a ruling above says otherwise.
 
 **Kills and reshapes (judge's rulings 1–3):**
+
 - **DA Premise 1/2a, Risk R4 (policy engine enforces nothing; boot-gate calls only validate+freeze):** the bash command-policy evaluator is **deleted** — script, rules grammar, modes, `check`/`run`/`validate`/`freeze`, snapshot semantics, all of it. What survives of Mechanism 2 is launch-point controls inside the lane launcher (Task 5), which execute on every coordinator launch by construction. `policy.rules` became `policy.data` (patterns + scrub fragments only; no rules, no mode).
 - **DA Premise 3a, Risk R2 (ledger `check` is self-attestation):** the evidence ledger and its completion `check` are **deleted**. Mechanism 1 is verification receipts (Tasks 1–2): the verifier itself writes hash-chained receipts from executions it performed, and Task 3's skill text requires the *controller* to run it (or chain-validate its own receipts) — an implementer-written receipts file is explicitly not evidence.
 - **DA Premise 3b (no-progress detection is self-reported and unread):** `observe` and the whole no-progress subsystem are **out of scope** (Non-Goals) — AEP has no dispatch observer. Fingerprinting survives only inside receipts, where the verifier hashes output it captured itself.
@@ -666,6 +694,7 @@ Every P1/HIGH finding and every Devil's Advocate kill from the Phase-2 panel, ma
 - **DA Premise 5 (capacity 4 invented; lease proves the wrong death):** capacity default is DeepCode's verified **2**, labeled operational. The detached `sleep infinity` fence holder is **deleted**: the launcher process holds the `flock` on its own fd for its lifetime, so the lock's release *is* the launcher's death (Task 4). The plan and doc state the fence claim in exactly those terms.
 
 **Feasibility:**
+
 - **P1-1 (fence lock leaks to `flock`'s forked `sleep` child; killing `holder_pid` never frees it):** moot by redesign — there is no spawned holder and no forked command; the claiming process holds the fd itself. Ruling-mandated post-acquisition fence verification is Task 4 transaction step 3. The v1 case-4 silent-void path (release) is impossible in v2: a failed fence acquisition exits 3/1 before any manifest is written.
 - **P2-1 (rules grammar didn't pin rest-of-line globs):** the rules grammar is deleted with the evaluator. The surviving data grammar (`policy.data`) is pinned exactly in Task 5, with a load-validation refusal (case 12).
 - **P2-2 (`*/secrets.json` dropped silently):** restored; the Task 5 list is DeepCode's 25 minus the two product-specific patterns plus the `gh` pair, and case 9 pins `*/secrets.json` behaviorally.
@@ -683,6 +712,7 @@ Every P1/HIGH finding and every Devil's Advocate kill from the Phase-2 panel, ma
 - **P3-6:** lint steps hedge on the absence of both `shellcheck` and `shfmt`.
 
 **Risk:**
+
 - **R1 (unverified `holder_pid` kill):** the kill path is deleted, not guarded — operational code in `lane-coord.sh` contains no `kill` invocation (Acceptance Criterion 7, its grep scoped outside the `self_test` function), and case 16 proves a crafted manifest's innocent PID is never signaled.
 - **R3 (`~/.aep` doesn't exist; freeze non-atomic):** freeze, snapshots, and `~/.aep` are deleted. Boot-gate's check is read-only hashing of two byte streams (working tree vs `git show HEAD:`); no directory is created and there is no torn-pair window. Absent file → named SKIP line, never a wedge.
 - **R5 (stale claims exhaust capacity forever):** claim's transaction auto-settles every provably-dead claim before counting (Task 4 step 1; case 5).
@@ -699,6 +729,7 @@ Every P1/HIGH finding and every Devil's Advocate kill from the Phase-2 panel, ma
 - **R16 (`--force-dirty` destroys uncommitted work):** `--force-dirty` first archives porcelain status + `git diff HEAD` to `$LANES_DIR/<name>.final-diff.patch` (Task 6; case 18 asserts the archive).
 
 **Devil's Advocate, remaining items:**
+
 - **Premise 2b (boot-gate itself has no caller):** acknowledged, not fixable inside this plan — cron invocation of boot-gate is issue #17's unexecuted scope. Task 7 and Task 9 state this plainly; no acceptance criterion claims cron enforcement (Criterion 4 is a behavioral check of the script, and says so by its form). The DA's sequencing condition (execute or drop #17 first) is noted for the handoff decision; the judge's ruling 4 governs: this plan proceeds without #17 and claims nothing from it.
 - **Premise 2c (skill wiring in unread copies):** verified by diff during this rewrite — both repo copies diverge from live, and the live overnight step 2 is three sentences routing through `using-git-worktrees`, none of which matches v1's quoted text. Tasks 3 and 8 quote and edit each file's actual current text.
 - **Premise 3c (fail-closed zero-discovery manufactures forgery):** zero-discovery is exit **2**, a named "no mechanical evidence available" state that Task 3's skill text records openly in the ledger — neither a FAIL to route around nor a PASS.

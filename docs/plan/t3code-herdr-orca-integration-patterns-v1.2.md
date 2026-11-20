@@ -115,11 +115,13 @@ flowchart TD
 ## 3. Four Core Integration Patterns
 
 ### Pattern A: Workspace Multiplexing & Near-Zero-Latency File Reflection
+
 - **Mechanism:** When a task begins, T3 Code allocates an isolated Git worktree under `.worktrees/lane-<id>`.
 - **Virtiofs Bridging:** The worktree directory is mounted into the execution lane container or VM using `virtiofs`.
 - **Herdr Event Handling:** Herdr's native folder watcher (`watchFolder`) receives inotify/FSEvents instantly across the mount, keeping terminal panes and diff trees updated in real time without polling loops.
 
 ### Pattern B: Agent Lifecycle State Machine & Human-in-the-Loop Supervision
+
 - **FSM Synchronization:** As agents execute turns (via OpenCode, Claude Code, or Pi harnesses), the `orca-opencode-status` plugin captures transitions:
   - `SessionStart`: Clears prior run logs and establishes factory session identity.
   - `SessionBusy`: Active model inference and tool calling.
@@ -129,6 +131,7 @@ flowchart TD
 - **Herdr Attention Routing:** Orca emits waiting events over the local IPC domain socket (`/Users/neo/.config/herdr-app/herdr-app.sock`). Herdr intercepts the event, raises an interactive desktop notification toast (`notify`), and autofocuses the specific agent pane for operator response.
 
 ### Pattern C: Supervisor-Mediated Socket Relays (Zero Token Leakage)
+
 - **Container Network Posture:** Both Ralph OCI lanes and ESF sandboxes execute with strict zero-egress policies (`--network none` or measured in-VM `EgressProbe`).
 - **Secret Isolation:** Provider API keys (OpenAI, Anthropic, Gemini) and GitHub Personal Access Tokens (PATs) reside exclusively in host memory and the host `ghg` gateway.
 - **Domain Sockets:** Containers communicate solely through host supervisor UNIX domain sockets mounted at `/run/aep/lanes/<laneId>/`:
@@ -138,6 +141,7 @@ flowchart TD
   - `exec.sock` → Relays tool execution commands from the host-hosted model harness.
 
 ### Pattern D: Verifiable Settlement & Ledger Synchronization
+
 - **Receipt Generation:** All lane test executions run through the compiled static Go binary `aep verify`, capturing full-stream `StdoutSha` and `StderrSha` into an RFC 8785 canonical JSON receipt signed with Ed25519.
 - **Single Source of Truth:** Beads (`bd list --limit 0`) acts as the single task ledger. Issues cannot close without verified receipt attachment.
 - **Continuous Learning:** Upon issue closure (`bd close <issueId>`), root causes, fix diffs, and test failure patterns inscribe into NeuroStrata cognitive memory.

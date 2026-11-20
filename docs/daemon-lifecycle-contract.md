@@ -41,7 +41,7 @@ document.
 There are **two** watchdog scripts, and they disagree.
 
 | | Repo script (`repo-scripts`) | Deployed script (`deployed-bin`) |
-|---|---|---|
+| --- | --- | --- |
 | Path | `scripts/watchdog-backup.sh` (in this repo) | `~/workspace/neurostrata/bin/watchdog-backup.sh` (on the VM) |
 | Daemon-down behavior | Three-way decision after change detection (see §3 Transitions): leave-down marker present → leave down; DB unchanged → restart; DB changed → take the backup while down, restart after the copy. The change path stops via `stop_daemon()` (`watchdog-backup.sh:199`, defined before the flow); a daemon that will not stop fails the run (exit 1). | Three-way decision + change-path restart (see §3 Transitions) |
 | `reaped_expected()` | Absent — zero occurrences. The intentional-down signal is the `WATCHDOG_LEAVE_DOWN_MARKER` file check instead (`leave_down_intentional()`, `watchdog-backup.sh:65`) | Present (`watchdog-backup.sh:163`) |
@@ -113,7 +113,7 @@ runnable as written; where a predicate is weak, the limit says so.
 ### State summary
 
 | State | Predicate source | Meaning |
-|---|---|---|
+| --- | --- | --- |
 | HEALTHY | `deployed-bin` :66 / `boot-gate.sh` :60 | Daemon serving |
 | DOWN_REAPED | `deployed-bin` :163-176, :202 | Probably reaped; limits apply |
 | DOWN_UNEXPECTED | `deployed-bin` :202 (negation) | Fail-closed: crash, trap-fail, or unknown |
@@ -193,7 +193,7 @@ Every transition names which script performs it.
 ## 4. Ownership
 
 | Actor | May start | May stop | Circumstances | Must not |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | Idle-reaper cron (15m) | No | Yes — `neurostrata-mcp shutdown` only | 45+ idle min and all 6 preconditions (`idle-reaper.sh:34,43,49,56,61,81`) | SIGKILL the daemon; shut down while lock held, connections active, or CLI active |
 | Watchdog cron (2h) | Yes — `start_daemon` | Yes — SIGTERM on change path | No-change+unexpected-down; change+down(any reason) (`watchdog-backup.sh:220-228,257-259,276-277`) | Restart a reaped daemon on the no-change path (`watchdog-backup.sh:216-219`) |
 | Boot-gate / job preamble | Yes — direct nohup | No | Job needs the daemon and it is not answering (`boot-gate.sh:60`) | Start while the watchdog lock is held (see race note) |

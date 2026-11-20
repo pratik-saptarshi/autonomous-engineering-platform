@@ -33,9 +33,11 @@
 ### Task 1: Verify preconditions and draft the gate preamble
 
 **Files:**
+
 - Modify: none (verification + drafting)
 
 **Interfaces:**
+
 - Consumes: none
 - Produces: the exact preamble text every target cron will share; go/no-go on PR #12 merge
 
@@ -79,9 +81,11 @@ Record this text for Tasks 2-3. No commit (no repo files change in this plan).
 ### Task 2: Wire `dap-build-check-3h`
 
 **Files:**
+
 - Modify: live cron definition `dap-build-check-3h` (via `cron.update`; no repo files)
 
 **Interfaces:**
+
 - Consumes: Task 1 preamble text and go-ahead
 - Produces: `dap-build-check-3h` body with Step 0 prepended
 
@@ -105,9 +109,11 @@ Expected: exit 0 with four "BOOT-GATE: ... ok" lines (environment is healthy). T
 ### Task 3: Wire `dap-nightly-build`
 
 **Files:**
+
 - Modify: live cron definition `dap-nightly-build` (via `cron.update`; no repo files)
 
 **Interfaces:**
+
 - Consumes: Task 1 preamble text
 - Produces: `dap-nightly-build` body with Step 0 prepended
 
@@ -126,6 +132,7 @@ Run: `cron.view` with `id: dap-nightly-build`. Confirm Step 0 is first and all o
 ### Task 4: Final verification — no other crons touched, gate live
 
 **Files:**
+
 - Modify: none
 
 - [ ] **Step 1: Confirm exactly two crons changed**

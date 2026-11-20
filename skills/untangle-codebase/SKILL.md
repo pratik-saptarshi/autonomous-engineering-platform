@@ -139,6 +139,7 @@ removing anything:
 - Comments that restate the implementation, like `// sort first so the binary search works`, only change when it does, so they have no reason of their own to change. Flag them, even if they're phrased as a why.
 
 Every flagged comment names the fact it protects — or states plainly that it protects none, which is why it can go.
+
 - Comments about something outside the code, like `// the proxy drops websockets, so we poll`, change when that does, and the code can't show it. Keep them.
 - Comments that explain a workaround in the codebase, like `// wait 100ms because the cache isn't ready yet`, only change when the problem behind the workaround does. Flag them for the cluster whose redesign removes that problem.
 

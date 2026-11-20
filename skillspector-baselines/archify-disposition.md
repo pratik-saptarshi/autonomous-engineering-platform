@@ -51,7 +51,7 @@ limit should re-verify this category.
 separator characters inside a dedupe-key template string in
 `recordDiagnostic()`:
 
-```
+```text
 const key = `${normalized.code}<NUL>${normalized.message}<NUL>${JSON.stringify(normalized.subject)}`;
 ```
 

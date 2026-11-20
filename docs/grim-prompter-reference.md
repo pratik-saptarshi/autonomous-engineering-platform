@@ -9,7 +9,7 @@ Vendored snapshot: [PROVENANCE.md](../reference/grim-prompter/PROVENANCE.md) —
 ## Mapping to the AEP loop
 
 | grim-prompter | AEP (this environment) |
-|---|---|
+| --- | --- |
 | evidence records typed by kind, each with a `path:start-end` locator; unknowns carried as explicit gaps | findings and claims grounded in file/line evidence; no silent gaps |
 | every collection at every handoff carries records or an explicit coverage disposition (`assessed` / `not_applicable` / `not_assessed`) | deterministic coverage gates; no silent skips |
 | a threat stays a design hypothesis until an implementation or execution observation supports more; treatments stay proposed, verification stays `not_run` | verdict discipline from the audit-adoption work: no severity or confirmation on unvalidated records |

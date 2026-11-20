@@ -103,7 +103,7 @@ All seven analysts always run. This table says which region to read
 yourself in step 3 and which findings to lead with in the verdict.
 
 | Complaint | Read first, lead with |
-|---|---|
+| --- | --- |
 | "It took too long" | cost-and-time, stumbles |
 | "Why did it do this extra work?" | repeated-work, plan-adherence |
 | "Why is it so expensive?" | cost-and-time |
@@ -146,7 +146,7 @@ yourself in step 3 and which findings to lead with in the verdict.
 ## Red Flags
 
 | Thought | Reality |
-|---------|---------|
+| --------- | --------- |
 | "The problem is obvious, skip intake" | The problem statement scopes everything. Ask. |
 | "They're away, so I'll reconstruct the statement" | You cannot reconstruct what they wanted. Write the questions and stop. |
 | "I'll sweep everything now and ask at the end" | An unscoped sweep spends their budget on the wrong question. Ask first. |

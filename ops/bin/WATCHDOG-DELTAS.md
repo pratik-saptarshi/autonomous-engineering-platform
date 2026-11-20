@@ -46,6 +46,7 @@ its definition at live line 260. Bash executes top-down, so the call
 fails with `stop_daemon: command not found` and exit 127.
 
 Evidence:
+
 - Sandbox repro on the UNMODIFIED live script (fixture HOME, stub daemon
   up, last-use epoch, unchanged DB, under `unshare -pf --mount-proc`):
   `daemon idle … — backing up and stopping`, `no DB changes … — skipping
@@ -91,6 +92,7 @@ sentence is superseded by this section.
 SC2012 rewrites (`ls -1t` → NUL-safe `find -printf '%T@ %p\0'` +
 `sort -znr` pipeline, GNU coreutils on the runner), keep-counts
 unchanged:
+
 - Newest staged DB (old line 74): `newest="$(ls -1t
   "$STAGE"/db-*.db 2>/dev/null | head -1 || true)"` →
   `newest="$(find "$STAGE" -maxdepth 1 -type f -name 'db-*.db'
