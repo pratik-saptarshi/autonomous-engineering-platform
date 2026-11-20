@@ -471,46 +471,54 @@ def build_rows(census, prev_rows, sync_record, verified_at):
                 d_behind, d_local, d_head = "", "", prev[11]
             if "unknown" in (row["mirror_status"], row["develop_status"]):
                 verified = prev[COL_VERIFIED] or verified_at
-            # Attribution is per-axis. The mirror axis is attributable
-            # on its own measurement: fork-sync moves mirrors only,
-            # so a develop-axis failure must not defer (and thereby
-            # permanently lose) a mirror attribution -- once the
-            # moved head is written, later runs see no movement. An
-            # unknown mirror axis (including the consistency-failure
-            # shape, whose rejected heads are non-null) preserves the
-            # previous attribution untouched.
+            # Attribution is per-axis: each axis is attributable on
+            # its own measurement, independently of the other axis.
+            # fork-sync moves mirrors only, so a develop-axis failure
+            # must not defer (and thereby permanently lose) a mirror
+            # attribution -- once the moved head is written, later
+            # runs see no movement. Symmetrically, a mirror-axis
+            # failure must not defer a develop attribution: column L
+            # advances to the measured develop head tonight, so a
+            # develop movement left unstamped would be invisible on
+            # recovery. An unknown axis (including the
+            # consistency-failure shape, whose rejected heads are
+            # non-null) is simply not evaluated; if neither axis
+            # measured a movement, the previous attribution stands.
             mirror_measured = (
                 row["mirror_status"] != "unknown" and row["mirror_head"] is not None
             )
-            if mirror_measured:
-                mirror_moved = _short(row["mirror_head"]) != str(prev[6]).strip()
-                if mirror_moved:
-                    applied = record_repos.get(row["repo"], {}).get(
-                        "last_applied_at"
-                    )
-                    # The record is evidence only if it is new: after
-                    # the row's verification stamp AND after the last
-                    # sync already recorded in column M. M is the
-                    # consumption watermark -- a partial row's frozen
-                    # stamp must not let an already-attributed sync be
-                    # reused for a later, external movement.
-                    prev_sync = str(prev[COL_LAST_SYNC]).strip()
-                    if (
-                        applied
-                        and _after(applied, str(prev[COL_VERIFIED]).strip())
-                        and (not prev_sync or _after(applied, prev_sync))
-                    ):
-                        actor = "fork-sync"
-                        last_sync = applied
-                    else:
-                        actor = "unknown (external change)"
-                elif (
-                    row["develop_status"] != "unknown"
-                    and row["develop_head"] is not None
-                    and _short(row["develop_head"]) != str(prev[11]).strip()
+            develop_measured = (
+                row["develop_status"] != "unknown"
+                and row["develop_head"] is not None
+            )
+            mirror_moved = mirror_measured and (
+                _short(row["mirror_head"]) != str(prev[6]).strip()
+            )
+            if mirror_moved:
+                applied = record_repos.get(row["repo"], {}).get(
+                    "last_applied_at"
+                )
+                # The record is evidence only if it is new: after
+                # the row's verification stamp AND after the last
+                # sync already recorded in column M. M is the
+                # consumption watermark -- a partial row's frozen
+                # stamp must not let an already-attributed sync be
+                # reused for a later, external movement.
+                prev_sync = str(prev[COL_LAST_SYNC]).strip()
+                if (
+                    applied
+                    and _after(applied, str(prev[COL_VERIFIED]).strip())
+                    and (not prev_sync or _after(applied, prev_sync))
                 ):
-                    # A develop-only move is never bot-made.
+                    actor = "fork-sync"
+                    last_sync = applied
+                else:
                     actor = "unknown (external change)"
+            elif develop_measured and (
+                _short(row["develop_head"]) != str(prev[11]).strip()
+            ):
+                # A develop-only move is never bot-made.
+                actor = "unknown (external change)"
         else:
             applied = record_repos.get(row["repo"], {}).get("last_applied_at")
             if applied:

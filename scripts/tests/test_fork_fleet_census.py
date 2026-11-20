@@ -568,3 +568,53 @@ class CodexRegressionTests(unittest.TestCase):
         rows3, _ = ffc.build_rows(census_doc([external]), rows2, record, "2026-11-18T09:00:00-06:00")
         self.assertEqual(rows3[0][13], "unknown (external change)")
         self.assertEqual(rows3[0][12], "2026-11-17T08:00:00-06:00")  # M kept
+
+    def test_develop_attribution_independent_of_mirror_failure(self):
+        # Mirror image of the develop-failure case: the mirror
+        # compare fails but the develop compare succeeds and reports
+        # a changed develop head. Column L advances to the measured
+        # head tonight, so the movement must be attributed tonight --
+        # on recovery the head already matches the previous row, and
+        # the external movement would never be recorded in column N.
+        t1 = "2026-11-16T09:00:00-06:00"
+        rows1, _ = ffc.build_rows(census_doc([census_row()]), [], {}, t1)
+        self.assertEqual(rows1[0][13], "fork-fleet-census")
+        partial = census_row(
+            mirror_status="unknown", mirror_behind=None,
+            mirror_unique=None, mirror_head=None, upstream_head=None,
+            develop_head=SHA_D, develop_behind=4,
+            error="mirror-compare: HTTP 500",
+        )
+        rows2, _ = ffc.build_rows(census_doc([partial]), rows1, {}, "2026-11-17T09:00:00-06:00")
+        self.assertEqual(rows2[0][11], SHA_D[:12])  # L advances tonight
+        self.assertEqual(rows2[0][13], "unknown (external change)")  # attributed tonight
+        self.assertEqual(rows2[0][6], SHA_A[:12])  # mirror baseline kept
+        self.assertEqual(rows2[0][14], t1)  # stamp frozen (an axis failed)
+        # Recovery night: both axes measured, nothing moves; the
+        # attribution must stand, not revert or vanish.
+        recovered = census_row(develop_head=SHA_D, develop_behind=4)
+        rows3, _ = ffc.build_rows(census_doc([recovered]), rows2, {}, "2026-11-18T09:00:00-06:00")
+        self.assertEqual(rows3[0][13], "unknown (external change)")
+
+    def test_develop_move_after_sync_does_not_retain_fork_sync(self):
+        # A row previously attributed to fork-sync: a later develop
+        # movement measured while the mirror compare fails must
+        # replace the attribution -- the stale fork-sync stamp must
+        # not survive a movement fork-sync cannot have made (it
+        # moves mirrors only). Column M still records the last sync.
+        t1 = "2026-11-16T09:00:00-06:00"
+        rows1, _ = ffc.build_rows(census_doc([census_row()]), [], {}, t1)
+        record = {"repos": {"pratik-saptarshi/x": {"last_applied_at": "2026-11-17T08:00:00-06:00"}}}
+        synced = census_row(mirror_head=SHA_D, mirror_behind=2)
+        rows2, _ = ffc.build_rows(census_doc([synced]), rows1, record, "2026-11-17T09:00:00-06:00")
+        self.assertEqual(rows2[0][13], "fork-sync")
+        self.assertEqual(rows2[0][12], "2026-11-17T08:00:00-06:00")
+        partial = census_row(
+            mirror_status="unknown", mirror_behind=None,
+            mirror_unique=None, mirror_head=None, upstream_head=None,
+            develop_head="e" * 40, develop_behind=1,
+            error="mirror-compare: HTTP 500",
+        )
+        rows3, _ = ffc.build_rows(census_doc([partial]), rows2, record, "2026-11-18T09:00:00-06:00")
+        self.assertEqual(rows3[0][13], "unknown (external change)")
+        self.assertEqual(rows3[0][12], "2026-11-17T08:00:00-06:00")  # M kept
