@@ -15,7 +15,7 @@ The Source column names pratik-saptarshi forks (default branch `develop`) wherev
 ## Skills
 
 | Skill | Source | License | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | agent_operations | pratik-saptarshi/12-factor-agents | CC BY-SA 4.0 | |
 | aim | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | archify | pratik-saptarshi/archify | MIT | Vendored verbatim (25cf370); needs ARCHIFY_CHROME env for browser-check gate |

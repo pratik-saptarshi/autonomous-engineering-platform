@@ -24,6 +24,7 @@ CONSENSAGENT (ACL 2025), Trust or Escalate (ICLR 2025 Oral).
 ## When NOT to Use This Skill
 
 Do NOT trigger for these requests — they need single-agent handling or other skills:
+
 - Single code review ("review this function for bugs")
 - Quick sanity checks ("just a quick look before I push")
 - Bug fixes ("fix the type errors", "fix the failing test")
@@ -82,7 +83,7 @@ Output: Classifies as mixed → adds Code Quality Auditor + Data Quality Auditor
 
 ## Process Overview
 
-```
+```text
 Phase 1:    Setup                     → Identify work, pick personas, define criteria
 Phase 2:    Data Flow Trace           → Trace critical path(s), document schemas [code only] (v2.14)
 Phase 3:    Independent Review        → All reviewers evaluate in parallel (no cross-talk)
@@ -117,6 +118,7 @@ The user provides: file paths, inline content, git diff/PR, or a plan/design doc
 Collect full content, then run Context Gathering (below).
 
 **Classify content type** (matters for persona selection):
+
 - **Pure code** — only code files
 - **Pure plan/design** — architecture docs, proposals, RFCs
 - **Mixed** — plans with code snippets, SQL, or config
@@ -127,7 +129,7 @@ Collect full content, then run Context Gathering (below).
 Auto-detect review mode from content type. No user toggle.
 
 | Content Type | Review Mode | Behavior |
-|---|---|---|
+| --- | --- | --- |
 | Pure code | **Precise** | Every finding MUST cite a specific file, line number, or code snippet. Findings without concrete evidence are demoted to [UNVERIFIED]. |
 | Pure plan/design | **Exhaustive** | Broader risk identification allowed. Findings may reference design sections or architectural patterns without line-number evidence. |
 | Mixed | **Precise** for code, **Exhaustive** for prose | Reviewers label each finding with its mode. Code findings without line citations are demoted. |
@@ -186,6 +188,7 @@ the #1 cause of incorrect [CRITICAL] recommendations.**
    the worktree files, none checked `main`. The finding was confidently wrong.
 
    **Steps:**
+
    ```bash
    # 1. Detect if we're in a worktree
    git rev-parse --is-inside-work-tree 2>/dev/null && \
@@ -217,7 +220,7 @@ the #1 cause of incorrect [CRITICAL] recommendations.**
    **Record in Context Brief:** Add a "Codebase State" section with: branch name,
    commits behind main, key PRs merged since branch point, worktree status.
 
-4. **Knowledge Mining (tiered loading)** — Mine local knowledge using a 3-tier
+1. **Knowledge Mining (tiered loading)** — Mine local knowledge using a 3-tier
    approach to minimize token waste while maximizing relevant context:
 
    **L0 — Index scan (~100 tokens each).** Read only index lines and frontmatter
@@ -243,17 +246,17 @@ the #1 cause of incorrect [CRITICAL] recommendations.**
    **Deduplication:** if the same insight appears in multiple sources, include
    only the most specific version (project > global > skill).
 
-5. **Web Research** (deep research mode only) — Triggers when user requests
+2. **Web Research** (deep research mode only) — Triggers when user requests
    "deep review" or 5+ keywords from a signal group with no built-in checklist.
    Cap at 2 web searches. Tag findings with [WEB]. If the built-in domain
    checklist already covers the signal group, web research is skipped unless
    explicitly requested.
 
-6. **Context Brief** — Compile into structured brief with sections: Codebase
+3. **Context Brief** — Compile into structured brief with sections: Codebase
    State, System Documentation Found, Referenced Files, Safety Mechanisms,
    Knowledge Mining Results, Web Research Findings, Domain Checklist, Context Gaps.
 
-7. **User Confirmation** — If significant context gaps exist or deep research
+4. **User Confirmation** — If significant context gaps exist or deep research
    is available but not requested, ask before proceeding.
 
 ### Select Personas with Agreement Intensity
@@ -261,24 +264,28 @@ the #1 cause of incorrect [CRITICAL] recommendations.**
 If user specifies personas, use those. Otherwise select 4 from content-type sets:
 
 **For code/implementation:**
+
 1. **Correctness Hawk** (30%) — Bugs, logic errors, edge cases
 2. **Architecture Critic** (50%) — Design patterns, coupling, extensibility
 3. **Security Auditor** (30%) — Vulnerabilities, injection, auth gaps
 4. **Devil's Advocate** (20%) — Challenges everything, proposes alternatives
 
 **For plans/designs (pure — no code):**
+
 1. **Feasibility Analyst** (60%) — Technical feasibility, timeline realism
 2. **Stakeholder Advocate** (50%) — Business perspective, ROI
 3. **Risk Assessor** (30%) — Failure modes, dependencies
 4. **Devil's Advocate** (20%)
 
 **For mixed content (plans WITH code/SQL/config) — CRITICAL:**
+
 1. **Feasibility Analyst** (60%)
 2. **Code Quality Auditor** (40%) — Line-by-line scrutiny of every snippet
 3. **Risk Assessor** (30%)
 4. **Devil's Advocate** (20%)
 
 **For documentation:**
+
 1. **Clarity Editor** (60%)
 2. **Technical Accuracy Reviewer** (30%)
 3. **Completeness Checker** (40%)
@@ -298,7 +305,7 @@ launch, synchronize, and hand off to dependent reducer phases.
 Use this stable persona registry when selecting and launching panel reviewers:
 
 | Persona | Primary Lens | Default Use |
-|---|---|---|
+| --- | --- | --- |
 | Correctness Hawk | Bugs, logic errors, edge cases | Code/implementation reviews |
 | Architecture Critic | Design patterns, coupling, extensibility | Code and architecture reviews |
 | Security Auditor | Vulnerabilities, injection, auth gaps | Security-sensitive code, auth, data handling |
@@ -326,7 +333,7 @@ The panel orchestrator MUST batch independent persona work instead of serializin
 ### Reasoning Strategy Assignment (DMAD, ICLR 2025)
 
 | Persona Type | Strategy | Injection |
-|---|---|---|
+| --- | --- | --- |
 | Correctness Hawk / Code Quality Auditor | Systematic enumeration | "Enumerate every code path, constant, edge case." |
 | Architecture Critic / Feasibility Analyst | Backward reasoning | "Start from desired outcome, trace backward." |
 | Security Auditor / Risk Assessor | Adversarial simulation | "Imagine you are an attacker. How would you break this?" |
@@ -355,7 +362,7 @@ agents are available by scanning the system-reminder agent list for any
 #### Core Persona Mapping (review panel built-in personas)
 
 | Persona | Primary Agent | Alt Agent | Fallback |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Correctness Hawk | `agent-qa-sec:code-reviewer` | `agent-qa-sec:debugger` | Generic + prompt |
 | Architecture Critic | `agent-qa-sec:architect-reviewer` | `agent-infra:cloud-architect` | Generic + prompt |
 | Security Auditor | `agent-qa-sec:security-auditor` | `agent-qa-sec:penetration-tester` | Generic + prompt |
@@ -379,7 +386,7 @@ When content signals trigger auto-addition of specialist reviewers, use these
 Agent agents instead of generic personas:
 
 | Content Signal | Auto-Add Persona | Agent `subagent_type` |
-|---|---|---|
+| --- | --- | --- |
 | SQL / database queries | Data Quality Auditor | `agent-data-ai:database-optimizer` |
 | Terraform / IaC | Infrastructure Reviewer | `agent-infra:terraform-engineer` |
 | Terragrunt | Infrastructure Reviewer | `agent-infra:terragrunt-expert` |
@@ -423,7 +430,7 @@ Agent agents instead of generic personas:
 All launches below MUST pass `model: "opus"` explicitly (v2.14).
 
 | Review Phase | Agent `subagent_type` | Use When |
-|---|---|---|
+| --- | --- | --- |
 | Data Flow Trace (Phase 2) | `agent-data-ai:data-engineer`, `model: "opus"` | Trace data paths, document schemas at boundaries (v2.14) |
 | Completeness Audit (Phase 8) | `agent-meta:knowledge-synthesizer`, `model: "opus"` | Synthesize what the panel missed |
 | Claim Verification (Phase 10) | `agent-qa-sec:code-reviewer`, `model: "opus"` | Verify line-number citations |
@@ -462,6 +469,7 @@ to the detected content signals, not all 10. If the user declines or the agents
 aren't available, proceed with the generic fallback silently.
 
 **Step 4: Launch with `subagent_type` AND `model: "opus"`.** When launching Phase 3 agents:
+
 - `subagent_type: "agent-qa-sec:code-reviewer", model: "opus"` (when available)
 - Omit `subagent_type`, pass `model: "opus"` explicitly (generic agent fallback)
 
@@ -508,12 +516,13 @@ header. Proceed directly to Phase 3.
 Three tiers, user-selectable via `--trace {tier}` or natural language:
 
 | Tier | Trigger Phrases | Paths Traced | Overhead | Token Budget |
-|------|----------------|--------------|----------|--------------|
+| ------ | ---------------- | -------------- | ---------- | -------------- |
 | **Standard** (default) | no modifier, "review" | Single most important path | ~5 min | ~8k |
 | **Thorough** | "thorough review", "thorough trace", `--trace thorough` | Top 3 paths + transform completeness | ~15 min | ~20k |
 | **Exhaustive** | "exhaustive review", "trace everything", "catch all bugs", `--trace exhaustive` | ALL paths from every entry point | No limit | No limit |
 
 **Tier detection priority:**
+
 1. Explicit `--trace {tier}` flag
 2. Natural language keywords in user's original prompt
 3. Default: Standard
@@ -553,7 +562,7 @@ Uses the **semi-formal certificate approach** from Meta's 2026 agentic code
 reasoning research. At each function boundary on the critical path, the agent
 produces a certificate:
 
-```
+```text
 FUNCTION: {name} ({file}:{line})
 INPUT_SCHEMA:
   - parameter types (declared or inferred)
@@ -595,6 +604,7 @@ prompt.
 ### Output and Integration with Phase 3
 
 The Data Flow Tracer produces a **Data Flow Map** containing:
+
 - List of paths traced
 - Per-function certificates
 - Invariant violations table (P0 candidates)
@@ -644,7 +654,8 @@ summary.
 ## Phase 5: Debate (Rounds 1-3, adaptive)
 
 Launch all reviewers **in parallel** each round. Each receives their own review
-+ reflection, all others' feedback, and unresolved points from previous round.
+
+- reflection, all others' feedback, and unresolved points from previous round.
 
 **Output (v3.1.0+):** Each reviewer's per-round debate response is written
 to `state/reviewer_<name>_phase_5_round<R>.md` (R = 1, 2, or 3). Round 1 is
@@ -654,6 +665,7 @@ Subagent returns only path + 100-word summary.
 ### Phase 6: Round Summarization
 
 After each round, summarize (no agent needed):
+
 - **Resolved this round** — who agreed, what convinced them
 - **Still in dispute** — with inlined source excerpts (max 10 lines per dispute,
   first 5 + last 5 if longer; max 3 disputes). If a reviewer's claim cannot be
@@ -692,6 +704,7 @@ evaluate quality — only finds overlooked details, edge cases, constants, code.
 See `references/prompt-templates.md` for full prompt.
 
 **Mandatory audit checks (in addition to general completeness):**
+
 - **Temporal scope verification:** For every claim that excludes, filters, or
   masks a time period, count all instances in the full date range and verify
   each is handled. Example: "excludes Christmas" with 2 years of data must
@@ -752,14 +765,14 @@ benchmark: 2/3 P0 findings were overstated after code investigation).
 
 4. **Output a severity verification table:**
 
-```
+```text
 | Finding | Panel Severity | Verified? | Actual Severity | Reason |
 |---------|---------------|-----------|-----------------|--------|
 | ...     | P0            | No        | Not a bug       | Grep found no bf/af COALESCE pattern |
 | ...     | P0            | Partial   | P1              | DELETE-then-INSERT already exists |
 ```
 
-5. **External domain claim detection and web verification (v2.16.3)**
+1. **External domain claim detection and web verification (v2.16.3)**
 
    **Why this exists:** Consensus P0 findings that depend on external domain
    knowledge bypass the Phase 12/13 dispute-verification pipeline entirely
@@ -793,7 +806,7 @@ benchmark: 2/3 P0 findings were overstated after code investigation).
 
    **Extended severity verification table:**
 
-   ```
+```text
    | Finding | Severity | Domain Type | Web Result | Source | Adjusted Severity |
    |---------|----------|-------------|------------|--------|-------------------|
    | ...     | P0       | External    | [WEB-VERIFIED] | support.google.com/... | P0 (confirmed) |
@@ -825,7 +838,7 @@ action items, skip Phases 12 and 13 entirely.
 ### Tier Definitions
 
 | Tier | Budget | Capabilities | When to Use | Example |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | **Light** | ~2k tokens | grep/read only, no web search | Factual claim checkable in a single file or constant lookup | "Reviewer A claims the threshold constant is 0.05 but the report says 0.5 — check the code." |
 | **Standard** | ~8k tokens | Multi-file reads, import tracing, static analysis | Claim requires following logic across files or comparing multiple outputs | "Two reviewers disagree on whether the rate-limiter handles concurrent requests — trace the implementation across its dependencies." |
 | **Deep** | ~32k tokens | Web search, multi-round reasoning | Requires external knowledge, novel domain, or fundamental disagreement unresolvable from code alone | "Security reviewer claims the PRNG is cryptographically weak for this use case — requires researching current best practices for the specific algorithm." |
@@ -851,7 +864,8 @@ confidence ratings and debate round signals:
   checkable fact (file exists, value matches, line present)
 
 Produces a draft tier table:
-```
+
+```text
 | Point # | Summary | Draft Tier | Signal (confidence ratings + rounds unresolved) |
 |---------|---------|------------|------------------------------------------------|
 ```
@@ -869,7 +883,8 @@ give it the "ground-level" signal from reviewers who lived through the debate,
 and the advisor's role is oversight and correction, not cold assessment from zero.
 
 Final tier table:
-```
+
+```text
 | Point # | Summary | Draft Tier | Final Tier | Override Reason | Suggested Persona |
 |---------|---------|------------|------------|-----------------|-------------------|
 ```
@@ -888,7 +903,7 @@ Classify each claim's type and select the matching verification persona. Agent
 agents are preferred when available; fall back to generic + focused prompt.
 
 | Claim Type | Verification Persona | Agent (preferred) |
-|---|---|---|
+| --- | --- | --- |
 | Statistical / numerical | Data Scientist | `agent-data-ai:data-scientist` |
 | Code correctness / logic | Code Reviewer | `agent-qa-sec:code-reviewer` |
 | Architecture / design | Architect Reviewer | `agent-qa-sec:architect-reviewer` |
@@ -925,7 +940,7 @@ agents are preferred when available; fall back to generic + focused prompt.
 
 After all agents complete, compile into a summary table:
 
-```
+```text
 | Point | Tier | Persona | Verdict | Key Evidence |
 |-------|------|---------|---------|--------------|
 ```
@@ -946,13 +961,14 @@ For each reviewer in the panel, verify these files exist under `state/`
 (or `state/run_<N>/` in multi-run mode):
 
 | Required file | Phase | Mandatory |
-|---|---|---|
+| --- | --- | --- |
 | `reviewer_<name>_phase_3.md` | Independent review | Always |
 | `reviewer_<name>_phase_4.md` | Private reflection | Always |
 | `reviewer_<name>_phase_5_round1.md` | Debate round 1 | Always (rounds 2/3 per existing skip rules) |
 | `reviewer_<name>_phase_7.md` | Blind final | Always |
 
 Plus panel-level files:
+
 - `phase_8_audit.md`
 - `phase_10_claim_verification.md`
 - `phase_11_severity_verification.md` (only when Phase 11 ran — it is
@@ -1041,6 +1057,7 @@ the paths to `{state_dir}/phase_14_judge_ruling.md`,
 `{state_dir}/phase_8_audit.md`. The agent has grep / Read / Bash tools.
 
 Steps:
+
 1. Classify each P0/P1 finding in the judge ruling as `[PANEL-RAISED]`
    (skip — covered by Phase 11) or `[JUDGE-INTRODUCED]` (verify here).
 2. For every `[JUDGE-INTRODUCED]` finding, run a ground-truth check
@@ -1192,7 +1209,7 @@ This makes the process history fully self-explanatory to a reader who wasn't pre
 
 Structure (in order, verbatim for each):
 
-```
+```text
 Persona Profiles Registry (at top)
   - All panelist profiles listed before any review output
   - Phase 12b tier advisor profile
@@ -1272,6 +1289,7 @@ cards** (v2.15).
 inject the structured data or process history into the agent prompt from the
 orchestrator's context. Instead, the agent prompt MUST instruct the agent to
 read from disk:
+
 1. Read `review_panel_report.md` (already written by Phase 15.1) for all
    structured summary data (verdict, scores, action items, consensus, etc.)
 2. Read `review_panel_process.md` (already written by Phase 15.2) for
@@ -1287,6 +1305,7 @@ read from disk:
 absolute paths before including them in the Phase 15.3 agent prompt. The
 subagent has no knowledge of the skill installation directory or the user's
 output directory. Substitute:
+
 - `{output_dir}` → the actual resolved output directory (where Phase 15.1
   wrote `review_panel_report.md`)
 - `{skill_dir}` → the absolute path to the skill's root directory (the
@@ -1295,7 +1314,8 @@ output directory. Substitute:
   use the actual filenames, not the defaults
 
 The orchestrator's Phase 15.3 launch prompt should be SHORT (~10 lines):
-```
+
+```text
 You are the Phase 15.3 HTML Report Agent. Generate `{output_dir}/{html_filename}`
 by reading these files:
 1. {output_dir}/{report_filename} — structured review data
@@ -1309,6 +1329,7 @@ This keeps the orchestrator's launch prompt under 200 tokens instead of
 700+ lines, eliminating the context-pressure failure mode.
 
 **Features:**
+
 - Dashboard overview: verdict, score, panel composition at a glance
 - Stats row: issue counts by severity (P0–P3), tier (Light/Standard/Deep),
   verdict (VR_CONFIRMED/VR_REFUTED/VR_PARTIAL/VR_INCONCLUSIVE/VR_NEW_FINDING)
@@ -1383,6 +1404,7 @@ review_panel_process.md review_panel_report.html`).
 **If all three files exist:** proceed to the completion message below.
 
 **If `review_panel_report.html` is missing (Phase 15.3 failed):**
+
 1. Log: "Phase 15.3 HTML report generation failed. Retrying..."
 2. Retry Phase 15.3 ONCE with the same disk-reading prompt (the agent reads
    from disk, so no orchestrator context re-assembly is needed)
@@ -1394,6 +1416,7 @@ review_panel_process.md review_panel_report.html`).
 
 **Completion message (only after verification passes):**
 Tell user:
+
 - Paths to all output files that were successfully written
 - Verdict + score (from primary report)
 - Counts: consensus points, disagreements, action items, verification verdicts
@@ -1409,6 +1432,7 @@ If the user asks to "generate the HTML report" or "generate the HTML review
 report" after a review has completed (whether Phase 15.3 failed or the user
 wants to regenerate), launch the Phase 15.3 agent with the same disk-reading
 prompt described above. Resolve all paths to absolute paths. The agent MUST:
+
 1. Read the Phase 15.1 output file (e.g., `review_panel_report.md`) for
    structured data — use the actual filename from the completed review
 2. Read the Phase 15.2 output file (e.g., `review_panel_process.md`) for
@@ -1445,13 +1469,14 @@ Deterministic given the run number. Run 1 uses the base set; subsequent
 runs use complementary sets to maximize coverage diversity.
 
 | Run # | Persona Set | Purpose |
-|-------|------------|---------|
+| ------- | ------------ | --------- |
 | 1 | Standard content-type base set + signal specialists | Canonical review |
 | 2 | Complementary: Code Quality Auditor, Performance Specialist, Methodology Analyst, DA + DIFFERENT signal specialists than Run 1 | Catch what Run 1 missed |
 | 3 | Adversarial-heavy: 3 Devil's Advocates (different reasoning strategies) + 1 Correctness Hawk | Stress-test consensus |
 | 4+ | Cycle through 1–3 with shuffled signal specialists | Diminishing returns |
 
 **Run 3 Devil's Advocates** use different reasoning strategies:
+
 1. Analogical reasoning ("compare to known failure patterns from similar projects")
 2. Adversarial simulation ("imagine you are an attacker / malicious user")
 3. Failure mode enumeration ("list every way this could fail in production")
@@ -1518,25 +1543,29 @@ The Merge Agent receives all N per-run reports and executes:
 The single-run Phase 15.1 report format is extended with:
 
 **New header fields:**
-```
+
+```text
 **Runs:** {N} (personas rotated per schedule)
 **Run stability:** {X}% of findings appeared in 2+ runs
 **Unique to single run:** {Y} findings
 ```
 
 **New required section:**
-```
+
+```text
 ## Run Comparison
 | Finding | Run 1 | Run 2 | Run 3 | Merged Severity | Stability |
 ```
 
 **New label type in Scope & Limitations:**
-```
+
+```text
 Stability labels: [N/N RUNS] (high confidence) [K/N RUNS] (medium) [1/N RUNS] (single-angle)
 ```
 
 **Action items gain a stability label:**
-```
+
+```text
 1. **[P0] [VERIFIED] [2/2 RUNS]** Add mutex lock around token refresh
 2. **[P1] [CONSENSUS] [1/2 RUNS]** Sanitize error messages *(Run 2 only: Security Auditor)*
 ```
@@ -1563,7 +1592,7 @@ Reviewer state files use the naming convention
 
 **Single-run layout:**
 
-```
+```text
 docs/reviews/<date>-<topic>/
 ├── state/
 │   ├── reviewer_<name>_phase_3.md         # independent review
@@ -1582,7 +1611,7 @@ docs/reviews/<date>-<topic>/
 
 **Multi-run layout (Phase 16):**
 
-```
+```text
 docs/reviews/<date>-<topic>/
 ├── state/
 │   ├── run_1/reviewer_<name>_phase_3.md

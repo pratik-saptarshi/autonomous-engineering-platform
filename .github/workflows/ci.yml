@@ -19,7 +19,10 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - run: npx --yes markdownlint-cli2@0.24.0 "**/*.md" "!reference/esf/**/*.md" "!reference/neurostrata/**/*.md" "!reference/neurostrata-ops/**/*.md" "!reference/harness2/**/*.md" "!reference/security-audit-skill/**/*.md" "!reference/ub-mode/**/*.md" "!reference/grim-prompter/**/*.md" "!reference/docs-mcp-server/**/*.md" "!reference/humanizer/**/*.md" "!reference/homebrew-install/**/*.md" "!reference/elephant-goldfish-model/**/*.md" "!reference/harness-profiler/**/*.md" "!skills/archify/**/*.md" "!skills/diagnosing-superpowers/**/*.md" "!skills/neurogenesis/**/*.md" "!skills/overseer/**/*.md" "!skills/retro/**/*.md" "!skills/egm-bootstrap/**/*.md" "!skills/egm-brainstorm/**/*.md" "!skills/egm-draft/**/*.md" "!skills/egm-drift-report/**/*.md" "!skills/egm-resolve/**/*.md" "!skills/egm-review/**/*.md" "!skills/egm-review-loop/**/*.md" "!docs/egm-adoption/**/*.md"
+      # reference/** is excluded because those trees are byte-pinned vendored
+      # snapshots (see .github/vendor-*.sha256): lint must never force an
+      # edit there. Everything else in the repo is linted.
+      - run: npx --yes markdownlint-cli2@0.24.0 "**/*.md" "!reference/**"
       - name: Design invariants
         run: |
           python3 scripts/check_design_invariants.py --self-test

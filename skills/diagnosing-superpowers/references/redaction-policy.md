@@ -4,7 +4,7 @@ Apply these categories with the supplied `PUBLIC_REPOS` and `PROPRIETARY`
 lists.
 
 | Category | Placeholder | What to catch |
-|---|---|---|
+| --- | --- | --- |
 | Email addresses | `<EMAIL-n>` | anything shaped like an email |
 | People | `<PERSON-n>` | given names, surnames, handles (`@name`), git author names; replace the whole name; role words ("the reviewer", "your human partner") stay |
 | Account / org identifiers | `<ORG-n>` | UUIDs and ids labelled account, org, owner, tenant, workspace, team |

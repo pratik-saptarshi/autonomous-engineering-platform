@@ -5,7 +5,7 @@ Title: <skill or symptom>: <one-line observable> (<harness>)
 ## Environment (required)
 
 | Field | Value | Provenance / supporting evidence |
-|-------|-------|-------------------------------|
+| ------- | ------- | ------------------------------- |
 | Superpowers version | <version> (<sha or "not a checkout">) | <historical evidence / unverified snapshot / current observation / unknown>; <location> |
 | Harness (Claude Code, Cursor, etc.) | <harness> | <label>; <location> |
 | Harness version | <version> | <label>; <location> |

@@ -46,12 +46,14 @@
 ### Task 0: Write the structural checker first
 
 **Files:**
+
 - Create: `scripts/check_design_invariants.py`
 - Create: `scripts/tests/fixtures/design-invariants/good/*.html`
 - Create: `scripts/tests/fixtures/design-invariants/bad/*.html`
 - Test: the checker's self-test; expected to fail on current docs
 
 **Interfaces:**
+
 - Produces: `check_design_invariants.py --check` and `--self-test`.
 
 - [ ] **Step 1: Write a section-aware checker**
@@ -59,7 +61,7 @@
 Use Python 3.9 `html.parser` to extract headings, `<pre>` blocks, table rows, and item cards. Bind each assertion to a section, not the whole file. For table/card checks, locate the `<tr>` containing the key (`nano-8g`, `PR-11b`, `AC-07`) and parse its cells; for run-spec checks, locate the `<pre>` under `<h3>9.3` and parse the exact lines. Each assertion gets its own good/bad fixture pair; a check with five assertions gets five bad fixtures, not one.
 
 | Check | Section | Assertion |
-|---|---|---|
+| --- | --- | --- |
 | C9-1 | LLD `<h3>4.1` + `<h3>4.9` | `Requirement`, `Backend`, `Isolation`, `NewBackend` exist; no `Tier2Supported bool` field; `Tier2Supported()` is a method; no duplicate `SandboxBackend string` enum |
 | C9-2 | HLD §9 + §11 | `Tier2Supported` is derived from `Backend`; `/dev/kvm` is only `KVMProbe` |
 | C6 | LLD §6 `<pre>` | no `host - req.MemMiB`; `host < reqBytes`; zero and overflow rejected |
@@ -98,6 +100,7 @@ git commit -m "test(docs): add section-aware invariant checker for PR #133"
 ### Task 1: Replace the capability model and set the requirement floor (C9, C8, C4, C5)
 
 **Files:**
+
 - Modify: `docs/plan/aep-lld-v1.1.html` §4.1, §4.9, §7, §10, §12 T4/T10/T11
 - Modify: `docs/plan/aep-hld-v1.1.html` §4 SVG (lines 114, 116), §5.2 (line 138), §6, §8 (line 172), §9, §11, §12
 - Modify: `docs/plan/aep-backlog-v1.1.html` CAP-02, CAP-07, PR-10/PR-11
@@ -105,6 +108,7 @@ git commit -m "test(docs): add section-aware invariant checker for PR #133"
 - Test: `check_design_invariants.py`
 
 **Interfaces:**
+
 - Produces: `BackendKind`, `IsolationKind`, `Provenance`, `Backend`, `Isolation`, `Requirement`, `NoFloor`, `NewBackend`, `Profile.Backend`, `Profile.KVMProbe`, `Profile.Tier2Supported()`, `Profile.Tier2Admissible()`.
 
 - [ ] **Step 1: Run the failing checks**
@@ -257,6 +261,7 @@ git commit -m "docs(plan): model capability as an attested value and gate re-ver
 ### Task 2: Move model execution outside the lane (C7)
 
 **Files:**
+
 - Modify: `docs/plan/aep-lld-v1.1.html` §4.4/§4.5, §9.2, §9.3, §10
 - Modify: `docs/plan/aep-hld-v1.1.html` §4 (line 114), §5.2, §9, §11 (add the model-boundary risk row)
 - Modify: `docs/plan/aep-backlog-v1.1.html` CAP-01, PR-06/PR-07
@@ -264,6 +269,7 @@ git commit -m "docs(plan): model capability as an attested value and gate re-ver
 - Test: `check_design_invariants.py`
 
 **Interfaces:**
+
 - Produces: `internal/execd` (`exec.sock`), `ExecRequest{Argv, Cwd, Timeout, Env}`, `ExecPolicy`, and one `relay.Handler` used by `memoryd`/`gwd`/`execd`/`gitd`.
 
 - [ ] **Step 1: Run the failing check**
@@ -331,12 +337,14 @@ git commit -m "docs(plan): run model inference outside zero-egress lanes"
 ### Task 3: Move Git control to a host relay and mask `.git` (C10)
 
 **Files:**
+
 - Modify: `docs/plan/aep-lld-v1.1.html` §8.1, §9.3, §11
 - Modify: `docs/plan/aep-backlog-v1.1.html` CAP-01 (line 175), AC-01.2, PR-07
 - Modify: `docs/plan/aep-hld-v1.1.html` §5.2, §9
 - Test: `check_design_invariants.py`
 
 **Interfaces:**
+
 - Produces: `internal/gitd` (`git.sock`), `GitRequest{Op, Paths, Message, Branch}`, `GitPolicy`; `/workspace/.git` mask.
 
 - [ ] **Step 1: Run the failing check**
@@ -387,12 +395,14 @@ git commit -m "docs(plan): commit through a host git relay and mask .git in lane
 ### Task 4: Fix memory semantics and admission (C6, C11)
 
 **Files:**
+
 - Modify: `docs/plan/aep-lld-v1.1.html` §4.1, §6, §11
 - Modify: `docs/plan/aep-backlog-v1.1.html` CAP-07, AC-07
 - Modify: `docs/plan/aep-hld-v1.1.html` §6 note
 - Test: `check_design_invariants.py`
 
 **Interfaces:**
+
 - Produces: `MiB`, `Bytes`, `MemoryView{Total, Available, Limit}`, `Validate(total Bytes)`, `Admit(req) error`.
 
 - [ ] **Step 1: Run the failing checks**
@@ -434,7 +444,7 @@ The subtraction is safe only after the `host < reqBytes` guard; state that expli
 - [ ] **Step 4: Replace the test table**
 
 | Available | Request | Floor | Used/Budget | Expected |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | 1 GiB | 2 GiB | 384 MiB | 0 / 4 GiB | reject (`host floor`) |
 | 2.375 GiB | 2 GiB | 384 MiB | 0 / 4 GiB | admit (exact floor) |
 | 2.374 GiB | 2 GiB | 384 MiB | 0 / 4 GiB | reject (below floor) |
@@ -459,6 +469,7 @@ git commit -m "docs(plan): use typed memory and checked admission arithmetic"
 ### Task 5: Specify full-stream signed receipts (C12)
 
 **Files:**
+
 - Modify: `docs/plan/aep-lld-v1.1.html` §3, §11
 - Modify: `docs/plan/aep-backlog-v1.1.html` PR-11b
 - Modify: `docs/plan/aep-hld-v1.1.html` §9
@@ -467,6 +478,7 @@ git commit -m "docs(plan): use typed memory and checked admission arithmetic"
 - Test: `check_design_invariants.py`; future Go/Python tests
 
 **Interfaces:**
+
 - Produces: `CommandReceipt.StdoutSha`, `CommandReceipt.StderrSha`, `RunReceipt{Nonce, IssuedAt, LedgerSeq, KeyID, Signature}`, `HashingWriter`.
 
 - [ ] **Step 1: Run the failing check**
@@ -545,6 +557,7 @@ git commit -m "docs(plan): bind full test output into signed run receipts"
 ### Task 6: Re-audit C1-C5 and align all four documents
 
 **Files:**
+
 - Modify: whichever of the four docs still carries a stale statement (Task 1 sets the rule; this task audits for residual copies)
 - Test: `check_design_invariants.py`
 
@@ -586,6 +599,7 @@ git commit -m "docs(plan): align C1-C5 and cross-document capability references"
 ### Task 7: Wire the guard, render artifacts, and close threads
 
 **Files:**
+
 - Modify: `.github/workflows/ci.yml` docs-lint job
 - Modify: `docs/plan/*.pdf` if rendered
 - GitHub review threads
@@ -683,7 +697,7 @@ These are named so the code does not hide inside a docs PR. Each is a separate P
 **In this PR (docs + checker):**
 
 | Check | Command | Expected |
-|---|---|---|
+| --- | --- | --- |
 | Checker self-test | `python3 scripts/check_design_invariants.py --self-test` | pass; every bad fixture fails |
 | Checker on docs | `python3 scripts/check_design_invariants.py --check` | pass after Tasks 1-6 |
 | Existing Go tests | `go test ./...` (CI/Linux) or `go test ./internal/platform/...` (macOS; runner fallback needs `setsid`) | pass, with the known macOS runner exception stated |

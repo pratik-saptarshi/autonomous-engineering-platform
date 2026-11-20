@@ -19,7 +19,7 @@ cd /tmp/skillinsp && ~/workspace/skillspector/venv/bin/pip install .  # or fresh
 
 Expected layout after setup:
 
-```
+```text
 ~/workspace/skillspector/
   venv/                 # isolated Python 3.12 venv (not in git)
   venv/bin/skillspector # CLI

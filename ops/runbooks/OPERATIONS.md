@@ -7,7 +7,7 @@
 ## Paths
 
 | What | Path |
-|---|---|
+| --- | --- |
 | Binary | `~/go/bin/neurostrata-mcp` (v1.9.0) |
 | Daemon log | `~/.local/share/neurostrata/daemon.log` |
 | Database | `~/.config/NeuroStrata/data/db/ladybug.db` |

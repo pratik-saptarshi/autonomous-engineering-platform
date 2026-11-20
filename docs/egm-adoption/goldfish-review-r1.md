@@ -19,7 +19,7 @@ round; the decision gate belongs to the user (egm-resolve is a separate step).
 ## Per-reviewer status
 
 | Reviewer | Standard | Status | Blocker | Major | Nit |
-|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- |
 | design_critic | feature-spec | completed | 0 | 7 | 3 |
 | structural | feature-spec | completed | 0 | 5 | 4 |
 | implementation_readiness | implementation-readiness | completed | 1 | 8 | 8 |
@@ -30,6 +30,7 @@ round; the decision gate belongs to the user (egm-resolve is a separate step).
 ## Findings — Blockers (3)
 
 ### comprehension-1-1 — Blocker — D3 adaptations vs. Path 1 plugin install are irreconcilable
+
 Lines 79, 84–92, 159–178. D3 says the three adaptations are "applied
 identically in both environments" and requires every adapted `SKILL.md` to
 gain the Muse routing line and bundle-relative path resolution. But §4.2
@@ -44,6 +45,7 @@ executed as written; the central "one adoption, two installations" claim
 (lines 20–21) fails for it.
 
 ### comprehension-1-2 — Blocker — Elephant / synthesizer / dispatch never mapped to a concrete actor
+
 Lines 25–28, 137–149, 244–251. The model is defined abstractly ("Elephant
 (one agent holds context and drafts the spec)"), but the document never maps
 Elephant / synthesizer / parent to a concrete actor in either environment. D7
@@ -57,6 +59,7 @@ given. A fresh reader can paraphrase the idea of fresh-eyes review but
 cannot run one review loop from this document alone.
 
 ### implementation_readiness-1-1 — Blocker — No exact file-change list; Phase 2 write allowlist cannot be enforced
+
 Lines §4 (D4, 94–113), §6 Phase 2 (278). The standard requires an explicit
 list of exact repository-relative file paths to be created, modified, or
 deleted. The plan gives only directory patterns
@@ -70,6 +73,7 @@ cannot produce a bounded change or an allowlist from this.
 ## Findings — Majors (35)
 
 ### design_critic-1-1 — Major — `vendor-integrity` coverage overstated; Phase 2 omits the required CI edit
+
 Lines 94–106 (D4), 278; AEP `.github/workflows/ci.yml` lines 73–132. D4
 states the bundle is "Covered by the `vendor-integrity` CI job". Verified:
 the job is nine hand-written, copy-pasted `run:` blocks, one per
@@ -80,6 +84,7 @@ edit is missed, the new bundle ships with zero integrity verification while
 the document claims coverage — silent non-coverage.
 
 ### design_critic-1-2 — Major — `skills-freshness` does not do what D4 claims; generated `skill.yaml` is outside the gate
+
 Lines 100–113 (D4), 259–270 (§5.4). (a) The scope file's own header states
 the gate proves only that the repo `skills/` tree equals the manifest
 generated from the repo tree after the last sync from live — "never a
@@ -91,6 +96,7 @@ excluded from the manifest. D4's "Covered by the `skills-freshness` gate" is
 true only for the adapted `SKILL.md`.
 
 ### design_critic-1-3 — Major — "One adoption, two installations" has no canonical source or sync mechanism
+
 Lines 20–21 (§1), 239–240 (§5.2), 269 (§5.4 step 4). §5.2 calls
 `~/workspace/egm/` "the single source of truth for personas and standards",
 but the local bundle lives outside any repository (no version control,
@@ -101,6 +107,7 @@ prefix…)") is not an executable check, and no normalisation procedure is
 defined. Dual-write drift is designed in, not guarded against.
 
 ### design_critic-1-4 — Major — D3 path-resolution adaptation underspecified; does not cover persona-internal references
+
 Lines 77–92 (D3); verified against `~/workspace/egm/skills/egm-review/SKILL.md`,
 `agents/zoom_out.md:44`, `agents/synthesizer.md:37–38`,
 `resources/README.md:16`. (a) D3 gives no rewriting rule: which literal
@@ -118,6 +125,7 @@ path, though `docs/muse.md` lives at different absolute locations per
 environment.
 
 ### design_critic-1-5 — Major — Principal risk (D6) has procedural-only mitigation over an unverified mechanism
+
 Lines 124–135 (D6), 292–296 (§7). The mitigation is "brief reviewers
 read-only… do not hand reviewers write tools", but the document never
 establishes that `subagent.spawn` in Environment B (or any Environment A
@@ -128,6 +136,7 @@ that edits the working tree or touches memory services is detectable only
 after the fact, if at all.
 
 ### design_critic-1-6 — Major — No cost, quota, or loop-bound economics for the review loop
+
 Lines 242–257 (§5.3), 272–284 (§6). The adoption sets no iteration cap, no
 per-run subagent-count or token budget, no timeout values, and no escalation
 path on non-convergence. The upstream skill mentions cap/converge, but the
@@ -136,6 +145,7 @@ measures cost. The most expensive behaviour — repeated full-context re-reads
 by fresh reviewers — is unbudgeted.
 
 ### design_critic-1-7 — Major — No Goals or success metrics; Alternatives Rule only partly met
+
 Lines 5–21 (§1), 108–113 (D4), 272–284 (§6), 302–310 (§8). (a) No Goals
 section and no measurable success criteria anywhere; phase gates are binary
 checklists ("gate-scan pass", "CI green", "drift report produces a dated,
@@ -147,6 +157,7 @@ vendoring; Path 1 plugin install for AEP instead of vendoring; adopting a
 subset of skills vs. all seven.
 
 ### structural-1-1 — Major — Missing required header: "Alternatives Considered"
+
 No such heading anywhere in lines 1–337; nearest content is §3 D4 lines
 108–114, §4.2 vs §4.3 (lines 159, 180), §4.4 decision matrix (lines
 194–201), §9 item 4 (lines 320–323). The standard's Alternatives Rule makes
@@ -155,21 +166,25 @@ only in fragments — a fresh reader cannot locate a single consolidated
 evaluation, and rejection rationales are not gathered in one place.
 
 ### structural-1-2 — Major — Missing required header: "Goals & Non-Goals" (Goals half missing)
+
 §8 "Non-goals" lines 302–311 only; no "Goals" heading or goals list
 anywhere. The standard requires both. Goals must be inferred from §1
 "Purpose" (lines 5–22) and §6 "Rollout" (lines 272–285).
 
 ### structural-1-3 — Major — Missing required header: "Problem Statement" (renamed, not headed)
+
 §1 "Purpose" lines 5–22. The standard requires a "Problem Statement"; the
 document covers motivation ("design-before-implementation becomes a loadable
 skill rather than an implicit habit", lines 7–10) under a different label.
 
 ### structural-1-4 — Major — Missing required header: "Proposed Architecture" (content present, heading absent)
+
 No such heading; architectural content is spread across §3 "Design
 decisions" (lines 58–150), §4 (lines 151–214), and §5 (lines 216–270). No
 single architectural overview section exists.
 
 ### structural-1-5 — Major — Missing required header: "Risks & Mitigations" (only a security subset is headed)
+
 §7 "Security notes" lines 286–300; D6 read-only caveat lines 124–136. The
 standard's "Risks & Limits" requires explicit failure modes, security
 implications, scalability limits, and mitigations under "Risks &
@@ -178,6 +193,7 @@ scalability limits have no headed section, and the principal risk (D6) is
 stated in §3 and repeated in §7 rather than in a risks section.
 
 ### implementation_readiness-1-2 — Major — `skill.yaml` generation schema unspecified
+
 Lines 81–83 (D3 item 1), 102–107, 232–235. "Generate one per skill from the
 existing frontmatter (name + description)." The AEP `skill.yaml` format
 (verified, e.g. `skills/archify/skill.yaml`) carries `name`, `title`,
@@ -189,6 +205,7 @@ name `skill.yaml` from the manifest, so the generated files are covered by
 **neither** gate the plan cites.
 
 ### implementation_readiness-1-3 — Major — D3 path-resolution adaptation is not executable as written
+
 Lines 87–90 (D3 item 3), 102–105, 185–189, 232–234. (a) The plan never
 enumerates which path references inside each of the seven `SKILL.md` files
 must be rewritten, nor the exact replacement strings. (b) Environment B is
@@ -202,6 +219,7 @@ the relative resolution from `<install-root>/skills/egm-*/` to
 `<install-root>/egm/` is never stated.
 
 ### implementation_readiness-1-4 — Major — §5.4 step 2 verification command cannot produce its stated expectation
+
 Lines 261–263. "`diff -rq` bundle vs. upstream at the pinned SHA (expect
 zero differences outside the adaptation layer)." Two defects: (i) no command
 is given to fetch upstream at the pinned SHA; (ii) the bundle is a **subset**
@@ -213,6 +231,7 @@ layer lives in `custom-skills/`, not in the bundle, so "outside the
 adaptation layer" has no meaning for this diff.
 
 ### implementation_readiness-1-5 — Major — §5.4 step 4 sync check has no executable procedure
+
 Lines 268–270. "Sync check: local `custom-skills/egm-*` vs. AEP
 `skills/egm-*` wrappers byte-identical (modulo the path prefix:
 `~/workspace/egm/` locally vs.
@@ -222,6 +241,7 @@ line. The implementer must design the normalization themselves, including
 deciding whether `~` vs. the expanded home path counts as a difference.
 
 ### implementation_readiness-1-6 — Major — No test plan; the core risk (broken path resolution) has no automated check
+
 Lines §4.5 (204–215), §5.4 (260–270), §6 (273–284). The standard requires
 specific test cases (happy path and edge cases). The plan contains only
 manual acceptance steps. There is no test case asserting that every
@@ -232,6 +252,7 @@ frontmatter. The exact failure mode D2 warns is "broken by construction"
 would only surface in the human pilot.
 
 ### implementation_readiness-1-7 — Major — Vendor-integrity coverage claim is false as written; CI change and manifest generation are missing
+
 Lines 96–101, 278. Verified in the repo: `.github/workflows/ci.yml`
 `vendor-integrity` is a series of **hardcoded per-tree `run:` blocks** (one
 each for `esf`, `neurostrata`, `neurostrata-ops`, `harness2`,
@@ -247,6 +268,7 @@ update history). Phase 2's gate "CI green" would pass vacuously for the new
 bundle without the CI edit.
 
 ### implementation_readiness-1-8 — Major — Path 1 install for non-Muse harnesses has no steps
+
 Lines 176–177, 198–199, 205–206. "Equivalent native installs exist for
 Claude Code, Codex, Cursor, OpenCode, and Antigravity (see `docs/harnesses.md`
 and the per-host manifests in the repo root)." No install command, install
@@ -256,6 +278,7 @@ matrix assigns them all "Path 1 (native install)" and §4.5 step 1 defers to
 harness. Only the Muse path has concrete commands.
 
 ### implementation_readiness-1-9 — Major — §5.3 dispatch lacks executable parameters
+
 Lines 244–252. "Reviewers: `subagent.spawn` with the persona file path and
 the verbatim prompt in the brief" — the "verbatim prompt" is never quoted or
 located. "Require the reviewer to read persona + target + every supplied
@@ -268,6 +291,7 @@ plain-text question" — the gate question text is never given. No
 hand reviewers write tools" mitigation.
 
 ### comprehension-1-3 — Major — Path arithmetic in D2 is wrong/confusing
+
 Lines 71–73. "Skills resolve `agents/` and `resources/` relative to the
 plugin root (three parents above each `SKILL.md`)." A skill file at
 `skills/<skill>/SKILL.md` reaches the plugin root with two `..` segments
@@ -276,6 +300,7 @@ plugin root (three parents above each `SKILL.md`)." A skill file at
 parents" does not match the document's own path example.
 
 ### comprehension-1-4 — Major — SkillSpector gate / `scan-gate.sh` invoked but never explained
+
 Lines 115–122, 190–192, 261, 276–277. D5 mandates "`scan-gate.sh` on each
 adapted skill dir; block on score > 50 or any HIGH/CRITICAL finding, fail
 closed on scan errors," and §4.3/§5.4/§6 repeat "gate-scan" as a phase gate.
@@ -285,6 +310,7 @@ what the score measures, what a HIGH/CRITICAL finding looks like, what a
 scores are recorded ("record scores," line 261 — in what file?).
 
 ### comprehension-1-5 — Major — AEP gates, manifest, scope file, `PROVENANCE.md`, `.sha256`, attribution table named, not specified
+
 Lines 96–107, 334–337. D4 says the bundle is "Covered by the
 `vendor-integrity` CI job" and wrappers by "the `skills-freshness` gate
 (manifest + `.github/skills-sync-scope.txt` entries…)" and "the attribution
@@ -297,6 +323,7 @@ baseline `skills/README.md` shows Source / License / Notes columns, but the
 target never maps EGM onto them).
 
 ### comprehension-1-6 — Major — `skill.yaml` generation is underspecified
+
 Lines 81–83, 235. "Generate one per skill from the existing frontmatter
 (name + description)." No schema, field list, example file, or generator
 command is given; it is unclear whether `license` and
@@ -306,6 +333,7 @@ loader, or where the template lives. `disable-model-invocation` itself is
 never explained.
 
 ### comprehension-1-7 — Major — Approval / readiness gates referenced but never defined
+
 Lines 55–56, 209–212, 249–251. §5.3 says "preserve the skill's readiness
 and section-approval gates" and "ask one plain-text question and wait for
 the answer where no structured question tool exists," but the document never
@@ -315,6 +343,7 @@ similarly mention "interactive approval gates" and approvals "simulated up
 front" (lines 55, 211) without explaining what was simulated or how.
 
 ### comprehension-1-8 — Major — "Verify reviewers read the files" has no mechanism
+
 Lines 244–248, 264–267. §5.3 requires the reviewer "to read persona +
 target + every supplied standard before returning findings (a missing read
 is an incomplete review, not a clean result)," and §5.4 step 3 asks an
@@ -325,6 +354,7 @@ simultaneously says reviewers "must not retrieve conversation history or
 memory" (lines 133–135) without saying how that prohibition is enforced.
 
 ### comprehension-1-9 — Major — Existing local tools used to justify scope are undefined
+
 Lines 252–257, 306–308. §5.3's overlap decision ("EGM formalizes what
 `grilling`, `roundtable_review`, and the Ralph per-iteration verifier
 already do informally… keep the lighter tools for fast checks") and §8's
@@ -334,6 +364,7 @@ link for any of them. A fresh reader cannot judge the claimed overlap, the
 "heavier vs. lighter" distinction, or when to choose EGM over them.
 
 ### comprehension-1-10 — Major — D6's mitigation contradicts its own premise and leaves key terms undefined
+
 Lines 124–135, 292–295. D6 states Claude tool allowlists "do **not**
 restrict Muse reviewers" and reviewers must be treated as able to write,
 then mitigates with "do not hand reviewers write tools" (line 132; repeated
@@ -345,6 +376,7 @@ environment. "Verify outputs" (line 132) is likewise vague — verify against
 what?
 
 ### comprehension-1-11 — Major — Path resolution for Environment A Path 2 has no concrete example
+
 Lines 87–91, 180–189. D3.3 defers to "see §4/§5," but §4.3 gives only the
 generic template "`<install-root>/egm/`" with "paths resolved against
 `<install-root>/egm/`" (lines 185–189) — no example of the actual path
@@ -354,6 +386,7 @@ form (`../../reference/...`, lines 103–105). `<install-root>` itself is never
 defined.
 
 ### comprehension-1-12 — Major — Rollout phase gates lack pass/fail criteria
+
 Lines 276–279. Phase 0's gate is "pilot review verified by an independent
 subagent" (no verification criteria beyond the unobservable read check in
 comprehension-1-8); Phase 1's gate is "drift report produces a dated,
@@ -364,6 +397,7 @@ fresh VM") is then softened by open decision 3 (lines 318–319), which asks
 whether Phase 3 may "stay documented-but-unexecuted."
 
 ### zoom_out-1-1 — Major — Environment A is designed in full for an environment with no identified user (YAGNI)
+
 Lines 13–14, 20, §4 (151–213), §6 Phase 3 (line ~280), §9 decision 3 (lines
 318–319). The document designs a complete second adoption — plugin install
 (§4.2), vendored-skills Path 2 (§4.3), a four-row decision matrix (§4.4,
@@ -376,6 +410,7 @@ Phase 3 may "stay documented-but-unexecuted." A section whose own author
 flags it as possibly never executed should not be designed in full detail now.
 
 ### zoom_out-1-2 — Major — Root problem is asserted, not demonstrated, for AEP itself
+
 Lines §1 (5–10), §5.3 (252–257), §9 decision 2 (316–317). §1 states the
 purpose but cites no AEP design document, past review failure, or concrete
 case where existing instruments fell short. §9 decision 2 leaves the Phase 0
@@ -389,6 +424,7 @@ evidenced. Contrast the companion NeuroStrata doc (§2), which names 14 dated
 design docs and live questions (`identity_mode`, #44/#47) as concrete targets.
 
 ### zoom_out-1-3 — Major — Two installations of the same adapted content, policed by a manual byte-compare (dual source of truth)
+
 Lines 20, §5.2 (229–240), §5.4 step 4 (268–270). The same 7 adapted skills
 live in two places — local `~/workspace/custom-skills/egm-*` (paths to
 `~/workspace/egm/`) and AEP `skills/egm-*` wrappers (paths to
@@ -403,6 +439,7 @@ the live tree (CI cannot see live)." Vendor-integrity covers the bundle
 hash, not the wrappers.
 
 ### zoom_out-1-4 — Major — All 7 skills are vendored on the plan, but only 2 have a demonstrated use; `egm-bootstrap` has no named target at all
+
 Lines §2 table (38–43), §5.3 (256–257), §6 (274–284). The full set (2,810
 lines) is scoped into the design, including `egm-bootstrap` (427 lines — the
 largest skill) and `egm-drift-report`. §5.3 claims both are "genuinely new
@@ -414,6 +451,7 @@ passes trivially, so the full set is never actually gated on demonstrated
 need.
 
 ### zoom_out-1-5 — Major — D4's wrapper indirection is a new coupling pattern with no repo precedent and no resolve check
+
 Lines §3 D4 (104–120), §5.4 (260–270). Wrappers under `skills/egm-*/` point
 via relative paths (`../../reference/elephant-goldfish-model/agents/`,
 `.../resources/document_standards/`) into the vendored bundle. Verified in
@@ -429,25 +467,30 @@ exists. A rename of either tree silently breaks all 7 skills.
 ## Findings — Nits (27)
 
 ### structural-1-6 — Nit — Inconsistent subsection numbering scheme
+
 Lines §3 uses decision IDs `### D1`–`D7` (lines 60, 67, 77, 94, 115, 124,
 137); §4 uses numeric `### 4.1`–`4.5`; §5 uses numeric `### 5.1`–`5.4`.
 Sibling H2 sections use two different H3 naming schemes with no explanation.
 
 ### structural-1-7 — Nit — Appendix breaks the numbered H2 sequence
+
 Line 325: `## Appendix — Sources (all verified 2026-11-06)` is the only
 unnumbered H2, following numbered H2s `## 1.` through `## 9.`
 
 ### structural-1-8 — Nit — Inconsistent parenthetical in the §2 skills table
+
 Lines 37–43. Line 37 reads `` `egm-brainstorm` (271 lines) ``; lines 38–43
 read `` `egm-draft` (321) ``, `` `egm-review` (426) ``, etc. — the word
 "lines" appears only in the first row.
 
 ### structural-1-9 — Nit — No markdown links; Appendix sources are not linkable
+
 Lines 325–337 (Appendix) list sources as plain code spans with no URLs; the
 document's only URL is a bare string inside a code block (line 164).
 Citations cannot be followed or verified as links.
 
 ### design_critic-1-8 — Nit — Appendix factual error: "8 trees"
+
 Line 337. The Appendix (headed "all verified 2026-11-06") says
 "`reference/` vendor pattern (8 trees, `.github/vendor-*.sha256`)".
 Verified by listing: `reference/` contains 9 trees (docs-mcp-server, esf,
@@ -456,6 +499,7 @@ security-audit-skill, ub-mode) and `.github/` contains 9 `vendor-*.sha256`
 files. Correct to 9. (Same error independently found by comprehension-1-21.)
 
 ### design_critic-1-9 — Nit — Local provenance artifact specified in D1 but missing from the §5.2 layout
+
 Lines 60–66 (D1), 227–240 (§5.2). D1 requires the pinned SHA in "the
 vendored tree's `PROVENANCE.md` (AEP) / bundle README (local)". The §5.2
 local layout lists only `skills/ agents/ resources/ docs/ LICENSE plugin.json`
@@ -463,6 +507,7 @@ under `~/workspace/egm/` — no README or provenance file. The local record of
 the pin has no home in the layout it must live in.
 
 ### design_critic-1-10 — Nit — Environment A may never be validated; the decision is parked, not owned
+
 Lines 312–323 (§9, decision 3), 203–214 (§4.5 step 3). Open decision 3 asks
 whether Phase 3 runs on a fresh VM "or stays documented-but-unexecuted",
 and §4.5 step 3 notes interactive approval gates "must be exercised by hand
@@ -471,16 +516,19 @@ design surface (Environment A, §4) can therefore ship as unexecuted
 documentation. Until Phase 3 runs, Environment A is specified, not validated.
 
 ### implementation_readiness-1-10 — Nit — `muse plugins validate <path>` argument unspecified
+
 Lines 205–207. `<path>` is presumably the cloned repo path
 (`./elephant-goldfish-model`), but this is never stated.
 
 ### implementation_readiness-1-11 — Nit — E2E fixture location and invocation not given
+
 Lines 210–213. "The upstream fixture — brainstorm → draft → uninterrupted
 review — run once per VM shape" — no file path, test name, or invocation in
 the upstream repo is cited, and "interactive gates … must be exercised by
 hand the first time" has no hand-exercise procedure.
 
 ### implementation_readiness-1-12 — Nit — Attribution-table rows unspecified; Source-column convention conflicts with D1
+
 Lines 106–107, 278. The plan requires seven new rows in `skills/README.md`
 but gives no row contents. The README's stated convention is "The Source
 column names pratik-saptarshi forks wherever a fork exists" — a fork exists
@@ -489,6 +537,7 @@ upstream, not the fork. The implementer must resolve which value goes in
 Source (and what the Notes column says, e.g. adapted vs. verbatim).
 
 ### implementation_readiness-1-13 — Nit — Gate-scan recording location undefined; scan invocation incomplete
+
 Lines 117–118, 261, 276–277. "Gate-scan all 7 adapted skills; record
 scores" — no location for the recorded scores (file, PR body, install
 notes). D5 names `scan-gate.sh` but not its path or the per-directory
@@ -498,34 +547,40 @@ invocation loop (the script lives at AEP `scripts/scan-gate.sh`, usage
 notes are.
 
 ### implementation_readiness-1-14 — Nit — Persona name→file mapping given for only 1 of 10 personas
+
 Lines 142–144 (D7). Only the example "`egm-design` is
 `agents/design_critic.md`" is given; the other nine frontmatter-`name` →
 file mappings must be derived by the implementer reading each
 `agents/*.md` frontmatter.
 
 ### implementation_readiness-1-15 — Nit — §4.3 generic layout vs. §5.2 actual layout differ without a stated mapping
+
 Lines 185–189 vs. 230–235. Path 2 puts skill dirs at
 `<install-root>/skills/egm-*/`; Environment B puts them at
 `~/workspace/custom-skills/egm-*/`. No mapping between the generic layout
 and the real one is stated.
 
 ### implementation_readiness-1-16 — Nit — Phase 2 branch name not specified
+
 Line 278. The gate requires "Conventional Commits; owner review," but no
 branch name is given, although the repo's `AGENTS.md` requires
 `type/scope-short-description` branches.
 
 ### implementation_readiness-1-17 — Nit — §4.1 prerequisites lack versions
+
 Lines 158–161. `git`, `python3` (+ `pytest`), "one supported harness CLI" —
 no minimum versions, although §4.5's checks (`muse plugins validate`,
 named-spawn behavior) are version-sensitive per the document's own §4.5
 step 4 note.
 
 ### comprehension-1-13 — Nit — Unlinked issue reference and unexplained frontmatter field
+
 Lines 81–86. "No EGM skill routes a Muse session to `docs/muse.md`
 (upstream gap #252)" cites issue #252 with no link or summary; a fresh
 reader cannot check whether the one-line fix actually addresses it.
 
 ### comprehension-1-14 — Nit — Unexplained upstream behaviors
+
 Lines 55–56, 169–176, 205–207. "Headless run with approvals simulated up
 front," "chat link rendering are untested," "`marketplace add` discovers
 zero plugins (Muse reads the Codex catalog first and skips the entry)," and
@@ -533,11 +588,13 @@ expected warnings "`multiple-manifests`; Claude-only fields ignored" are all
 stated without explanation of what they mean or why they matter.
 
 ### comprehension-1-15 — Nit — `concepts_brief.md` and the drift report's destination are unspecified
+
 Lines 37, 43. The brainstorm output `concepts_brief.md` is named with no
 location or format, and `egm-drift-report` writes "a dated report" with no
 stated directory.
 
 ### comprehension-1-16 — Nit — "Byte-identical (modulo the path prefix)" is self-contradictory
+
 Lines 268–270. §5.4 step 4 requires local `custom-skills/egm-*` vs. AEP
 `skills/egm-*` wrappers to be "byte-identical (modulo the path prefix:
 `~/workspace/egm/` locally vs.
@@ -546,23 +603,27 @@ files cannot differ by prefix; no comparison method (e.g.
 normalize-then-diff) is specified.
 
 ### comprehension-1-17 — Nit — `re0-upgrade` precedent is unexplained
+
 Lines 320–323. Open decision 4 invokes "the `re0-upgrade` precedent:
 force-sync rests on the explicit decision, not on dispositioned findings"
 with no definition or link; a fresh reader cannot apply the precedent to a
 gate trip.
 
 ### comprehension-1-18 — Nit — Standing rules named without definition or pointer
+
 Lines 224–225. "Conventional Commits for any AEP PR; identity scrubbing in
 externally visible content" are stated as standing rules with no format,
 example, or pointer to where they are defined.
 
 ### comprehension-1-19 — Nit — "Install notes" is an undefined artifact
+
 Lines 190–192. §4.3 says where the SkillSpector gate is unavailable, "the
 scan is run once on the authoring machine and the scores recorded in the
 install notes." No install-notes file, location, or format is defined
 anywhere in the document.
 
 ### comprehension-1-20 — Nit — Priority order asserts value without rationale
+
 Lines 281–284. "Priority order within each phase follows value, not
 alphabetical order" lists `egm-review-loop` + `egm-review` first, then
 brainstorm, draft, resolve, drift-report, bootstrap — but never says why
@@ -570,6 +631,7 @@ that order is the value order (e.g. why `egm-resolve` precedes
 `egm-drift-report`, which §5.3 calls "genuinely new").
 
 ### comprehension-1-21 — Nit — Vendor-tree count in the Appendix does not match the repo listing
+
 Line 337. The Appendix claims the `reference/` vendor pattern has "(8
 trees, `.github/vendor-*.sha256`)"; a listing of
 `~/workspace/autonomous-engineering-platform/reference/` shows 9 entries
@@ -578,6 +640,7 @@ neurostrata-ops, security-audit-skill, ub-mode). (Same error independently
 found by design_critic-1-8.)
 
 ### zoom_out-1-6 — Nit — D5's "no exception" gate has an escape hatch, but only for the speculative environment
+
 Lines §3 D5 (122–128), §4.3 (190–192). D5 states "Standing rule, no
 exception" for the SkillSpector gate, yet §4.3 permits the scan to be "run
 once on the authoring machine and the scores recorded in the install notes"
@@ -586,6 +649,7 @@ Environment A. The exception exists solely to serve the environment flagged
 in zoom_out-1-1.
 
 ### zoom_out-1-7 — Nit — `skill.yaml` generation is unmechanized and thinner than the repo norm
+
 Lines §3 D3 item 1 (81–83). "Generate one per skill from the existing
 frontmatter (name + description)." Verified: 61 `skill.yaml` files exist in
 repo `skills/`, but no script generates them (`check_skills_manifest.py`
@@ -596,6 +660,7 @@ specifies name + description only, so the generated files would not match
 the established local format.
 
 ### zoom_out-1-8 — Nit — Altitude drops: shell commands and warning names in a strategy document
+
 Lines 165–167 (`git clone ...; muse plugins install ...`), 207 ("Warnings
 are expected (`multiple-manifests`...)"), 262 (`diff -rq` bundle vs.
 upstream). Literal install commands, a specific expected warning string,

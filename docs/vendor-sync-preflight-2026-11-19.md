@@ -5,7 +5,7 @@
 ## Live graph
 
 | Tree | Policy | Pin | Pin vs fork head (behind/ahead) | Fork vs upstream (behind/ahead) |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | craft-anything | keep (review due 2026-11-19) | `2e4afc5` | 0 / 1391 | 3 / 0 |
 | docs-mcp-server | sync-then-repin | `506f27b` | 0 / 0 | 4 / 10 |
 | elephant-goldfish-model | repin | `e9e1f06` | 0 / 45 | 0 / 0 |
@@ -27,7 +27,7 @@
 ## Action classification (Task 2 refines this at execution time)
 
 | Fork | Mirror branch | Working branch | Mirror vs upstream | Action |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | `pratik-saptarshi/install` | `main` | `main` | 6 behind | real fast-forward of `main`; no working merge |
 | `pratik-saptarshi/docs-mcp-server` | `main` | `develop` | identical | forward merge `main`→`develop` only (no mirror sync) |
 | `pratik-saptarshi/esf` | `master` | `develop` | identical | forward merge `master`→`develop` only (no mirror sync) |
@@ -38,7 +38,7 @@
 Backup root: `/Users/neo/Git-SCM/.vendor-backups/2026-11-19/` (outside `/tmp`, outside every work tree).
 
 | Fork | Mirror clone | Bundle | Pre-sync mirror SHA | Pre-sync working SHA |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | install | `vendor-backup-install-2026-11-19.git` | `vendor-backup-install-2026-11-19.git/pre-sync-install-2026-11-19.bundle` | `7986efac25016e41eed7e471666140c06f9d97cf` | `7986efac25016e41eed7e471666140c06f9d97cf` |
 | docs-mcp-server | `vendor-backup-docs-mcp-server-2026-11-19.git` | `vendor-backup-docs-mcp-server-2026-11-19.git/pre-sync-docs-mcp-server-2026-11-19.bundle` | `d2bdb2f8378d4e901c764aba32b5941d05a6a50f` | `506f27b31956c4acc28ff27cb6f9691e83d8dfce` |
 | esf | `vendor-backup-esf-2026-11-19.git` | `vendor-backup-esf-2026-11-19.git/pre-sync-esf-2026-11-19.bundle` | `e5567fbfb12e98996b52178bdb4fb1f66b39566d` | `25e2ef8707c6f491b5abe235b74d652b0b7bd418` |
@@ -83,7 +83,7 @@ The pre-sync SHAs above are also held by the mirror-clone tags and inside the bu
 ## Task 2 verify-target log (live, immediately before migration)
 
 | Fork | Mirror branch @ SHA | Working branch @ SHA | Matches backup record | Action |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | install | `main` @ `7986efac25016e41eed7e471666140c06f9d97cf` | `main` @ `7986efac25016e41eed7e471666140c06f9d97cf` | yes | REAL: fast-forward `main` 6 commits |
 | docs-mcp-server | `main` @ `d2bdb2f8378d4e901c764aba32b5941d05a6a50f` | `develop` @ `506f27b31956c4acc28ff27cb6f9691e83d8dfce` | yes | REAL: forward merge `main`→`develop` (10 fork-only commits preserved) |
 | esf | `master` @ `e5567fbfb12e98996b52178bdb4fb1f66b39566d` | `develop` @ `25e2ef8707c6f491b5abe235b74d652b0b7bd418` | yes | REAL: forward merge `master`→`develop` (11 fork-only commits preserved) |
@@ -94,7 +94,7 @@ The pre-sync SHAs above are also held by the mirror-clone tags and inside the bu
 ## Mutation results
 
 | Task | Fork | Action | New head | Verification |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | 3 | install | `gh repo sync --branch main --source Homebrew/install` | `3ef3676f8028811d38eae05d3b3b4f97d72a0f61` | fork `main` == upstream `main` (0 behind, 0 ahead) |
 | 4 | docs-mcp-server | forward merge `main`→`develop` (`--no-ff`) | `5e1ce5268f6dd84e2aeee1738d6ac2bac51896fb` | all 10 fork-only SHAs + upstream head ancestors; follow-redirects 1.16.2, minimatch 11.0.5, lockfile 3.4.1, `patternMatcher.ts` all present |
 | 5 | esf | **BLOCKED — not pushed** | fork `develop` unchanged at `25e2ef8707c6f491b5abe235b74d652b0b7bd418` | 30+ merge conflicts including a directory rename `internal/controlplane/web`→`internal/console/web` and modify/delete on files carrying fork remediations (vite/undici pins). Per the plan's stop guard, no conflict was resolved silently; the merge was aborted. |

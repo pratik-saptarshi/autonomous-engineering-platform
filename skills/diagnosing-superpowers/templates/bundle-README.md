@@ -31,10 +31,11 @@ reader's job.
   examined session (never the raw JSONL). Tool-result bodies by level:
 
   | Level | Tool-result bodies |
-  |---|---|
+  | --- | --- |
   | skeleton | intentionally limited; replaced by `[tool result: <tool>, <bytes> bytes, exit <code>]` |
   | evidence | kept for cited events, including the commands and results needed to support findings |
   | full | all kept |
+
 - `scrub-log.md` — every placeholder used and its category (never the
   original value).
 
@@ -67,6 +68,7 @@ Remove stale export statements; distinguish bundle preparation from archive
 delivery. Retain a mapping from historical anchors to included evidence.
 
 Record the independent privacy audit separately from evidence usefulness:
+
 - Privacy audit: CLEAN or unresolved misses.
 - Evidence support: supported or limited, with affected findings and reasons.
 

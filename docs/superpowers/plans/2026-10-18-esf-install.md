@@ -45,9 +45,11 @@
 ### Task 1: Clone and pin ESF
 
 **Files:**
+
 - Create: `~/workspace/repos/esf/`
 
 **Interfaces:**
+
 - Consumes: nothing (first task)
 - Produces: pinned clone at `~/workspace/repos/esf`; HEAD SHA `d41535d86a13e55fe2357d9e0a108566d68ce1b9` for Tasks 2 and 5.
 
@@ -69,9 +71,11 @@ Expected: SHA matches Step 2; LICENSE begins `MIT License`; `go.mod` begins `mod
 ### Task 2: Build the factory binaries
 
 **Files:**
+
 - Create: `~/workspace/repos/esf/bin/` (build output)
 
 **Interfaces:**
+
 - Consumes: Task 1 clone at `~/workspace/repos/esf`
 - Produces: `bin/factory`, `bin/machinist` (+ `bin/cube-smoke`, `bin/cube-netprobe`, `bin/cube-agent-spike`) for Task 4.
 
@@ -90,6 +94,7 @@ Expected: usage text prints; no panic, no stack trace.
 **Files:** none (verification only)
 
 **Interfaces:**
+
 - Consumes: Task 2 built tree
 - Produces: lint + unit-test verdict for the plan record.
 
@@ -106,9 +111,11 @@ Expected: exit 0. Do NOT run `make test` (includes frontend), `make test-integra
 ### Task 4: Exercise init / validate / doctor in scratch
 
 **Files:**
+
 - Create: `/tmp/esf-scratch/` (disposable; deleted after)
 
 **Interfaces:**
+
 - Consumes: Task 2 `bin/factory`
 - Produces: recorded `doctor` output showing the fail-closed posture on this VM.
 
@@ -135,10 +142,12 @@ Expected: directory gone. No `factory.toml` may remain anywhere except the delet
 ### Task 5: Vendor ESF into the AEP repo
 
 **Files:**
+
 - Create: `~/workspace/repos/autonomous-engineering-platform/reference/esf/**`
 - Create: `~/workspace/repos/autonomous-engineering-platform/reference/esf/PROVENANCE.md`
 
 **Interfaces:**
+
 - Consumes: Task 1 SHA `d41535d86a13e55fe2357d9e0a108566d68ce1b9`
 - Produces: vendored tree + provenance for Tasks 6–7.
 
@@ -165,10 +174,12 @@ Expected: empty output. If `testdata/` fixtures trip the grep, verify each hit i
 ### Task 6: Wire into AEP docs
 
 **Files:**
+
 - Create: `~/workspace/repos/autonomous-engineering-platform/docs/esf-reference.md`
 - Modify: `~/workspace/repos/autonomous-engineering-platform/README.md` (one bullet)
 
 **Interfaces:**
+
 - Consumes: Task 5 vendored tree + `PROVENANCE.md`
 - Produces: discoverable docs for Task 7.
 
@@ -192,6 +203,7 @@ Expected: no `MISSING` lines.
 **Files:** none new (stages Tasks 5–6 output + this plan)
 
 **Interfaces:**
+
 - Consumes: Tasks 5–6 files; this plan at `docs/superpowers/plans/2026-10-18-esf-install.md`
 - Produces: local branch `docs/esf-reference` ready for review.
 

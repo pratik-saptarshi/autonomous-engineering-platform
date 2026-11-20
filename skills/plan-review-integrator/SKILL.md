@@ -47,7 +47,7 @@ the default workflow single-agent and low overhead.
 ## Quick Reference
 
 | Stage | Phase | Action | Output |
-|-------|-------|--------|--------|
+| ------- | ------- | -------- | -------- |
 | **Gather** | 1. Gather Inputs | Collect review reports + plan + domain context | Input set |
 | | 2. Agent Detection | Detect specialists, suggest install if beneficial | Available specialist map |
 | **Analyze** | 3. Extract Findings | Parse findings with severity, source, citations | Structured finding list |
@@ -110,7 +110,7 @@ If none found, skip all Agent steps silently -- everything works without them.
 signals to specialists:
 
 | Content Signal | Agent Specialist | Verification Use |
-|---|---|---|
+| --- | --- | --- |
 | SQL / database queries | `agent-data-ai:database-optimizer` | Verify query correctness in must-fix edits |
 | Data pipelines / ETL | `agent-data-ai:data-engineer` | Verify pipeline logic changes |
 | ML / model training | `agent-data-ai:ml-engineer` | Verify model config / hyperparameter fixes |
@@ -208,7 +208,7 @@ for specialist verification. This is correct behavior.
 For each finding, capture:
 
 | Field | Description |
-|-------|-------------|
+| ------- | ------------- |
 | ID | Sequential: R1-F01, R1-F02, ... R2-F01, ... |
 | Severity | CRITICAL / HIGH / MEDIUM / LOW |
 | Source | Reviewer name, "Completeness Audit", or "Judge" |
@@ -229,7 +229,7 @@ For each finding, capture:
 Categorize each finding's relationship to the plan:
 
 | Category | Meaning |
-|----------|---------|
+| ---------- | --------- |
 | Already addressed | Plan handles it; reviewer may have missed it |
 | Gap | Plan should address this but doesn't |
 | Correction | Plan addresses it but contains an error |
@@ -237,6 +237,7 @@ Categorize each finding's relationship to the plan:
 | Pre-existing | Valid concern, but not introduced or worsened by this plan |
 
 **Domain validation checklist** -- for each finding ask:
+
 - Does the prescribed fix make sense given domain constraints?
 - Is the reviewer assuming something untrue about the system?
 - Would the fix break something the reviewer doesn't know about?
@@ -267,17 +268,19 @@ might miss. Counts toward the 3-spawn-per-run cap.
 Score each finding on two dimensions before classification:
 
 | Dimension | Question | Score |
-|-----------|----------|-------|
+| ----------- | ---------- | ------- |
 | **Actionability** | Does this finding identify a specific, objectively verifiable issue with a concrete action? | 0.0 - 1.0 |
 | **Groundedness** | Is the finding supported by code citations, line references, or verifiable claims? | 0.0 - 1.0 |
 
 **Filter rules:**
+
 - **Drop** findings with actionability < 0.3 (conversational, acknowledgements, vague concerns)
 - **Flag for human review** findings with actionability 0.3-0.5 (valid concern, unclear action)
 - **Pass through** findings with actionability >= 0.5 (specific issue, concrete fix path)
 - Groundedness < 0.3 caps maximum severity at MEDIUM regardless of original rating
 
 **Epistemic label weighting** (from upstream overseer):
+
 - `[VERIFIED]` or `[CMD_CONFIRMED]`: +0.2 actionability bonus
 - `[CONSENSUS]`: no adjustment
 - `[SINGLE-SOURCE]`: -0.1 actionability penalty
@@ -301,6 +304,7 @@ before classification:
 > require caveats or human review before finalizing.
 
 For findings with `context_coverage: partial`:
+
 - Downgrade confidence by one tier.
 - Cap automatic disposition at `Apply with caveats`.
 - Do not auto-apply disputed P0/P1 findings; route them through Phase 6.5 or mark
@@ -322,7 +326,7 @@ the confidence of the evidence behind it.
 ### Epistemic-Weighted Severity
 
 | Raw Severity | Epistemic Label | Effective Priority |
-|---|---|---|
+| --- | --- | --- |
 | CRITICAL | `[VERIFIED]` / `[CMD_CONFIRMED]` | P0 -- immediate must-fix |
 | CRITICAL | `[CONSENSUS]` | P0 -- must-fix with verification step |
 | CRITICAL | `[SINGLE-SOURCE]` / `[DISPUTED]` | P1 -- flag for human review before acting |
@@ -335,18 +339,23 @@ A `[VERIFIED]` HIGH finding outranks a `[SINGLE-SOURCE]` CRITICAL finding. When 
 present the conflict to the user rather than auto-resolving.
 
 ### Must-fix
+
 P0 or P1 effective priority + Correction or Gap + affects correctness/data integrity/security. For example, a wrong SQL WHERE clause or missing temporal guard. Applied immediately.
 
 ### Bundle into implementation
+
 Valid items that are implementation details, not plan defects, e.g., pipeline quality gates or additional test cases. Added to checklists.
 
 ### Defer
+
 LOW severity, pre-existing debt not worsened by plan, or different workstream. For instance, refactoring code not touched by this plan. Documented with rationale. Add a TODO or backlog item for tracking.
 
 ### Informational
+
 Raised, debated, and resolved during review. No plan changes needed.
 
 ### Conflict resolution
+
 - CRITICAL + pre-existing: defer, but add caveat with risk note and future work item
 - Panels disagree on severity: use higher severity, note disagreement
 - Valid finding + wrong fix: classify on finding severity, supply correct fix
@@ -356,7 +365,7 @@ Raised, debated, and resolved during review. No plan changes needed.
 Use these gates after epistemic-weighted classification and before applying edits:
 
 | Gate | Trigger | Required disposition |
-|---|---|---|
+| --- | --- | --- |
 | Security/Data Integrity Veto | P0/P1 verified or consensus finding affects security, privacy, data integrity, or destructive operations | Cannot be silently deferred; apply, block, or require human review with rationale |
 | Scope Expansion Veto | Recommended fix expands scope, timeline, architecture, or user-facing behavior beyond the reviewed plan | Requires explicit user confirmation before applying |
 | Disputed Critical Rule | CRITICAL finding is `[SINGLE-SOURCE]`, `[DISPUTED]`, or has partial context | Do not auto-apply; escalate in Phase 6.5 or mark `Human review required` |
@@ -387,6 +396,7 @@ single-agent by default.
    the three-spawn specialist cap.
 
 Decision thresholds:
+
 - 3/3 agreement with verified evidence: proceed with the majority disposition.
 - 2/3 agreement with verified evidence: proceed, but include dissent in the
   Dissent Ledger.
@@ -400,13 +410,14 @@ issue cleanly, preserve the plan and surface the decision to the user.
 ## Phase 7: Apply Edits
 
 | Category | Edit type |
-|----------|-----------|
+| ---------- | ----------- |
 | Must-fix | Direct plan edits: fix code, add guards, correct values |
 | Bundle | Add to implementation checklists and verification sections |
 | Gap (new section) | Add pre-impl checks, go/no-go criteria, rollback, monitoring |
 | Caveat | Inline `> **Review note:** [concern + mitigation]` near relevant content |
 
 **Edit discipline:**
+
 - Minimum necessary change per finding
 - Preserve plan voice and structure
 - Do not rewrite correct sections
@@ -490,7 +501,7 @@ Record verification findings in the traceability summary as "V-01", "V-02", etc.
 Example output:
 
 | ID | Severity | Summary | Category | Action Taken |
-|----|----------|---------|----------|--------------|
+| ---- | ---------- | --------- | ---------- | -------------- |
 | R1-F01 | CRITICAL | Missing temporal guard | Must-fix | Added guard to step 3 query |
 | R1-F02 | HIGH | Stale default in config | Bundle | Added to checklist item 3 |
 | R1-F03 | MEDIUM | Refactor identity resolution | Defer | Pre-existing, tracked as future work |
@@ -500,7 +511,7 @@ Include statistics in this format: `Total findings: {N} | Must-fix: {n} | Bundle
 Include a `Final Recommendation:` state:
 
 | Final Recommendation | Meaning |
-|---|---|
+| --- | --- |
 | `Auto-applied` | All actionable findings were applied or classified without caveats, disputes, or partial-context limits |
 | `Applied with caveats` | Edits were applied, but at least one caveat, context limitation, or non-blocking dissent remains |
 | `Human review required` | At least one P0/P1, disputed, scope-expanding, or partial-context finding requires user decision |
@@ -513,7 +524,7 @@ result, and required decision owner.
 Add an **Action Items** section with prioritized checklist items:
 
 | Priority | Owner | Action | Source finding |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | P0/P1/P2 | user / implementer / reviewer | Concrete next step | Finding ID |
 
 ---
@@ -569,17 +580,20 @@ matching historically-applied patterns get a +0.1 bonus.
 **Compatible with:** `overseer` v2.0+ (v2.9+ for Agent-enriched findings, v2.16.1+ ships in the same `overseer` marketplace bundle as this plugin — install both with `/plugin install roundtable@overseer` + `/plugin install plan-review-integrator@overseer`)
 
 **Required fields per finding:**
+
 - Severity tier: `P0` / `P1` / `P2` (maps to CRITICAL / HIGH / MEDIUM-LOW)
 - Epistemic label: one of `[VERIFIED]`, `[CMD_CONFIRMED]`, `[CONSENSUS]`, `[SINGLE-SOURCE]`, `[UNVERIFIED]`, `[DISPUTED]`
 - Defect type: `[EXISTING_DEFECT]` or `[PLAN_RISK]`
 - Source attribution: reviewer persona name or "Completeness Audit" or "Judge"
 
 **Required report sections:**
+
 - `## Action Items` -- tagged findings with severity + epistemic labels
 - `## Consensus Points` -- agreed findings (can be processed as `[CONSENSUS]`)
 - `## Disagreement Points` -- with Side A, Side B, Judge's ruling
 
 **Optional but utilized:**
+
 - `## Completeness Audit Findings` -- elevated weight in classification
 - `## Severity Verification Table` -- used to validate P0 claims
 - Verification annotations: `[CMD_CONFIRMED]`, `[CMD_CONTRADICTED]`, `[CMD_INCONCLUSIVE]`
@@ -599,7 +613,7 @@ After integration, then use the implementation executor to begin building.
 This plugin is designed to consume output from `overseer` and ships alongside it in the same `plugin` marketplace bundle (see [`wan-huiyan/overseer`](https://github.com/wan-huiyan/overseer)). It works with any structured review output matching the schema above; `overseer` is the canonical producer. Compatible with review v1.0 output format and above.
 
 | Field | Value |
-|-------|-------|
+| ------- | ------- |
 | Consumes from | `overseer` (or any structured review with severity-rated findings) |
 | Hands off to | Implementation executor; updated plan feeds into build phases |
 | Output contract | Updated plan + traceability summary + optional ADRs/runbooks |
@@ -630,7 +644,7 @@ This plugin is designed to consume output from `overseer` and ships alongside it
 Design decisions are informed by the following research:
 
 | Feature | Source | Reference |
-|---------|--------|-----------|
+| --------- | -------- | ----------- |
 | Actionability filter | Atlassian RovoDev Code Reviewer | ICSE 2026 SEIP, arXiv:2601.01129 |
 | Epistemic-weighted severity | "Can LLM Agents Really Debate?" | arXiv:2511.07784 |
 | Dual rollback strategy | AutoDW document workflow orchestration | arXiv:2512.04445 |

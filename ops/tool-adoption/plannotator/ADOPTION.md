@@ -76,7 +76,7 @@ Important limitation stated by the SBOM itself: it is a release-wide, Syft-detec
 
 No standalone Grype report is published as a release asset. The release workflow evidence is nevertheless specific: in release run `43413212378`, the `release-security` job — whose workflow step is “Generate SBOM and enforce Grype policy” — completed with conclusion **success**. The `attest` and `release` jobs also succeeded. The workflow run's overall conclusion was failure because the separate `npm-publish` job failed; the binary build, security, attestation, and release jobs did not.
 
-- Release-security job: https://github.com/backnotprop/plannotator/actions/runs/43413212378/job/131848695979
+- Release-security job: <https://github.com/backnotprop/plannotator/actions/runs/43413212378/job/131848695979>
 
 ## Hardened local configuration
 
@@ -117,7 +117,7 @@ Accepted residual: Plannotator still performs its documented GitHub release chec
 All tests used the wrapper, not the raw binary.
 
 | Test | Result |
-|---|---|
+| --- | --- |
 | `plannotator --version` | Exit 0; output `plannotator 0.28.63` |
 | `plannotator --help` | Exit 0; command surface printed normally |
 | `plannotator sessions` | Exit 0; `No active Plannotator sessions.` |

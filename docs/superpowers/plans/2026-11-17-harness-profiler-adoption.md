@@ -19,7 +19,7 @@
 Panels: feasibility ×2, code-quality, risk ×2, devil ×2. All six returned proceed-with-changes; two devils rejected the first draft as written. Where they disagreed:
 
 | Dispute | Ruling | Evidence |
-|---|---|---|
+| --- | --- | --- |
 | Manifest recipe produces `././path` | **Refuted.** Command emits one `./`, matching `vendor-harness2.sha256:1`. Keep it; add `-print0`/`xargs -0` for future trees with spaces. | Ran both variants: `86ad…  ./.claude-plugin/marketplace.json`. |
 | `ctx.session.context({sessionID})` vs `{params:{sessionID}}` | **Avoided.** Do not use it; tokens come from events. | Conflict between reviewers; removing the call settles it. |
 | `tool.execute` hooks | **Removed.** v2.3 exposes `session.tool.called/success/failed`, `session.step.ended`, `message.part.updated`. Phase 0 observed 1,990 events: `session.created` never fired, so parentage comes from `ctx.session.get().parentID`, not an event. | opencode 2.3.0 spike log + docs. |
@@ -185,7 +185,7 @@ Eval **E14**: wrapper resolves the repo root by walking up for `reference/harnes
 ## Test Plan
 
 | Eval | Command | Pass condition |
-|---|---|---|
+| --- | --- | --- |
 | E1–E4b | `node --test tools/harness-profile/translate.test.js` | fields, name mapping, root omission, token formula, root spend |
 | E5 | `node --test tools/harness-profile/gate.test.js` | records read back from disk: two contexts, correct parent, no placeholder, inline marker, child+root spend |
 | E6–E9b | `node --test tools/harness-profile/handle.test.js` | inertness, durations, linkage, dir override, plugin shape |

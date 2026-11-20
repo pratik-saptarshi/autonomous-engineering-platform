@@ -15,7 +15,7 @@ This is deliberately different from the ESF treatment ([esf-reference.md](esf-re
 ## Mapping to the AEP loop
 
 | DeepCode | AEP |
-|---|---|
+| --- | --- |
 | Goal loop with evidence-gated closure | ralph-loop lane — bounded iterations, 3-strike stop |
 | mechanical verification recorded in the run result | TDD + review gates before anything ships |
 | permissions frozen into an admission-time snapshot | boot-gate preflight (`scripts/boot-gate.sh`) |
@@ -64,7 +64,7 @@ Coordination is by typed resource claims and fenced workspaces, never by inspect
 
 ## Provenance
 
-- Fork: https://github.com/pratik-saptarshi/DeepCode (default branch `develop`; upstream HKUDS/DeepCode — University of Hong Kong Data Science lab)
+- Fork: <https://github.com/pratik-saptarshi/DeepCode> (default branch `develop`; upstream HKUDS/DeepCode — University of Hong Kong Data Science lab)
 - Pinned commit: `49805ef25e5c18b2a58ae797028f599b6aca161b`
 - License: MIT
 - Date pinned: 2026-10-23
