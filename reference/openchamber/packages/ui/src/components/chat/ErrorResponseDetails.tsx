@@ -1,0 +1,36 @@
+import React from 'react';
+import { Button } from '@/components/ui/button';
+import { useI18n } from '@/lib/i18n';
+import { ScrollableOverlay } from '@/components/ui/ScrollableOverlay';
+
+const formatResponseBody = (body: string): string => {
+  try {
+    return JSON.stringify(JSON.parse(body), null, 2);
+  } catch {
+    return body;
+  }
+};
+
+export const ErrorResponseDetails: React.FC<{ body: string; className?: string }> = ({ body, className }) => {
+  const { t } = useI18n();
+  const [open, setOpen] = React.useState(false);
+
+  return (
+    <div className={className}>
+      <Button
+        variant="link"
+        size="xs"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+        className="-ms-2 normal-case"
+      >
+        {open ? t('chat.errorDetails.hide') : t('chat.errorDetails.show')}
+      </Button>
+      {open ? (
+        <ScrollableOverlay as="pre" outerClassName="mt-1 max-h-60 rounded-md bg-muted/30" className="px-2 py-1 typography-meta font-mono text-muted-foreground whitespace-pre-wrap break-all" disableHorizontal>
+          {formatResponseBody(body)}
+        </ScrollableOverlay>
+      ) : null}
+    </div>
+  );
+};

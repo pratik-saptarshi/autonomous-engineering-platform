@@ -1,0 +1,18 @@
+# Dependencies
+node_modules/
+
+# Electron build output
+dist/
+dist-bundle/
+
+# Generated packaging resources
+resources/web-dist/
+resources/web-dist-staging-*/
+resources/sidecar/
+resources/opencode-server/
+resources/ripgrep/*
+!resources/ripgrep/.gitkeep
+.cache/
+
+# OS-specific
+.DS_Store
