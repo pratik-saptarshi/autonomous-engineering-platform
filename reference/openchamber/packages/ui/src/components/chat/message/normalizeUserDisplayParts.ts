@@ -1,0 +1,119 @@
+
+import type { FilePart, Part, TextPart } from '@/lib/opencode/model';
+import { readContextPart, type ContextPartPayload } from '@/lib/messages/contextParts';
+import { formatChangeRequestLabel } from '@/lib/source-control/providers/terminology';
+import type { SourceControlDescriptorOf } from '@/lib/source-control/providers/registry';
+import { repositoryIssueLinkMime, trackerItemLinkMime } from '@/lib/messages/attachmentPreview';
+
+const LEGACY_ISSUE_PROVIDER = 'github';
+
+const redundantCommentFileUrls = (parts: Part[]): Set<string> => {
+    const comments = parts
+        .map((part) => readContextPart(part))
+        .filter((payload) => payload?.kind === 'code-comment');
+    if (comments.length === 0) return new Set();
+
+    const redundant = new Set<string>();
+    for (const part of parts) {
+        if (part.type !== 'file') continue;
+        const { url } = part;
+        const range = url.match(/[?&]start=(\d+)&end=(\d+)/);
+        if (!range) continue;
+        const encodedPath = url.replace(/^file:\/\//, '').split('?')[0];
+        let path = encodedPath;
+        try {
+            path = decodeURIComponent(encodedPath);
+        } catch {
+            // Keep the encoded path; malformed URLs must not break rendering.
+        }
+        path = path.replace(/\\/g, '/');
+        const matches = comments.some((comment) => {
+            const commentPath = comment.fileLabel.replace(/\\/g, '/');
+            return comment.startLine === Number(range[1])
+                && comment.endLine === Number(range[2])
+                && (path === commentPath || path.endsWith(`/${commentPath}`));
+        });
+        if (matches) redundant.add(url);
+    }
+    return redundant;
+};
+
+export type InlineLinkedItem = Extract<ContextPartPayload, { kind: 'repository-issue' | 'repository-discussion' | 'change-request' | 'tracker-item' }>;
+
+const linkedItems = new WeakMap<Part, InlineLinkedItem>();
+
+export const linkedItemOfDisplayPart = (part: Part): InlineLinkedItem | null => linkedItems.get(part) ?? null;
+
+const linkAttachmentPart = (part: TextPart, descriptorOf: SourceControlDescriptorOf): FilePart | null => {
+    const payload = readContextPart(part);
+    if (!payload) return null;
+    const display = displayPartOf(part, payload, descriptorOf);
+    if (display && (payload.kind === 'repository-issue' || payload.kind === 'repository-discussion' || payload.kind === 'change-request' || payload.kind === 'tracker-item')) {
+        linkedItems.set(display, payload);
+    }
+    return display;
+};
+
+const displayPartOf = (part: TextPart, payload: ContextPartPayload, descriptorOf: SourceControlDescriptorOf): FilePart | null => {
+    const identity = { id: part.id, sessionID: part.sessionID, messageID: part.messageID };
+
+    switch (payload.kind) {
+        case 'repository-issue':
+            return {
+                ...identity,
+                type: 'file',
+                mime: repositoryIssueLinkMime(payload.provider ?? LEGACY_ISSUE_PROVIDER),
+                filename: `Issue #${payload.number}: ${payload.title}`,
+                url: payload.url,
+            };
+        case 'repository-discussion':
+            return {
+                ...identity,
+                type: 'file',
+                mime: repositoryIssueLinkMime(payload.provider),
+                filename: `Discussion #${payload.number}: ${payload.title}`,
+                url: payload.url,
+            };
+        case 'change-request':
+            return {
+                ...identity,
+                type: 'file',
+                mime: 'application/vnd.github.pull-request-link',
+                filename: `${formatChangeRequestLabel(descriptorOf(payload.provider), payload.number)}: ${payload.title}`,
+                url: payload.url,
+            };
+        case 'tracker-item':
+            return {
+                ...identity,
+                type: 'file',
+                mime: trackerItemLinkMime(payload.provider),
+                filename: `${payload.identifier}: ${payload.title}`,
+                url: payload.url,
+            };
+        case 'guest-issue':
+            return {
+                ...identity,
+                type: 'file',
+                mime: 'application/vnd.openchamber.guest-issue-link',
+                filename: payload.title === payload.id ? payload.id : `${payload.id}: ${payload.title}`,
+                url: payload.url,
+            };
+        case 'guest-pr':
+            return {
+                ...identity,
+                type: 'file',
+                mime: 'application/vnd.openchamber.guest-pr-link',
+                filename: `PR ${payload.id}: ${payload.title}`,
+                url: payload.url,
+            };
+        default:
+            return null;
+    }
+};
+
+export const normalizeUserDisplayParts = (parts: Part[], descriptorOf: SourceControlDescriptorOf): Part[] => {
+    const redundantFileUrls = redundantCommentFileUrls(parts);
+    return parts
+        .filter((part) => !(part.type === 'file' && redundantFileUrls.has(part.url)))
+        .map((part) => (part.type === 'text' ? linkAttachmentPart(part, descriptorOf) ?? part : part));
+};

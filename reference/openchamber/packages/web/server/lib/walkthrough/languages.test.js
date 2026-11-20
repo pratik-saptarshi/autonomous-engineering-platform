@@ -1,0 +1,49 @@
+import { describe, expect, it } from 'vitest';
+import { LOCALES } from '../../../../ui/src/lib/i18n/runtime.ts';
+import { normalizeLanguage, languageName, __testing } from './languages.js';
+
+// The languages a walkthrough may be written in have to agree with the locales
+// the interface ships, because the picker offers exactly those and the server
+// decides what the prompt asks for. The two lists cannot be one list — the
+// server cannot import from `packages/ui` — so they are compared here instead.
+//
+// This exists because German was added to the interface and not here. Nothing
+// broke loudly: the picker offered Deutsch, `normalizeLanguage` quietly resolved
+// it to English, and a German user paid for a walkthrough written in English
+// while the picker still said Deutsch. A drift this quiet needs a test, not
+// vigilance.
+describe('supported languages', () => {
+  it('keeps prototype names out of normalized tags and preserves direct lookup behavior', () => {
+    expect(normalizeLanguage('constructor')).toBe('en');
+    expect(normalizeLanguage('toString')).toBe('en');
+    expect(languageName('constructor')).toBe(Object);
+    expect(languageName('toString')).toBe(Object.prototype.toString);
+  });
+
+  it('covers every locale the interface offers', () => {
+    const missing = LOCALES.filter((locale) => !Object.hasOwn(__testing.LANGUAGE_NAMES, locale));
+
+    expect(missing, `add these to LANGUAGE_NAMES in languages.js: ${missing.join(', ')}`).toEqual([]);
+  });
+
+  it('offers nothing the interface cannot label', () => {
+    const locales = new Set(LOCALES);
+    const extra = Object.keys(__testing.LANGUAGE_NAMES).filter((tag) => !locales.has(tag));
+
+    // A language here that the interface does not know is not harmful, but it
+    // is unreachable: the picker is built from the interface list.
+    expect(extra, `unreachable from the picker: ${extra.join(', ')}`).toEqual([]);
+  });
+
+  it('resolves every interface locale to itself rather than to the default', () => {
+    for (const locale of LOCALES) {
+      expect(normalizeLanguage(locale)).toBe(locale);
+    }
+  });
+
+  it('names every supported language in English, for the prompt', () => {
+    for (const [tag, name] of Object.entries(__testing.LANGUAGE_NAMES)) {
+      expect(name, tag).toMatch(/^[A-Z][A-Za-z ]+$/);
+    }
+  });
+});

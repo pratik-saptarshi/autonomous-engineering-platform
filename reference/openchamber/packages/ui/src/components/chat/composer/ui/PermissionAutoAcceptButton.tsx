@@ -1,0 +1,87 @@
+
+import React from 'react';
+
+import { Icon } from '@/components/icon/Icon';
+import type { IconName } from '@/components/icon/icons';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { useI18n } from '@/lib/i18n';
+import { cn } from '@/lib/utils';
+import type { PermissionMode } from '@/stores/utils/permissionAutoAccept';
+import { TooltipLabelWithShortcut } from '@/components/ui/action-toolbar';
+import { formatShortcutForDisplay, getEffectiveShortcutCombo } from '@/lib/shortcuts';
+import { useUIStore } from '@/stores/useUIStore';
+
+type PermissionAutoAcceptButtonProps = {
+    footerIconButtonClass: string;
+    iconSizeClass: string;
+    isInteractive: boolean;
+    permissionMode: PermissionMode;
+    handlePermissionModeCycle: () => void;
+    withTooltip?: boolean;
+};
+
+const MODE_ICON = {
+    ask: { icon: 'shield-user', color: undefined },
+    safety: { icon: 'shield-star', color: 'var(--status-success)' },
+    auto: { icon: 'shield-check', color: 'var(--status-info)' },
+} satisfies Record<PermissionMode, { icon: IconName; color: string | undefined }>;
+
+export const PermissionAutoAcceptButton = React.memo(function PermissionAutoAcceptButton(props: PermissionAutoAcceptButtonProps) {
+    const { t } = useI18n();
+    const shortcutOverrides = useUIStore((state) => state.shortcutOverrides);
+    const {
+        footerIconButtonClass,
+        iconSizeClass,
+        isInteractive,
+        permissionMode,
+        handlePermissionModeCycle,
+        withTooltip = false,
+    } = props;
+
+    const label = permissionMode === 'safety'
+        ? t('chat.chatInput.permissionMode.safety')
+        : permissionMode === 'auto'
+            ? t('chat.chatInput.permissionMode.auto')
+            : t('chat.chatInput.permissionMode.ask');
+    const { icon, color } = MODE_ICON[permissionMode];
+
+    const button = (
+        <button
+            type="button"
+            onClick={handlePermissionModeCycle}
+            className={cn(
+                footerIconButtonClass,
+                'rounded-md hover:bg-transparent',
+                !isInteractive && 'opacity-30',
+            )}
+            onMouseDown={(event) => {
+                event.preventDefault();
+            }}
+            onPointerDownCapture={(event) => {
+                if (event.pointerType === 'touch') {
+                    event.preventDefault();
+                    event.stopPropagation();
+                }
+            }}
+            aria-label={label}
+            {...(withTooltip ? {} : { title: label })}
+        >
+            <Icon name={icon} className={cn(iconSizeClass)} style={color ? { color } : undefined} />
+        </button>
+    );
+
+    if (!withTooltip) {
+        return button;
+    }
+
+    return (
+        <Tooltip>
+            <TooltipTrigger asChild>
+                {button}
+            </TooltipTrigger>
+            <TooltipContent side="top" sideOffset={8}>
+                <TooltipLabelWithShortcut label={label} shortcut={formatShortcutForDisplay(getEffectiveShortcutCombo('toggle_permission_auto_accept', shortcutOverrides), '')} />
+            </TooltipContent>
+        </Tooltip>
+    );
+});

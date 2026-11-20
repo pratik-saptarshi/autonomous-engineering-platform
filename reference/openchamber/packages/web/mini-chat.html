@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en" class="h-full">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <title>OpenChamber Mini Chat</title>
+
+    <script>
+      // Apply the theme and its backdrop colours before first paint. The window
+      // itself is already on screen in that colour (createMiniChatWindow).
+      (function() {
+        try {
+          var themeMode = localStorage.getItem('themeMode');
+          var variant = localStorage.getItem('selectedThemeVariant');
+          var useSystem = localStorage.getItem('useSystemTheme');
+          var isDark;
+
+          if (themeMode === 'dark') {
+            isDark = true;
+          } else if (themeMode === 'light') {
+            isDark = false;
+          } else if (themeMode === 'system' || useSystem === null || useSystem === 'true') {
+            isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+          } else if (variant === 'light' || variant === 'dark') {
+            isDark = variant === 'dark';
+          } else {
+            isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+          }
+
+          document.documentElement.classList.add(isDark ? 'dark' : 'light');
+          document.documentElement.setAttribute('data-splash-variant', isDark ? 'dark' : 'light');
+          document.documentElement.style.setProperty('color-scheme', isDark ? 'dark' : 'light');
+
+          var splashBgLight = localStorage.getItem('splashBgLight');
+          var splashFgLight = localStorage.getItem('splashFgLight');
+          var splashBgDark = localStorage.getItem('splashBgDark');
+          var splashFgDark = localStorage.getItem('splashFgDark');
+
+          if (splashBgLight) document.documentElement.style.setProperty('--splash-background-light', splashBgLight);
+          if (splashFgLight) document.documentElement.style.setProperty('--splash-stroke-light', splashFgLight);
+          if (splashBgDark) document.documentElement.style.setProperty('--splash-background-dark', splashBgDark);
+          if (splashFgDark) document.documentElement.style.setProperty('--splash-stroke-dark', splashFgDark);
+
+          // The document paints the theme colour itself until React applies
+          // the theme: `<body class="bg-background">` would otherwise show the
+          // stylesheet's default background in between, a different colour
+          // from the window's. Set on the root, as mobile.html does; the
+          // theme system's own variables take over once it runs.
+          var background = isDark ? (splashBgDark || '#151313') : (splashBgLight || '#FFFCF0');
+          document.documentElement.style.setProperty('--background', background);
+          document.documentElement.style.backgroundColor = background;
+        } catch (error) {
+          console.warn('Failed to apply theme:', error);
+        }
+      })();
+    </script>
+
+    <style>
+      /* The backdrop colour of the screens shown before the theme has applied
+         (the sign-in check). */
+      :root {
+        --splash-background-dark: #151313;
+        --splash-background-light: #FFFCF0;
+        --splash-background: var(--splash-background-dark);
+      }
+      html[data-splash-variant='light'] { --splash-background: var(--splash-background-light); }
+      html[data-splash-variant='dark'] { --splash-background: var(--splash-background-dark); }
+    </style>
+
+    <script type="module" src="/src/mini-chat-main.tsx"></script>
+  </head>
+  <body class="h-full bg-background text-foreground">
+    <div id="root" class="h-full"></div>
+  </body>
+</html>

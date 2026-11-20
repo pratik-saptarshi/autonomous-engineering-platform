@@ -1,0 +1,15 @@
+import type { Session } from "@/lib/opencode/model"
+import { Binary } from "./binary"
+
+function areSessionsEqual(left: Session, right: Session): boolean {
+  return JSON.stringify(left) === JSON.stringify(right)
+}
+
+export function upsertSessionRecord(current: Session[], incoming: Session): Session[] {
+  const result = Binary.search(current, incoming.id, (session) => session.id)
+  if (!result.found) return [...current.slice(0, result.index), incoming, ...current.slice(result.index)]
+  if (areSessionsEqual(current[result.index], incoming)) return current
+  const next = [...current]
+  next[result.index] = incoming
+  return next
+}
