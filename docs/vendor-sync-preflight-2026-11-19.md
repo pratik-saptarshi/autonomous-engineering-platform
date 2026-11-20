@@ -75,6 +75,8 @@ git -C "vendor-backup-$tree-2026-11-19.git" tag "backup/pre-sync-$tree-working" 
 
 The pre-sync SHAs above are also held by the mirror-clone tags and inside the bundles, so a moved ref cannot lose them to GC.
 
+> **Errata (2026-11-20):** the sentence above is wrong for the bundles created on 2026-11-19. The commands in the block above created each bundle **before** its tags, so the `backup/pre-sync-*` tags are **not** inside those bundles — they exist only in the mirror clones (`vendor-backup-<tree>-2026-11-19.git`). A restore that clones from a 2026-11-19 bundle cannot resolve `backup/pre-sync-<tree>-mirror`; restore from the mirror clone instead. The command block itself is the historical record and is unchanged. Future backups use `scripts/vendor_sync.sh backup`, which tags first, bundles second, and verifies both tag refs are in the bundle.
+
 ## Ordering record
 
 - Rollback runbook commit SHA and timestamp: `ac826a392bec341b2397d2f412af1bd01bec0a16` / `2026-11-19T20:00:34-06:00`.

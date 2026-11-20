@@ -93,4 +93,14 @@ else
   pass "revert with -m 1 undoes the forward merge"
 fi
 
+# ---------- test: backup tags first, bundle second, so the bundle carries the tags ----------
+BUNDLE="$TMP/pre-sync-esf-2026-11-19.bundle"
+bash "$SCRIPT" backup "$FK" esf "$UP_SHA" "$FORK_ONLY" "$BUNDLE" >/dev/null ||
+  fail "backup helper failed"
+git clone -q --mirror "$BUNDLE" "$TMP/restore.git"
+[ "$(git -C "$TMP/restore.git" rev-parse backup/pre-sync-esf-mirror)" = "$UP_SHA" ] &&
+  pass "bundle clone resolves the mirror backup tag" || fail "mirror backup tag missing from bundle"
+[ "$(git -C "$TMP/restore.git" rev-parse backup/pre-sync-esf-working)" = "$FORK_ONLY" ] &&
+  pass "bundle clone resolves the working backup tag" || fail "working backup tag missing from bundle"
+
 echo "ALL VENDOR SYNC TESTS PASSED"

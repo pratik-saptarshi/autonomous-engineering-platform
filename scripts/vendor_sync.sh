@@ -11,6 +11,7 @@ usage: vendor_sync.sh <command> [args]
   assert-ancestors REPO_DIR WORKING_BRANCH SHA...
   assert-content REPO_DIR WORKING_BRANCH FILE PATTERN
   mirror-ff REPO_DIR MIRROR_BRANCH MIRROR_REF
+  backup REPO_DIR TREE MIRROR_SHA WORKING_SHA BUNDLE_PATH
   rollback-plan TREE MIRROR_BRANCH WORKING_BRANCH
 EOF
   exit 2
@@ -65,6 +66,24 @@ mirror-ff)
   git -C "$repo" checkout -q "$mirror"
   git -C "$repo" merge --ff-only -q "$ref"
   echo "mirror-ff: $mirror now at $(git -C "$repo" rev-parse "$mirror")"
+  ;;
+backup)
+  [ $# -eq 5 ] || usage
+  repo=$1 tree=$2 mirror_sha=$3 working_sha=$4 bundle=$5
+  # Tags BEFORE the bundle: a bundle captures the refs that exist when it is
+  # created, and the rollback restore clones from the bundle and resolves
+  # these tags -- a bundle made first can never contain them.
+  git -C "$repo" tag "backup/pre-sync-$tree-mirror" "$mirror_sha"
+  git -C "$repo" tag "backup/pre-sync-$tree-working" "$working_sha"
+  git -C "$repo" bundle create "$bundle" --all >/dev/null
+  heads=$(git bundle list-heads "$bundle")
+  for ref in "refs/tags/backup/pre-sync-$tree-mirror" "refs/tags/backup/pre-sync-$tree-working"; do
+    if ! grep -q "$ref" <<<"$heads"; then
+      echo "backup: $ref missing from bundle $bundle" >&2
+      exit 1
+    fi
+  done
+  echo "backup: tags created before bundle; both tag refs verified in $bundle"
   ;;
 rollback-plan)
   [ $# -eq 3 ] || usage
