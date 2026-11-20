@@ -26,3 +26,12 @@ Clean. A gitleaks scan (v8.24.3, this repo's CI version and config) of the pinne
 
 - Fork `develop` == upstream `jmanico/grim-prompter@main` at this pin. 359 Markdown files + `LICENSE`, no symlinks, no executable code.
 - No new instruction surfaces relative to the prior snapshot; `AGENTS.md` is upstream reference data under `reference/`. Secret scan clean.
+
+## Freshness
+
+This file is the single source of truth for this tree's pin. The one-line `vendor-freshness` block above is machine-readable and is parsed by `scripts/vendor_graph.py` and `scripts/vendor_freshness.py`. Every re-vendor updates the block's `pin` in the same PR.
+
+- **Current state:** **repin** — re-vendored at the current fork head on 2026-11-19; next freshness review 2026-12-19.
+- **Owner:** the AEP maintainer (repository owner).
+- **SLA:** a weekly non-gating detector opens or updates one tracking issue within 7 days of detected drift; it never auto-syncs or auto-merges.
+- **Known out-of-scope drift for this lane:** `harness2` (2 behind upstream), `neurostrata` (170 behind, 604 ahead), and `craft-anything` (decision due) are reported by the detector, not fixed by the 2026-11-19 migration.
