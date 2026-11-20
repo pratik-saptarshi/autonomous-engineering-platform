@@ -23,6 +23,9 @@ jobs:
       - name: Self-test the detector
         run: python3 scripts/vendor_freshness.py --self-test
       - name: Generate report
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: python3 scripts/vendor_freshness.py --issue-body > vendor-freshness.md
       - name: Create or update the tracking issue
         env:
