@@ -15,9 +15,15 @@ that is the intended contract — treat the failure as the gate doing its job.
    checkout, then restore `scripts/policy.data` from `HEAD` so the working
    tree matches the committed blob (an uncommitted policy edit fails the gate
    by design).
-3. If the host has no checkout (installed copy, bare cron host): copy the
-   committed `scripts/policy.data` from a trusted checkout into the path the
-   FAIL line names, or point `AEP_POLICY_DATA` at the trusted copy.
+3. If the host has no checkout (installed copy, bare cron host): a copied
+   policy file cannot restore service on its own — the gate hashes the
+   policy against the committed blob it reads with git from the script's
+   own directory, so a checkout-less copy fails closed with `cannot read
+   committed scripts/policy.data via git` even when the copy is
+   byte-identical, and pointing `AEP_POLICY_DATA` at the copy does not
+   change that. Provision a trusted checkout on the host instead (clone or
+   fetch the repo at the trusted commit), restore `scripts/policy.data`
+   there as in step 2, and invoke the gate from that checkout.
 4. Re-run `bash scripts/boot-gate.sh` and confirm the fifth check line is
    `BOOT-GATE: policy ok: ...` with the `BOOT-GATE-RESULT: POLICY-OK` token.
 
