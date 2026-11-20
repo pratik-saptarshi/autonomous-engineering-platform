@@ -51,7 +51,7 @@ Gather first, draft second. For every factual claim, have in hand this run:
 These four rules caught real errors in the workflow's first run (upstream issue #58):
 
 | Rule | Test before filing |
-|---|---|
+| --- | --- |
 | "Verbatim" means character-verbatim | Punctuation, typography, or OCR differed at all → the quote is a transcription; drop the label or re-capture the source |
 | Evidence belongs to the item it was gathered for | A grep/tree/scan run for item X says nothing about item Y — never write "both" from one item's run |
 | Exposure claims state what the command shows | Empty inverted tree under named target/feature sets = "no compiled code path **found**" — never "not compiled", never "not reachable" |
@@ -93,7 +93,7 @@ Self-review, a co-drafter's review, and "the evidence is in the log" are not thi
 ## Rationalizations — Stop When You Hear These
 
 | Excuse | Reality |
-|---|---|
+| --- | --- |
 | "The owner consented to the related PR — close enough" | Consent is per-action. A PR consent never covers an issue filing. |
 | "The maintainer is waiting; filing now unblocks discussion" | Urgency is not consent, and an unvalidated filing is a public record you cannot unpublish. |
 | "The summary says item Y is the same as X" | Summaries are not sources. Run Y's checks or leave Y out. |

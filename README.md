@@ -67,7 +67,7 @@ Guards: at most 6 iterations per run. Three failed attempts on one task stops th
 ## Component inventory
 
 | Component | Version | Location | Status |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Skill library | 58 skills, 12 upstream sources | `~/workspace/custom-skills/` | Installed, verified |
 | Ralph loop | skill + `backlog.py` | `~/workspace/ralph/` | Installed; scheduled every 2 h |
 | NeuroStrata engine | v1.9.0 (prebuilt binary) | `~/workspace/neurostrata/` | Live; daemon healthy |
@@ -82,7 +82,7 @@ Guards: at most 6 iterations per run. Three failed attempts on one task stops th
 ### Skill sources
 
 | Source | Skills adapted |
-|---|---|
+| --- | --- |
 | pratik-saptarshi/superpowers | brainstorming, dispatching-parallel-agents, executing-plans, receiving-review, requesting-review, subagent-driven-development, systematic-debugging, test-driven-development, verification-before-completion, writing-plans, writing-skills |
 | pratik-saptarshi/skills | grilling, prototype, recurring-workflows, research, teach, to-questionnaire, writing-articles, writing-for-agents |
 | pratik-saptarshi/NeuroStrata | neurostrata_memory |

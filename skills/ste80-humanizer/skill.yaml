@@ -1,0 +1,5 @@
+name: "ste80-humanizer"
+title: "STE80 Humanizer"
+description: "Use when the user asks for STE, ASD-STE100, or Simplified Technical English, or wants technical text (documentation, procedures, runbooks, instructions, specifications) rewritten into plain, structured, unambiguous English with one idea per sentence. For general humanizing of prose, use humanizer instead."
+category: "Work and knowledge"
+include_in_prompt: true

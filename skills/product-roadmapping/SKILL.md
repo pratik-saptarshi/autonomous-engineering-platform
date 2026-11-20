@@ -75,7 +75,7 @@ Features trace to `VERIFIED` or `DEFINED` capabilities only. Discovery loop for 
 Per feature: actors, preconditions, main flow, failure flows, observable outcome — then ACs. Features in a `BLOCKED-ON-RULING` stage are skipped entirely — no use cases, no ACs — until the ruling lands (Law 3). Each AC is mechanically checkable (a command, a test name, or a measurement with a threshold) **and** carries its failure witness (Law 4). **Eval level is assigned here, by the AC's author** — it is part of authoring the criterion, not a separate mapping pass:
 
 | Level | Meaning | Discharges with |
-|---|---|---|
+| --- | --- | --- |
 | L0 — Conformance | Deterministic corpus/unit proof; bit-for-bit where identity is involved | Corpus cases, golden values |
 | L1 — Integration | Component-against-component behaviour | Integration tests, recovery drills |
 | L2 — Adversarial / property | Fuzz, mutation, break-the-behavior: the check is shown to bite | Fuzz corpora, mutation reports |
@@ -90,7 +90,7 @@ Per feature: actors, preconditions, main flow, failure flows, observable outcome
 Map ACs down to functions/modules and implementation tasks — **only as deep as nearness justifies**:
 
 | Horizon | Depth |
-|---|---|
+| --- | --- |
 | Next stage | Full function/task mapping; tasks sized for one implementer + one reviewer |
 | Stage after next | Module-level mapping only (components, interfaces, no task list) |
 | All later stages | Feature-level only; mapping is deferred until they become "next" |
@@ -127,7 +127,7 @@ Required fields per row: `id`, `title`, `links` (upstream IDs), `evidence` (alia
 Full panel (one fresh agent per role; no role grades its own output):
 
 | Role | Owns |
-|---|---|
+| --- | --- |
 | Capability Mapper | Stage 2 capability map |
 | Feature Developer | Stage 4 feature specs + discovery |
 | Use-Case + Acceptance Analyst | Stage 5 — one role, deliberately: splitting use cases from their criteria severs the failure witness from the flow that produces it |
@@ -152,7 +152,7 @@ There is **no separate Eval Mapper role**: eval-level assignment belongs to acce
 ## Quick Reference
 
 | Question | Answer |
-|---|---|
+| --- | --- |
 | Can this capability seed a feature? | Only if `VERIFIED` or `DEFINED` (Law 2) |
 | The source plan's shape looks wrong | Log a re-cut ruling; never silently paraphrase (Law 1) |
 | A stage depends on an open ruling | Brief first; stage labelled `BLOCKED-ON-RULING`, feature-level only (Laws 3, 5) |

@@ -10,7 +10,7 @@
 
 **Tech Stack:** bash, the deployed watchdog script, daemon logs, system memory stats.
 
-**Spec:** https://github.com/pratik-saptarshi/autonomous-engineering-platform/issues/21
+**Spec:** <https://github.com/pratik-saptarshi/autonomous-engineering-platform/issues/21>
 
 ## What changed since the original plan (verified 2026-10-21)
 
@@ -55,9 +55,11 @@
 ### Task 1: Stop destroying evidence (log rotation, corrected paths)
 
 **Files:**
+
 - Modify: `~/workspace/neurostrata/bin/watchdog-backup.sh` (deployed copy)
 
 **Interfaces:**
+
 - Consumes: nothing (first task)
 - Produces: daemon log preserved across restarts at its REAL path.
 
@@ -71,6 +73,7 @@ Expected: find the log path variable (currently `DAEMON_LOG="$HOME/.local/share/
 - [ ] **Step 2: Add timestamped rotation before (re)start**
 
 Before the daemon is (re)started, add (adapting to the script's actual variable names):
+
 ```bash
 if [ -f "$DAEMON_LOG" ]; then
   mv "$DAEMON_LOG" "$DAEMON_LOG.$(date +%Y%m%d-%H%M%S)"
@@ -95,15 +98,18 @@ Append to `~/workspace/neurostrata/OPERATIONS.md` (create it if absent): date, w
 ### Task 2: Instrument resource usage (corrected paths)
 
 **Files:**
+
 - Create: `~/workspace/neurostrata/bin/sample-daemon-rss.sh`, `~/workspace/neurostrata/daemon-rss.log`
 
 **Interfaces:**
+
 - Consumes: nothing (parallel with Task 1)
 - Produces: time-series of daemon RSS (Resident Set Size — actual RAM footprint in KB) + system memory.
 
 - [ ] **Step 1: Create the sampler**
 
 Write `~/workspace/neurostrata/bin/sample-daemon-rss.sh`:
+
 ```bash
 #!/usr/bin/env bash
 # Sample daemon RSS + system memory every 5 min. Appended to daemon-rss.log.
@@ -130,6 +136,7 @@ Note: the sampler does not survive VM reboots (no @reboot cron). If the VM is re
 ### Task 3: Identify the unclean killer (replaces old H4 test)
 
 **Interfaces:**
+
 - Consumes: Task 1 (preserved logs with WAL warnings intact)
 - Produces: timestamped list of unclean deaths, separated from reaper-cycle events.
 
@@ -140,6 +147,7 @@ Note: the sampler does not survive VM reboots (no @reboot cron). If the VM is re
 Task 1 rotates `daemon.log` before every restart, so a WAL warning in the CURRENT log and the shutdown that caused it live in DIFFERENT files: the warning is in the fresh log, the preceding shutdown sequence is at the tail of the rotated file. Pair them — never classify from the current log alone.
 
 Run:
+
 ```bash
 # 1a: list WAL warnings across the CURRENT log and ALL rotated logs
 # (after 2+ restarts, earlier warnings live in daemon.log.*, not the current file)
@@ -154,11 +162,13 @@ ls -1t ~/.local/share/neurostrata/daemon.log.*
 # 1c: for each matched rotation, pull the tail — this is the preceding shutdown:
 tail -30 ~/.local/share/neurostrata/daemon.log.<matched-timestamp>
 ```
+
 Record: how many WAL warnings, and for each, what the PREVIOUS shutdown looked like (from the ROTATED file's tail — SIGTERM+checkpoint = clean; HTTP+checkpoint = clean; abrupt end = unclean). A warning whose preceding rotation shows a clean SIGTERM shutdown points at a daemon-side race (H2 variant); one whose rotation ends abruptly points at SIGKILL/crash (H1/H3).
 
 - [ ] **Step 2: Correlate unclean deaths with reaper and watchdog logs**
 
 For each WAL warning's startup time, check:
+
 ```bash
 # was the reaper active near the preceding shutdown?
 grep -B5 -A5 '<timestamp>' ~/workspace/neurostrata/reaper.log
@@ -176,12 +186,14 @@ grep -B5 -A5 '<timestamp>' ~/workspace/neurostrata/watchdog.log
 ### Task 4: Test H1 — OOM killer
 
 **Interfaces:**
+
 - Consumes: Task 2's RSS log + Task 3's unclean-death timestamps (need ≥1 unclean death captured)
 - Produces: verdict on H1.
 
 - [ ] **Step 1: Try every available OOM-evidence source**
 
 Run each; record which are accessible:
+
 ```bash
 dmesg 2>&1 | grep -i oom | tail -5
 journalctl -k 2>&1 | grep -i 'killed process' | tail -5
@@ -204,6 +216,7 @@ For each unclean-death timestamp from Task 3, pull the nearest RSS-log samples (
 ### Task 5: Test H2/H3 — crash vs external SIGKILL
 
 **Interfaces:**
+
 - Consumes: Task 1's preserved logs + Task 3's unclean-death list
 - Produces: verdict on H2 (crash) vs H3 (external SIGKILL).
 
@@ -215,6 +228,7 @@ Look for: Rust panic traces, `ERROR` lines, stack traces, or abrupt end (no shut
 - [ ] **Step 2: Audit for SIGKILL sources**
 
 Run:
+
 ```bash
 # any other reaper-like automation?
 ps aux | grep -iE 'reaper|monit|supervisord|oom' | grep -v grep
@@ -232,10 +246,12 @@ ls ~/workspace/cron.d/hourly/ ~/workspace/system-cron.d/hourly/ 2>/dev/null
 ### Task 6: Fix and harden (only after a hypothesis is confirmed)
 
 **Interfaces:**
+
 - Consumes: verdict from Tasks 3–5
 - Produces: targeted fix — NOT a speculative rewrite.
 
 Do not write this task's steps in advance. The fix depends entirely on the confirmed cause:
+
 - H1 confirmed → reduce memory footprint, add early-warning restart, or document the constraint.
 - H2 confirmed → pin a fixed upstream version or file the upstream issue with the preserved trace.
 - H3 confirmed → remove/disable the killer or guard the daemon against it.
@@ -249,9 +265,11 @@ Do not write this task's steps in advance. The fix depends entirely on the confi
 ### Task 7: Report and update docs
 
 **Files:**
+
 - Modify (repo): `docs/limitation-analysis.md` §1(f). Repo checkout: `~/workspace/repos/autonomous-engineering-platform`.
 
 **Interfaces:**
+
 - Consumes: findings from Tasks 3–6
 - Produces: issue #21 updated; docs reflect reality.
 

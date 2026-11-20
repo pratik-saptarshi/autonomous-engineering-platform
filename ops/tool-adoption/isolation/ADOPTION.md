@@ -48,7 +48,7 @@ workspace):
 ## Status summary
 
 | Component | Survey rank | Status on the origin runtime |
-|---|---|---|
+| --- | --- | --- |
 | Rank-1 composite + `sandbox-gate` (2a) | 1 (4.20) | **Adopted and in force** for untrusted-evaluation lanes |
 | gVisor / `runsc` (systrap) | 2 (3.65) | **Adopted** as the opt-in boundary for the highest-risk lane type (launcher flag, default off); smoke-test gate passed |
 | nsjail profile | 3 (tied, 3.35) | **Adopted** — pinned local build, profile probed, sibling launcher live |
@@ -115,7 +115,7 @@ never runs), exact exit-code propagation, clean teardown.
 ### Pins (origin runtime, 2026-11-14)
 
 | Artefact | SHA256 |
-|---|---|
+| --- | --- |
 | `bin/sandbox-run` (this directory) | `7374076c471053159f8dfb56b9e084b418fe5d9fafd59a50d674c1c1a6f4095d` |
 | `bin/inner.sh` | `66de07ba99ad6f50e71c380289ec61dadeed47f8214b746c7cc1558933f63fff` |
 | `gate/sandbox-gate.c` (source pin) | `d1a9bdea0480d19280c6def5ac7f2145dfc1de9d4706f5a45e37d087b9d716f1` |
@@ -181,7 +181,7 @@ launcher enforces the pin at runtime (refuses unless
 ### Pin and verification (before first execution)
 
 | Item | Value |
-|---|---|
+| --- | --- |
 | Release pin | **release-20261109.0** |
 | Artifact | `gvisor.tar.bz2`, 84,532,987 bytes, from `https://storage.googleapis.com/gvisor/releases/release/20261109.0/x86_64/` |
 | SHA-512 (artifact) | `1a6b8f74c37b4931ef473f67ec1f601690855bedc52ac709f2fac965c69677aa0426ef44598d8eee1aed72cfdb9df87a2a5f352cb3348880fc61a7732bc10f2a` |
@@ -341,7 +341,7 @@ on a qualifying host. There is deliberately **no Incus step in
 ## What enforces, and what does not (summary)
 
 | Mechanism | Composite | gVisor mode | nsjail profile |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Mount/pid/net confinement, host paths absent | Enforces | Enforces | Enforces |
 | Env allowlist / credential scrub | Enforces | Enforces | Enforces |
 | Landlock ruleset / uid 65534 drop | Enforces | n/a (sentry boundary instead) | Not applied (uid-0 residual) |

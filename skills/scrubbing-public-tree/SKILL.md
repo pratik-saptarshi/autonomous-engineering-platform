@@ -26,7 +26,7 @@ Language-agnostic: the playbook detects the build system instead of assuming one
 Work through these in order. Each step ends with a checkable result.
 
 | # | Step | What to do | Done when |
-|---|------|-----------|-----------|
+| --- | ------ | ----------- | ----------- |
 | 1 | Inventory | List process artifacts (plans, designs, reviews, integration logs) and agent/machine traces (headers, absolute paths, identity strings) in the public tree | You have the full list |
 | 2 | Relocate | Move process docs under `docs/process/` (`plans/`, `designs/`, `reviews/` subdirs as appropriate) | Public tree has no build paperwork |
 | 3 | Scrub | Remove agent headers, absolute machine paths (`/home/...`, `/root/...`, `/Users/...`), and bot identity strings from every public-tree file | `grep -r` for each pattern returns empty |
@@ -38,12 +38,15 @@ Work through these in order. Each step ends with a checkable result.
 ## Implementation
 
 **Scrub patterns** (extend per repo; these are the common ones). Search all text files, excluding VCS and build output:
+
 ```bash
 EXCL="--exclude-dir=.git --exclude-dir=target --exclude-dir=node_modules --exclude-dir=vendor --exclude-dir=dist"
 grep -rn -E '/home/|/root/|/Users/' . $EXCL
 grep -rniE 'cloudbot|neo-green' . $EXCL
 ```
+
 In repos with gitignored local material (evidence dirs, scratch checkouts), scope verification to tracked files so local-only hits don't mask real ones (no output means clean):
+
 ```bash
 git grep -nE '/home/|/root/|/Users/'
 git grep -niE 'cloudbot|neo-green'
@@ -58,7 +61,7 @@ Do NOT blanket-exclude skill files: another SKILL.md in the public tree carrying
 **Build detection** (step 7) — discover manifest files at any depth (excluding VCS and build-output dirs), in this order. Guard each with `command -v` so a manifest without its toolchain reports cleanly instead of failing opaquely:
 
 | Manifest | Run |
-|---|---|
+| --- | --- |
 | `Cargo.toml` | `command -v cargo >/dev/null && cargo test` |
 | `go.mod` | `command -v go >/dev/null && go test ./...` |
 | `package.json` | `command -v npm >/dev/null && npm test` |
@@ -71,7 +74,7 @@ A root manifest's suite covers the workspace members it declares — but an inde
 ## Common Mistakes
 
 | Mistake | Why it hurts | Fix |
-|---------|--------------|-----|
+| --------- | -------------- | ----- |
 | Scrubbing only `*.md` | Paths hide in code comments, scripts, fixtures — in any language | Grep all text files (see patterns above) |
 | Assuming one build system | `go test` on a Rust repo wastes the verification step | Detect via manifest files (step 7) |
 | Leaving ADRs pointing at moved files | Traceability rots immediately | Repair is part of the move |

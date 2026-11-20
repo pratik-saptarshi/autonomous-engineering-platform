@@ -8,7 +8,7 @@
 
 **Tech Stack:** Markdown (bash code blocks). CI gate: markdownlint (v1 baseline in `.markdownlint.yaml` stays in effect).
 
-**Spec:** https://github.com/pratik-saptarshi/autonomous-engineering-platform/issues/14
+**Spec:** <https://github.com/pratik-saptarshi/autonomous-engineering-platform/issues/14>
 
 ## Global Constraints
 
@@ -36,27 +36,32 @@ The five rebuild-breaking failure modes most likely to bite, most likely first �
 ### Task 1: Rewrite §1 Binary tools and fix §3 daemon binary paths
 
 **Files:**
+
 - Modify: `docs/runbook.md:5-44` (§1, three install blocks + PATH setup)
 - Modify: `docs/runbook.md:65-78` (§3, two `~/workspace/neurostrata/bin/neurostrata-mcp` occurrences)
 
 **Interfaces:**
+
 - Consumes: verified install records (TOOLS.md for bd/Go; `~/memory/2026-10-16.md` for neurostrata-mcp and ocr)
 - Produces: corrected §1 and §3 that install to real paths
 
 - [ ] **Step 1: Replace the PATH setup block (docs/runbook.md:7-10)**
 
 Replace `mkdir -p ~/workspace/bin` + `~/workspace/bin` PATH export with the real convention (verbatim):
+
 ```bash
 # Binaries live in ~/go/bin (created if missing); Go toolchain at ~/sdk/go.
 mkdir -p ~/go/bin
 echo 'export PATH="$HOME/sdk/go/bin:$HOME/go/bin:$PATH"' >> ~/.bashrc
 export PATH="$HOME/sdk/go/bin:$HOME/go/bin:$PATH"
 ```
+
 Rationale for the implementer: `~/go/bin` is where every binary actually lives (verified 2026-10-19: bd, gh, neuroplasticity, neurostrata-mcp, ocr, shfmt); the `export` line makes it effective in the current shell, not just future ones.
 
 - [ ] **Step 2: Rewrite the beads install block**
 
 Delete the `gastownhall/beads` tarball block. Replace with the verified method from TOOLS.md (verbatim, including the CGO note):
+
 ```bash
 # bd is built from source (github.com/steveyegge/beads); the README's
 # CGO_ENABLED=0 recipe produces a broken embedded DB — use the default CGO build.
@@ -64,11 +69,13 @@ Delete the `gastownhall/beads` tarball block. Replace with the verified method f
 go install github.com/steveyegge/beads/cmd/bd@v1.3.1
 bd --version   # bd version 1.3.1 (dev) — the (dev) suffix is expected: source build
 ```
+
 Keep the existing Verify line (`bd ping`, `bd init` lifecycle) — it is correct.
 
 - [ ] **Step 3: Rewrite the open-code-review install block**
 
 Delete the npm-fetch + symlink block (`@alibaba-group/ocr-linux-x64`, `~/workspace/open-code-review/`, `ln -s ... ~/workspace/bin/ocr`) — none of those paths were ever used. Replace with the verified install (verbatim):
+
 ```bash
 # ocr v1.13.1 (Apache-2.0): linux-amd64 binary from the alibaba/open-code-review
 # GitHub release. Download with curl (a prerequisite — do NOT use gh, which is
@@ -82,11 +89,13 @@ sha256sum -c sha256sum.txt --ignore-missing  # must report OK for opencodereview
 install -m 755 opencodereview-linux-amd64 ~/go/bin/ocr
 ~/go/bin/ocr --version  # open-code-review v1.13.1 linux/amd64
 ```
+
 Keep the existing Verify lines (`ocr delegate preview/rule`) — they are correct.
 
 - [ ] **Step 4: Rewrite the NeuroStrata engine block and fix §3 paths**
 
 In §1, replace `mkdir -p ~/workspace/neurostrata/bin` + extract-to-there with (verbatim):
+
 ```bash
 cd /tmp
 # neurostrata-mcp-linux-amd64.tar.gz from the v1.9.0 release
@@ -99,7 +108,9 @@ tar xzf neurostrata-mcp-linux-amd64.tar.gz neurostrata-mcp
 install -m 755 neurostrata-mcp ~/go/bin/neurostrata-mcp
 ~/go/bin/neurostrata-mcp --version  # neurostrata-mcp 1.9.0
 ```
+
 In §3 (`docs/runbook.md:65-78`), replace both `~/workspace/neurostrata/bin/neurostrata-mcp` occurrences with `~/go/bin/neurostrata-mcp`, and add `HF_HUB_OFFLINE=1` to the daemon start line (required: the binary cannot download through the TLS-intercepting proxy — see limitation-analysis.md §2):
+
 ```bash
 HF_HUB_OFFLINE=1 nohup ~/go/bin/neurostrata-mcp daemon > ~/workspace/neurostrata/daemon.log 2>&1 &
 sleep 15
@@ -116,6 +127,7 @@ grep -n "workspace/bin" docs/runbook.md; echo "---"; grep -n "gastownhall/beads\
 # README inventory Locations must match the paths documented here:
 grep -n "go/bin" README.md | head -5   # informational; full alignment is issue #13's job, but do not contradict it
 ```
+
 Expected: zero stale-path hits.
 
 - [ ] **Step 6: Commit**
@@ -130,9 +142,11 @@ git commit -m "docs(runbook): rewrite binary installs against verified state"
 ### Task 2: Add the Go toolchain to prerequisites
 
 **Files:**
+
 - Modify: `docs/runbook.md:3` (the Prerequisites line)
 
 **Interfaces:**
+
 - Consumes: TOOLS.md (Go install record)
 - Produces: prerequisites line covering every toolchain §§1–5 need
 
@@ -148,6 +162,7 @@ Then append this note verbatim after the line:
 ```bash
 grep -n "go install\|go build\|go vet\|gcc" docs/runbook.md
 ```
+
 Expected: the `go install` (bd) and any `go` usage are covered by the prerequisites line. `python3` (backlog.py was removed — see Task 3), `node` (§7 moved — see Task 3), `curl` (§2) are covered.
 
 - [ ] **Step 3: Commit**
@@ -162,21 +177,25 @@ git commit -m "docs(runbook): document Go toolchain prerequisite"
 ### Task 3: Move §§6–7 to a "Planned components" appendix
 
 **Files:**
+
 - Modify: `docs/runbook.md:109-125` (§§6–7), `docs/runbook.md:127-137` (§8, checklist items — see Task 5)
 
 **Interfaces:**
+
 - Consumes: Task 1 (confirms ralph/open-connector absent)
 - Produces: appendix section; main flow §§1–5 all executable
 
 - [ ] **Step 1: Cut §§6–7 into a new appendix**
 
 Delete `## 6. Ralph loop and scheduler` (lines 109-117) and `## 7. open-connector gateway (optional)` (lines 119-125) from the numbered flow. Append at the end of the file a new section (verbatim heading):
+
 ```markdown
 ## Appendix A: Planned components (not yet implemented)
 
 The following were designed but are not installed. They are preserved here as
 design reference — do not follow these steps expecting them to work.
 ```
+
 Then paste the §6 and §7 content verbatim under it, each demoted one heading level (`### A.1 Ralph loop and scheduler`, `### A.2 open-connector gateway`). Keep the `backlog.md`/`backlog.py`/cron-body design text unchanged — it is the spec for when these get built.
 
 - [ ] **Step 2: Fix the §5 cross-reference**
@@ -189,6 +208,7 @@ Then paste the §6 and §7 content verbatim under it, each demoted one heading l
 # After the move, sections ## 1. through ## 5. and ## 8. must not mention:
 grep -n "workspace/ralph\|workspace/open-connector" docs/runbook.md | grep -v "Appendix A"
 ```
+
 Expected: no hits outside the appendix.
 
 - [ ] **Step 4: Commit**
@@ -203,9 +223,11 @@ git commit -m "docs(runbook): move ralph loop and open-connector to planned appe
 ### Task 4: Rewrite §4 to document the actual MCP integration
 
 **Files:**
+
 - Modify: `docs/runbook.md:80-98` (§4, "MCP client and connector registration")
 
 **Interfaces:**
+
 - Consumes: live `~/.config/opencode/opencode.json` (verified 2026-10-19)
 - Produces: §4 describing what exists
 
@@ -245,6 +267,7 @@ test record. `add_memory` requires `content`, `namespace`, `project_root`.
 ```bash
 python3 -c "import json; c=json.load(open('/home/hatch/.config/opencode/opencode.json')); print(c['mcp']['neurostrata']['command'])"
 ```
+
 Expected: `['/home/hatch/go/bin/neurostrata-mcp']` — the exact command array quoted in the doc.
 
 - [ ] **Step 3: Commit**
@@ -259,15 +282,18 @@ git commit -m "docs(runbook): document actual OpenCode MCP integration"
 ### Task 5: Fix the §8 verification checklist
 
 **Files:**
+
 - Modify: `docs/runbook.md:127-137` (§8, checklist)
 
 **Interfaces:**
+
 - Consumes: Tasks 1–4 (know what's real)
 - Produces: checklist with only checkable items
 
 - [ ] **Step 1: Rewrite the checklist**
 
 Replace the checklist with items that each name an exact command and expected output (Review Focus 5). Keep the real ones, drop the fictional ones, fix paths:
+
 ```markdown
 ## 8. Verification checklist
 
@@ -277,6 +303,7 @@ Replace the checklist with items that each name an exact command and expected ou
 - [ ] Scheduler shows the `neurostrata-watchdog` job with a next run time; a manual run backs up to Google Drive on DB change
 - [ ] `go version` reports go1.27.2
 ```
+
 Dropped (with reason, for the commit message): `backlog.py next` (no backlog.py — Appendix A), `ralph-loop` scheduler check (no such job), empty-backlog run behavior (no loop).
 
 - [ ] **Step 2: Verify every checklist item is checkable (Review Focus 5)**

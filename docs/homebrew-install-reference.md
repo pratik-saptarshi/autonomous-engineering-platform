@@ -9,7 +9,7 @@ Vendored snapshot: [PROVENANCE.md](../reference/homebrew-install/PROVENANCE.md) 
 ## Mapping to the AEP loop
 
 | homebrew-install | AEP (this environment) |
-|---|---|
+| --- | --- |
 | a bootstrap script fetched and executed on trust — the archetypal supply-chain decision | vendored snapshots pinned by commit and sha256 manifest; content is reviewed at a pin, never fetched-and-run from a moving branch |
 | staged install with preflight checks (OS, toolchain, permissions) that abort before mutating anything | gated pipelines: pre-flight checks (`ghg check`, hygiene gates) decide before any publish step runs |
 | idempotent, re-runnable installer steps | re-vendor and sync operations that can be re-run safely against a pinned state |

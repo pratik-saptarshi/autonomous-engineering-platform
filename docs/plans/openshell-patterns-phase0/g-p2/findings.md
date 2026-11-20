@@ -34,7 +34,7 @@ text diff reviewers already read.
 ## Seeds (into copies of the current artefacts)
 
 | Seed | Result |
-|---|---|
+| --- | --- |
 | S1 new credentialed host — new ghg bucket `metadata_creds` | **caught** (newly allowed call class) |
 | S2 new method on an allowed host — `merge` leaves `_MUTATING_SUBCOMMANDS` | **caught** (escapes mutating classification) |
 | S3 metadata-endpoint reach — `*/.config/gcloud{,/*}` leaves the policy.data deny-set | **caught** (both patterns reported newly allowed) |

@@ -29,9 +29,11 @@
 ### Task 1: Add "Seed the guard namespace" to the runbook
 
 **Files:**
+
 - Modify: `docs/runbook.md` (new subsection after §3 "Start the daemon", before §4)
 
 **Interfaces:**
+
 - Consumes: the three verified rule texts below
 - Produces: a runbook subsection with copy-pasteable seeding commands
 
@@ -76,7 +78,8 @@ if you replace the DAP-specific rules, keep the count at ≥3.
 
 Verify: `neurostrata-mcp list guard` should show `Found 3 memories`, and
 `scripts/boot-gate.sh` check 3 should print `BOOT-GATE: guards ok`.
-```
+
+```text
 
 - [ ] **Step 3: Verify the rule texts byte-match the live namespace**
 
@@ -93,9 +96,11 @@ git commit -m "docs(runbook): document guard namespace seeding for boot-gate"
 ### Task 2: Cross-reference from boot-gate.sh header
 
 **Files:**
+
 - Modify: `scripts/boot-gate.sh` (header comment only, no behavior change)
 
 **Interfaces:**
+
 - Consumes: Task 1's new subsection anchor
 - Produces: a header comment pointing at the seeding docs
 
@@ -107,7 +112,8 @@ Expected: the contract comment block ending before `set -euo pipefail`.
 - [ ] **Step 2: Add the cross-reference**
 
 Append to the header comment (keeping the existing style):
-```
+
+```text
 # Check 3 needs ≥3 guard rules incl. "Destructive GitHub actions"; on a fresh
 # VM seed them first — see docs/runbook.md "Seed the guard namespace".
 ```
@@ -127,6 +133,7 @@ git commit -m "docs(boot-gate): reference guard seeding docs in header"
 ### Task 3: End-to-end verification
 
 **Files:**
+
 - Modify: none
 
 - [ ] **Step 1: Confirm the docs chain is complete**

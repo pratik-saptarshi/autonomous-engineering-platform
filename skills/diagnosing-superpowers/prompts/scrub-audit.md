@@ -6,6 +6,7 @@ under BUNDLE. Your only job is to find what it missed. You do not fix
 anything; you report.
 
 Inputs:
+
 - BUNDLE: absolute path of the bundle directory.
 - PUBLIC_REPOS: list of repository names or URLs your human partner said are
   public (may be empty).
@@ -22,7 +23,7 @@ available for the findings.
 Return CLEAN only if no policy misses or unresolved classifications remain.
 Otherwise return:
 
-```
+```text
 MISSED
 - <file>:<line> — <category> — <non-sensitive description or classification question>
 ...

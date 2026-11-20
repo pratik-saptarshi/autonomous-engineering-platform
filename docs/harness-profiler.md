@@ -101,7 +101,7 @@ Only this handler's own `ses_*.jsonl` and `ses_*.parentage.json` files are
 counted or removed. A shared explicit directory keeps everything else.
 
 | Variable | Default | Effect |
-|---|---|---|
+| --- | --- | --- |
 | `AEP_HARNESS_PROFILE_RETENTION_DAYS` | `14` | age bound in days; `0` disables it |
 | `AEP_HARNESS_PROFILE_MAX_BYTES` | `33554432` (32 MiB) | byte ceiling; `0` disables it |
 

@@ -10,7 +10,7 @@
 A profiler for coding-agent sessions. A hook records every tool call, skill call, subagent start/stop, session start and compaction as one JSON line; `tree` renders those lines as a text call tree or a single-file HTML UML sequence diagram, and attributes token spend to each context (one conversation history).
 
 | Fact | Value | Evidence |
-|---|---|---|
+| --- | --- | --- |
 | License | MIT | `LICENSE`, `package.json` |
 | Size | 79 files, 2.4 MB; capture/render logic in one 960-line dependency-free Node file | `plugin/libexec/hp.js` |
 | Runtime | Node 18+, `sh` launcher | `package.json` engines, `plugin/libexec/hp.sh` |
@@ -33,6 +33,7 @@ Adopting it as shipped would deepen the harness coupling the architecture panel 
 Read separately, the capture and render halves have different assumptions.
 
 **Render half is record-shaped, with Claude vocabulary in nesting and visibility.** `tree` consumes records only:
+
 - `agent_id` / `child_agent_id` establish context parenting (`hp.js:473-495`).
 - `context_tokens` per record; the Claude transcript is read only for records that lack it (`hp.js:269-282`).
 - `tool === "Skill"` marks an inline skill (`hp.js:586`); `SubagentStop` ends a subagent call (`hp.js:489`).
@@ -61,7 +62,7 @@ Read separately, the capture and render halves have different assumptions.
 ## Options considered
 
 | Option | Verdict |
-|---|---|
+| --- | --- |
 | Install the plugin as shipped | **Reject.** Claude-only; executes from GitHub; writes `.claude/` settings into the repo; deepens harness coupling. |
 | Fork and patch upstream | **Defer.** Nothing to patch yet; AEP's `FORK.md` conventions exist if the adapter cannot stay additive. |
 | Vendor pinned tree + AEP-owned adapter | **Recommended.** Upstream stays byte-identical, AEP owns the multi-harness capture, and the renderer is reused unmodified. |

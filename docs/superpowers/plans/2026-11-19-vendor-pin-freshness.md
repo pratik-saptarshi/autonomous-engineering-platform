@@ -37,6 +37,7 @@
 ### Task 1: Derive the live graph and record a rollback harness
 
 **Files:**
+
 - Create: `scripts/vendor_graph.py` (stdlib; prints JSON of tree→{pin, repo, branch, parent, parent_branch, divergence, policy})
 - Create: `docs/vendor-sync-preflight-2026-11-19.md` (generated report + rollback runbook)
 - Modify: `.github/workflows/ci.yml` (validate freshness blocks)
@@ -55,6 +56,7 @@
 ### Task 2: Pre-flight each fork and classify actions
 
 **Files:**
+
 - Create: `scripts/vendor_sync.sh` (helpers: `verify-target`, `merge-forward`, `assert-content`, `rollback-plan`)
 - Test: `scripts/tests/test_vendor_sync.sh` (wired into `script-tests` in `ci.yml`)
 
@@ -147,6 +149,7 @@ One PR per tree. Every task includes the disposition gate and manifest regenerat
 ### Task 12: Add the weekly detector (non-gating, issues: write)
 
 **Files:**
+
 - Create: `scripts/vendor_freshness.py`
 - Create: `.github/workflows/vendor-freshness.yml`
 - Test: `scripts/tests/test_vendor_freshness.py`

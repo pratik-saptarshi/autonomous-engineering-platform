@@ -2,7 +2,7 @@
 
 This copy is a **locally modified fork** of an upstream skill. It is not the upstream original.
 
-- **Source origin:** obra/superpowers — https://github.com/obra/superpowers (MIT), `skills/diagnosing-superpowers`
+- **Source origin:** obra/superpowers — <https://github.com/obra/superpowers> (MIT), `skills/diagnosing-superpowers`
 - **Origin version / pin:** Imported 2026-10-13. Diff baseline: local clone ~/workspace/repos/superpowers at bb92a77 (release v7.0.0). No per-skill upstream version exists; 7.0.0 is the library release.
 - **Fork version:** 1 (first marked fork version, 2026-11-04)
 - **Internal marker:** `fork_of` + `fork_version: 1` in SKILL.md frontmatter and skill.yaml.

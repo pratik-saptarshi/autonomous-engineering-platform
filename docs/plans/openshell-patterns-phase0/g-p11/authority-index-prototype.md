@@ -6,7 +6,7 @@ the named source; [PTR] = pointer only (source is prose, runtime state, or
 settings UI — a generator lists the pointer, never a paraphrase).*
 
 | # | Surface | Governs | Owner / change path | Source | Kind |
-|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- |
 | 1 | Branch protection — `develop` | 8 required checks (docs-lint, shell-lint, script-tests, vendor-integrity, skills-freshness, security, go-checks, skills-routing-check), conversation resolution, enforce_admins ON, no force-push/deletions. **No required approving reviews at extraction time.** | Repo admin (owner) via GitHub settings | GitHub API `branches/develop/protection` | GEN |
 | 2 | Branch protection — `main` | Same 8 checks; enforce_admins OFF (promotion merges by the owner); no required approving reviews at extraction time | Repo admin via GitHub settings; main changes only by manual promotion from develop | GitHub API `branches/main/protection` | GEN |
 | 3 | Ruleset `aep-default-branch-guard` (default branch) | Branch deletion + force-push blocked on develop | Repo admin via GitHub rulesets | GitHub API `rulesets/26571395` | GEN |

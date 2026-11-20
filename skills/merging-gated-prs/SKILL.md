@@ -64,7 +64,7 @@ the PR's current head:
 Owner shorthand maps to census predicates:
 
 | Term | Predicate on the exact head |
-|---|---|
+| --- | --- |
 | clean | state OPEN, mergeable MERGEABLE, mergeStateStatus CLEAN |
 | green | every required check concluded success on the head SHA |
 | no review comments | zero unresolved threads AND zero outstanding findings (including findings whose "fix" failed step 6) |
@@ -136,7 +136,7 @@ commit SHA, or the analyst's findings, or the pending question asked).
 ## Rationalizations
 
 | Excuse | Reality |
-|---|---|
+| --- | --- |
 | "The Codex comment says no major issues" | The receipt binds a SHA. If it isn't the head, it is not a verdict on this tree. |
 | "The thread is resolved, so the finding is closed" | Resolved is a UI state. Verify the head's content (census step 6). |
 | "CI is green and it's CLEAN — that's what the owner meant" | The condition is conjunctive. Every predicate, on the exact head, or it is not met. |

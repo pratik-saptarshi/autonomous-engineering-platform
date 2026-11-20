@@ -28,9 +28,11 @@
 ### Task 1: Fix `docs/operations.md:26`
 
 **Files:**
+
 - Modify: `docs/operations.md` (delete line 26; keep surrounding section coherent)
 
 **Interfaces:**
+
 - Consumes: the verified finding (limitation-analysis.md item 1, operations.md:98)
 - Produces: a daemon section with no auto-restart claim
 
@@ -58,9 +60,11 @@ git commit -m "docs(operations): remove false MCP auto-spawn revive claim"
 ### Task 2: Fix `README.md:117`
 
 **Files:**
+
 - Modify: `README.md` (Known limitations bullet, line 117)
 
 **Interfaces:**
+
 - Consumes: the Task 1 wording (for consistency)
 - Produces: a README bullet matching limitation-analysis.md
 
@@ -88,9 +92,11 @@ git commit -m "docs(readme): correct watchdog revive mechanism to direct nohup r
 ### Task 3: Sweep for remaining auto-restart claims
 
 **Files:**
+
 - Modify: none (verification only; fix any hits as new edits in this task)
 
 **Interfaces:**
+
 - Consumes: Tasks 1-2 completions
 - Produces: proof of zero remaining false claims
 
@@ -110,6 +116,7 @@ Expected: at least the limitation-analysis.md Resolution line and the operations
 git add -u  # only if files changed in Step 1
 git commit -m "docs: remove residual MCP auto-spawn revive claims"  # only if files changed
 ```
+
 If Step 1 found nothing, skip this step — no empty commit.
 
 > **Reconciliation note (2026-10-23):** The 'watchdog cron does not restart it' claim is accurate for the REPO script and for the deployed script's no-change+reaped path. It does not cover the deployed script's change-path unconditional restart — see `docs/daemon-lifecycle-contract.md` § The Fork. The plan's core correction (MCP-spawn revive is unreliable; use direct nohup) stands; the demand-path gap is now tracked in `docs/daemon-lifecycle-contract.md` § Known gaps.

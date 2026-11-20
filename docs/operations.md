@@ -103,7 +103,7 @@ bash .../bin/stop.sh
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
-|---|---|---|
+| --- | --- | --- |
 | Daemon fails: `invalid peer certificate: UnknownIssuer` | TLS-intercepting proxy; binary does not trust the proxy CA | Pre-seed the model cache (runbook section 2); the binary never downloads on a cache hit |
 | MCP client: invalid JSON-RPC message | Server emits `{}` after `notifications/initialized` | Tolerate non-JSON-RPC stdout lines; do not fail on them |
 | `bd doctor`: "not yet supported in embedded mode" | Expected | Use `bd doctor --check={artifacts,conventions,pollution}`, `bd ping` |
