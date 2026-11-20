@@ -80,6 +80,17 @@ The pre-sync SHAs above are also held by the mirror-clone tags and inside the bu
 - Rollback runbook commit SHA and timestamp: `ac826a392bec341b2397d2f412af1bd01bec0a16` / `2026-11-19T20:00:34-06:00`.
 - First external mutation (Task 3 `gh repo sync`): **not yet performed.** The runbook commit is strictly earlier than any mutation.
 
+## Task 2 verify-target log (live, immediately before migration)
+
+| Fork | Mirror branch @ SHA | Working branch @ SHA | Matches backup record | Action |
+|---|---|---|---|---|
+| install | `main` @ `7986efac25016e41eed7e471666140c06f9d97cf` | `main` @ `7986efac25016e41eed7e471666140c06f9d97cf` | yes | REAL: fast-forward `main` 6 commits |
+| docs-mcp-server | `main` @ `d2bdb2f8378d4e901c764aba32b5941d05a6a50f` | `develop` @ `506f27b31956c4acc28ff27cb6f9691e83d8dfce` | yes | REAL: forward merge `main`→`develop` (10 fork-only commits preserved) |
+| esf | `master` @ `e5567fbfb12e98996b52178bdb4fb1f66b39566d` | `develop` @ `25e2ef8707c6f491b5abe235b74d652b0b7bd418` | yes | REAL: forward merge `master`→`develop` (11 fork-only commits preserved) |
+| humanizer | `main` @ `a32f24407364c74c812b43c15926d638bee1e072` | `develop` @ `a32f24407364c74c812b43c15926d638bee1e072` | yes | **SKIP: no sync** — mirror == working == upstream; re-pin only |
+
+**Classify-and-skip log:** the only no-op is `humanizer` (recorded above). No mirror is behind upstream except `install`; docs-mcp-server and esf need no `gh repo sync` because their mirrors are already identical to upstream. This log is the evidence that no no-op sync was performed.
+
 ## Sign-off
 
 The owner decision recorded in the plan is "sync the forks first." Task 2 re-runs `verify-target` immediately before each mutation; any mismatch with the classification above stops that task rather than acting on stale data.
