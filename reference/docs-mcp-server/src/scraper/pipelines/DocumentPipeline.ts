@@ -12,7 +12,7 @@
  * - Jupyter Notebook (.ipynb)
  *
  * The pipeline requests Markdown output from Xberg (`@xberg-io/xberg`) via
- * `outputFormat: OutputFormat.Markdown`, aligning with the project's Markdown-first
+ * `outputFormat: "markdown"`, aligning with the project's Markdown-first
  * processing pipeline. Xberg's Markdown renderer emits fully structured output for
  * every format — including spreadsheets, where each sheet appears as a heading
  * followed by a Markdown table — so `content` is the preferred representation and
@@ -21,12 +21,7 @@
  * Documents exceeding the configured maximum size are skipped with a warning.
  */
 
-import {
-  type ExtractedDocument,
-  ExtractInputKind,
-  extract,
-  OutputFormat,
-} from "@xberg-io/xberg";
+import { type ExtractedDocument, ExtractInputKind, extract } from "@xberg-io/xberg";
 import { GreedySplitter } from "../../splitter/GreedySplitter";
 import { SemanticMarkdownSplitter } from "../../splitter/SemanticMarkdownSplitter";
 import type { AppConfig } from "../../utils/config";
@@ -105,7 +100,7 @@ export class DocumentPipeline extends BasePipeline {
     try {
       const result = await extract(
         { kind: ExtractInputKind.Bytes, bytes: buffer, mimeType },
-        { outputFormat: OutputFormat.Markdown },
+        { outputFormat: "markdown" },
       );
 
       // `extract` returns an envelope that can carry several documents. A

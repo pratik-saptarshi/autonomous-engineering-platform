@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AEP Agentic-Container OS — Low-Level Design (v1.1)</title>
+<style>
+  @page { size: A4; margin: 16mm 14mm; }
+  :root { --ink:#0f172a; --muted:#475569; --line:#cbd5e1; --soft:#f1f5f9; --pri:#0369a1; --sec:#4f46e5; --ok:#047857; --warn:#b45309; --bad:#b91c1c; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: var(--ink); line-height: 1.5; font-size: 10.5pt; max-width: 980px; margin: 0 auto; padding: 24px; }
+  h1 { font-size: 22pt; margin: 0 0 4px; color: var(--pri); }
+  h2 { font-size: 14pt; margin: 26px 0 8px; padding-bottom: 4px; border-bottom: 2px solid var(--line); color: var(--sec); page-break-after: avoid; }
+  h3 { font-size: 11.5pt; margin: 16px 0 6px; page-break-after: avoid; }
+  p, li { margin: 0 0 6px; }
+  ul, ol { padding-left: 20px; margin: 0 0 8px; }
+  code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 9pt; background: var(--soft); padding: 1px 4px; border-radius: 3px; }
+  pre { background: var(--soft); border: 1px solid var(--line); border-radius: 4px; padding: 10px; overflow-x: auto; font-size: 8.5pt; line-height: 1.4; page-break-inside: avoid; }
+  pre code { background: none; padding: 0; }
+  table { width: 100%; border-collapse: collapse; margin: 8px 0 12px; font-size: 9.5pt; page-break-inside: avoid; }
+  th, td { border: 1px solid var(--line); padding: 5px 8px; text-align: left; vertical-align: top; }
+  th { background: var(--soft); }
+  .meta { color: var(--muted); font-size: 9.5pt; margin-bottom: 14px; }
+  .tag { display: inline-block; font-size: 8pt; font-weight: 700; padding: 1px 7px; border-radius: 9px; border: 1px solid; text-transform: uppercase; letter-spacing: .04em; }
+  .built { color: var(--ok); border-color: var(--ok); }
+  .new { color: var(--sec); border-color: var(--sec); }
+  .note { border-left: 4px solid var(--warn); background: #fffbeb; padding: 8px 12px; margin: 10px 0; page-break-inside: avoid; }
+  .note strong:first-child { display: block; }
+  footer { margin-top: 28px; padding-top: 8px; border-top: 1px solid var(--line); color: var(--muted); font-size: 8.5pt; }
+</style>
+</head>
+<body>
+
+<h1>AEP Agentic-Container OS — Low-Level Design</h1>
+<div class="meta">
+  <strong>LLD · v1.1</strong> · Status: Proposed · Branch: <code>docs/dual-lane-governance-proposal</code> · Companion: <code>aep-hld-v1.1.html</code><br>
+  Module path: <code>github.com/pratik-saptarshi/autonomous-engineering-platform</code> · Go 1.27.x · stdlib + <code>golang.org/x/sys</code> only unless stated
+</div>
+
+<h2>1. Scope and conventions</h2>
+<p>This document specifies interfaces, data formats, algorithms and an ordered task list for turning the as-built <code>aep</code> binary into the dispatching, admission-controlled substrate described in the HLD. Every item is marked <span class="tag built">as-built</span> (exists in <code>develop</code>) or <span class="tag new">new</span> (to be written). Nothing marked <em>new</em> exists yet.</p>
+<ul>
+  <li>Process boundary rule: lanes are containers; the <code>aep</code> binary on the substrate is the only component that starts, tracks and stops them.</li>
+  <li>All persistent state is JSON written atomically (temp file + rename) under <code>$AEP_STATE_DIR</code> (default <code>~/.local/state/aep</code>; on Windows <code>%LOCALAPPDATA%\aep</code>), mode 0700.</li>
+  <li>Exit codes: <code>0</code> ok · <code>1</code> failed check · <code>2</code> usage · <code>3</code> admission refused · <code>4</code> degraded/quarantined · <code>75</code> reserved for <code>ghg</code> budget denial (passed through unchanged).</li>
+</ul>
+
+<h2>2. Repository layout</h2>
+<pre><code>cmd/aep/main.go                       as-built  subcommand switch; flags per subcommand
+internal/platform/memory/             as-built  GetMemoryInfo() — linux /proc/meminfo, darwin sysctl, windows GlobalMemoryStatusEx
+internal/platform/lock/               as-built  FileLock — unix.Flock / LockFileEx; TryLock, Lock, Unlock, Close
+internal/platform/process/            as-built  ProcessGroup — Setpgid + group signal / Win32 Job Object
+internal/verifier/runner/             as-built  DiscoverCommands, RunVerification, TailCappedBuffer, CommandReceipt
+internal/profile/                     new       hardware profile loading + validation
+internal/policy/                      new       policy.data parse + committed-blob hash check
+internal/ledger/                      new       beads adapter (issue read/claim/close)
+internal/memoryd/                     new       NeuroStrata client (search, inscribe, status)
+internal/admission/                   new       memory/CPU reservation accounting
+internal/lane/                        new       lane manifest, claim/release/reap, container runtime driver
+internal/dispatch/                    new       tier routing + degradation decisions
+internal/factory/                     new       thin ESF client (wraps the `factory` CLI)
+cmd/aep  (new subcommands)            new       dispatch · lane · profile · boot --factory
+deploy/colima/                        new       colima.yaml + substrate compose file
+docs/plan/                            this doc  HLD + LLD (html + pdf)</code></pre>
+
+<h2>3. As-built components (reference)</h2>
+<table>
+  <tr><th>Package / command</th><th>Behaviour that later work depends on</th></tr>
+  <tr><td><code>memory.GetMemoryInfo()</code></td><td>Returns <code>MemoryInfo{TotalBytes, AvailableBytes}</code>. Darwin availability is free + speculative pages only, so it under-reports reclaimable memory; admission must not treat it as exact.</td></tr>
+  <tr><td><code>lock.New(path)</code></td><td>Advisory exclusive lock. <code>TryLock()</code> returns <code>ErrLocked</code> if held. The kernel releases it on process death — the property the lane fence relies on.</td></tr>
+  <tr><td><code>process.NewCommand(ctx,name,args,cfg)</code></td><td>Returns a <code>ProcessGroup</code>; <code>Kill()</code> terminates the whole tree (group SIGTERM→grace→SIGKILL on POSIX, Job Object on Windows).</td></tr>
+  <tr><td><code>runner.RunVerification(ctx,root,minMem,perCmd,budget)</code></td><td>Discovers go/cargo/npm/pytest/make checks, runs them sequentially bounded by timeout and budget, stops at first failure, returns <code>VerificationResult{Pass, Receipts[]}</code>. <strong>As built:</strong> 64 KiB tail hashes (<code>CommandReceipt.StdoutTailSha</code>/<code>StderrTailSha</code>). <strong>Planned in PR-11b:</strong> full-stream <code>StdoutSha</code>/<code>StderrSha</code> and the signed <code>RunReceipt</code> with nonce, ledger sequence, and Ed25519 signature.</td></tr>
+  <tr><td><code>aep boot</code></td><td>Memory probe, 384 MiB floor, platform line, then <code>BOOT-GATE-RESULT: SYSTEM-OK</code>. <strong>Does not</strong> yet check NeuroStrata, guards, gh auth, binaries or policy.</td></tr>
+  <tr><td><code>aep supervisor [--loop --interval D --once]</code></td><td>Tick = boot gate then one <code>RunVerification</code>. Boot-gate failure is fatal in every mode; verification failure is fatal only outside loop mode. Ticks never overlap.</td></tr>
+</table>
+
+<h2>4. New packages — interfaces</h2>
+
+<h3>4.1 <code>internal/profile</code></h3>
+<pre><code>type BackendKind string
+
+type IsolationKind uint8
+const (
+    IsolationNone IsolationKind = iota
+    IsolationUserSpaceKernel
+    IsolationHardwareMicroVM
+)
+
+type Provenance uint8
+const (
+    ProvenanceLocal Provenance = iota
+    ProvenanceRemote
+)
+
+type Isolation struct {
+    kind     IsolationKind
+    evidence [32]byte // probe or attestation digest; zero means unusable
+}
+func (i Isolation) Valid() bool
+func (i Isolation) AtLeast(min IsolationKind) bool // rank only; Valid() checks evidence
+
+type Requirement struct {
+    kind IsolationKind
+    set  bool
+}
+func NoFloor() Requirement
+func AtLeast(kind IsolationKind) Requirement
+func RequirementForRiskClass(class string) (Requirement, error)
+func (r Requirement) MetBy(i Isolation) bool // unset requirement fails closed
+
+type Backend struct {
+    kind       BackendKind
+    isolation  Isolation
+    provenance Provenance
+}
+func NewBackend(kind BackendKind, isolation Isolation, provenance Provenance) (Backend, error)
+    // rejects gVisor+hardware, cube-kvm+user-space, remote without attestation,
+    // and zero evidence; the zero Backend is not usable.
+func (b Backend) Usable() bool
+func (b Backend) Isolation() Isolation
+
+type ProbeResult struct {
+    Present bool
+    Digest  [32]byte
+}
+
+type MiB uint64
+type Bytes uint64
+func (m MiB) Bytes() (Bytes, error) // rejects overflow
+type MemoryView struct {
+    Total     Bytes // profile minimum
+    Available Bytes // admission
+    Limit     Bytes // cgroup or VM limit; zero means none
+}
+
+type Profile struct {
+    HostFamily      string // "mac-colima-vz" | "linux-native" | "linux-gvisor"; runtime only
+    Name            string // e.g. "mac-colima-vz-48g", "linux-native-16g"
+    VMCPUs          int    // 2 (nano) up to 12 (workstation)
+    VMMemoryMiB     uint64 // 8192 up to 49152
+    VMDiskGiB       int    // 30 up to 220
+    SubstrateMiB    uint64 // 2560 (nano, 2.5 GiB) up to 8192
+    Tier1BudgetMiB  uint64 // 3584 (nano, 3.5 GiB) up to 16384
+    Tier2BudgetMiB  uint64 // 1536 (nano, 1.5 GiB) up to 24576
+    Tier1LaneMiB    uint64 // 2048 (nano/small/medium) or 1536 (workstation 10-lane preset)
+    Tier2LaneMiB    uint64 // 1536 (nano) up to 6144
+    MaxTier1Lanes   int    // 1 (nano) up to 10 (workstation; 10 * 1536 = 15360 <= 16384)
+    MaxTier2Lanes   int    // 1 (nano) up to 6
+    Backend         Backend
+    KVMProbe        ProbeResult
+    MemFloorMiB     uint64 // 384 (nano) / 512
+    ONNXThreads     int
+}
+func Detect() (Profile, error)            // probes CPU, RAM, disk, /dev/kvm, and container runtime
+func Load(path string) (Profile, error)   // KEY=VALUE file, same keys as hardware-profile.conf
+func (p Profile) Validate(total memory.Bytes) error // sum(substrate+t1+t2) &lt;= total; ceilings*laneMiB &lt;= budgets
+func (p Profile) Tier2Supported() bool { return p.Backend.Usable() }
+func (p Profile) Tier2Admissible(laneMiB memory.MiB, active int) error</code></pre>
+<p><strong>Host-family rule:</strong> host family selects the runtime; the resolved <code>Backend</code> decides Tier 2. <code>Tier2Supported()</code> is true iff <code>Backend.Usable()</code>; <code>KVMProbe</code> only selects the <code>cube-kvm</code> candidate and is never the capability definition. <code>mac-colima-vz</code> may resolve <code>libkrun</code> without nested KVM; <code>linux-native</code> may resolve <code>gvisor</code> on KVM-free hosts; <code>remote-api</code> counts only when explicitly configured and attested. The nano preset is 2560 + 3584 + 1536 = 7680 MiB (7.5 GiB), with <code>MaxTier1Lanes=1</code> and <code>MaxTier2Lanes=1</code>. Preset validation must satisfy <code>MaxTier1Lanes * Tier1LaneMiB &lt;= Tier1BudgetMiB</code> and the same for Tier 2: nano 1×2048 &lt;= 3584; small 3×2048 &lt;= 6656; medium 6×2048 &lt;= 12288; workstation 10×1536 &lt;= 16384; Tier 2: nano 1×1536 &lt;= 1536, small 1×6144 &lt;= 6144, medium 3×5120 &lt;= 15360, workstation 6×4096 &lt;= 24576. <code>Detect()</code> returns the family from <code>GOOS</code> + runtime probe, then the size tier from CPU/RAM.</p>
+
+<h3>4.2 <code>internal/policy</code></h3>
+<pre><code>type Policy struct { EnvScrubFragments []string; SensitivePaths []string; Raw []byte; SHA256 string }
+func Load(path string) (Policy, error)
+func (p Policy) VerifyAgainstHEAD(repoDir string) error   // git show HEAD:scripts/policy.data | sha256 == p.SHA256
+func (p Policy) ScrubEnv(env []string) []string          // drops names containing any fragment, keeping the AUTH boundary exemptions
+func (p Policy) CheckWorkingSet(paths []string) error    // refuses sensitive-path matches</code></pre>
+<p>Behavioural parity target: <code>scripts/boot-gate.sh</code> <code>check_policy</code> and <code>lane-coord.sh</code>'s working-set check. When <code>policy.data</code> is absent, return a distinguishable <code>ErrPolicyInactive</code> so boot can print <code>POLICY-INACTIVE</code> (exit 0) instead of pretending a check passed.</p>
+
+<h3>4.3 <code>internal/ledger</code> (beads adapter)</h3>
+<pre><code>type Issue struct { ID string; Title string; Status string; Tier string /* "local"|"factory"|"" */; Priority int; Labels []string }
+type Ledger interface {
+    Next(ctx context.Context) (*Issue, error)          // highest-priority open issue with no active lane
+    Get(ctx context.Context, id string) (*Issue, error)
+    Claim(ctx context.Context, id, owner string) error  // sets in_progress; idempotent for same owner
+    Close(ctx context.Context, id, reason string) error
+}
+func NewBD(binary string) Ledger   // shells out to `bd ... --json`; no direct Dolt access</code></pre>
+<p>The adapter only parses <code>bd</code>'s JSON output. Tier comes from a label (<code>tier:local</code> / <code>tier:factory</code>); a missing label is treated as <code>local</code> only if the issue also carries <code>risk:low</code>, otherwise dispatch refuses (exit 4) so untrusted work cannot silently land in the weaker lane.</p>
+
+<h3>4.4 <code>internal/memoryd</code> (NeuroStrata host relay)</h3>
+<pre><code>type Client interface {
+    Status(ctx context.Context) error                                   // maps to `neurostrata-mcp status`
+    Search(ctx context.Context, ns, query string, k int) ([]Hit, error)
+    Inscribe(ctx context.Context, ns string, rec Record) error
+    Guards(ctx context.Context) (n int, hasDestructiveRule bool, err error)
+}
+// memoryd and gwd implement the shared relay.Handler contract.
+type Handler = relay.Handler
+func NewCLI(binary string) Client   // wraps the neurostrata-mcp CLI, as boot-gate.sh does today</code></pre>
+<p>Host supervisor exposes a per-lane UNIX domain socket (<code>/run/aep/lanes/&lt;laneID&gt;/memory.sock</code>) mounted into the lane container. The relay intercepts requests, strips credentials, attaches the lane provenance tag, and proxies to NeuroStrata. In host mode the endpoint is <code>127.0.0.1:34343</code>; in the compose topology it is <code>neurostrata:34343</code> on the private <code>aep-net</code> network, where <code>neurostrata</code> binds <code>0.0.0.0:34343</code> and publishes no host port. A supervisor container cannot use its own loopback as the upstream. MicroVMs use an outbox spool file ingested upon run completion, preserving zero-egress boundaries.</p>
+<p>All relays (<code>memoryd</code>, <code>gwd</code>, <code>execd</code>, <code>gitd</code>) implement <code>relay.Handler</code>; there is no separate <code>RelayServer</code> or <code>GHGRelay</code> protocol.</p>
+
+<h3>4.5 <code>internal/gateway</code> (ghg IPC relay)</h3>
+<pre><code>// gwd implements the shared relay.Handler contract; no separate protocol.
+type GHGRelay = relay.Handler
+type GHGClient interface {
+    Watch(ctx context.Context, runID string) error
+    API(ctx context.Context, method, endpoint string, body io.Reader) ([]byte, error)
+    PRView(ctx context.Context, prNumber int) ([]byte, error)
+}</code></pre>
+<p>Overcomes the fact that <code>tools/ghg/ghg.py</code> is a CLI with no network daemon. The host-side <code>aep gwd</code> daemon serves an IPC socket (<code>/run/aep/lanes/&lt;laneID&gt;/ghg.sock</code>). Inside the lane, a lightweight shim forwards commands to the socket. The host relay executes <code>ghg.py</code> locally, enforcing the 3,500 req/h cap and poller coalescing. GitHub PAT credentials never enter the container.</p>
+
+<h3>4.6 <code>internal/admission</code></h3>
+<pre><code>type Request struct { LaneID string; Tier int; MemMiB uint64; CPUs float64 }
+type Reservation struct { LaneID string; Tier int; MemMiB uint64; CPUs float64; At time.Time }
+type Controller struct { /* profile, state file, lock */ }
+func (c *Controller) Admit(ctx context.Context, r Request) (Reservation, error)  // ErrNoCapacity or ErrTier2Unsupported
+func (c *Controller) Release(laneID string) error
+func (c *Controller) Snapshot() (Usage, error)</code></pre>
+<p>State lives in <code>$AEP_STATE_DIR/admission.json</code>, guarded by one <code>lock.FileLock</code> held only for the read-modify-write. See §6 for the algorithm.</p>
+
+<h3>4.7 <code>internal/lane</code></h3>
+<pre><code>type Manifest struct {
+    LaneID, IssueID string
+    Tier            int
+    Image, Container string
+    Worktree        string
+    ReservedMiB     uint64
+    LauncherPID     int
+    StartedAt       time.Time
+    State           string // claimed|running|verifying|done|failed|reaped
+}
+type Runtime interface {                      // docker/podman-compatible CLI driver
+    Run(ctx context.Context, spec RunSpec) (containerID string, err error)
+    Stop(ctx context.Context, id string, grace time.Duration) error
+    Inspect(ctx context.Context, id string) (State, error)
+}
+func Claim(ctx context.Context, d Deps, issue Issue) (Manifest, error)
+func Release(ctx context.Context, d Deps, laneID string, clean bool) error
+func Reap(ctx context.Context, d Deps) ([]string, error)   // lanes whose launcher is dead AND container is gone</code></pre>
+<p>The fence is a <code>lock.FileLock</code> on <code>lanes/&lt;id&gt;.fence</code> held by the launching <code>aep lane claim --exec</code> process for the lane's lifetime, mirroring <code>lane-coord.sh</code>. A takeover or <code>release --clean</code> requires both: fence free <em>and</em> recorded container no longer running.</p>
+
+<h3>4.8 <code>internal/dispatch</code></h3>
+<pre><code>type Decision struct {
+    IssueID string
+    Tier    int
+    Action  string // "run-local" | "run-factory" | "quarantine" | "fallback-local" | "wait"
+    Reason  string
+}
+func Decide(ctx context.Context, d Deps, issue Issue) Decision</code></pre>
+<p>Decision table in §7. <code>Decide</code> is pure given its probes, so it is unit-testable with fakes.</p>
+
+<h3>4.9 <code>internal/factory</code></h3>
+<pre><code>// BackendKind, Isolation, and Requirement are defined in §4.1.
+const (
+    BackendNone      BackendKind = ""            // no usable backend
+    BackendCubeKVM   BackendKind = "cube-kvm"    // Linux with /dev/kvm
+    BackendLibkrun   BackendKind = "libkrun"     // macOS Virtualization.framework / vz
+    BackendGVisor    BackendKind = "gvisor"      // runsc systrap (no KVM required)
+    BackendRemote    BackendKind = "remote-api"  // emergency fallback, attested only
+)
+
+func NewBackend(kind BackendKind, isolation Isolation, provenance Provenance) (Backend, error)
+    // rejects gVisor+hardware, cube-kvm+user-space, remote without attestation,
+    // and zero evidence; the zero Backend is not usable.
+func (b Backend) Usable() bool
+func (b Backend) Isolation() Isolation
+
+type Client interface {
+    Doctor(ctx context.Context) error
+    Backend() (Backend, error)
+    Run(ctx context.Context, req RunRequest) (RunHandle, error)   // WorkflowID = "esf-beads-" + IssueID
+    Status(ctx context.Context, id string) (RunStatus, error)
+    PatchPath(ctx context.Context, id string) (string, error)
+    VerifyEgressProbe(ctx context.Context, id string) (bool, error)
+}</code></pre>
+<p>Wraps ESF's sandbox provider interface. Selects a <strong>local-first backend</strong>: native hardware microVMs via <code>cube-kvm</code> (Linux) or <code>libkrun</code> (macOS <code>vz</code>), falling back to <code>gvisor</code> (<code>runsc systrap</code> user-space kernel) when hardware virtualization is absent. Remote sandbox clusters are strictly an emergency fallback of last resort if all local options fail. A guard reads <code>factory.toml</code> and rejects <code>hardening.acknowledge_open_egress = true</code> (upstream default is <code>false</code>) and ensures closed egress policies. <code>VerifyEgressProbe</code> checks the SHA-256 digest of the in-VM probe evidence; a missing or mismatched digest rejects the run.</p>
+
+<h2>5. CLI surface (new)</h2>
+<table>
+  <tr><th>Command</th><th>Behaviour</th><th>Exits</th></tr>
+  <tr><td><code>aep boot [--factory] [--profile F]</code></td><td>Extends the as-built gate: binaries (<code>neurostrata-mcp bd ocr gh</code>), NeuroStrata status, guard count ≥3 and destructive-actions rule, <code>gh auth status</code>, policy hash, memory floor from profile. <code>--factory</code> adds <code>factory doctor</code> and the egress assertion. Prints the same <code>BOOT-GATE: &lt;name&gt; ok|FAIL</code> lines and <code>BOOT-GATE-RESULT</code> tokens as the shell gate.</td><td>0 / 1</td></tr>
+  <tr><td><code>aep profile show|validate</code></td><td>Prints the resolved profile and current admission usage.</td><td>0 / 1</td></tr>
+  <tr><td><code>aep dispatch [--issue ID] [--dry-run]</code></td><td>Boot gate → pick issue (or <code>Next</code>) → <code>Decide</code> → admit → start lane/pipeline. <code>--dry-run</code> prints the decision record only.</td><td>0 / 3 / 4</td></tr>
+  <tr><td><code>aep lane claim|release|status|reap</code></td><td>Go port of <code>lane-coord.sh</code>'s verbs for container lanes (§4.6).</td><td>0 / 1 / 3</td></tr>
+  <tr><td><code>aep supervisor</code> (extended)</td><td>Tick becomes: boot gate → <code>reap</code> → dispatch up to the admission ceiling → verification of done lanes. Existing flags unchanged; new <code>--dispatch</code> opt-in so current behaviour is preserved by default.</td><td>unchanged</td></tr>
+</table>
+
+<h2>6. Admission algorithm</h2>
+<pre><code>Admit(req):
+  lock(admission.lock)                         # FileLock.Lock, bounded wait 30s
+  s := load(admission.json)
+  if req.Tier == Tier2:
+    if !profile.Tier2Supported():
+      return ErrTier2Unsupported("no local sandbox backend (Cube/KVM, libkrun, or gVisor) available")
+    if err := profile.Tier2Admissible(memory.MiB(req.MemMiB), count(tier)); err != nil:
+      return err                                  # capacity, not capability
+
+  budget  := profile.TierBudgetMiB(req.Tier)
+  used    := sum(s.Reservations[tier == req.Tier].MemMiB)
+  ceiling := profile.MaxLanes(req.Tier)
+  host    := memory.GetMemoryInfo().AvailableBytes (inside the VM)
+
+  reqBytes, err := memory.MiB(req.MemMiB).Bytes()
+  if err != nil || req.MemMiB == 0                   -> ErrInvalidRequest("invalid memory request")
+  if count(tier) >= ceiling                          -> ErrNoCapacity("lane ceiling")
+  if used > budget || req.MemMiB > budget - used     -> ErrNoCapacity("tier memory budget")
+  if host &lt; reqBytes                                -> ErrNoCapacity("host floor")
+  if host - reqBytes &lt; profile.MemFloorMiB*MiB      -> ErrNoCapacity("host floor")
+  append reservation; write atomically; unlock; return</code></pre>
+<p>The nano preset is 2560 + 3584 + 1536 = 7680 MiB (7.5 GiB); <code>MaxTier1Lanes=1</code> and <code>MaxTier2Lanes=1</code>. The subtraction is safe only after the <code>host &lt; reqBytes</code> guard; do not reintroduce the unsigned underflow.</p>
+<ul>
+  <li>Reservations are keyed by lane ID and removed in <code>Release</code> and by <code>Reap</code>; a reservation whose lane manifest is <code>reaped</code> is garbage-collected on the next <code>Admit</code>.</li>
+  <li>The count ceiling and the memory budget are <em>both</em> enforced, parameterizing dynamically by the active hardware profile (<code>nano-8g</code> to <code>workstation-48g</code>).</li>
+  <li>Container memory is enforced by the runtime: <code>--memory=&lt;ReservedMiB&gt;m --memory-swap=&lt;same&gt; --cpus=&lt;n&gt;</code>, so a lane exceeding its reservation is OOM-killed inside its own cgroup rather than starving the substrate.</li>
+  <li>CPU is a soft share (not a hard partition): reservations sum may exceed host cores by design; only memory and sandbox backend availability are admission-blocking resources.</li>
+</ul>
+
+<h2>7. Dispatch decision table</h2>
+<table>
+  <tr><th>Tier tag</th><th>Probes</th><th>Decision</th><th>Exit</th></tr>
+  <tr><td><code>local</code></td><td>boot ok, admission ok</td><td><code>run-local</code></td><td>0</td></tr>
+  <tr><td><code>local</code></td><td>admission ErrNoCapacity</td><td><code>wait</code> (bounded retry, then leave issue open)</td><td>3</td></tr>
+  <tr><td><code>factory</code></td><td>local backend available (Cube/KVM, libkrun, or gVisor) + doctor ok + probe ok + admit ok</td><td><code>run-factory</code> (local sandbox)</td><td>0</td></tr>
+  <tr><td><code>factory</code></td><td>all local backends fail + remote cluster configured</td><td><code>run-remote-factory</code> (emergency fallback of last resort)</td><td>0</td></tr>
+  <tr><td><code>factory</code></td><td>no local backend available and no remote cluster</td><td><code>quarantine</code>: label issue <code>blocked:unsupported-tier2-no-sandbox</code></td><td>4</td></tr>
+  <tr><td><code>factory</code></td><td>Temporal or sandbox daemon unreachable</td><td><code>quarantine</code>: label issue <code>blocked:factory-unavailable</code>, write decision record, do not start anything</td><td>4</td></tr>
+  <tr><td><code>factory</code></td><td><code>acknowledge_open_egress = true</code> OR probe failed</td><td><code>quarantine</code> (governance failure, never auto-fallback)</td><td>4</td></tr>
+  <tr><td><code>factory</code></td><td>unreachable/unsupported <em>and</em> operator provides <code>--override-tier1-risk-reassessment</code> <em>and</em> <code>fallback:local-ok</code></td><td><code>fallback-local</code>: run in a fenced Tier-1 lane with <code>review:escalated</code> (mandatory human review)</td><td>4</td></tr>
+  <tr><td>missing, no <code>risk:low</code></td><td>—</td><td>refuse (cannot place untrusted work)</td><td>4</td></tr>
+</table>
+<p><strong>Local-First and Quarantine Invariants:</strong> Tasks tagged <code>factory</code> execute locally using hardware microVMs (<code>cube-kvm</code>, <code>libkrun</code>) or user-space kernels (<code>gvisor</code>). Remote sandbox clusters are strictly an emergency fallback of last resort if all local options fail. Automatic downgrade to Tier 1 is strictly prohibited; downgrade requires an explicit operator risk reassessment override (<code>--override-tier1-risk-reassessment --reason="..."</code>).</p>
+
+<h2>8. Data formats</h2>
+<h3>8.1 Lane manifest — <code>$AEP_STATE_DIR/lanes/&lt;laneId&gt;.json</code></h3>
+<pre><code>{
+  "schema": 1,
+  "lane_id": "t1-7f3a9c",
+  "issue_id": "aep-142",
+  "tier": 1,
+  "image": "aep:1.1",
+  "container": "aep-lane-t1-7f3a9c",
+  "worktree": "/Volumes/Build 1/Git-SCM/worktrees/aep-142",
+  "reserved_mib": 2048,
+  "launcher_pid": 41233,
+  "started_at": "2026-11-08T23:59:00Z",
+  "state": "running",
+  "policy_sha256": "…",
+  "exec_relay": "/run/aep/exec.sock",
+  "git_relay": "/run/aep/git.sock",
+  "receipts": "/…/aep-142.receipts.jsonl"
+}</code></pre>
+<h3>8.2 Dispatch decision record — <code>$AEP_STATE_DIR/decisions/&lt;ts&gt;-&lt;issue&gt;.json</code></h3>
+<pre><code>{ "schema": 1, "issue_id": "aep-142", "tier_tag": "factory",
+  "action": "quarantine", "reason": "temporal unreachable",
+  "probes": { "boot": "ok", "factory_doctor": "fail: connection refused", "egress": "ok", "admission": "ok" },
+  "override": { "used": false, "operator": null, "reason": null },
+  "at": "2026-11-08T23:59:00Z" }</code></pre>
+<p>The decision record is the audit home for the explicit operator override: <code>override.used</code>, <code>override.operator</code>, and <code>override.reason</code> are required when a factory task is downgraded. A lane cannot set its own <code>MinIsolation</code> or override; only the authenticated operator path can.</p>
+<h3>8.3 Identity conventions</h3>
+<ul>
+  <li>Lane ID: <code>t&lt;tier&gt;-&lt;6 hex&gt;</code>. Container name: <code>aep-lane-&lt;laneId&gt;</code>. Worktree: <code>$AEP_WORKTREES_ROOT/&lt;issueId&gt;</code>.</li>
+  <li>ESF workflow ID: <code>esf-beads-&lt;issueId&gt;</code>; a second submit for the same issue is rejected by the dispatcher before calling <code>factory run</code>.</li>
+  <li>Branch: <code>type/scope-short-description</code> and Conventional Commits, per repo <code>AGENTS.md</code>; commit identity per <code>AGENTS.md</code>.</li>
+</ul>
+
+<h2>9. Runtime topology</h2>
+<h3>9.1 Container and VM runtimes — by host family</h3>
+<p><strong>mac-colima-vz (macOS):</strong> one large shared Colima VM; Docker/Podman containers are spawned on demand <em>inside</em> that VM and bounded by admission control — never one VM per lane. Use <code>--vm-type vz --mount-type virtiofs</code>; worktrees are virtiofs-mounted into the VM. Tier 2 hardware microVMs are supported via Colima nested KVM (requires <code>--nested-virtualization</code>, confirmed 2026-11-09) OR natively via <code>libkrun</code> using Apple's <code>Virtualization.framework</code> (<code>vz</code>) without requiring nested KVM. gVisor is Linux-only; if neither nested KVM nor libkrun is available on macOS, Tier-2 tasks quarantine rather than claiming a local gVisor fallback.</p>
+<p><strong>linux-native (Linux):</strong> no Colima; Podman (rootless) / Docker runs directly on the host under cgroups v2. Tier-2 hardware microVMs run via <code>cube-kvm</code> if <code>/dev/kvm</code> is present.</p>
+<p><strong>linux-gvisor (KVM-Free Linux & Cloud VMs):</strong> on hosts lacking <code>/dev/kvm</code> (Intel N100, Raspberry Pi 5, or standard non-bare-metal cloud instances), Tier-2 isolation runs locally via <strong>gVisor</strong> (<code>runsc</code> in <code>systrap</code> mode). <code>systrap</code> intercepts all guest syscalls in user space with zero hardware virtualization requirement, providing a measured kernel boundary on low-power devices.</p>
+<p><strong>Remote Sandbox Cluster (Emergency Last Resort):</strong> connecting to an external/remote sandbox cluster (e.g. remote Cube/E2B endpoint) is strictly an emergency fallback of last resort if and only if all local isolation backends (Cube/KVM, libkrun, and gVisor) have failed or are impossible.</p>
+<p><strong>Confirmed 2026-11-09</strong> on Apple M3 Max (macOS 27.2, Colima 0.10.3, <code>vz</code> + <code>virtiofs</code>): <code>colima start --nested-virtualization</code> exposes <code>/dev/kvm</code> inside the VM (and in <code>--privileged</code> containers); QEMU <code>accel=kvm</code> is accepted for a nested L2 guest; Docker 29.5.2 containers run in-VM; Temporal (sqlite dev server) serves UI on <code>:8233</code>. Without <code>--nested-virtualization</code>, <code>/dev/kvm</code> is absent — the flag is required. CubeSandbox itself was not installed/tested.</p>
+<pre><code># macOS (M3 Max / Apple Silicon Workstation):
+colima start --profile aep \
+  --cpu 12 --memory 48 --disk 220 \
+  --vm-type vz --mount-type virtiofs --nested-virtualization
+
+# Linux hosts (Intel N100 / AMD Ryzen / Cloud VMs):
+# Runs natively on host cgroups v2 using Podman (rootless) or Docker:
+aep boot --profile nano-8g --runtime podman</code></pre>
+<p>Sandbox backends are probed at boot in order: local KVM -> local libkrun -> local gVisor -> remote fallback. If all options are unavailable, Tier 2 is disabled and untrusted tasks are safely quarantined.</p>
+
+<h3>9.2 Substrate compose file (<code>deploy/compose/substrate.compose.yml</code>)</h3>
+<pre><code>services:
+  neurostrata:   # image bakes neurostrata-mcp + pre-seeded model cache; HF_HUB_OFFLINE=1
+    volumes: [ns-data:/data]
+    mem_limit: 2g
+    expose: ["34343"]
+    networks: [aep-net]
+    # binds 0.0.0.0:34343 inside aep-net; no host port publish
+  aep-supervisor:
+    command: ["supervisor","--loop","--dispatch","--interval","2h"]
+    depends_on: [neurostrata]
+    volumes:
+      - aep-state:/state
+      - "${AEP_SOCKETS_DIR}:/run/aep"               # host bind, shared with lanes
+      - "${AEP_REPO}:${AEP_REPO}:rw"                # same absolute path for linked-worktree gitdir pointers
+      - "${AEP_WORKTREES_ROOT}:${AEP_WORKTREES_ROOT}:rw"
+      - "${DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock:rw" # container-runtime socket for sibling lane provisioning
+    environment:
+      AEP_REPO: "${AEP_REPO}"
+      AEP_WORKTREES_ROOT: "${AEP_WORKTREES_ROOT}"
+      AEP_SOCKETS_DIR: "${AEP_SOCKETS_DIR}"
+      DOCKER_HOST: "unix:///var/run/docker.sock"    # or CONTAINER_HOST for Podman rootless socket
+      NEUROSTRATA_ENDPOINT: "neurostrata:34343"
+      GIT_CONFIG_GLOBAL: /dev/null
+      GIT_CONFIG_SYSTEM: /dev/null
+      GIT_OPTIONAL_LOCKS: "0"
+    mem_limit: 512m
+    networks: [aep-net, aep-egress]
+volumes: { ns-data: {}, aep-state: {}, aep-sockets: {} }
+networks:
+  aep-net: { driver: bridge, internal: true }   # NeuroStrata only; no external route
+  aep-egress: { driver: bridge }                # ghg.py/GitHub egress for the supervisor only</code></pre>
+<p>The trusted supervisor joins <code>aep-egress</code> so <code>ghg.py</code> can reach GitHub; <code>aep-supervisor</code> keeps <code>aep-net</code> for NeuroStrata. <code>neurostrata</code> joins only <code>aep-net</code>, and lane containers join neither network (<code>--network none</code>). The two-network split keeps memory private while giving the GitHub relay an external route. The supervisor mounts the repository and worktrees at the <strong>same absolute host paths</strong>, so host-created linked-worktree <code>.git</code> pointers resolve inside the supervisor. <code>git.sock</code> writes objects/refs there with global/system config disabled and hooks host-controlled; lanes still see no usable <code>.git</code>. Relay sockets use a host bind directory (<code>${AEP_SOCKETS_DIR}</code>), not a named volume, so the supervisor and the lane bind mount share the same socket files. To provision, inspect, and stop sibling lane containers under <code>--dispatch</code> (§4.7 <code>internal/lane.Runtime</code>), the containerized supervisor mounts the host container-runtime socket (<code>${DOCKER_SOCKET:-/var/run/docker.sock}</code> or Podman's user socket) with <code>DOCKER_HOST</code> / <code>CONTAINER_HOST</code> configured. Sibling lane containers are launched on the same daemon and join neither network (<code>--network none</code>). In host-native mode outside Compose, the supervisor binary runs directly against the local engine CLI or socket.</p>
+<p>The substrate supervisor manages four IPC relays in <code>aep-sockets</code>: <code>memory.sock</code> (NeuroStrata), <code>ghg.sock</code> (GitHub), <code>exec.sock</code> (allowlisted command execution), and <code>git.sock</code> (host-side status/diff/commit). All four implement one <code>relay.Handler</code> contract with peer authentication, framing, size caps, and one audit record; they are not four ad-hoc protocols.</p>
+
+<h3>9.3 Lane container run spec</h3>
+<pre><code>docker run -d --name aep-lane-t1-7f3a9c \
+  --memory=2048m --memory-swap=2048m --cpus=1 \
+  --read-only --tmpfs /tmp:rw,size=256m \
+  --network none \                            # no direct network egress
+  -v "$AEP_SOCKETS_DIR/lanes/t1-7f3a9c:/run/aep:rw" \ # host bind shared with the supervisor, not a named volume
+  -v "&lt;worktree&gt;:/workspace:rw" \
+  -v "$AEP_STATE_DIR/empty-git-file:/workspace/.git:ro" \ # mask the linked-worktree gitdir pointer
+  --env AEP_EXEC_SOCKET=/run/aep/exec.sock \
+  --env AEP_GIT_SOCKET=/run/aep/git.sock \
+  --env-file &lt;scrubbed.env&gt; \                 # policy.ScrubEnv; no provider or GitHub tokens
+  aep:1.1 lane-exec --issue aep-142</code></pre>
+<div class="note"><strong>Zero-egress lane architecture.</strong>
+The trusted host harness runs the agent loop and all model inference. A lane is a tool executor: it runs argv-level allowlisted commands over <code>exec.sock</code>, commits over <code>git.sock</code>, and mounts no host <code>.git</code> directory (the linked-worktree <code>.git</code> file is masked). GitHub PATs, provider keys, and loopback ports never enter the container namespace. Dependency caches and package modules are pre-baked into the lane image or mounted via read-only volume cache. Lane output is untrusted tool data; the host harness never interpolates it into a system prompt.</div>
+
+<h2>10. Error handling and failure matrix</h2>
+<table>
+  <tr><th>Failure</th><th>Detection</th><th>Behaviour</th></tr>
+  <tr><td>NeuroStrata down at dispatch</td><td><code>memoryd.Status</code></td><td>Boot fails closed (exit 1). Supervisor in loop mode treats it as fatal and lets the service manager own retry cadence.</td></tr>
+  <tr><td>Tier-2 task when no usable backend</td><td><code>!profile.Tier2Supported()</code></td><td><code>quarantine</code>: labeled <code>blocked:unsupported-tier2-no-sandbox</code>. Never auto-downgraded to Tier 1.</td></tr>
+  <tr><td>Tier-2 task when backend exists but capacity is exhausted</td><td><code>profile.Tier2Admissible</code></td><td><code>quarantine</code>: labeled <code>blocked:tier2-capacity-exhausted</code>; do not wait forever.</td></tr>
+  <tr><td>Re-verification target cannot meet <code>MinIsolation</code></td><td><code>Requirement.MetBy</code></td><td><code>quarantine</code> before the original run; never execute then discover the mismatch.</td></tr>
+  <tr><td>Egress probe fails or unverified</td><td><code>VerifyEgressProbe</code></td><td><code>quarantine</code>: run evidence rejected; PR creation blocked; never merged.</td></tr>
+  <tr><td>Exec or git relay unavailable</td><td><code>ECONNREFUSED / EPIPE</code></td><td>Pause with bounded retry, then <code>blocked:exec-relay-unavailable</code> or <code>blocked:git-relay-unavailable</code>; never fall back to direct network or a host <code>.git</code> mount.</td></tr>
+  <tr><td>Relay socket communication error</td><td><code>ECONNREFUSED / EPIPE</code></td><td>Lane execution pauses; alerts supervisor; never falls back to direct network calls.</td></tr>
+  <tr><td>Launcher crashes mid-lane</td><td>fence free</td><td>Lane marked reapable only if the container is also gone; otherwise left running and reported.</td></tr>
+  <tr><td>Lane exceeds memory reservation</td><td>runtime OOM kill (exit 137)</td><td>Receipt records failure; issue stays open; reservation released; counts toward 3-strike stop.</td></tr>
+  <tr><td>Temporal/Cube lost mid-run</td><td><code>factory status</code></td><td>Do not retry-submit (workflow ID is idempotency key); mark manifest <code>failed</code> and quarantine.</td></tr>
+  <tr><td>Admission state corrupt</td><td>JSON parse error</td><td>Refuse to admit (exit 3), preserve file as <code>.corrupt-&lt;ts&gt;</code>, require operator <code>aep lane reap</code>.</td></tr>
+  <tr><td><code>policy.data</code> differs from <code>HEAD</code></td><td><code>VerifyAgainstHEAD</code></td><td>Boot FAIL; nothing starts.</td></tr>
+</table>
+
+<h2>11. Test plan</h2>
+<table>
+  <tr><th>Layer</th><th>What is tested</th><th>How</th></tr>
+  <tr><td>Unit</td><td><code>profile</code> validation & detection, <code>policy</code> scrub/hash, <code>admission</code> arithmetic, <code>gateway</code> relay verbs, <code>dispatch.Decide</code> table (every row of §7)</td><td>Table-driven Go tests with fakes for ledger, factory, memoryd, gateway, and memory probe.</td></tr>
+  <tr><td>Concurrency</td><td>Two <code>Admit</code> calls racing for the last slot; exactly one wins</td><td>Goroutines + a real <code>lock.FileLock</code> on a temp dir.</td></tr>
+  <tr><td>Fault injection</td><td>Corrupt admission file; stale fence; launcher killed; broken relay socket</td><td>Temp state dir; spawned helper process; assert no double admit, no premature reap.</td></tr>
+  <tr><td>Parity</td><td><code>aep boot</code> vs <code>boot-gate.sh</code> output tokens for the same stub environment</td><td>Reuse shell gate's stub-PATH technique; diff the <code>BOOT-GATE:</code> lines.</td></tr>
+  <tr><td>Integration (needs runtime)</td><td>Lane container respects <code>--memory</code>; IPC sockets functional with zero direct network</td><td>Runs where a container runtime exists; skipped elsewhere with printed reason.</td></tr>
+  <tr><td>Requirement matrix</td><td><code>NoFloor</code> admits Tier 1; unset fails closed; user-space floor rejects hardware-unattested; hardware floor rejects gVisor; exact kind passes</td><td>Table-driven <code>Requirement.MetBy</code> test, including an unknown risk class.</td></tr>
+  <tr><td>Relay boundaries</td><td><code>exec.sock</code> rejects shell interpolation and unlisted argv; <code>git.sock</code> commits on the host and rejects <code>.git/</code> paths; lane sees no usable <code>.git</code></td><td>Scratch repo + <code>git -C /workspace rev-parse</code> must fail; host log must show the commit.</td></tr>
+  <tr><td>Receipt integrity</td><td><code>Commands[].StdoutSha</code>/<code>StderrSha</code> hash every byte; nonce/ledger sequence reject replay; signature verifies</td><td>128 KiB stream with byte 0 changed; replay after ledger restart; wrong key.</td></tr>
+  <tr><td>Cross-platform</td><td>New packages compile for all four <code>dist/bin</code> targets</td><td>CI <code>GOOS/GOARCH</code> build matrix; runtime-dependent tests gated by build tag or env.</td></tr>
+</table>
+<p>Per repo practice (see <code>docs/field-learnings.md</code>), each new test must be shown to fail against a deliberate break of what it guards before it is accepted; a test that cannot fail is not evidence.</p>
+
+<h2>12. Implementation plan (PR-sized tasks)</h2>
+<p>Each task is a separate branch (<code>type/scope-short-description</code>), Conventional-Commit titles, one reviewable deliverable. Tasks T1–T5 need no container runtime and can land on any host.</p>
+<table>
+  <tr><th>ID</th><th>Task</th><th>Files</th><th>Acceptance</th></tr>
+  <tr><td><strong>T0 ✅ DONE 2026-11-09</strong></td><td>Feasibility spike: KVM / nested virt on macOS (Colima) — <strong>confirmed</strong></td><td>this doc §9.1 evidence note</td><td><code>/dev/kvm</code> exists in-VM with <code>--nested-virtualization</code> (M3 Max, Colima 0.10.3); QEMU <code>accel=kvm</code> accepted; Docker + Temporal run in-VM. Remaining: CubeSandbox-in-Colima + lane RSS measurement. <strong>T9 unblocked; T10 still needs CubeSandbox validation.</strong></td></tr>
+  <tr><td>T1</td><td><code>profile</code> package + <code>aep profile detect|show</code></td><td><code>internal/profile/*</code>, <code>cmd/aep</code></td><td>Validate rejects over-committed budgets; nano, small, medium, workstation presets load; KVM, libkrun, and gVisor backends detected.</td></tr>
+  <tr><td>T1b</td><td><code>gateway</code> package (<code>aep gwd</code> / ghg IPC relay)</td><td><code>internal/gateway/*</code>, <code>cmd/aep</code></td><td>Socket relay executes <code>ghg.py</code>; rate caps and poller coalescing verified without leaking PAT.</td></tr>
+  <tr><td>T2</td><td><code>policy</code> package; HEAD-blob verification</td><td><code>internal/policy/*</code></td><td>Matches <code>boot-gate.sh</code> behaviour incl. <code>POLICY-INACTIVE</code>; tamper test fails gate.</td></tr>
+  <tr><td>T3</td><td><code>memoryd</code> host relay client + <code>aep boot</code> full parity</td><td><code>internal/memoryd/*</code>, <code>cmd/aep</code></td><td>Parity test vs shell gate passes; socket relay forwards to <code>127.0.0.1:34343</code> in host mode or <code>neurostrata:34343</code> on <code>aep-net</code> in compose mode.</td></tr>
+  <tr><td>T4</td><td><code>admission</code> controller</td><td><code>internal/admission/*</code></td><td>Race test: one winner for last slot; budget, ceiling, and sandbox backend availability enforced.</td></tr>
+  <tr><td>T5</td><td><code>ledger</code> beads adapter + tier-tag rules</td><td><code>internal/ledger/*</code></td><td>Missing-tag policy enforced; <code>bd</code> JSON fixtures parsed.</td></tr>
+  <tr><td>T6</td><td><code>lane</code> manifest + fence + Go <code>claim/release/reap</code> (runtime driver behind interface, fake in tests)</td><td><code>internal/lane/*</code></td><td>Launcher-dead-but-container-alive is refused; socket mounts plumbed.</td></tr>
+  <tr><td>T7</td><td><code>dispatch</code> decision engine + <code>aep dispatch --dry-run</code></td><td><code>internal/dispatch/*</code></td><td>Every §7 row covered; quarantine-first on missing local sandbox; decision records written.</td></tr>
+  <tr><td>T8</td><td>Supervisor <code>--dispatch</code> opt-in</td><td><code>cmd/aep</code></td><td>Default behaviour byte-identical to today; new path behind the flag.</td></tr>
+  <tr><td>T9</td><td>Compose topology + substrate relays + lane image</td><td><code>deploy/compose/*</code>, <code>Containerfile</code></td><td>Substrate comes up; lane container enforces memory cap and communicates over sockets. <em>Needs runtime (T0).</em></td></tr>
+  <tr><td>T10</td><td><code>factory</code> client + sandbox adapters + egress probe verification + <code>boot --factory</code></td><td><code>internal/factory/*</code></td><td>Local backends (Cube/KVM, libkrun, gVisor) supported; open-egress config rejected; probe digest verified; quarantine path exercised; emergency remote fallback connector.</td></tr>
+  <tr><td>T11</td><td>Patch re-verification inside a fresh disposable sandbox meeting <code>MinIsolation</code>; <code>bd close</code> + NeuroStrata inscription</td><td><code>internal/factory</code>, <code>internal/dispatch</code></td><td>Untrusted patch re-verified in a fresh sandbox whose isolation meets the task <code>Requirement</code>; a gVisor-only host quarantines hardware-floor work before execution.</td></tr>
+</table>
+
+<h2>13. Open items carried from the HLD</h2>
+<ul>
+  <li>Local sandbox runtime availability across environments (T0) — determines whether Tier 2 runs locally via Cube/KVM, libkrun, or gVisor, or must quarantine (with remote cluster strictly as an emergency fallback of last resort).</li>
+  <li>NeuroStrata socket relay wire protocol vs CLI-only integration (§4.4).</li>
+  <li>Doc location: <code>docs/plan/</code> (this folder) vs the existing <code>docs/plans/</code>.</li>
+  <li>Independent adversarial review of this LLD before T9–T11.</li>
+</ul>
+
+<footer>AEP LLD v1.1 · updated with PR #133 review remediations and multi-hardware profiles on 2026-11-08 · as-built facts verified against <code>cmd/aep/main.go</code> in <code>develop</code>; everything marked <em>new</em> is unimplemented.</footer>
+</body>
+</html>

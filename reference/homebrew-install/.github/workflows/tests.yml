@@ -1,0 +1,186 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  tests:
+    strategy:
+      matrix:
+        os:
+          - macOS-latest
+          - ubuntu-latest
+          - windows-2025
+        include:
+          - os: macOS-latest
+            shell: bash
+          - os: ubuntu-latest
+            shell: bash
+          - os: windows-2025
+            shell: wsl -- dos2unix <"$(wslpath '{0}')" | bash --noprofile --norc -euo pipefail
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    steps:
+      - name: Set up Git repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Cleanup macOS
+        if: runner.os == 'macOS'
+        run: |
+          sudo rm -rf /Applications/Xcode.app \
+                      /Library/Developer/CommandLineTools
+          sudo xcode-select --reset
+
+      - name: Set up WSL
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          mkdir "$env:USERPROFILE\.cloud-init"
+          cp "$env:GITHUB_WORKSPACE\.github\wsl-init.yml" "$env:USERPROFILE\.cloud-init\Ubuntu-24.04.user-data"
+          wsl --install --distribution Ubuntu-24.04 --no-launch
+          wsl --set-default Ubuntu-24.04
+          wsl -- cloud-init status --wait
+          wsl --manage Ubuntu-24.04 --set-default-user runner
+          echo "WSLENV=CI:GITHUB_ACTIONS:RUNNER_OS:GITHUB_PATH/p" >> $env:GITHUB_ENV # allow some basic envs to be passed in
+
+      - name: Check Bash 3.x syntax
+        if: runner.os == 'macOS'
+        run: |
+          /bin/bash -u -n install.sh
+          /bin/bash -u -O extglob -n uninstall.sh
+
+      - name: Set up Homebrew PATH
+        run: |
+          if [[ "${RUNNER_OS}" = "macOS" ]]
+          then
+            echo "/opt/homebrew/bin:/usr/bin:/bin" >> "${GITHUB_PATH}"
+          elif [[ "${RUNNER_OS}" = "Windows" ]]
+          then
+            echo "$(wslpath -w /home/linuxbrew/.linuxbrew/bin)" >> "${GITHUB_PATH}"
+          else
+            echo "/home/linuxbrew/.linuxbrew/bin:/usr/bin:/bin" >> "${GITHUB_PATH}"
+          fi
+
+      - name: Test installation permissions
+        run: |
+          if [[ "${RUNNER_OS}" != "macOS" ]]
+          then
+            sudo apt-get update
+            sudo apt-get install --yes ruby ruby-minitest
+          fi
+          /usr/bin/ruby tests/test_install.rb
+
+      - name: Uninstall GitHub Actions Homebrew
+        run: |
+          if which brew &>/dev/null
+          then
+            /bin/bash uninstall.sh -n >/dev/null
+            /bin/bash uninstall.sh -f >/dev/null
+          fi
+
+      - run: /bin/bash -c "$(cat install.sh)"
+
+      - name: Check system PATH entry
+        if: runner.os == 'macOS'
+        run: |
+          [[ "$(stat -f '%Su:%Sg %Lp' /etc/paths.d/homebrew)" == "root:wheel 644" &&
+             "$(cat /etc/paths.d/homebrew)" == /opt/homebrew/bin ]] || exit 1
+
+      - run: brew config
+
+      - run: brew install ack
+
+      - run: /bin/bash uninstall.sh -f >/dev/null
+
+      - name: Install as a non-admin user into a provisioned prefix
+        run: |
+          if [[ "${RUNNER_OS}" = "macOS" ]]
+          then
+            sudo sysadminctl -addUser brewtest -password "$(uuidgen)" -shell /bin/bash
+          else
+            sudo useradd --create-home --user-group --shell /bin/bash brewtest
+          fi
+          if id -Gn brewtest | grep -Eq '(^| )(admin|sudo|wheel)( |$)'
+          then
+            echo "The test account must not be an administrator."
+            exit 1
+          fi
+          sudo install -d -o brewtest -g "$(id -gn brewtest)" -m 0755 /opt/brew
+          sudo -i -u brewtest /usr/bin/env HOMEBREW_NO_SUDO=1 NONINTERACTIVE=1 \
+            /bin/bash -s -- --path /opt/brew < install.sh
+          if [[ "${RUNNER_OS}" = "macOS" && "$(id -gn brewtest)" = staff ]]
+          then
+            test -z "$(find /opt/brew ! -type l \( -perm -0020 -o -perm -0002 \))"
+          fi
+          sudo -i -u brewtest /usr/bin/env HOMEBREW_NO_SUDO=1 /opt/brew/bin/brew config
+          sudo -i -u brewtest /usr/bin/env HOMEBREW_NO_SUDO=1 /opt/brew/bin/brew install --force-bottle ack
+          sudo -i -u brewtest /opt/brew/bin/ack --version
+          test -z "$(find /opt/brew ! -user brewtest -o ! -group "$(id -gn brewtest)")"
+          # These generated files survive removal of the Cellar.
+          sudo -i -u brewtest /bin/rm -f /opt/brew/lib/ld.so /opt/brew/share/info/dir
+          sudo /usr/bin/env NONINTERACTIVE=1 /bin/bash uninstall.sh --path /opt/brew
+
+      - name: Install into custom prefixes non-interactively
+        run: |
+          case "$(uname)" in
+            Darwin) prefix=/opt/homebrew ;;
+            *) prefix=/home/linuxbrew/.linuxbrew ;;
+          esac
+          printf -v prefix "/opt/%*s" "$((${#prefix} - 5))" ""
+          prefix="${prefix// /x}"
+          if NONINTERACTIVE=1 /bin/bash install.sh --path "${prefix}x" >install.log 2>&1
+          then
+            echo "An overlong prefix was accepted."
+            exit 1
+          fi
+          grep -q "longer than the default prefix" install.log
+          for prefix in "${prefix}" /opt/brew
+          do
+            NONINTERACTIVE=1 /bin/bash -c "$(cat install.sh)" -- --path "${prefix}" </dev/null
+            test "$("${prefix}/bin/brew" --prefix)" = "${prefix}"
+            "${prefix}/bin/brew" config
+            "${prefix}/bin/brew" install --force-bottle ack
+            "${prefix}/bin/ack" --version
+            # These generated files survive removal of the Cellar.
+            for residual in lib/ld.so share/info/dir
+            do
+              if [[ -e "${prefix}/${residual}" || -L "${prefix}/${residual}" ]]
+              then
+                ls -l "${prefix}/${residual}"
+                rm "${prefix}/${residual}"
+              fi
+            done
+            NONINTERACTIVE=1 /bin/bash uninstall.sh --path "${prefix}"
+          done
+
+      - run: /bin/bash -c "$(cat install.sh)"
+
+      - name: Uninstall and reinstall with sudo NOPASSWD
+        if: runner.os == 'Linux'
+        run: |
+          echo "${USER} ALL=(ALL) NOPASSWD:ALL" | sudo tee "/etc/sudoers.d/${USER}"
+          /bin/bash uninstall.sh -f >/dev/null
+          /bin/bash -c "$(cat install.sh)"
+
+      - name: Check code styles
+        run: |
+          brew install shellcheck shfmt diffutils
+          HOMEBREW_DEVELOPER=1 brew style *.sh
+
+      - run: /bin/bash uninstall.sh -n >/dev/null
+
+      - run: /bin/bash uninstall.sh -f >/dev/null

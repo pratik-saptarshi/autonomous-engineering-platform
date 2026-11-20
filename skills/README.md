@@ -15,7 +15,7 @@ The Source column names pratik-saptarshi forks (default branch `develop`) wherev
 ## Skills
 
 | Skill | Source | License | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | agent_operations | pratik-saptarshi/12-factor-agents | CC BY-SA 4.0 | |
 | aim | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | archify | pratik-saptarshi/archify | MIT | Vendored verbatim (25cf370); needs ARCHIFY_CHROME env for browser-check gate |
@@ -49,6 +49,8 @@ The Source column names pratik-saptarshi forks (default branch `develop`) wherev
 | neurostrata_memory | Distilled locally from NeuroStrata docs | MIT | Custom wiring: retrieval before / inscription after loop iterations |
 | overnight-parallel-lanes | Authored locally | MIT | Unattended parallel-run setup: isolated worktree per lane, parallel workers, independent reviewers, explicit stop conditions |
 | plan_review_integrator | pratik-saptarshi/opencode-rountable-review | MIT | |
+| plannotator-gate | Authored locally | MIT | Mechanical plan-approval gate over the pinned Plannotator tool: owner reviews and annotates plans, decision archive preserved; pattern in ops/tool-adoption/ |
+| plannotator-inbox | Authored locally | MIT | Asynchronous owner decision queue over the Plannotator Inbox: batched rulings routed back to the asking session; pattern in ops/tool-adoption/ |
 | prism | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | product-refinement-loop | Created locally | MIT | Distilled from 2026-10-18 profile-decisions refinement |
 | prototype | pratik-saptarshi/skills | MIT | |

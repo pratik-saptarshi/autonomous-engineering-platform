@@ -134,6 +134,7 @@ export const DEFAULT_CONFIG = {
     telemetryEnabled: true,
     readOnly: false,
     embeddingModel: "text-embedding-3-small",
+    directApi: false,
   },
   server: {
     name: "docs-mcp-server",
@@ -247,6 +248,7 @@ export const AppConfigSchema = z.object({
       telemetryEnabled: envBoolean.default(DEFAULT_CONFIG.app.telemetryEnabled),
       readOnly: envBoolean.default(DEFAULT_CONFIG.app.readOnly),
       embeddingModel: z.string().default(DEFAULT_CONFIG.app.embeddingModel),
+      directApi: envBoolean.default(DEFAULT_CONFIG.app.directApi),
     })
     .default(DEFAULT_CONFIG.app),
   server: z
@@ -560,6 +562,11 @@ const configMappings: ConfigMapping[] = [
     env: ["DOCS_MCP_EMBEDDING_MODEL"],
     cli: "embeddingModel",
   },
+  {
+    path: ["app", "directApi"],
+    env: ["DOCS_MCP_DIRECT_API", "DOCS_MCP_NO_API_KEY"],
+    cli: "directApi",
+  },
   { path: ["auth", "enabled"], env: ["DOCS_MCP_AUTH_ENABLED"], cli: "authEnabled" },
   {
     path: ["auth", "issuerUrl"],
@@ -664,8 +671,20 @@ export function loadConfig(
     deepMerge(envConfig, cliConfig),
   ) as ConfigObject;
 
+  const hasOpenAiProxyOrCredentials =
+    !!process.env.OPENAI_API_KEY ||
+    !!process.env.OPENAI_BASE_URL ||
+    !!process.env.OPENAI_API_BASE ||
+    process.env.DOCS_MCP_DIRECT_API === "true" ||
+    process.env.DOCS_MCP_DIRECT_API === "1" ||
+    process.env.DOCS_MCP_NO_API_KEY === "true" ||
+    process.env.DOCS_MCP_NO_API_KEY === "1" ||
+    process.env.OPENAI_NO_KEY === "true" ||
+    process.env.OPENAI_NO_KEY === "1" ||
+    Boolean(getAtPath(mergedInput, ["app", "directApi"]));
+
   // Special handling for embedding model fallback
-  if (!getAtPath(mergedInput, ["app", "embeddingModel"]) && process.env.OPENAI_API_KEY) {
+  if (!getAtPath(mergedInput, ["app", "embeddingModel"]) && hasOpenAiProxyOrCredentials) {
     setAtPath(mergedInput, ["app", "embeddingModel"], "text-embedding-3-small");
   }
 
@@ -713,9 +732,20 @@ export function loadConfig(
     defaults,
     deepMerge(envConfig, cliConfig),
   ) as ConfigObject;
+  const fallbackHasOpenAiProxyOrCredentials =
+    !!process.env.OPENAI_API_KEY ||
+    !!process.env.OPENAI_BASE_URL ||
+    !!process.env.OPENAI_API_BASE ||
+    process.env.DOCS_MCP_DIRECT_API === "true" ||
+    process.env.DOCS_MCP_DIRECT_API === "1" ||
+    process.env.DOCS_MCP_NO_API_KEY === "true" ||
+    process.env.DOCS_MCP_NO_API_KEY === "1" ||
+    process.env.OPENAI_NO_KEY === "true" ||
+    process.env.OPENAI_NO_KEY === "1" ||
+    Boolean(getAtPath(fallbackInput, ["app", "directApi"]));
   if (
     !getAtPath(fallbackInput, ["app", "embeddingModel"]) &&
-    process.env.OPENAI_API_KEY
+    fallbackHasOpenAiProxyOrCredentials
   ) {
     setAtPath(fallbackInput, ["app", "embeddingModel"], "text-embedding-3-small");
   }

@@ -1,0 +1,15 @@
+{
+  "name": "harness-profiler",
+  "version": "0.2.2",
+  "description": "Records every skill, agent, and tool call of a Claude Code session, and shows which calls share a context and what each one costs in tokens.",
+  "bin": { "harness-profiler": "plugin/libexec/hp.js" },
+  "files": ["plugin/", ".claude-plugin/", "README.md", "LICENSE"],
+  "engines": { "node": ">=18" },
+  "scripts": { "test": "node --test", "e2e:render": "node e2e/render.js --png" },
+  "devDependencies": { "playwright": "^1.63.0" },
+  "repository": { "type": "git", "url": "git+https://github.com/afurmanov/harness-profiler.git" },
+  "homepage": "https://github.com/afurmanov/harness-profiler",
+  "author": "Aleksandr Furmanov (https://afurmanov.com)",
+  "license": "MIT",
+  "keywords": ["claude-code", "codex", "hooks", "profiling", "agents"]
+}

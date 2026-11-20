@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AEP Agentic-Container OS — High-Level Design (v1.1)</title>
+<style>
+  @page { size: A4; margin: 16mm 14mm; }
+  :root { --ink:#0f172a; --muted:#475569; --line:#cbd5e1; --soft:#f1f5f9; --pri:#0369a1; --sec:#4f46e5; --ok:#047857; --warn:#b45309; --bad:#b91c1c; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: var(--ink); line-height: 1.5; font-size: 10.5pt; max-width: 980px; margin: 0 auto; padding: 24px; }
+  h1 { font-size: 22pt; margin: 0 0 4px; color: var(--pri); }
+  h2 { font-size: 14pt; margin: 26px 0 8px; padding-bottom: 4px; border-bottom: 2px solid var(--line); color: var(--sec); page-break-after: avoid; }
+  h3 { font-size: 11.5pt; margin: 16px 0 6px; page-break-after: avoid; }
+  p, li { margin: 0 0 6px; }
+  ul, ol { padding-left: 20px; margin: 0 0 8px; }
+  code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 9pt; background: var(--soft); padding: 1px 4px; border-radius: 3px; }
+  pre { background: var(--soft); border: 1px solid var(--line); border-radius: 4px; padding: 10px; overflow-x: auto; font-size: 8.5pt; page-break-inside: avoid; }
+  pre code { background: none; padding: 0; }
+  table { width: 100%; border-collapse: collapse; margin: 8px 0 12px; font-size: 9.5pt; page-break-inside: avoid; }
+  th, td { border: 1px solid var(--line); padding: 5px 8px; text-align: left; vertical-align: top; }
+  th { background: var(--soft); }
+  .meta { color: var(--muted); font-size: 9.5pt; margin-bottom: 14px; }
+  .tag { display: inline-block; font-size: 8pt; font-weight: 700; padding: 1px 7px; border-radius: 9px; border: 1px solid; text-transform: uppercase; letter-spacing: .04em; }
+  .built { color: var(--ok); border-color: var(--ok); }
+  .planned { color: var(--sec); border-color: var(--sec); }
+  .risk { color: var(--bad); border-color: var(--bad); }
+  .note { border-left: 4px solid var(--warn); background: #fffbeb; padding: 8px 12px; margin: 10px 0; page-break-inside: avoid; }
+  .note.info { border-color: var(--pri); background: #f0f9ff; }
+  .note strong:first-child { display: block; }
+  svg { max-width: 100%; height: auto; page-break-inside: avoid; }
+  footer { margin-top: 28px; padding-top: 8px; border-top: 1px solid var(--line); color: var(--muted); font-size: 8.5pt; }
+</style>
+</head>
+<body>
+
+<h1>AEP as the Agentic-Container OS</h1>
+<div class="meta">
+  <strong>High-Level Design (HLD) · v1.1</strong> · Status: Proposed · Branch: <code>docs/dual-lane-governance-proposal</code> · Companion: <code>aep-lld-v1.1.html</code><br>
+  Supersedes: v1 (dual-lane governance proposal, <code>docs/draft-proposal.html</code> v1)
+</div>
+
+<h2>1. Purpose and scope</h2>
+<p>This document consolidates the design decisions reached in the working discussion into one reference: how the Autonomous Engineering Platform (AEP) is built and deployed portably, and how it governs two kinds of autonomous execution — fast local <strong>ralph-loop</strong> lanes and sandboxed <strong>ESF</strong> (Engineering Software Factory) pipelines — on a shared set of core services.</p>
+<p>It is a design, not a record of finished work. Section 9 states exactly what exists in the repository today and what is still to be built; reading the rest of the document as "already implemented" would be wrong.</p>
+
+<h2>2. Decision log</h2>
+<table>
+  <tr><th>#</th><th>Decision</th><th>Rationale</th><th>Status</th></tr>
+  <tr><td>D1</td><td>Orchestration tier is a single Go binary, <code>aep</code>; NeuroStrata stays in Rust.</td><td>Static cross-compiled binaries need no Python on Windows/embedded hosts; <code>golang.org/x/sys</code> gives Job Objects, <code>flock</code>/<code>LockFileEx</code> and process groups. Python's one real edge (<code>ast</code>-based test classification in <code>mechanical_verify.py</code>) is narrow.</td><td><span class="tag built">Built (core)</span></td></tr>
+  <tr><td>D2</td><td>Artifact targets: <code>dist/bin/aep-{linux,darwin}-{amd64,arm64}</code>, <code>dist/vm/linux-{amd64,arm64}</code>, plus OCI image/context.</td><td>Covers Linux servers, the 8&nbsp;GB Muse ARM64 VM, Apple Silicon and Intel Macs, and any Docker/Podman host. Native Windows is explicitly out of the target list (WSL2 or container only).</td><td><span class="tag built">Built</span></td></tr>
+  <tr><td>D3</td><td>Two execution lanes: Tier 1 ralph-loop, Tier 2 ESF.</td><td>Local worktree lanes are fast but share the host kernel; ESF adds microVM isolation and durable workflows for untrusted or high-blast-radius work.</td><td><span class="tag planned">Planned</span></td></tr>
+  <tr><td>D4</td><td>AEP is the "container OS": five shared core services on the substrate; lanes are ephemeral containers above it.</td><td>One memory, one ledger, one rate limiter, one policy for every lane — no per-lane drift.</td><td><span class="tag planned">Planned</span></td></tr>
+  <tr><td>D5</td><td>Runtime is <strong>host-family dependent</strong>: on macOS, <em>one large shared Colima VM</em> (<code>vz</code> + <code>virtiofs</code>, sized 12 CPU / 48&nbsp;GB / 220&nbsp;GB) with Docker/Podman containers spawned on demand inside it; on Linux, Podman/Docker directly on host. Never one VM per lane in either family.</td><td>Container spawning is need-based and admission-bounded inside the single VM/host; per-lane VMs only where kernel-level (microVM) isolation is required, i.e. Tier 2 on <code>linux-native</code> with KVM.</td><td><span class="tag planned">Planned</span></td></tr>
+  <tr><td>D6</td><td><code>beads</code> is the single macro task ledger. The Superpowers SDD ledger (<code>.superpowers/sdd/&lt;plan&gt;/progress.md</code>) stays a per-plan micro ledger and does not replace it.</td><td>Different lifetimes and purposes: durable cross-session backlog vs. ephemeral compaction-recovery record.</td><td><span class="tag planned">Planned</span></td></tr>
+  <tr><td>D7</td><td>ESF workflow IDs are keyed to beads issue IDs (<code>esf-beads-&lt;ID&gt;</code>).</td><td>Prevents orphan factory runs and dual-backlog drift.</td><td><span class="tag planned">Planned</span></td></tr>
+  <tr><td>D8</td><td>Factory-tagged tasks degrade explicitly when Temporal/CubeSandbox are unreachable: quarantine by default. A downgrade to a fenced local lane requires the explicit authenticated <code>--override-tier1-risk-reassessment --reason="..."</code> path and a decision record with operator identity — never a silent or implicit downgrade.</td><td>Removes the load-bearing failure found in review: the loop stalling on infrastructure that does not exist on most hosts, without weakening the isolation boundary.</td><td><span class="tag planned">Planned</span></td></tr>
+  <tr><td>D9</td><td>Local-first pluggable Tier-2 sandbox fabric: CubeSandbox (Linux hosts with <code>/dev/kvm</code>), <code>libkrun</code> (macOS native Hypervisor/Virtualization.framework), and <code>gVisor</code> (<code>runsc</code> in <code>systrap</code> mode for KVM-free Linux/cloud). Remote sandbox clusters are strictly an emergency fallback of last resort if all local sandbox runtimes fail.</td><td>Breaks the hard dependency on Linux nested KVM: macOS runs native microVMs via <code>libkrun</code>, while KVM-free edge/cloud nodes isolate untrusted tasks via <code>gVisor</code> user-space kernel. <strong>Update 2026-11-09:</strong> nested KVM inside Colima is also <em>confirmed</em> (<code>--nested-virtualization</code> exposes <code>/dev/kvm</code> on M3 Max / Colima 0.10.3), so CubeSandbox-in-Colima is a valid macOS Tier-2 route alongside native <code>libkrun</code>.</td><td><span class="tag planned">Planned</span></td></tr>
+</table>
+
+<h2>3. Goals and non-goals</h2>
+<h3>Goals</h3>
+<ul>
+  <li>One-command install and run on Linux (x86_64 and ARM64), the Muse 8&nbsp;GB VM, and macOS (Intel and Apple Silicon).</li>
+  <li>Many parallel lanes under one governance plane with bounded, predictable resource use.</li>
+  <li>Deterministic verification decides success; an agent saying "done" never does.</li>
+  <li>Pluggable sandbox isolation for Tier 2: hardware microVMs via CubeSandbox/libkrun, or user-space kernel sandboxing via gVisor on KVM-free hosts.</li>
+  <li>Fail closed: no autonomous run starts if the environment is unfit.</li>
+</ul>
+<h3>Non-goals (v1.1)</h3>
+<ul>
+  <li>Native Windows binaries or service wrappers.</li>
+  <li>macOS guest VM images (macOS runs the native binary under <code>launchd</code>).</li>
+  <li>Replacing <code>beads</code> or NeuroStrata.</li>
+  <li>Modifying the vendored <code>reference/esf</code> tree (it changes only by re-vendoring).</li>
+</ul>
+
+<h2>4. System architecture</h2>
+<svg viewBox="0 0 900 520" role="img" aria-label="AEP architecture: host, Colima VM, substrate services, tier 1 and tier 2 lanes">
+  <rect x="5" y="5" width="890" height="510" rx="10" fill="#fff" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="20" y="28" font-size="13" font-weight="700" fill="#0f172a">Host (macOS arm64 / Linux)</text>
+  <text x="20" y="46" font-size="10.5" fill="#475569">T3 Code · Herdr · Orca · repo + git worktrees (bind-mounted via virtiofs)</text>
+
+  <rect x="20" y="60" width="860" height="445" rx="8" fill="#f8fafc" stroke="#4f46e5" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <text x="34" y="82" font-size="12.5" font-weight="700" fill="#4f46e5">Colima VM — 12 vCPU · 48 GB RAM · 220 GB disk (vz + virtiofs)</text>
+
+  <rect x="34" y="94" width="832" height="150" rx="8" fill="#ecfdf5" stroke="#047857" stroke-width="1.5"/>
+  <text x="48" y="116" font-size="12" font-weight="700" fill="#047857">AEP SUBSTRATE — core runtime services (Nano 2.5 GB to Workstation 8 GB)</text>
+  <rect x="48"  y="128" width="152" height="52" rx="6" fill="#fff" stroke="#047857"/><text x="124" y="150" text-anchor="middle" font-size="11" font-weight="700">NeuroStrata</text><text x="124" y="166" text-anchor="middle" font-size="9.5" fill="#475569">memory relay (socket/vsock)</text>
+  <rect x="210" y="128" width="152" height="52" rx="6" fill="#fff" stroke="#047857"/><text x="286" y="150" text-anchor="middle" font-size="11" font-weight="700">beads / backlog</text><text x="286" y="166" text-anchor="middle" font-size="9.5" fill="#475569">single task ledger</text>
+  <rect x="372" y="128" width="152" height="52" rx="6" fill="#fff" stroke="#047857"/><text x="448" y="150" text-anchor="middle" font-size="11" font-weight="700">ghg relay (aep gwd)</text><text x="448" y="166" text-anchor="middle" font-size="9.5" fill="#475569">capped GitHub proxy</text>
+  <rect x="534" y="128" width="152" height="52" rx="6" fill="#fff" stroke="#047857"/><text x="610" y="150" text-anchor="middle" font-size="11" font-weight="700">policy.data</text><text x="610" y="166" text-anchor="middle" font-size="9.5" fill="#475569">git-bound enforcement</text>
+  <rect x="696" y="128" width="158" height="52" rx="6" fill="#fff" stroke="#047857"/><text x="775" y="150" text-anchor="middle" font-size="11" font-weight="700">aep boot + supervisor</text><text x="775" y="166" text-anchor="middle" font-size="9.5" fill="#475569">preflight · profile · admission</text>
+  <text x="48" y="206" font-size="10" fill="#475569">Lanes reach substrate services via host supervisor relays (UNIX socket or vsock); no direct loopback or credential exposure.</text>
+  <text x="48" y="226" font-size="10" fill="#475569">Dispatch routes by beads tier tag; hardware profiles (Nano to Workstation) size admission budgets and KVM availability.</text>
+
+  <line x1="450" y1="244" x2="450" y2="268" stroke="#0f172a" stroke-width="1.5" marker-end="url(#a)"/>
+  <defs><marker id="a" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#0f172a"/></marker></defs>
+
+  <rect x="34" y="272" width="406" height="220" rx="8" fill="#f0f9ff" stroke="#0369a1" stroke-width="1.5"/>
+  <text x="48" y="294" font-size="12" font-weight="700" fill="#0369a1">TIER 1 — ralph-loop lanes</text>
+  <text x="48" y="314" font-size="10.5">1–2 lanes (Nano) up to 8–10 concurrent (Workstation) · ~1.5–2 GB each</text>
+  <text x="48" y="332" font-size="10.5">Fabric: OCI container + isolated git worktree</text>
+  <text x="48" y="350" font-size="10.5">Engine: plan → TDD → review → verify (SDD ledger inside)</text>
+  <text x="48" y="368" font-size="10.5">Gate: <tspan font-family="monospace">aep verify</tspan> (hash-chained receipts)</text>
+  <text x="48" y="386" font-size="10.5">Output: branch + verified PR; learnings → NeuroStrata relay</text>
+  <rect x="48" y="402" width="30" height="22" rx="3" fill="#bae6fd" stroke="#0369a1"/><rect x="84" y="402" width="30" height="22" rx="3" fill="#bae6fd" stroke="#0369a1"/><rect x="120" y="402" width="30" height="22" rx="3" fill="#bae6fd" stroke="#0369a1"/><rect x="156" y="402" width="30" height="22" rx="3" fill="#bae6fd" stroke="#0369a1"/><text x="200" y="418" font-size="11" fill="#0369a1">… lane containers</text>
+  <text x="48" y="448" font-size="9.5" fill="#475569">Risk: shares the host kernel; isolation is cgroup + worktree, not a hypervisor.</text>
+
+  <rect x="460" y="272" width="406" height="220" rx="8" fill="#eef2ff" stroke="#4f46e5" stroke-width="1.5"/>
+  <text x="474" y="294" font-size="12" font-weight="700" fill="#4f46e5">TIER 2 — ESF factory pipelines</text>
+  <text x="474" y="314" font-size="10.5">1 pipeline (Nano) up to 4–6 concurrent (Workstation) · ~4–6 GB each</text>
+  <text x="474" y="332" font-size="10.5">Fabric: Temporal + Local Sandbox (Cube/KVM, libkrun/vz, or gVisor)</text>
+  <text x="474" y="350" font-size="10.5">Host harness: model + orchestration; sandbox executes tools</text>
+  <text x="474" y="368" font-size="10.5">Gate: in-VM build.sh / test.sh + verified in-VM EgressProbe</text>
+  <text x="474" y="386" font-size="10.5">Output: patch + evidence → re-verified in a sandbox meeting MinIsolation</text>
+  <rect x="474" y="402" width="30" height="22" rx="3" fill="#c7d2fe" stroke="#4f46e5"/><rect x="510" y="402" width="30" height="22" rx="3" fill="#c7d2fe" stroke="#4f46e5"/><rect x="546" y="402" width="30" height="22" rx="3" fill="#c7d2fe" stroke="#4f46e5"/><text x="590" y="418" font-size="11" fill="#4f46e5">… pipelines</text>
+  <text x="474" y="448" font-size="9.5" fill="#047857">Local-first: microVM (KVM/vz) or user-space kernel (gVisor). Remote is last resort.</text>
+</svg>
+
+<h2>5. Components</h2>
+<h3>5.1 Core runtime services (substrate)</h3>
+<table>
+  <tr><th>Service</th><th>Responsibility</th><th>Key constraint</th></tr>
+  <tr><td>NeuroStrata</td><td>Hybrid vector + full-text memory (<code>ladybug.db</code>, nomic-embed-text-v1.5). Inscription and search via host-mediated socket relay (<code>aep memoryd</code>) or vsock outbox.</td><td>Host mode: loopback <code>127.0.0.1:34343</code> private to host. Compose mode: <code>neurostrata:34343</code> on the private <code>aep-net</code> network, with no host port published. Lanes connect only via the UNIX socket; embedding cache pre-seeded; <code>HF_HUB_OFFLINE=1</code>; DB backed up by change-detected watchdog.</td></tr>
+  <tr><td>beads / backlog</td><td>Single canonical task ledger; carries the tier tag and the foreign key used by ESF workflow IDs.</td><td>Telemetry off (<code>bd metrics off</code>); Dolt remote host allowlisted if egress is blocked.</td></tr>
+  <tr><td>ghg</td><td>Counted, coalescing GitHub gateway: served to lanes via <code>aep gwd</code> IPC relay; 3,500/5,000 core req/h self-cap, one poller per watched run.</td><td>Lanes communicate via client shim to relay socket; GitHub PAT credentials remain strictly on host.</td></tr>
+  <tr><td>policy.data</td><td>Env-variable scrub fragments, sensitive-path patterns, hardware profile; bound to the committed git blob.</td><td>Edits land via PR; boot refuses a policy that differs from <code>HEAD</code>.</td></tr>
+  <tr><td>aep boot / supervisor</td><td>Fail-closed preflight, dispatch, capacity admission, profile auto-detection.</td><td>Exit non-zero rather than start in a degraded state.</td></tr>
+</table>
+
+<h3>5.2 Execution lanes</h3>
+<table>
+  <tr><th></th><th>Tier 1 · ralph-loop</th><th>Tier 2 · ESF</th></tr>
+  <tr><td>Intended work</td><td>Features, fixes, refactors, tests, docs</td><td>Untrusted dependencies, CVE remediation, multi-repo or high-blast-radius change</td></tr>
+  <tr><td>Isolation</td><td>Container + git worktree + process group / Job Object</td><td>Pluggable local-first sandbox: Hardware microVM (CubeSandbox on Linux KVM, libkrun on macOS vz) OR User-space kernel (gVisor runsc systrap on KVM-free hosts) per run, destroyed on exit. Remote cluster is strictly an emergency last resort.</td></tr>
+  <tr><td>Model</td><td colspan="2">The trusted <strong>host harness</strong> runs the agent loop and all model inference <strong>outside the lane</strong>, and selects the model tier. A lane holds no provider credential and cannot originate a model request; lane output is untrusted tool data.</td></tr>
+  <tr><td>Orchestration</td><td>Scheduler tick (default 2 h), ≤6 iterations, 3-strike stop; host harness orchestrates, lane executes allowlisted argv over <code>exec.sock</code></td><td>Temporal durable workflow with replay-safe activities</td></tr>
+  <tr><td>Verification</td><td>Host harness runs <code>aep verify</code>; static checks only in Tier 1</td><td>Repo <code>build.sh</code>/<code>test.sh</code> in a fresh sandbox meeting the task <code>Requirement</code></td></tr>
+  <tr><td>Human gate</td><td>PR review; circuit breaker</td><td><code>factory review --approve/--reject</code></td></tr>
+</table>
+
+<h2>6. Scalable resource model (Nano 2vCPU / 8GB to Workstation 12vCPU / 48GB)</h2>
+<p>Profiles are two-axis — <strong>Host Family</strong> &times; <strong>Size Tier</strong>. Host families select the local sandbox engine: <code>linux-kvm</code> (CubeSandbox microVM via <code>/dev/kvm</code>), <code>mac-native-vz</code> (hardware microVM via <code>libkrun</code> / Apple <code>Virtualization.framework</code>), or <code>linux-gvisor</code> (user-space kernel via <code>runsc systrap</code> without KVM). Size tiers set admission budgets:</p>
+<table>
+  <tr><th>Profile</th><th>Target hardware</th><th>Allocation</th><th>Substrate</th><th>Tier 1 (Ralph)</th><th>Tier 2 (ESF Local Backend)</th><th>Isolation Mechanism</th></tr>
+  <tr><td><code>nano-8g</code></td><td>Intel N100, RPi 5, Cloud 2vCPU/8GB</td><td>2 vCPU · 8 GB · 30 GB</td><td>2560 MiB (2.5 GiB) · 10 GB</td><td>3584 MiB (3.5 GiB); 1 lane @ 2 GiB + 1.5 GiB headroom</td><td>1536 MiB (1.5 GiB); 1 lane via gVisor systrap</td><td>User-space kernel (no KVM needed)</td></tr>
+  <tr><td><code>small-16g</code></td><td>Intel Core i5, AMD Ryzen 5, Cloud 4vCPU/16GB</td><td>4 vCPU · 16 GB · 80 GB</td><td>1 vCPU · 3.5 GB · 15 GB</td><td>6.5 GB budget (2–3 lanes @ 2GB)</td><td>6.0 GB budget (1 pipeline @ 6GB)</td><td>Cube/KVM (Linux) or gVisor (Cloud)</td></tr>
+  <tr><td><code>medium-32g</code></td><td>Intel Core i7/i9, AMD Ryzen 7/9, Cloud 8vCPU/32GB</td><td>8 vCPU · 32 GB · 150 GB</td><td>2 vCPU · 4.5 GB · 25 GB</td><td>12.0 GB budget (4–6 lanes @ 2GB)</td><td>15.0 GB budget (2–3 pipelines @ 5GB)</td><td>Cube/KVM (Linux) or libkrun (macOS)</td></tr>
+  <tr><td><code>workstation-48g</code></td><td>Apple Silicon M3 Max / Linux Threadripper</td><td>12 vCPU · 48 GB · 220 GB</td><td>2 vCPU · 8.0 GB · 30 GB</td><td>16.0 GB budget (8–10 lanes; 10-lane preset uses 1536 MiB each)</td><td>24.0 GB budget (4–6 pipelines @ 4–6GB)</td><td>libkrun/vz (macOS) or Cube/KVM (Linux)</td></tr>
+</table>
+<div class="note"><strong>Nested-virtualization evidence (2026-11-09).</strong> <strong>Confirmed 2026-11-09</strong> on Apple M3 Max (macOS 27.2, Colima 0.10.3, <code>vz</code> + <code>virtiofs</code>): <code>colima start --nested-virtualization</code> exposes <code>/dev/kvm</code> inside the VM (and in <code>--privileged</code> containers); QEMU <code>accel=kvm</code> is accepted for a nested L2 guest; Docker 29.5.2 containers run in-VM; Temporal (sqlite dev server) serves UI on <code>:8233</code>. Without <code>--nested-virtualization</code>, <code>/dev/kvm</code> is absent — the flag is required. CubeSandbox itself was not installed/tested.</div>
+<div class="note"><strong>Local-first isolation hierarchy.</strong>
+AEP prioritizes on-node isolation: (1) native hardware microVMs via CubeSandbox/KVM on Linux or <code>libkrun</code>/<code>vz</code> on macOS; (2) user-space kernel isolation via <code>gVisor</code> (<code>runsc</code> in <code>systrap</code> mode) when hardware virtualization is absent (e.g. Intel N100 or non-metal Cloud VMs). Remote sandbox clusters are strictly an emergency fallback of last resort if all local sandbox runtimes fail.</div>
+
+<h2>7. Platform and artifact coverage</h2>
+<table>
+  <tr><th>Artifact</th><th>Covers</th><th>Does not cover</th></tr>
+  <tr><td><code>dist/bin/aep-linux-amd64</code></td><td>Linux x86_64 servers, cloud VMs, CI runners</td><td>32-bit x86; native Windows</td></tr>
+  <tr><td><code>dist/bin/aep-linux-arm64</code></td><td>Muse ARM64 VM, Graviton/Ampere, Raspberry Pi 4/5 (64-bit)</td><td>32-bit ARM</td></tr>
+  <tr><td><code>dist/bin/aep-darwin-arm64</code></td><td>Apple Silicon Macs</td><td>Intel Macs (Rosetta only)</td></tr>
+  <tr><td><code>dist/bin/aep-darwin-amd64</code></td><td>Intel Macs</td><td>—</td></tr>
+  <tr><td><code>dist/vm/linux-{amd64,arm64}</code></td><td>Cloud-init + systemd bundles with per-arch hardware profile</td><td>Non-systemd distros</td></tr>
+  <tr><td>OCI image / <code>dist/oci</code> context</td><td>Any Docker/Podman host; Kubernetes-style schedulers</td><td>Hosts with no container runtime</td></tr>
+</table>
+
+<h2>8. Dispatch and lifecycle</h2>
+<ol>
+  <li><strong>Intake.</strong> Work is a beads issue carrying a tier tag (<code>local</code> or <code>factory</code>) and acceptance criteria.</li>
+  <li><strong>Preflight.</strong> <code>aep boot</code> must pass: binaries, NeuroStrata answering, standing guards present, policy blob matches <code>HEAD</code>, memory floor and hardware profile met.</li>
+  <li><strong>Admission.</strong> Dispatcher reserves RAM/CPU for the lane against the active profile budget; if it cannot, the task waits (bounded) rather than oversubscribing.</li>
+  <li><strong>Execute.</strong> The trusted host harness runs plan/TDD/review/model inference. Tier 1: claim worktree, start the lane executor with <code>memory.sock</code>, <code>ghg.sock</code>, <code>exec.sock</code>, and <code>git.sock</code>; the lane runs allowlisted commands and commits through <code>git.sock</code> with no host <code>.git</code> mount. Tier 2: submit <code>factory run</code> with workflow ID <code>esf-beads-&lt;ID&gt;</code>; the sandbox executes tools, never the model loop.</li>
+  <li><strong>Verify.</strong> Both lanes emit signed receipts. For Tier-2 factory work containing untrusted code, independent patch re-verification runs in a fresh, disposable sandbox whose isolation meets the task <code>MinIsolation</code>, with closed egress—never directly on the shared Tier-1 host kernel. A host that cannot meet the floor quarantines before the original run.</li>
+  <li><strong>Close.</strong> PR merges, <code>bd close</code>, learnings inscribed to NeuroStrata via supervisor relay, lane and reservation released.</li>
+</ol>
+
+<h2>9. Governance invariants</h2>
+<ul>
+  <li>No lane starts unless <code>aep boot</code> passes (fail closed).</li>
+  <li>All GitHub traffic from lanes goes through <code>ghg</code> via the <code>aep gwd</code> IPC relay. Lane containers hold no GitHub credentials and cannot connect directly to api.github.com.</li>
+  <li><code>policy.data</code> must equal the committed blob; lanes run with credential-named env vars scrubbed.</li>
+  <li>ESF runs require <code>hardening.acknowledge_open_egress = false</code> (the upstream default), configured closed egress policies (<code>allow_internet = false</code>), and verified in-VM <code>EgressProbe</code> digest. Checking only the acknowledgement boolean is not network enforcement.</li>
+  <li>Tasks requiring Tier-2 isolation MUST NOT be downgraded silently to Tier 1 when Tier 2 / KVM is unavailable; they are strictly quarantined. Downgrade requires an explicit, authenticated operator risk reassessment override (<code>aep dispatch --override-tier1-risk-reassessment --reason="..."</code>), recorded in the decision record with the operator identity.</li>
+  <li>Tier-2 capability is derived from the resolved <code>Backend</code>, never from host family or <code>/dev/kvm</code> alone: <code>KVMProbe</code> selects the Cube/KVM candidate, while <code>Tier2Supported()</code> reports whether a usable backend exists. Capability and capacity are separate failure reasons.</li>
+  <li>Independent re-verification of Tier-2 patches MUST execute in a fresh disposable sandbox whose isolation meets the task <code>Requirement</code>. A gVisor-only host may re-verify gVisor-eligible work; it MUST quarantine hardware-floor work before the original run. Tier 1 performs static analysis only (syntax, diff, lint).</li>
+  <li>Model inference occurs in the trusted host harness, outside every lane. A lane has no provider credential and cannot originate a model request; lane output is untrusted tool data, never interpolated into a system prompt.</li>
+  <li>Model tiering is selected by the host harness: ralph work at <code>standard</code>/<code>measured</code>; <code>frontier</code>/<code>thorough</code> reserved for factory runs.</li>
+  <li>Receipts bind full-stream <code>StdoutSha</code>/<code>StderrSha</code>, <code>Nonce</code>, <code>IssuedAt</code>, <code>LedgerSeq</code>, and <code>KeyID</code>, and carry an Ed25519 <code>Signature</code>. A replayed nonce/sequence, altered output byte, wrong key, or missing signature fails verification.</li>
+  <li>Every lane uses <code>exec.sock</code> for allowlisted commands and <code>git.sock</code> for status/diff/commit. No host <code>.git</code> directory is mounted; the linked-worktree <code>.git</code> file is masked.</li>
+  <li>A task has exactly one ledger identity (the beads ID) across both lanes.</li>
+</ul>
+
+<h2>10. Implementation status (as of this document)</h2>
+<h3><span class="tag built">Built</span> in <code>develop</code></h3>
+<ul>
+  <li><code>cmd/aep</code> with <code>version</code>, <code>info</code>, <code>boot</code>, <code>verify</code>, <code>supervisor</code>, <code>lock-test</code>.</li>
+  <li><code>internal/platform/{memory,lock,process}</code> for Linux, macOS and Windows; <code>internal/verifier/runner</code> (allowlist discovery, 64 KiB tail-capped SHA-256 receipts, memory preflight, budgets). Full-stream receipt hashing and signing are <strong>planned in PR-11b</strong>, not yet built.</li>
+  <li><code>Makefile</code> targets <code>binaries</code>, <code>vm</code>, <code>oci</code>; <code>scripts/package-vm.sh</code>, <code>scripts/package-oci.sh</code>; <code>Containerfile</code>, <code>docker-compose.yml</code>.</li>
+  <li>Root CI runs <code>gofmt</code>, <code>go vet</code>, <code>go test</code>.</li>
+</ul>
+<h3><span class="tag planned">Not yet built</span></h3>
+<ul>
+  <li><code>aep boot</code> today checks only the memory floor and platform; the NeuroStrata/guard/gh-auth/policy checks still live in <code>scripts/boot-gate.sh</code>.</li>
+  <li><code>aep supervisor</code> today runs boot gate + one verification pass per tick; it does not dispatch lanes or ESF runs.</li>
+  <li>Lane coordination remains in <code>scripts/lane-coord.sh</code> (Linux <code>flock</code>); no Go lane manager, no admission control, no beads adapter, no dispatcher, no ESF client, no Colima profile or compose topology for the substrate.</li>
+  <li>The "unified verifier inside the CubeSandbox template" and NeuroStrata hooks in the ESF harness are design intent only.</li>
+</ul>
+
+<h2>11. Risks and open questions</h2>
+<table>
+  <tr><th>Risk / question</th><th>Why it matters</th><th>Cheapest check</th></tr>
+  <tr><td><span class="tag risk">Med</span> KVM inside Colima/VZ requires <code>--nested-virtualization</code> — <strong>confirmed 2026-11-09</strong>; CubeSandbox itself still unvalidated</td><td>CubeSandbox microVMs require Linux KVM. On macOS, KVM exists inside the Colima VM <em>only</em> with <code>--nested-virtualization</code> (confirmed: <code>/dev/kvm</code> present, QEMU <code>accel=kvm</code> accepted on M3 Max / Colima 0.10.3). Additional local-first backends remain: <code>libkrun</code> on macOS (native <code>vz</code>) and <code>gVisor</code> (<code>runsc systrap</code> on KVM-free Linux). Remote cluster is strictly an emergency last resort.</td><td><code>colima ssh -- ls -l /dev/kvm</code> in the VM; probe at <code>aep boot</code> and record <code>KVMProbe</code>. Derive <code>Tier2Supported()</code> from the resolved <code>Backend</code>, never from the KVM result alone. Next: validate CubeSandbox-in-Colima.</td></tr>
+  <tr><td><span class="tag risk">High</span> Model boundary and prompt injection</td><td>Hosted inference requires provider credentials. Putting a model relay inside a lane would turn zero network egress into a semantic exfiltration channel and expose provider keys to untrusted code.</td><td>Run model inference in the trusted host harness; lane output is untrusted tool data. Canary test: a lane cannot originate a provider request; <code>exec.sock</code> rejects shell interpolation. Verify no provider key exists in the lane env.</td></tr>
+  <tr><td><span class="tag risk">High</span> CubeSandbox and Temporal are external</td><td>ESF discovers an existing CubeSandbox; it never installs one. Neither exists on this host.</td><td><code>factory doctor</code> against the target environment.</td></tr>
+  <tr><td><span class="tag risk">Med</span> Lane footprints are unmeasured</td><td>Admission thresholds depend on real RSS of ralph and ESF lanes across hardware profiles.</td><td>Install Colima/Podman, run representative lanes, record peak RSS.</td></tr>
+  <tr><td><span class="tag risk">Med</span> Tier-1 isolation is container-only</td><td>Lane containers share one kernel; a hostile task in Tier 1 is not contained like Tier 2.</td><td>Keep untrusted work routed to Tier 2; enforce quarantine on fallback.</td></tr>
+  <tr><td><span class="tag risk">Med</span> Boot parity gap</td><td>Moving to <code>aep boot</code> without the daemon/guard/policy checks would silently weaken governance versus <code>boot-gate.sh</code>.</td><td>Port checks with tests before retiring the shell gate.</td></tr>
+  <tr><td><span class="tag risk">Low</span> Singular/plural docs path</td><td>This document lives in <code>docs/plan/</code>; the repo already has <code>docs/plans/</code> and <code>docs/superpowers/plans/</code>.</td><td>Decide on one location.</td></tr>
+</table>
+
+<h2>12. Review status & PR #133 review remediations</h2>
+<p>The v1.1 design incorporates the PR #133 review findings (C1–C12). C1 (probe-verified egress), C2 (no silent downgrade), and C3 (host-mediated memory/GitHub relays) are restored or verified at head. C4 and C5 are reopened and fixed in this revision: re-verification is gated by a task <code>Requirement</code> rather than an unconditional hardware microVM, and the nano preset is coherent at 2560 + 3584 + 1536 = 7680 MiB. C6–C12 are addressed by the checked admission predicate, host-harness model boundary, host-side <code>git.sock</code>, typed memory, and full-stream signed receipts. Supervisory relays share one <code>relay.Handler</code> contract.</p>
+
+<footer>AEP HLD v1.1 · updated with PR #133 review remediations and multi-hardware profiles on 2026-11-08 · see the LLD for interfaces, data formats, sequencing and task breakdown.</footer>
+</body>
+</html>

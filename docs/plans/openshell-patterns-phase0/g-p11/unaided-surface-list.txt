@@ -1,0 +1,27 @@
+G-P11 unaided authority-surface list — written from session knowledge BEFORE
+any mechanical extraction (2026-11-13), to test the completeness leg honestly.
+
+1. GitHub branch protection on AEP develop + main (required checks, 1 approving
+   review on develop, conversation resolution, enforce-admins settings)
+2. ghg gateway: DEFAULT_LIMITS caps + classify/mutating sets (tools/ghg/ghg.py),
+   budget ledger, GHG_ACTOR attribution; GHG_LIMITS_JSON env override
+3. scripts/policy.data — lane launch policy (sensitive paths, env scrub),
+   hash-bound at claim by lane-coord.sh and checked by boot-gate.sh
+4. scripts/boot-gate.sh — autonomous-run preflight (binaries, daemon, guards,
+   gh-auth, policy)
+5. .github/skills-sync-scope.txt + .github/skills-manifest.sha256 +
+   scripts/check_skills_manifest.py — which skills sync and their pinned content
+6. Per-skill governance: skills/*/SKILL.md (+ FORK.md fork markers);
+   AGENTS.md-wins precedence for skill conflicts
+7. Procedural standing rules: per-PR merge authorisation (owner's word);
+   deletion rule (explicit confirmation + 1h delay + reconfirmation);
+   AEP branch model (develop default, main by manual promotion only)
+8. Harness/runtime permission system (approval cards) — outside the repo
+9. .github/CODEOWNERS — review ownership
+10. .github/dependabot.yml — automated dependency PR surface
+11. Vendor manifests .github/vendor-*.sha256 + vendor-integrity CI — vendored
+    tree pins
+12. Repo AGENTS.md conventions (commit identity, Conventional Commits,
+    branch naming)
+13. NeuroStrata guard namespace — standing guard rules for memory (checked
+    by boot-gate)

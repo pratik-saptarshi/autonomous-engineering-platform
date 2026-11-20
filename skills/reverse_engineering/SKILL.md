@@ -20,7 +20,7 @@ Adapted from REA (Reverse Engineer Anything). Use this when a claim depends on a
 This table is shared with the `craft-anything-protocol` skill; the two copies are kept byte-identical so the surfaces cannot drift apart. Where the table routes to the protocol, that skill governs posture (Decision D5) and claim verification; the rest of this skill is the tool mechanics for the REA and Ghidra routes.
 
 | Question shape | Route | Why |
-|---|---|---|
+| --- | --- | --- |
 | JS / Electron app structure, module graph, evidence record | REA (`npx -y rea-agents@6.5.0`) | Already pinned, verified, and cheapest. Unchanged. (Applies whenever clean-room posture is not required — see the protocol row's disjoint predicate.) |
 | Native binary needing disassembly / decompilation / CFG, where inspection rights are established | Ghidra headless, behind the 2026-10-21 gating rule (cheapest-first ladder, heap-capped, bounded `-analysisTimeoutPerFile`) | Installed and verified. The gating rule stands; this protocol does not loosen it. Posture binds to tool: Ghidra on a target without an established inspection right is out-of-protocol (Decision D5). |
 | Clean-room posture is required (inspection rights not affirmatively established), or the deliverable is a recreation-oriented evidence record | Craft Anything protocol — Study-surface discipline + AEP-side claim-verification, executed with REA/Ghidra outputs as evidence sources under the posture the routing decision records | The protocol governs the shape of the work and the evidence. Its verification step is AEP-side claim-verification against the evidence records — not upstream's Check, which operates on Build artifacts and is not adopted. |

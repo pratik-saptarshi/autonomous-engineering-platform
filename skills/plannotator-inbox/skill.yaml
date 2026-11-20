@@ -1,0 +1,5 @@
+name: "plannotator-inbox"
+title: "Plannotator Inbox"
+description: "Batch agent decision questions to the owner through the locally pinned, hardened Plannotator Inbox and route the owner's answers back to the asking session. Use when several related rulings can be answered together without holding a lane open, especially the pilot ruling batch. The Inbox is an asynchronous decision queue, not a plan-approval gate and not a general substitute for explicit authorization."
+category: "Work and knowledge"
+include_in_prompt: false

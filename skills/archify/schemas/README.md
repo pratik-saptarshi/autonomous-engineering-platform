@@ -6,7 +6,7 @@ against one of the schemas in this folder before any layout work happens.
 ## Files
 
 | Schema | Governs | Structural arrays |
-|--------|---------|-------------------|
+| -------- | --------- | ------------------- |
 | `workflow.schema.json` | `diagram_type: "workflow"` | `lanes`, `phases`, `groups`, `mainPath`, `nodes`, `edges` |
 | `sequence.schema.json` | `diagram_type: "sequence"` | `participants`, `segments`, `messages`, `activations` |
 | `dataflow.schema.json` | `diagram_type: "dataflow"` | `stages`, `nodes`, `flows` |
@@ -93,7 +93,7 @@ strict validation.
 Supported keys are renderer-owned:
 
 | Renderer | `meta.legend.entries` keys |
-|---|---|
+| --- | --- |
 | Architecture | `frontend`, `backend`, `database`, `cloud`, `security`, `messagebus`, `external` |
 | Workflow | `frontend`, `backend`, `security`, `messagebus`, `database`, `cloud`, `external` |
 | Sequence | `emphasis`, `return`, `security`, `dashed`, `default` |

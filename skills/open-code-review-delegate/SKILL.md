@@ -31,6 +31,7 @@ ocr delegate preview --format json [--from <ref> --to <ref>] [--commit <hash>] [
 ```
 
 This outputs:
+
 - **mode** (workspace / range / commit)
 - **from / to / commit / merge_base** — ref metadata for constructing git commands
 - **Reviewable file list** — paths, status, insertions/deletions
@@ -39,7 +40,7 @@ This outputs:
 **Common invocations:**
 
 | Scenario | Command |
-|----------|---------|
+| ---------- | --------- |
 | Workspace changes | `ocr delegate preview` |
 | Branch comparison | `ocr delegate preview --from main --to feature` |
 | Single commit | `ocr delegate preview -c abc123` |
@@ -59,16 +60,19 @@ Choose the diff command using the mode and refs from Step 1. Use `git --no-pager
 The diff commands disable external diff programs, text conversion, and color to produce plain patches.
 
 **Range mode** (merge_base provided in preview output):
+
 ```bash
 git --no-pager diff --no-ext-diff --no-textconv --no-color <merge_base>..<to> -- "<path>"
 ```
 
 **Commit mode**:
+
 ```bash
 git --no-pager show --no-ext-diff --no-textconv --no-color <commit> -- "<path>"
 ```
 
 **Workspace mode**:
+
 ```bash
 # Tracked files
 git --no-pager diff --no-ext-diff --no-textconv --no-color HEAD -- "<path>"
@@ -110,7 +114,7 @@ For large changes, review in bounded batches grouped by shared rules and diff si
 Each comment must follow this structure:
 
 | Field | Type | Required | Description |
-|-------|------|----------|-------------|
+| ------- | ------ | ---------- | ------------- |
 | path | string | yes | Relative file path |
 | content | string | yes | Review comment describing the issue |
 | start_line | integer | no | Start line in the new file |
@@ -133,6 +137,7 @@ Discard likely false positives silently.
 ### Step 7: Fix (Optional)
 
 If the user requested "review and fix":
+
 - Apply High/Critical fixes directly
 - Describe Medium fixes that require manual intervention
 - Skip Low-priority items unless trivial
@@ -140,14 +145,14 @@ If the user requested "review and fix":
 ## Sub-commands Reference
 
 | Command | Purpose |
-|---------|---------|
+| --------- | --------- |
 | `ocr delegate preview` | Which files to review + mode/ref metadata |
 | `ocr delegate rule <path...>` | Review rules grouped by content |
 
 ## Shared Flags
 
 | Flag | Description |
-|------|-------------|
+| ------ | ------------- |
 | `--from <ref>` | Source ref for range mode |
 | `--to <ref>` | Target ref for range mode |
 | `-c, --commit <hash>` | Single commit mode |

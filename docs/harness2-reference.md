@@ -9,7 +9,7 @@ Vendored snapshot: [PROVENANCE.md](../reference/harness2/PROVENANCE.md) — upst
 ## Mapping to the AEP loop
 
 | Harness² | AEP (this environment) |
-|---|---|
+| --- | --- |
 | Propose–Probe–Compose task-level refinement | spike/prototype → verification gates before adoption |
 | improvement harness — persistent, evidence-supported lessons | NeuroStrata inscription at task close (primary-memory rule) |
 | benchmark suites (JobBench, Harvey LAB, WorkBuddy) as harness evidence | deterministic verification + review gates decide what ships |

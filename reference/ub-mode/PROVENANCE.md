@@ -2,9 +2,9 @@
 
 - **Source (fork):** https://github.com/pratik-saptarshi/ub-mode
 - **Upstream:** https://github.com/unclebob/ub-mode
-- **Pinned commit:** `57a8bdd28e45ed41900ace0bafa2ff76dd9ed70f` ("Remove crap4clj and clj-mutate references from README")
-- **Snapshot date:** 2026-10-27
-- **License:** NONE. The source tree carries no `LICENSE` file and grants no license — nothing in this tree is licensed for reuse, and the snapshot is held as reference data only. ub-mode's companion gate tools (`unclebob/crapper`, `unclebob/dryer`, `unclebob/mutator`) are separate repositories under their own 0BSD licenses; they are NOT part of this snapshot, and their licenses do not extend to this tree.
+- **Pinned commit:** `3da62bf3fcfd2034de41f30d920d2739e566171f` ("Add MIT license")
+- **Snapshot date:** 2026-11-19 (re-vendor; first snapshot 2026-10-27 at `57a8bdd`)
+- **License:** MIT (Copyright (c) 2026 Robert C. Martin). The new pin adds a `LICENSE` file at the tree root, preserved verbatim; the previous pin carried no license and this note has been corrected rather than left stale. Companion gate tools (`unclebob/crapper`, `unclebob/dryer`, `unclebob/mutator`) remain separate repositories under their own 0BSD licenses and are NOT part of this snapshot.
 - **Excluded from the vendor:** `.git` (history — the snapshot was produced with `git archive`).
 - **Purpose:** reference snapshot of Uncle Bob's ub-mode agent skill — a reduced set of engineering principles (First Make it Work, Then Make it Right, Follow Practice) whose "Make it Right" phase prescribes three deterministic quality gates: CRAP score per function under 10 (crapper), structural duplication at 0.8 similarity or above eliminated (dryer), and mutation-testing survivors killed (mutator). The skill itself is a thin orchestration layer — `README.md` + `SKILL.md` only — and its substance, the three gate tools, lives in the separate companion repositories named above, which are not vendored here. Studied, not executed from here, the same treatment as the other vendored trees.
 
@@ -17,3 +17,20 @@ Branch note: the fork's default branch is `develop`, while upstream's default is
 ## Secret-scan annotation (2026-10-27)
 
 Clean. A credential-pattern grep over the pinned tree matched nothing, and a gitleaks scan (v8.24.3, this repo's CI version and config) of the tree (~6.2 KB) reported no leaks. The tree is two Markdown files of engineering-practice prose; it contains no credential-shaped values. No `.gitleaks.toml` allowlist entries were needed for this tree.
+
+<!-- vendor-freshness: {"branch": "develop", "decision_date": "2026-11-19", "parent": "unclebob/ub-mode", "parent_branch": "master", "pin": "3da62bf3fcfd2034de41f30d920d2739e566171f", "policy": "repin", "repo": "pratik-saptarshi/ub-mode", "review_due": "2026-12-19", "tree": "ub-mode"} -->
+
+## Disposition (2026-11-19 re-vendor)
+
+- Fork `develop` == upstream `unclebob/ub-mode@master` at this pin. Three files: `README.md`, `SKILL.md`, `LICENSE`.
+- License note corrected to MIT per the new `LICENSE` file (the plan required reporting rather than leaving the old "License: NONE" note stale; correction is byte-grounded in the pinned tree).
+- No instruction surfaces beyond upstream `SKILL.md`; secret scan clean.
+
+## Freshness
+
+This file is the single source of truth for this tree's pin. The one-line `vendor-freshness` block above is machine-readable and is parsed by `scripts/vendor_graph.py` and `scripts/vendor_freshness.py`. Every re-vendor updates the block's `pin` in the same PR.
+
+- **Current state:** **repin** — re-vendored at the current fork head on 2026-11-19; next freshness review 2026-12-19.
+- **Owner:** the AEP maintainer (repository owner).
+- **SLA:** a weekly non-gating detector opens or updates one tracking issue within 7 days of detected drift; it never auto-syncs or auto-merges.
+- **Known out-of-scope drift for this lane:** `harness2` (2 behind upstream), `neurostrata` (170 behind, 604 ahead), and `craft-anything` (decision due) are reported by the detector, not fixed by the 2026-11-19 migration.

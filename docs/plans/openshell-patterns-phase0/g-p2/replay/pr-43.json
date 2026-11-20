@@ -1,0 +1,11 @@
+{
+ "base": "37f040636a10a7ee76a1b3a223a9ae69e143ef8f",
+ "head": "bcee15f",
+ "newly_allowed": [],
+ "newly_denied": [],
+ "notes": [
+  "ghg.py created (whole gateway is new; no prior power baseline)"
+ ],
+ "pr": 43,
+ "commit": "bcee15f"
+}

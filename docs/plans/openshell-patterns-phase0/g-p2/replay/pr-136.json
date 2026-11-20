@@ -1,0 +1,11 @@
+{
+ "base": "f3abbdfb0128f4f1d7650257333a3610dba8c65e",
+ "head": "c932258",
+ "newly_allowed": [],
+ "newly_denied": [],
+ "notes": [
+  "ghg.py changed but modelled power (caps + classification) unchanged"
+ ],
+ "pr": 136,
+ "commit": "c932258"
+}

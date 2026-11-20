@@ -1,0 +1,18 @@
+{
+ "base": "bedb90eacdd99d2b9f554f0ccbcb704d6de0abc7",
+ "head": "4e0bb62",
+ "newly_allowed": [
+  "skills scope: 'archify' enters sync scope -> newly allowed surface",
+  "skills scope: 'neurogenesis_teams' enters sync scope -> newly allowed surface",
+  "skills scope: 'ralph_loop' enters sync scope -> newly allowed surface",
+  "skills scope: 'recurring-workflows' enters sync scope -> newly allowed surface",
+  "skills scope: 'roundtable_review' enters sync scope -> newly allowed surface",
+  "skills scope: 'teach' enters sync scope -> newly allowed surface",
+  "skills scope: 'to-questionnaire' enters sync scope -> newly allowed surface",
+  "skills scope: 'writing-articles' enters sync scope -> newly allowed surface"
+ ],
+ "newly_denied": [],
+ "notes": [],
+ "pr": 141,
+ "commit": "4e0bb62"
+}

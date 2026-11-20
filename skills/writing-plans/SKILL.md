@@ -14,6 +14,7 @@ Write implementation plans for an engineer who has not seen this codebase or thi
 **Context:** If working in an isolated worktree, it should have been created via the `superpowers:using-git-worktrees` skill at execution time.
 
 **Save plans to:** `docs/superpowers/plans/YYYY-MM-DD-<feature-name>.md`
+
 - (User preferences for plan location override this default)
 
 ## Scope Check
@@ -43,6 +44,7 @@ independently testable deliverable.
 ## Step Granularity
 
 **Each step is one action with a checkable result:**
+
 - "Write the failing test" - step
 - "Run it to make sure it fails" - step
 - "Implement the minimal code to make the test pass" - step
@@ -198,7 +200,9 @@ them to review the plan and choose an execution method before implementation.
 **"Plan complete and saved to `docs/superpowers/plans/<filename>.md`. Please review the plan. Does it capture what you want?"**
 
 **If Subagent-driven chosen:**
+
 - **REQUIRED SUB-SKILL:** Use superpowers:subagent-driven-development
 
 **If Native chosen:**
+
 - **REQUIRED SUB-SKILL:** Use superpowers:executing-plans

@@ -28,7 +28,15 @@ vi.mock("env-paths", () => ({
 }));
 
 /** Environment variables without the DOCS_MCP_ prefix that loadConfig() reads. */
-const UNPREFIXED_ENV = ["PORT", "HOST", "DOCS_MCP_CONFIG", "OPENAI_API_KEY"];
+const UNPREFIXED_ENV = [
+  "PORT",
+  "HOST",
+  "DOCS_MCP_CONFIG",
+  "OPENAI_API_KEY",
+  "OPENAI_BASE_URL",
+  "OPENAI_API_BASE",
+  "OPENAI_NO_KEY",
+];
 
 let tmpDir: string;
 
@@ -637,6 +645,18 @@ describe("loadConfig", () => {
       expect(config.embeddings.vectorDimension).toBe(defaults.embeddings.vectorDimension);
       expect(isVectorDimensionExplicit(config)).toBe(true);
     });
+
+    it("falls back to text-embedding-3-small when direct API or proxy is configured without explicit model", () => {
+      vi.stubEnv("OPENAI_BASE_URL", "http://localhost:11434/v1");
+      const config = loadWithoutFile({ embeddingModel: "" });
+      expect(config.app.embeddingModel).toBe("text-embedding-3-small");
+    });
+
+    it("loads directApi from DOCS_MCP_DIRECT_API or DOCS_MCP_NO_API_KEY", () => {
+      vi.stubEnv("DOCS_MCP_DIRECT_API", "true");
+      const config = loadWithoutFile();
+      expect(config.app.directApi).toBe(true);
+    });
   });
 });
 
@@ -645,6 +665,7 @@ describe("config CLI helpers", () => {
     const keys = getConfigMappedCliKeys();
 
     expect(keys).toContain("authEnabled");
+    expect(keys).toContain("directApi");
     expect(keys).toContain("readOnly");
     expect(keys).toContain("protocol");
   });

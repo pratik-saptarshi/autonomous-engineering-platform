@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OpenShell Patterns — Adoption Plan for AEP</title>
+<style>
+  body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;max-width:880px;margin:2rem auto;padding:0 1.2rem;line-height:1.55;color:#1a1a2e;background:#fdfdfd}
+  h1{font-size:1.55rem;margin-bottom:.2rem} h2{font-size:1.2rem;margin-top:2rem;border-bottom:2px solid #4a6fa5;padding-bottom:.25rem}
+  h3{font-size:1.02rem;margin-top:1.3rem}
+  .meta{color:#666;font-size:.9rem}
+  table{border-collapse:collapse;width:100%;margin:.8rem 0;font-size:.92rem}
+  th,td{border:1px solid #c9d2e0;padding:.4rem .55rem;text-align:left;vertical-align:top}
+  th{background:#eef2f8}
+  .none{color:#b00020;font-weight:600}.on{color:#1e7d32;font-weight:600}.warn{color:#b26a00;font-weight:600}
+  .callout{background:#eef2f8;border-left:4px solid #4a6fa5;padding:.7rem 1rem;margin:1rem 0}
+  .risk{background:#fdeeee;border-left:4px solid #b00020;padding:.7rem 1rem;margin:1rem 0}
+  code{background:#eef2f8;padding:.1rem .3rem;border-radius:3px;font-size:.88em}
+  li{margin:.3rem 0}
+</style>
+</head>
+<body>
+<h1>OpenShell Patterns — Adoption Plan for AEP</h1>
+<p class="meta">AEP vendored repo maintenance lane · Author: Musebot-Astro · Date: 2026-11-13 · Status: <strong>plan from a completed adversarial panel — nothing in this document has been executed</strong><br>
+Basis: pattern inventory and four-lens panel record in <code>files/openshell-patterns/</code>. The OpenShell product itself remains DEFER per the companion evaluation; this plan concerns only its ideas, re-implemented minimally in AEP's own shape.</p>
+
+<h2>Executive takeaway</h2>
+<p>An adversarial panel — security, architecture, environment, and cost lenses, each attacking fit rather than summarising — tested twelve OpenShell patterns against AEP's architecture, its actual environments, and its existing mechanisms. Eight do not survive. Several are already present in AEP under other names: ESF's provider abstraction, the branch-and-PR lifecycle, the ghg ledger. Two are category errors for a fleet of agent sessions rather than containerised workloads. And the flagship mechanisms — the credential broker, the runtime supervisor, the egress fence — form a chain whose load-bearing link, a buildable network fence, does not exist in AEP's sandbox; adopting them there would manufacture polished governance records for a boundary that is not physically present. Four adaptations survive, all small, all one-shot tools, none requiring a resident process: a power-differ for policy-affecting pull requests, per-run scoped credentials inside ESF, wiring the already-built boot gate into every autonomous launch path, and a generated read-only index of AEP's federated authority surfaces. <strong>The plan's shape: a test-first battery (Phase 0, roughly a day and a half) gates four small builds across three further phases (an estimated 7–13 agent-days in total if every test passes), each phase independently valuable, each with a named kill condition.</strong></p>
+
+<h2>1. What the panel closed — and the only ways back in</h2>
+<p>These patterns are <strong>not</strong> in the plan. They are listed so their absence is a decision, not an omission. Re-examination happens only on the named trigger, through a fresh review — never by drift.</p>
+<table>
+<tr><th>Pattern</th><th>Disposition</th><th>Revisit trigger</th></tr>
+<tr><td>P1 Brokered credential injection</td><td class="none">Rejected. AEP has no broker to generalise (ghg is a pass-through shim; the credential never transits it), and a broker without an exclusive fence is a concentration target, not a control.</td><td>A credential census or incident names a second provider with repeated broad standing-credential use. Pre-shaped response: per-provider ghg-style shims, never a shared relay.</td></tr>
+<tr><td>P3 Agent proposes, gate disposes</td><td class="none">Rejected as a pattern — it is AEP's existing branch + PR + CI/Codex + human-merge lifecycle. Its one useful residue (a proposal template) is folded into Phase 1 at zero marginal cost.</td><td>None.</td></tr>
+<tr><td>P4 Deny-by-default egress fencing</td><td class="none">Rejected. Network-namespace creation is denied and host networking is forced in the current sandbox; for fleet sessions the pattern is also a category error. No declared-egress artefact may be produced until a fence can physically exist.</td><td>Evaluation trigger T3 (a runnable host/cluster target) <em>plus</em> the podman settling probe (cached image, <code>--network none</code> run, exec attempt) passing.</td></tr>
+<tr><td>P5 Supervisor-mediated governance</td><td class="none">Rejected. No AEP component occupies the supervisor's seat (parent of, and network owner of, the governed process — that seat is the harness's), and the gateway stack's estimated 200–500 MB resident footprint exceeds the VM's measured available memory.</td><td>None short of an architecture change owned outside this plan.</td></tr>
+<tr><td>P8 Caller identity from /proc</td><td class="none">Rejected on executed evidence: in this fleet the observed binary collapses to the interpreter (<code>python3.12</code>) for effectively all work. AEP's self-reported attribution (<code>GHG_ACTOR</code>) stays accounting, never authorisation.</td><td>None.</td></tr>
+<tr><td>P9 OCSF / OTel audit telemetry</td><td class="none">Rejected. It would be a fifth record system behind the ghg ledger, shipped OTel telemetry, ESF evidence, and git — re-encoding stronger records into a weaker stream, with no consumer.</td><td>A named external consumer requires OCSF. Admissible form then: a generated export view over existing records, never a streaming pipeline or a new store.</td></tr>
+<tr><td>P10 Driver abstraction</td><td class="none">Closed — already incumbent. ESF's <code>sandbox.Provider</code>/<code>Capabilities</code> implements this pattern today, more honestly than the import would.</td><td>None. No action.</td></tr>
+<tr><td>P12 Kernel confinement (Landlock/seccomp)</td><td class="none">Rejected on placement, not capability: the panel's probes verified Landlock (ABI v8) and seccomp user-notification are live in this VM — correcting an assumption in the companion evaluation — but confinement is self-applied and cannot reach the session or harness from code running inside them.</td><td>ESF gains a long-lived provider on a capable host (P12 lands as that provider's internal feature), or a first observed child-process incident (test: a one-week confined-worker trial).</td></tr>
+</table>
+<div class="callout"><strong>Standing constraints on every phase below</strong> (from the panel record): zero new resident processes or services; no artefact may describe a boundary AEP cannot build; the differ is never called "formally verified" and the index is never called a "ceiling" in AEP documents — both names promise guarantees the mechanisms do not provide.</div>
+
+<h2>2. Phase 0 — The test battery (gates everything; ≈1.5 agent-days total)</h2>
+<p>No building happens in Phase 0. Four cheap experiments, each with a pre-registered pass/kill criterion, decide whether the corresponding build exists at all. A killed item closes with a dated note in the panel record — that is a successful outcome of this phase, not a failure of the plan. One informational item rides along: a two-hour credential census (which providers' credentials agents actually use, at what scope), whose only consumer is the P1 watch trigger in §1.</p>
+<table>
+<tr><th>Gate</th><th>Experiment</th><th>Pass → build</th><th>Kill → close</th></tr>
+<tr><td><strong>G-P2</strong> (≈½ day)</td><td>Prototype power-differ replayed over the last 20 merged policy-affecting PRs, plus 3 seeded escalations (new credentialed host, new method on an allowed host, metadata-endpoint reach).</td><td>Catches all 3 seeds <em>and</em> at least 1 real delta human review missed.</td><td>Adds nothing beyond the text diff reviewers already read.</td></tr>
+<tr><td><strong>G-P7</strong> (≈½ day)</td><td>Post-run replay probe: take a credential used by a completed ESF run and attempt reuse after the run ends; inventory the last 10 ESF runs for credential scope and expiry.</td><td>Any finished-run credential still works, or any run received broader credentials than its harness needed.</td><td>Credentials already die with the run and are already minimal — the gap is theoretical.</td></tr>
+<tr><td><strong>G-P6</strong> (≈1 hour)</td><td>Launch-path census: enumerate every autonomous launch path (cron jobs, lane-coordinator claims, any other entry point that starts fleet work) and mark which invoke <code>boot-gate.sh</code>.</td><td>Any launch path does not invoke the gate.</td><td>Coverage is already 100% — P6 closes as fully incumbent at zero build cost.</td></tr>
+<tr><td><strong>G-P11</strong> (≈1 hour)</td><td>Time-to-answer test: hand-build a one-page authority-surface list; time five realistic questions ("which surface governs X, who owns it, how is it changed?") answered with and without it.</td><td>The page measurably cuts answer time or catches a surface the unaided answer missed.</td><td>The unaided answers are as fast and complete — the enumerability gap is theoretical.</td></tr>
+</table>
+<p><strong>Phase 0 is independently valuable:</strong> it converts four plausible investments into four verified decisions for ~1.5 days, and its census artefacts (launch paths, credential inventory) are durable AEP documentation in their own right.</p>
+
+<h2>3. Phase 1 — The power-differ (P2, adapted)</h2>
+<h3>What AEP builds</h3>
+<ul>
+<li>A <code>check_policy_delta.py</code> in the existing <code>scripts/</code> verifier family, alongside <code>mechanical_verify.py</code> — a batch tool, no daemon, no new language.</li>
+<li>Inputs are the policy-bearing artefacts AEP already diffs by eye: <code>policy.data</code>, ghg's cap/bucket tables, and skill manifests/frontmatter. One differ per artefact type, reporting into a single machine-generated PR comment: "Newly allowed: … / Newly denied: …".</li>
+<li>A CI check that fails closed until a human acknowledges the delta on the PR — acknowledgement is a recorded human act, never an approval substitute and never auto-satisfied by the tool itself.</li>
+<li>A standard proposal block for policy-affecting PR descriptions (newly allowed / why / expiry) — the surviving residue of P3, riding at zero marginal cost.</li>
+</ul>
+<h3>Entry gate and proof</h3>
+<p>Entry gate is <strong>G-P2</strong>. The build's own acceptance proof is the same replay, re-run against the finished tool in CI form: seeds caught, and the delta comment present and correct on a synthetic policy-affecting PR. Estimated build: 2–4 agent-days; carrying cost dominated by upkeep of the artefact-boundary definitions, inside the package ceiling in §6.</p>
+<h3>What AEP explicitly does not take from OpenShell</h3>
+<ul>
+<li>The claim and the name "formally verified." The differ computes a delta over a stated model of each artefact; it does not verify an implementation, reachability through allowed hosts, or data-level exfiltration over allowed methods — and its output must say what its model covers.</li>
+<li>A new policy language (YAML/Cedar) or a standalone prover product. AEP's policy stays where it lives; the differ adapts to the artefacts, not the reverse.</li>
+<li>Auto-approval semantics. In OpenShell the prover gates auto-approval; in AEP nothing auto-approves — the differ informs the human gate that already exists.</li>
+</ul>
+<p><strong>Phase 1 is independently valuable:</strong> it is the panel's one conceded capability gap, and if the plan stops here, AEP keeps the single highest-leverage artefact of the four.</p>
+
+<h2>4. Phase 2 — Execution-path gap closures (P7 and P6, adapted; independent of each other)</h2>
+<h3>4a. Per-run scoped credentials for ESF runs (P7)</h3>
+<ul>
+<li><strong>Builds:</strong> in ESF's harness credential path — credentials for a run are scoped to that run's needs, bound to the run as their generation, and expired at run end. Implementation reuses the shapes AEP already operates (ghg's lease/reservation machinery; ESF run create/destroy as the generation boundary). Estimated 3–6 agent-days, a few hundred lines, no new issuer service, no resident process.</li>
+<li><strong>Entry gate and proof:</strong> gate <strong>G-P7</strong>. Acceptance proof: the replay probe becomes a regression test — a credential from a finished run demonstrably fails, and an in-run credential demonstrably lacks scope beyond the run's harness needs.</li>
+<li><strong>Not taken:</strong> the gateway JWT pair architecture, supervisor-side token renewal, and any fleet-wide token infrastructure. GitHub is explicitly out of scope: ghg's posture (the agent never receives a token at all) is strictly stronger than short-lived tokens, and P7 must not be used to "harmonise" it downward.</li>
+</ul>
+<h3>4b. Boot-gate invocation wiring (P6)</h3>
+<ul>
+<li><strong>Builds:</strong> wiring only. Every autonomous launch path enumerated by the census invokes the existing <code>boot-gate.sh</code> before work starts; the census result is checked in as the coverage record, and a lightweight check keeps new launch paths from silently bypassing it. Estimated 1–3 agent-days, no new mechanism.</li>
+<li><strong>Entry gate and proof:</strong> gate <strong>G-P6</strong>. Acceptance proof: re-run the census against the wired tree — 100% invocation coverage, demonstrated path by path.</li>
+<li><strong>Not taken:</strong> the freeze/terminate half of the pattern, in full. There is no supervisor link to monitor, one-shot runs have nothing to freeze, and on this VM the likeliest freeze trigger would be routine memory-balloon pressure — the gate would terminate healthy work. Fail-closed applies at startup, where AEP can honour it, and nowhere it would be theatre.</li>
+</ul>
+<p><strong>Phase 2 is independently valuable:</strong> each half closes a gap the panel verified exists today (standing in-run credentials; a built gate with unproven invocation) using only mechanisms AEP already owns.</p>
+
+<h2>5. Phase 3 — The authority index (P11, adapted as a view)</h2>
+<h3>What AEP builds</h3>
+<ul>
+<li>A generator in the <code>check_*.py</code> family (~200 lines) that produces a read-only index page from the incumbent sources themselves: each authority surface (harness permissions, GitHub branch protection, ghg caps, <code>policy.data</code>, per-skill governance, procedural standing rules), its owner, its change path, and where it is enforced. Regenerated in CI; never hand-edited, so it cannot silently drift — when it is wrong, the generator is wrong in one fixable place.</li>
+<li>The page carries a standing header: <em>descriptive, not authoritative — the surfaces listed are the authority; this page is a map.</em></li>
+</ul>
+<h3>Entry gate and proof</h3>
+<p>Entry gate is <strong>G-P11</strong>. Acceptance proof: regenerate from a deliberately perturbed source (a renamed surface in a scratch copy) and show the index follows the source, not a stored copy. Estimated build: 1–3 agent-days; carrying cost ~zero by construction.</p>
+<h3>What AEP explicitly does not take from OpenShell</h3>
+<ul>
+<li>The ceiling itself: no consolidated policy store, no migration of any authority into a single document, no enforcement role for the index. AEP's authority stays deliberately federated — including the procedural rules (per-PR merge authorisation; the deletion rule's confirmation, one-hour delay, and reconfirmation) that do not survive translation into declarative predicates and are listed in the index <em>as</em> procedural, not rewritten.</li>
+<li>The word "ceiling," and any completeness claim. The index enumerates known surfaces to speed up audits; it does not assert that the enumeration is the whole of the fleet's power.</li>
+</ul>
+<p><strong>Phase 3 is independently valuable:</strong> it pays only at audit and onboarding moments, which is exactly the frequency its near-zero carrying cost is priced for.</p>
+
+<h2>6. Risks and controls</h2>
+<h3>R-A — The differ's output is trusted beyond its model</h3>
+<div class="risk">A machine-generated "newly allowed" list invites the same failure the panel identified in OpenShell's prover: reviewers downgrade their own scrutiny in proportion to a guarantee the tool does not provide. The differ is blind to reachability through allowed hosts, to exfiltration over allowed methods, and to cumulative creep across individually benign changes.</div>
+<ul>
+<li><strong>Control 1:</strong> Every delta comment carries its model scope in-line (which artefacts, which surfaces are <em>not</em> modelled), and the naming prohibition stands: the tool is a differ, never a verifier, in code, docs, and PR text.</li>
+<li><strong>Control 2:</strong> The differ also reports a trailing-window aggregate (power added across the last N policy-affecting merges), so salami-sliced escalation is visible as a sum, not only as benign individual deltas; the human acknowledgement requirement is not waivable by the tool.</li>
+</ul>
+<h3>R-B — ESF credential scoping breaks real runs</h3>
+<div class="risk">Per-run expiry and scoping touch the execution path: an over-tight scope or an expiry edge case (long runs, clock skew) can fail factory runs environmentally, in a VM where suites already fail below ~512 MB available memory and failure classification is costly.</div>
+<ul>
+<li><strong>Control 1:</strong> Roll out on one harness first, with the G-P7 replay probe wired as a pre/post regression pair; any run failure during rollout is classified baseline-first (pristine comparison) before it is attributed to the change.</li>
+<li><strong>Control 2:</strong> Scope is bound to run lifetime plus a stated grace window, and expiry events are logged as evidence in the run record — a credential dying mid-run must be diagnosable from the record, never a silent 401.</li>
+</ul>
+<h3>R-C — The index is mistaken for authority, or rots into shelfware</h3>
+<div class="risk">A tidy one-page map of "what the fleet can do" is exactly the kind of artefact that gets cited instead of the surfaces it maps — the completeness-theatre failure — or, at the other extreme, is generated once and never read.</div>
+<ul>
+<li><strong>Control 1:</strong> Generated-only, enforced mechanically: the page is a CI artefact with a regeneration check, carries the descriptive-not-authoritative header, and links every row to its living source rather than restating its contents.</li>
+<li><strong>Control 2:</strong> The G-P11 time-to-answer test is re-run at the first quarterly posture audit; if the index no longer measurably helps, it is deleted rather than maintained on momentum — the generator is small enough that deletion is cheap.</li>
+</ul>
+<h3>R-D — Scope creep back toward the platform</h3>
+<div class="risk">Each adaptation sits one rhetorical step from its rejected parent ("while we have a differ, why not a prover service?"; "while we scope ESF credentials, why not a broker?"). The rejected stack was priced by the panel at months of build, a resident footprint that does not fit this VM, and a perpetual dual-maintenance charge on owner attention — re-entering it piecemeal forfeits the panel's work.</div>
+<ul>
+<li><strong>Control 1:</strong> The standing constraints in §1 are plan-level gates, not guidance: any phase design that introduces a resident process, a new service, or an artefact describing an unbuildable boundary stops that phase automatically and returns to the owner as a new proposal.</li>
+<li><strong>Control 2:</strong> Re-entry to any rejected pattern happens only through its §1 named trigger plus a fresh panel — the triggers are the complete list; "we're already nearby" is not one of them.</li>
+</ul>
+<h3>R-E — The package's carrying cost quietly exceeds its budget</h3>
+<div class="risk">Four small tools are still four tools: boundary definitions drift, artefact formats change, and the weekly sweep inherits the attention cost — levied on the scarcest resource in the system, the owner's review time.</div>
+<ul>
+<li><strong>Control 1:</strong> A package ceiling of ~2 hours/month total carrying cost, observed at the weekly sweep; any component that exceeds its share twice running is a candidate for deletion, with deletion preferred over repair for the index and the wiring check.</li>
+<li><strong>Control 2:</strong> Every build lands as a single-purpose one-shot tool in an existing family (<code>scripts/</code> verifiers, <code>check_*.py</code>, ESF harness path) with its gate test checked in beside it — no component may introduce a new runtime, framework, or configuration surface of its own.</li>
+</ul>
+
+<h2>7. Stop conditions and sequencing summary</h2>
+<ul>
+<li><strong>Stop at any gate:</strong> a killed gate closes its pattern with a note; the plan continues with whatever survived. Zero surviving builds after Phase 0 is a valid, cheap endpoint (~1.5 days spent, four decisions verified).</li>
+<li><strong>Stop on physics:</strong> any design step that requires a resident process, a database, or memory headroom this VM does not have terminates that phase (see R-D Control 1).</li>
+<li><strong>Stop on attention:</strong> if the §6 R-E ceiling is breached by the package as built, the newest component is removed first — last in, first out — rather than letting the sweep absorb the growth.</li>
+<li><strong>Sequencing:</strong> Phase 0 → Phase 1 (differ) → Phase 2 (ESF credentials; boot-gate wiring — either order, independently) → Phase 3 (index). No phase depends on a later one; each phase's gate is re-checked at its start, not inherited from Phase 0 if time has passed.</li>
+</ul>
+
+<h2>Sources consulted</h2>
+<ul>
+<li>Pattern inventory: <code>files/openshell-patterns/pattern-inventory.md</code> — P1–P12 extracted from the OpenShell repository README, the NVIDIA OpenShell architecture documentation, and the CNCF Sandbox application.</li>
+<li>Panel record: <code>files/openshell-patterns/panel/verdict.md</code> with <code>review-1-security.md</code>, <code>review-2-architecture.md</code>, <code>review-3-environment.md</code> (including its executed environment probes), and <code>review-4-cost.md</code>.</li>
+<li>Companion evaluation: <code>files/2026-11-13-openshell-aep-evaluation.html</code> — product DEFER decision and revisit triggers T1–T4.</li>
+</ul>
+</body>
+</html>

@@ -53,6 +53,20 @@ describe("global options", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("enables direct API when --direct-api is passed", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "cli-direct-api-"));
+    const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      await createCli([]).parseAsync(["list", "--store-path", dir, "--direct-api"]);
+
+      const [options] = vi.mocked(openBackend).mock.calls.at(-1) ?? [];
+      expect(options?.appConfig.app.directApi).toBe(true);
+    } finally {
+      stdout.mockRestore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("resolveProtocol", () => {

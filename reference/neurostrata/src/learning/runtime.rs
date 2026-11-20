@@ -29,9 +29,8 @@ impl LearningRuntimeManager {
 
     /// Return the local training runtime configuration.
     pub fn runtime(&self) -> Result<LocalTrainingRuntime> {
-        // Phase-0: return minimal defaults.
-        use std::env;
-        let python = env::current_exe().ok()
+        let python = std::env::current_exe()
+            .ok()
             .and_then(|e| e.parent().map(|p| p.join("python")))
             .unwrap_or_else(|| PathBuf::from("python"));
         let laya_train = PathBuf::from("laya-train");

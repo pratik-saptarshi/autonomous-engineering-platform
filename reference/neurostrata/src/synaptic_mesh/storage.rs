@@ -35,7 +35,7 @@ impl MeshStorage {
     /// `base_root` is normally `~/.NeuroStrata/synaptic-mesh`; tests pass a
     /// scratch dir. `remote` only records the URL and configures `origin` —
     /// no network happens here.
-    pub fn init(
+    pub async fn init(
         base_root: &Path,
         node_id: &str,
         mesh_name: &str,
@@ -51,9 +51,9 @@ impl MeshStorage {
             )
         })?;
 
-        run_ok(&root, &["init"])?;
+        run_ok(&root, &["init"]).await?;
         if let Some(url) = remote {
-            run_ok(&root, &["remote", "add", "origin", url])?;
+            run_ok(&root, &["remote", "add", "origin", url]).await?;
         }
 
         let manifest = MeshManifest {
@@ -66,11 +66,20 @@ impl MeshStorage {
             namespaces: namespaces.to_vec(),
             policy: MeshPolicy::default(),
             remote: remote.map(str::to_string),
+            signers: Vec::new(),
         };
         write_manifest(&root, &manifest)?;
 
-        Ok(MeshStorage { root, manifest })
+        // AK-H1: the ignore rule goes in before the first `git add -A` so the
+        // private signing key can never enter history through the first
+        // commit.
+        let mesh = MeshStorage { root, manifest };
+        mesh.ensure_signing_key_ignored()?;
+        mesh.ensure_bundles_ignored()?;
+
+        Ok(mesh)
     }
+
 
     /// Open an EXISTING mesh checkout. Refuses any manifest whose
     /// `schema_version` is not `synaptic-mesh/v1`, naming the offending
@@ -110,7 +119,7 @@ impl MeshStorage {
         mesh_dir: &Path,
         remote: Option<&str>,
     ) -> Result<()> {
-        let path = pointer_path(project);
+        let path = Self::pointer_path(project);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).with_context(|| {
                 format!("pointer dir could not be created at {}", parent.display())
@@ -129,7 +138,7 @@ impl MeshStorage {
 
     /// Read the project pointer. `Ok(None)` when the project has no mesh.
     pub fn read_pointer(project: &Path) -> Result<Option<(Uuid, PathBuf, Option<String>)>> {
-        let path = pointer_path(project);
+        let path = Self::pointer_path(project);
         let text = match std::fs::read_to_string(&path) {
             Ok(text) => text,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -168,7 +177,7 @@ impl MeshStorage {
     /// `leave()`: drop the project's link to the mesh. Idempotent — a project
     /// with no pointer is already left.
     pub fn remove_pointer(project: &Path) -> Result<()> {
-        let path = pointer_path(project);
+        let path = Self::pointer_path(project);
         match std::fs::remove_file(&path) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -189,9 +198,11 @@ impl MeshStorage {
     /// Stage + commit everything in the mesh repo as `node_id`. Returns
     /// `Ok(false)` on a no-op (nothing changed) — an empty commit is a bug
     /// in the caller, never a fallback.
-    pub fn commit_all(&self, message: &str, node_id: &str) -> Result<bool> {
-        run_ok(&self.root, &["add", "-A"])?;
-        let staged = run(&self.root, &["status", "--porcelain"])?;
+    pub async fn commit_all(&self, message: &str, node_id: &str) -> Result<bool> {
+        self.ensure_signing_key_ignored()?;
+        self.ensure_bundles_ignored()?;
+        run_ok(&self.root, &["add", "-A"]).await?;
+        let staged = run(&self.root, &["status", "--porcelain"]).await?;
         if String::from_utf8_lossy(&staged.stdout).trim().is_empty() {
             return Ok(false);
         }
@@ -207,36 +218,37 @@ impl MeshStorage {
             "-m",
             message,
         ];
-        run_ok(&self.root, &args)?;
+        run_ok(&self.root, &args).await?;
         Ok(true)
     }
 
     /// `git fetch` + fast-forward merge from the configured remote. Err when
     /// no remote is set, or when history has genuinely diverged (operator
     /// resolves; never force-overwrite).
-    pub fn pull(&self) -> Result<()> {
+    pub async fn pull(&self) -> Result<()> {
         self.require_remote()?;
         // `origin HEAD` = the remote's default branch, written as the single
         // line of FETCH_HEAD (a bare `git fetch origin` lists every branch and
         // the first line is not necessarily the one to merge).
-        run_ok(&self.root, &["fetch", "origin", "HEAD"])?;
+        run_ok(&self.root, &["fetch", "origin", "HEAD"]).await?;
         // NOT bare `FETCH_HEAD`: git special-cases that literal name and skips
         // FETCH_HEAD lines marked `not-for-merge` (which is what a fetch that
         // also updated a remote-tracking ref writes), silently reporting
         // "Already up to date" without merging. `FETCH_HEAD^{commit}` peels to
         // the commit and bypasses the special case. --ff-only: divergent
         // history is an operator decision, never a silent merge commit.
-        run_ok(&self.root, &["merge", "--ff-only", "FETCH_HEAD^{commit}"])?;
+        run_ok(&self.root, &["merge", "--ff-only", "FETCH_HEAD^{commit}"]).await?;
         Ok(())
     }
 
     /// `git push` the current checkout to the configured remote. Err when no
     /// remote is set.
-    pub fn push(&self) -> Result<()> {
+    pub async fn push(&self) -> Result<()> {
         self.require_remote()?;
-        run_ok(&self.root, &["push", "origin", "HEAD"])?;
+        run_ok(&self.root, &["push", "origin", "HEAD"]).await?;
         Ok(())
     }
+
 
     fn require_remote(&self) -> Result<()> {
         match &self.manifest.remote {
@@ -247,10 +259,116 @@ impl MeshStorage {
             ),
         }
     }
-}
 
-fn pointer_path(project: &Path) -> PathBuf {
-    project.join(POINTER_DIR_NAME).join(POINTER_FILE_NAME)
+
+    /// Keep the local Ed25519 signing key out of the published history.
+    ///
+    /// The default key path is `<mesh_root>/.neurostrata-mesh/signing.key`
+    /// (see `worker.rs`) and [`commit_all`] stages with `git add -A`, so
+    /// without an explicit ignore rule `git add -A` would publish the
+    /// private key into the team-shared history on the very next commit.
+    /// Both patterns are enforced because a mesh may hand its key a
+    /// different physical name through `NEUROSTRATA_MESH_SIGNING_KEY`.
+    /// Idempotent: existing lines are never duplicated or rewritten.
+    fn ensure_signing_key_ignored(&self) -> Result<()> {
+        self.ensure_ignored_lines(&[".neurostrata-mesh/signing.key", "*.key"])
+    }
+
+    /// Keep drain bundles out of the published history.
+    ///
+    /// A drain's opt-in compressed bundle lands in `<mesh_root>/bundles/`
+    /// (see `worker.rs`) and is a local-only artifact: it is a lagging
+    /// duplicate replay source, never the drain's publication channel.
+    /// [`commit_all`] stages with `git add -A`, so without an explicit
+    /// ignore rule a written bundle would be staged by a later drain —
+    /// and, until then, it would trip the import dirty gate as an
+    /// untracked path. A tracked bundle would also be re-scanned on
+    /// every import pass. The rule is artifact-scoped
+    /// (`/bundles/*.bundle.zst`): `write_compressed_bundle` writes
+    /// exactly `<name>.bundle.zst` directly into `bundles/` — the
+    /// drain passes `drain-<millis>` as the name — via a plain
+    /// `std::fs::write`, with no staging file and no rename, so that
+    /// suffix is the whole artifact set in-flight and at rest (a
+    /// partial write still carries it). Only those files are ignored.
+    /// Namespaces are root-level directories
+    /// (`<root>/<namespace>/{memories,procedures}/<id>.json`; see
+    /// `record_path` in `worker.rs`), so a namespace literally named
+    /// `bundles` keeps its `memories/`/`procedures/` records stageable
+    /// and publishing normally — the previous directory-level rule
+    /// (`/bundles`) silently swallowed them: the drain marked them
+    /// committed while `commit_all`'s `git add -A` never staged them. The
+    /// trade: a stray non-artifact file placed directly in `bundles/`
+    /// — or at the `bundles` path itself, as a regular file or a
+    /// symlink — is no longer ignore-covered. It shows in
+    /// `git status --porcelain` and pauses the import dirty gate, but
+    /// only until the next committing drain: [`commit_all`] stages
+    /// with an unconditional `git add -A` and no drain-side gate
+    /// check, so that drain sweeps the stray into tracked,
+    /// peer-published mesh history (a file or symlink at `bundles`
+    /// is committed as `bundles`), after which porcelain is clean
+    /// again. Under the superseded directory-level rule the whole
+    /// `bundles` path was ignore-covered, so a stray stayed hidden
+    /// indefinitely. Idempotent: existing lines are never duplicated
+    /// or rewritten.
+    fn ensure_bundles_ignored(&self) -> Result<()> {
+        self.ensure_ignored_lines(&["/bundles/*.bundle.zst"])
+    }
+
+    /// Append any of `wanted` missing from the checkout's `.gitignore`.
+    ///
+    /// Shared body of the ignore-rule wrappers above: reads the file,
+    /// appends only the missing lines under a header naming the artifact
+    /// class being kept local, and never rewrites existing lines.
+    /// Idempotent.
+    fn ensure_ignored_lines(&self, wanted: &[&str]) -> Result<()> {
+        let path = self.root.join(".gitignore");
+        let existing = match std::fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(e) => {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    tracing::warn!("failed to read {}: {e}", path.display());
+                }
+                String::new()
+            }
+        };
+        let have: Vec<&str> = existing.lines().map(|l| l.trim()).collect();
+        let missing: Vec<&str> = wanted
+            .iter()
+            .copied()
+            .filter(|w| !have.contains(w))
+            .collect();
+        if missing.is_empty() {
+            return Ok(());
+        }
+        let mut text = existing;
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        // The header names the artifact class this call is keeping local;
+        // both rule sets share the "never publish" rationale.
+        if wanted.contains(&"/bundles/*.bundle.zst") {
+            text.push_str(
+                "# Drain bundles are local-only artifacts — never publish to the mesh history.\n",
+            );
+        } else {
+            text.push_str(
+                "# Private Ed25519 signing material — never publish to the mesh history.\n",
+            );
+        }
+        for entry in &missing {
+            text.push_str(entry);
+            text.push('\n');
+        }
+        std::fs::write(&path, text).with_context(|| {
+            format!(".gitignore could not be written to {}", path.display())
+        })?;
+        Ok(())
+    }
+
+    /// The project-side pointer path: `<project>/.NeuroStrata/synaptic-mesh-ref`.
+    pub(crate) fn pointer_path(project: &Path) -> PathBuf {
+        project.join(POINTER_DIR_NAME).join(POINTER_FILE_NAME)
+    }
 }
 
 fn write_manifest(root: &Path, manifest: &MeshManifest) -> Result<()> {
@@ -264,19 +382,59 @@ fn write_manifest(root: &Path, manifest: &MeshManifest) -> Result<()> {
     Ok(())
 }
 
-/// Run one git subcommand non-interactively (`GIT_TERMINAL_PROMPT=0`: a
-/// credential prompt would wedge the daemon) inside the mesh checkout.
-fn run(root: &Path, args: &[&str]) -> Result<std::process::Output> {
-    std::process::Command::new("git")
-        .args(args)
-        .current_dir(root)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output()
-        .with_context(|| format!("git {} could not be executed", args.join(" ")))
+/// DR-4's mesh git timeout: no single git subprocess runs longer than
+/// this. A mesh git call that hangs (unreachable remote, wedged transport)
+/// must die here, at the funnel — never wedge the async runtime, the drain
+/// loop, or a session-start pull.
+pub(crate) const GIT_COMMAND_TIMEOUT_SECS: u64 = 30;
+
+/// The effective git timeout: DR-4's 30 s, overridable via
+/// `NEUROSTRATA_GIT_TIMEOUT_SECS` (whole seconds, minimum 1; an unset,
+/// unparsable, or zero value falls back to the DR-4 default). Read per
+/// call — one env lookup next to a subprocess spawn is not a hot path, and
+/// per-call reading keeps the knob deterministic in tests.
+pub(crate) fn git_timeout() -> std::time::Duration {
+    let secs = std::env::var("NEUROSTRATA_GIT_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|&s| s >= 1)
+        .unwrap_or(GIT_COMMAND_TIMEOUT_SECS);
+    std::time::Duration::from_secs(secs)
 }
 
-fn run_ok(root: &Path, args: &[&str]) -> Result<std::process::Output> {
-    let out = run(root, args)?;
+/// Run one git subcommand non-interactively (`GIT_TERMINAL_PROMPT=0`: a
+/// credential prompt would wedge the daemon) inside the mesh checkout, as
+/// an async subprocess bounded by [`git_timeout`]. This funnel is the ONLY
+/// place production mesh git executes: every caller — storage methods,
+/// mesh_service probes, import plumbing — inherits the timeout from here.
+///
+/// Timeout semantics: when the timeout fires, the returned future is
+/// dropped and `kill_on_drop` kills the git child (SIGKILL on unix) and
+/// reaps it; the caller receives an error naming the subcommand and the
+/// timeout. A git operation killed mid-flight may leave the checkout's
+/// own lock files behind exactly as a crashed git would — recovery is the
+/// existing `mesh recover` surface, not a retry inside the funnel.
+pub(crate) async fn run(root: &Path, args: &[&str]) -> Result<std::process::Output> {
+    let timeout = git_timeout();
+    let mut cmd = tokio::process::Command::new("git");
+    cmd.args(args)
+        .current_dir(root)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .kill_on_drop(true);
+    match tokio::time::timeout(timeout, cmd.output()).await {
+        Ok(Ok(out)) => Ok(out),
+        Ok(Err(e)) => Err(e).with_context(|| format!("git {} could not be executed", args.join(" "))),
+        Err(_) => bail!(
+            "git {} timed out after {}s — process killed (mesh git timeout; \
+             override with NEUROSTRATA_GIT_TIMEOUT_SECS)",
+            args.join(" "),
+            timeout.as_secs()
+        ),
+    }
+}
+
+pub(crate) async fn run_ok(root: &Path, args: &[&str]) -> Result<std::process::Output> {
+    let out = run(root, args).await?;
     if out.status.success() {
         return Ok(out);
     }
@@ -286,6 +444,24 @@ fn run_ok(root: &Path, args: &[&str]) -> Result<std::process::Output> {
         out.status,
         String::from_utf8_lossy(&out.stderr).trim()
     )
+}
+
+/// Does the configured remote have refs yet? Three answers, not two:
+/// `Some(false)` = reachable but EMPTY (bare repo nobody pushed to — a
+/// normal "team inbox not yet filled" state); `Some(true)` = has refs;
+/// `None` = could not ask (unreachable/auth/timeout) — and an unreachable
+/// remote must fall through to the real fetch so the failure SURFACES, per
+/// the spec's fail-soft rule ("an unreachable remote reports the failure").
+/// The one shared probe: mesh_service and import both feed `pull()` from
+/// this answer, so it lives beside the funnel they share.
+pub(crate) async fn remote_refs_present(root: &Path) -> Option<bool> {
+    let out = run(root, &["ls-remote", "--refs", "origin", "HEAD"])
+        .await
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(!out.stdout.is_empty())
 }
 
 #[cfg(test)]
@@ -307,7 +483,7 @@ mod tests {
         dir
     }
 
-    fn init_under(base: &Path) -> MeshStorage {
+    async fn init_under(base: &Path) -> MeshStorage {
         MeshStorage::init(
             base,
             "node-abc123",
@@ -315,6 +491,7 @@ mod tests {
             &["stripe-api".to_string()],
             None,
         )
+        .await
         .unwrap()
     }
 
@@ -334,10 +511,10 @@ mod tests {
         String::from_utf8(out.stdout).unwrap().trim().to_string()
     }
 
-    #[test]
-    fn init_creates_dir_repo_and_manifest() {
+    #[tokio::test]
+    async fn init_creates_dir_repo_and_manifest() {
         let base = scratch("init");
-        let mesh = init_under(&base);
+        let mesh = init_under(&base).await;
 
         let root = mesh.root();
         assert!(root.is_dir(), "mesh dir must exist at {}", root.display());
@@ -365,10 +542,11 @@ mod tests {
         assert_eq!(parsed.get_version(), Some(uuid::Version::Random));
     }
 
-    #[test]
-    fn manifest_round_trips_to_disk() {
+
+    #[tokio::test]
+    async fn manifest_round_trips_to_disk() {
         let base = scratch("roundtrip");
-        let mesh = init_under(&base);
+        let mesh = init_under(&base).await;
         let original = mesh.manifest().clone();
 
         let reopened = MeshStorage::open(mesh.root()).expect("open freshly inited mesh");
@@ -376,10 +554,11 @@ mod tests {
         assert_eq!(reopened.root(), mesh.root());
     }
 
-    #[test]
-    fn open_refuses_unknown_schema_version() {
+
+    #[tokio::test]
+    async fn open_refuses_unknown_schema_version() {
         let base = scratch("schema-mismatch");
-        let mesh = init_under(&base);
+        let mesh = init_under(&base).await;
         let path = mesh.root().join(MANIFEST_FILE_NAME);
 
         let mut doc: serde_json::Value =
@@ -395,6 +574,7 @@ mod tests {
             "error must name the offending version, got: {err}"
         );
     }
+
 
     #[test]
     fn pointer_round_trips() {
@@ -428,10 +608,10 @@ mod tests {
         MeshStorage::remove_pointer(&project).unwrap();
     }
 
-    #[test]
-    fn commit_all_records_a_commit_and_author() {
+    #[tokio::test]
+    async fn commit_all_records_a_commit_and_author() {
         let base = scratch("commit");
-        let mesh = init_under(&base);
+        let mesh = init_under(&base).await;
 
         // The slice-3 mesh-worker's shape: one file per record.
         let memories = mesh.root().join("stripe-api").join("memories");
@@ -440,6 +620,7 @@ mod tests {
 
         assert!(
             mesh.commit_all("mesh slice 2a: first record", "node-author-1")
+                .await
                 .unwrap(),
             "a dirty tree must commit"
         );
@@ -450,13 +631,16 @@ mod tests {
         assert_eq!(git_out(mesh.root(), &["rev-list", "--count", "HEAD"]), "1");
 
         assert!(
-            !mesh.commit_all("nothing changed", "node-author-1").unwrap(),
+            !mesh.commit_all("nothing changed", "node-author-1")
+                .await
+                .unwrap(),
             "a clean tree is Ok(false), never an empty commit"
         );
     }
 
-    #[test]
-    fn push_and_pull_between_two_checkouts() {
+
+    #[tokio::test]
+    async fn push_and_pull_between_two_checkouts() {
         let base = scratch("sync");
         let remote = base.join("remote.git");
         let out = Command::new("git")
@@ -478,9 +662,10 @@ mod tests {
             &["stripe-api".to_string()],
             Some(remote.to_str().unwrap()),
         )
+        .await
         .unwrap();
-        assert!(a.commit_all("bootstrap", "node-a").unwrap());
-        a.push().unwrap();
+        assert!(a.commit_all("bootstrap", "node-a").await.unwrap());
+        a.push().await.unwrap();
 
         // Point the bare repo's HEAD at the branch A actually pushed, so the
         // clone checks it out (git init's default HEAD may not match).
@@ -520,11 +705,11 @@ mod tests {
         let memories = b.root().join("stripe-api").join("memories");
         std::fs::create_dir_all(&memories).unwrap();
         std::fs::write(memories.join("m2.json"), r#"{"id":"m2"}"#).unwrap();
-        assert!(b.commit_all("node-b record", "node-b").unwrap());
-        b.push().unwrap();
+        assert!(b.commit_all("node-b record", "node-b").await.unwrap());
+        b.push().await.unwrap();
         assert_eq!(git_out(b.root(), &["log", "--format=%an", "-1"]), "node-b");
 
-        a.pull().unwrap();
+        a.pull().await.unwrap();
         assert!(
             a.root()
                 .join("stripe-api")
@@ -535,21 +720,383 @@ mod tests {
         );
     }
 
-    #[test]
-    fn push_without_remote_errors() {
+
+    #[tokio::test]
+    async fn push_without_remote_errors() {
         let base = scratch("no-remote");
-        let mesh = init_under(&base);
+        let mesh = init_under(&base).await;
         assert!(mesh.manifest().remote.is_none());
 
-        let pull_err = mesh.pull().expect_err("pull with no remote must error");
+        let pull_err = mesh.pull().await.expect_err("pull with no remote must error");
         assert!(
             pull_err.to_string().contains("no remote"),
             "got: {pull_err}"
         );
-        let push_err = mesh.push().expect_err("push with no remote must error");
+        let push_err = mesh.push().await.expect_err("push with no remote must error");
         assert!(
             push_err.to_string().contains("no remote"),
             "got: {push_err}"
+        );
+    }
+
+
+    // --- Task 13 (J12, DR-4): the git funnel is timed ---------------------
+
+    /// Restores PATH + the timeout env knob on drop, so a panicking hang
+    /// test can never leak the shim into the rest of the suite.
+    #[cfg(unix)]
+    struct EnvGuard {
+        path: Option<std::ffi::OsString>,
+        timeout: Option<std::ffi::OsString>,
+    }
+
+    #[cfg(unix)]
+    impl EnvGuard {
+        fn install(shim_dir: &Path) -> Self {
+            let guard = Self {
+                path: std::env::var_os("PATH"),
+                timeout: std::env::var_os("NEUROSTRATA_GIT_TIMEOUT_SECS"),
+            };
+            let mut paths: Vec<PathBuf> = guard
+                .path
+                .as_ref()
+                .map(|p| std::env::split_paths(p).collect())
+                .unwrap_or_default();
+            paths.insert(0, shim_dir.to_path_buf());
+            std::env::set_var("PATH", std::env::join_paths(paths).unwrap());
+            std::env::set_var("NEUROSTRATA_GIT_TIMEOUT_SECS", "1");
+            guard
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.path {
+                Some(p) => std::env::set_var("PATH", p),
+                None => std::env::remove_var("PATH"),
+            }
+            match &self.timeout {
+                Some(t) => std::env::set_var("NEUROSTRATA_GIT_TIMEOUT_SECS", t),
+                None => std::env::remove_var("NEUROSTRATA_GIT_TIMEOUT_SECS"),
+            }
+        }
+    }
+
+    /// A `git` that hangs must be cut off at the DR-4 timeout (here 1 s via
+    /// the env knob): `run` errors naming the subcommand + the timeout, in
+    /// ~1 s rather than the shim's 60 s, and the shim process is gone —
+    /// killed, not abandoned.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn git_hang_times_out_and_kills() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let shim_dir = scratch("git-shim");
+        let shim = shim_dir.join("git");
+        std::fs::write(
+            &shim,
+            "#!/bin/sh\necho $$ > \"$PWD/git-shim.pid\"\nexec sleep 60\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let root = scratch("hang-root");
+        let _env = EnvGuard::install(&shim_dir);
+
+        let start = std::time::Instant::now();
+        let res = run(&root, &["fetch", "origin", "HEAD"]).await;
+        let elapsed = start.elapsed();
+
+        let err = res.expect_err("a hung git must error at the timeout, not run to completion");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("fetch"),
+            "timeout error must name the subcommand, got: {msg}"
+        );
+        assert!(
+            msg.contains("timed out") || msg.contains("timeout"),
+            "error must name the timeout, got: {msg}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(20),
+            "the funnel must cut the hang at ~1 s (env override), took {elapsed:?}"
+        );
+
+        let pid: i32 = std::fs::read_to_string(root.join("git-shim.pid"))
+            .expect("the shim ran and recorded its pid")
+            .trim()
+            .parse()
+            .expect("shim pid parses");
+        if cfg!(target_os = "linux") {
+            // Killed means SIGKILL delivered: the pid is either reaped and
+            // gone or a zombie awaiting the runtime's reaper (tokio reaps
+            // orphans asynchronously, so poll briefly for either state).
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let killed = loop {
+                match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+                    Err(_) => break true,
+                    Ok(stat) => {
+                        let state = stat
+                            .rsplit(')')
+                            .next()
+                            .map(|rest| rest.trim_start())
+                            .unwrap_or("");
+                        if state.starts_with('Z') {
+                            break true;
+                        }
+                        if std::time::Instant::now() >= deadline {
+                            break false;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
+                }
+            };
+            assert!(
+                killed,
+                "the timed-out git process (pid {pid}) must be killed, not left running"
+            );
+        }
+    }
+
+    /// Pin: the success path is unchanged — init/commit/push/pull round-trip
+    /// against a real bare remote moves the record exactly as before.
+    #[tokio::test]
+    async fn git_success_path_unchanged() {
+        let base = scratch("pin-sync");
+        let remote = base.join("remote.git");
+        let out = Command::new("git")
+            .args(["init", "--bare"])
+            .arg(&remote)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let a_dir = base.join("checkout-a");
+        let a = MeshStorage::init(
+            &a_dir,
+            "node-a",
+            "stripe-api-team",
+            &["stripe-api".to_string()],
+            Some(remote.to_str().unwrap()),
+        )
+        .await
+        .unwrap();
+        assert!(a.commit_all("bootstrap", "node-a").await.unwrap());
+        a.push().await.unwrap();
+
+        let branch = git_out(a.root(), &["branch", "--show-current"]);
+        let out = Command::new("git")
+            .args(["--git-dir"])
+            .arg(&remote)
+            .args([
+                "symbolic-ref",
+                "HEAD",
+                format!("refs/heads/{}", branch).as_str(),
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let b_dir = base.join("checkout-b");
+        let out = Command::new("git")
+            .arg("clone")
+            .arg(&remote)
+            .arg(&b_dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let b = MeshStorage::open(&b_dir).unwrap();
+        let memories = b.root().join("stripe-api").join("memories");
+        std::fs::create_dir_all(&memories).unwrap();
+        std::fs::write(memories.join("pin.json"), r#"{"id":"pin"}"#).unwrap();
+        assert!(b.commit_all("pin record", "node-b").await.unwrap());
+        b.push().await.unwrap();
+
+        a.pull().await.unwrap();
+        assert!(
+            a.root()
+                .join("stripe-api")
+                .join("memories")
+                .join("pin.json")
+                .is_file(),
+            "pull must fast-forward the pin record in"
+        );
+    }
+
+    /// Pin: a failing subcommand surfaces git's stderr in the error, in the
+    /// same shape as the synchronous funnel produced.
+    #[tokio::test]
+    async fn git_failure_surfaces_stderr() {
+        let base = scratch("pin-failure");
+        let mesh = init_under(&base).await;
+
+        let err = run_ok(mesh.root(), &["rev-parse", "--verify", "refs/heads/no-such-ref"])
+            .await
+            .expect_err("verifying a missing ref must fail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("git rev-parse --verify refs/heads/no-such-ref failed"),
+            "error keeps the failing-invocation shape, got: {msg}"
+        );
+        assert!(
+            msg.contains("Needed a single revision"),
+            "error must carry git's stderr verbatim, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn commit_all_never_stages_or_commits_the_signing_key() {
+        let base = scratch("signing-key");
+        let mesh = init_under(&base).await;
+
+        // The key material exists before the first commit (a feasible local
+        // state: auto-sign has run or the operator pre-created the key).
+        let key_dir = mesh.root().join(".neurostrata-mesh");
+        std::fs::create_dir_all(&key_dir).unwrap();
+        std::fs::write(key_dir.join("signing.key"), "ed25519 private bytes").unwrap();
+
+        let memories = mesh.root().join("stripe-api").join("memories");
+        std::fs::create_dir_all(&memories).unwrap();
+        std::fs::write(memories.join("m1.json"), r#"{"id":"m1"}"#).unwrap();
+        assert!(mesh.commit_all("first record with a local key", "node-key").await.unwrap());
+
+        let gitignore = std::fs::read_to_string(mesh.root().join(".gitignore")).unwrap();
+        assert!(
+            gitignore.contains(".neurostrata-mesh/signing.key") && gitignore.contains("*.key"),
+            ".gitignore must carry the signing-key patterns, got: {gitignore:?}"
+        );
+        assert_eq!(
+            git_out(mesh.root(), &["ls-files", ".neurostrata-mesh/signing.key"]),
+            "",
+            "the signing key must never be staged or committed"
+        );
+        assert_eq!(
+            git_out(mesh.root(), &["check-ignore", "--quiet", ".neurostrata-mesh/signing.key"]),
+            "",
+            "check-ignore must flag the signing key"
+        );
+
+        // Idempotent: a second pass never duplicates or rewrites the rules.
+        let before = gitignore.clone();
+        mesh.ensure_signing_key_ignored().unwrap();
+        assert_eq!(std::fs::read_to_string(mesh.root().join(".gitignore")).unwrap(), before);
+    }
+
+    #[tokio::test]
+    async fn init_ignores_drain_bundles_and_never_duplicates_the_rule() {
+        let base = scratch("bundles-ignored");
+        let mesh = init_under(&base).await;
+
+        // Whether `git check-ignore` does NOT accept `path`: the raw
+        // command, because `git_out` asserts success (exit 0 = ignored).
+        let not_ignored = |path: &str| {
+            !Command::new("git")
+                .args(["check-ignore", "--quiet", path])
+                .current_dir(mesh.root())
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .output()
+                .unwrap()
+                .status
+                .success()
+        };
+
+        let gitignore = std::fs::read_to_string(mesh.root().join(".gitignore")).unwrap();
+        assert!(
+            gitignore.lines().any(|l| l.trim() == "/bundles/*.bundle.zst"),
+            ".gitignore must carry the /bundles/*.bundle.zst pattern, got: {gitignore:?}"
+        );
+        assert_eq!(
+            git_out(mesh.root(), &["check-ignore", "--quiet", "bundles/drain-1.bundle.zst"]),
+            "",
+            "check-ignore must flag a drain bundle artifact"
+        );
+        // Deliberately REVERSED from the directory-level rule: the bare
+        // `bundles` path is no longer ignore-covered. Under `/bundles`
+        // this assertion demanded the opposite (see the P2 fix commit).
+        assert!(
+            not_ignored("bundles"),
+            "check-ignore must NOT flag the bare bundles path"
+        );
+        assert!(
+            not_ignored("probe/bundles/inner.txt"),
+            "check-ignore must NOT flag a nested same-named path"
+        );
+
+        // Idempotent: a second pass never duplicates or rewrites the rule.
+        mesh.ensure_bundles_ignored().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(mesh.root().join(".gitignore")).unwrap(),
+            gitignore
+        );
+    }
+
+    /// Discriminating oracle for the artifact-scoped rule: a root-level
+    /// namespace literally named `bundles` publishes its records
+    /// normally, while a drain bundle artifact beside them stays
+    /// local-only. Under the old directory-level rule (`/bundles`) the
+    /// `git add -A` inside `commit_all` never staged the records, so
+    /// the `ls-files` assertions below fail there (verified against a
+    /// scratch repo carrying the old pattern).
+    #[tokio::test]
+    async fn a_namespace_named_bundles_still_publishes_its_records() {
+        let base = scratch("bundles-namespace");
+        let mesh = init_under(&base).await;
+
+        let memories = mesh.root().join("bundles").join("memories");
+        std::fs::create_dir_all(&memories).unwrap();
+        std::fs::write(memories.join("m1.json"), r#"{"id":"m1"}"#).unwrap();
+        let procedures = mesh.root().join("bundles").join("procedures");
+        std::fs::create_dir_all(&procedures).unwrap();
+        std::fs::write(procedures.join("p1.json"), r#"{"id":"p1"}"#).unwrap();
+        // The artifact the rule exists for, in the same directory.
+        std::fs::write(
+            mesh.root().join("bundles").join("drain-1.bundle.zst"),
+            b"bundle bytes",
+        )
+        .unwrap();
+
+        for rel in ["bundles/memories/m1.json", "bundles/procedures/p1.json"] {
+            let out = Command::new("git")
+                .args(["check-ignore", "--quiet", rel])
+                .current_dir(mesh.root())
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .output()
+                .unwrap();
+            assert!(
+                !out.status.success(),
+                "check-ignore must NOT flag the bundles-namespace record {rel}"
+            );
+        }
+
+        assert!(
+            mesh.commit_all("bundles namespace records", "node-abc123")
+                .await
+                .unwrap(),
+            "commit_all must report a commit for the namespace records"
+        );
+        let tracked = git_out(mesh.root(), &["ls-files"]);
+        for rel in ["bundles/memories/m1.json", "bundles/procedures/p1.json"] {
+            assert!(
+                tracked.lines().any(|l| l == rel),
+                "{rel} must be tracked, ls-files: {tracked}"
+            );
+        }
+        assert!(
+            !tracked.lines().any(|l| l.ends_with(".bundle.zst")),
+            "no bundle artifact may be tracked, ls-files: {tracked}"
         );
     }
 }
