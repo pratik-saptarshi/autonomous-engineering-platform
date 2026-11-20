@@ -1,0 +1,103 @@
+# CodeQL advanced setup.
+#
+# This workflow replaces CodeQL default setup, which cannot express path
+# filters (the default-setup update API rejects "paths-ignore" as not a
+# permitted key — probed 2026-11-19). It landed together with default setup
+# being turned off in Settings > Code scanning (leaving both on makes
+# analyses fail as duplicates); from then on the code-scanning results the
+# "default-set" ruleset requires on PR heads come from this workflow instead
+# of default setup. The matrix below mirrors the default-setup configuration
+# in force at switch time (state=configured, query_suite=default,
+# threat_model=remote, schedule=weekly, runner=standard): the same analyzed
+# languages, producing the same "Analyze (<language>)" check names, with
+# three exceptions — Ruby, Rust, and Java/Kotlin are dropped from the
+# matrix. Ruby and Rust have sources only inside the ignored tree: the
+# repository's only Ruby source is
+# reference/homebrew-install/tests/test_install.rb, and all Rust sources
+# and Cargo manifests are likewise inside reference/**, so an Analyze
+# (ruby) or Analyze (rust) job would have no source and fail database
+# finalization on every run. Java/Kotlin likewise has no source outside
+# reference/** and no buildable Java project (no Maven, Gradle, or Ant
+# build file anywhere), so an Analyze (java-kotlin) job would fail
+# autobuild on every run. A language belongs in this matrix only while
+# it has analyzable sources outside reference/**. Landed coverage is
+# therefore 5 languages, not 8. The only other behavioural delta is the
+# exclusion of reference/** (pinned vendored snapshots; fixes land
+# fork-first, never in the tree). The exclusion mechanism differs by
+# language class: the config file's paths-ignore excludes reference/**
+# for the interpreted languages and for the no-build (c-cpp) analysis,
+# but path filters do not bind compiled-language autobuild extraction,
+# so Go is excluded by extraction scoping instead — its job uses a
+# manual build of the root module only, and reference/esf (a separate
+# Go module, not a dependency of the root module) is never compiled and
+# therefore never extracted. Coverage warning: a future first-party Go
+# module created outside the root module will not be analyzed by the Go
+# job until the manual build below is extended to cover it.
+
+name: "CodeQL"
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["develop", "main"]
+  pull_request:
+    branches: ["develop", "main"]
+  schedule:
+    # Weekly, mirroring default setup's weekly schedule.
+    - cron: "0 6 * * 1"
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      packages: read
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: actions
+            build-mode: none
+          - language: c-cpp
+            build-mode: none
+          - language: go
+            build-mode: manual
+          - language: javascript-typescript
+            build-mode: none
+          - language: python
+            build-mode: none
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Go
+        if: matrix.language == 'go'
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          config-file: ./.github/codeql/codeql-config.yml
+
+      - name: Run manual build steps
+        if: matrix.build-mode == 'manual'
+        shell: bash
+        run: |
+          if [ "${{ matrix.language }}" = "go" ]; then
+            go build ./...
+          else
+            echo "No manual build defined for language: ${{ matrix.language }}" >&2
+            exit 1
+          fi
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4
+        with:
+          category: "/language:${{ matrix.language }}"
