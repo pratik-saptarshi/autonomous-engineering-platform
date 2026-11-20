@@ -72,7 +72,7 @@ rollback-plan)
   cat <<EOF
 # Rollback plan for $tree (run only on explicit owner authorization)
 revert working branch:
-  git revert --no-edit <merge-commit-sha> && git push origin $working
+  git revert --no-edit -m 1 <merge-commit-sha> && git push origin $working
 restore mirror from bundle (destructive; separate authorization):
   git clone --mirror /Users/neo/Git-SCM/.vendor-backups/2026-11-19/vendor-backup-$tree-2026-11-19.git/pre-sync-$tree-2026-11-19.bundle restore-$tree.git
   git -C restore-$tree.git push --force https://github.com/pratik-saptarshi/$tree.git backup/pre-sync-$tree-mirror:refs/heads/$mirror

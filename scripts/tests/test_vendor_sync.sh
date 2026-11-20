@@ -78,4 +78,19 @@ bash "$SCRIPT" mirror-ff "$FK" master upstream/master >/dev/null
 bash "$SCRIPT" rollback-plan esf master develop | grep -q 'pre-sync-esf-2026-11-19.bundle' &&
   pass "rollback-plan references the backup bundle" || fail "rollback-plan missing bundle"
 
+# ---------- test: rollback-plan revert carries -m 1 (forward merges are --no-ff) ----------
+bash "$SCRIPT" rollback-plan esf master develop | grep -q 'git revert --no-edit -m 1' &&
+  pass "rollback-plan revert specifies -m 1 for the merge commit" ||
+  fail "rollback-plan revert lacks -m 1 (git revert refuses a merge commit without it)"
+
+# ---------- test: the printed revert actually undoes a forward merge ----------
+MERGE_SHA=$(git -C "$FK" rev-parse develop)
+git -C "$FK" checkout -q develop
+git -C "$FK" revert --no-edit -m 1 "$MERGE_SHA" >/dev/null
+if git -C "$FK" cat-file -e develop:upstream-update.txt 2>/dev/null; then
+  fail "revert with -m 1 left the merged upstream file in place"
+else
+  pass "revert with -m 1 undoes the forward merge"
+fi
+
 echo "ALL VENDOR SYNC TESTS PASSED"

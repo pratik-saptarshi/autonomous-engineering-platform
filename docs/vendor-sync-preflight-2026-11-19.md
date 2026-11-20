@@ -59,7 +59,7 @@ git -C "vendor-backup-$tree-2026-11-19.git" tag "backup/pre-sync-$tree-working" 
    ```sh
    git clone "https://github.com/pratik-saptarshi/<tree>.git" rollback-<tree>
    cd rollback-<tree>
-   git revert --no-edit <merge-commit-sha>       # the --no-ff merge made by Task 4/5
+   git revert --no-edit -m 1 <merge-commit-sha>   # the --no-ff merge made by Task 4/5; -m 1 = working-branch parent
    git push origin <working-branch>
    ```
 
