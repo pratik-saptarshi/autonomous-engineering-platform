@@ -732,3 +732,35 @@ class CodexRegressionTests(unittest.TestCase):
             row = derived["rows"][0]
             self.assertEqual(row[13], "fork-sync")
             self.assertEqual(row[12], "2026-11-18T09:30:00-06:00")
+
+    def test_sync_record_after_measurement_is_not_consumed(self):
+        # The refreshed record can describe a sync applied AFTER
+        # this repo was measured (fork-sync overlapped the census
+        # and reached this repo while later repos were still being
+        # processed). That record cannot explain the movement this
+        # observation measured, so it must stay unconsumed: the
+        # measured (external) movement is stamped external, M is
+        # untouched, and the next census -- which measures the
+        # synced head -- attributes the sync to fork-sync.
+        rows1, _ = ffc.build_rows(
+            census_doc([census_row()]), [], {}, "2026-11-18T09:00:00-06:00"
+        )
+        record = {"repos": {"pratik-saptarshi/x": {"last_applied_at": "2026-11-18T10:30:00-06:00"}}}
+        external = census_row(
+            mirror_head="e" * 40, mirror_behind=1,
+            measured_at="2026-11-18T10:00:00-06:00",
+        )
+        rows2, _ = ffc.build_rows(
+            census_doc([external]), rows1, record, "2026-11-18T10:45:00-06:00"
+        )
+        self.assertEqual(rows2[0][13], "unknown (external change)")
+        self.assertEqual(rows2[0][12], "")  # future sync NOT consumed
+        synced = census_row(
+            mirror_head=SHA_D, mirror_behind=2,
+            measured_at="2026-11-19T10:00:00-06:00",
+        )
+        rows3, _ = ffc.build_rows(
+            census_doc([synced]), rows2, record, "2026-11-19T10:45:00-06:00"
+        )
+        self.assertEqual(rows3[0][13], "fork-sync")
+        self.assertEqual(rows3[0][12], "2026-11-18T10:30:00-06:00")

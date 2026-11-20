@@ -528,21 +528,34 @@ def build_rows(census, prev_rows, sync_record, verified_at):
             develop_moved = develop_measured and (
                 _short(row["develop_head"]) != str(prev[11]).strip()
             )
+            # The attribution window is bounded above by this
+            # observation's own measurement time (the run stamp for
+            # rows from censuses without one): the refreshed record
+            # may describe a sync applied after this repo was
+            # measured, while later repos were still being processed.
+            # Such a record cannot explain the movement measured
+            # here and must stay unconsumed for the next census.
+            # (Not the row's `verified`, which a partial row froze
+            # to the previous stamp.)
+            attribution_bound = row.get("measured_at") or verified_at
             if mirror_moved:
                 applied = record_repos.get(row["repo"], {}).get(
                     "last_applied_at"
                 )
-                # The record is evidence only if it is new: after
-                # the row's verification stamp AND after the last
-                # sync already recorded in column M. M is the
+                # The record is evidence only if it falls inside
+                # this observation's attribution window: after the
+                # row's previous verification stamp, after the last
+                # sync already recorded in column M (M is the
                 # consumption watermark -- a partial row's frozen
                 # stamp must not let an already-attributed sync be
-                # reused for a later, external movement.
+                # reused for a later, external movement), and not
+                # after this observation's own measurement time.
                 prev_sync = str(prev[COL_LAST_SYNC]).strip()
                 if (
                     applied
                     and _after(applied, str(prev[COL_VERIFIED]).strip())
                     and (not prev_sync or _after(applied, prev_sync))
+                    and not _after(applied, attribution_bound)
                 ):
                     actor = "fork-sync"
                     last_sync = applied

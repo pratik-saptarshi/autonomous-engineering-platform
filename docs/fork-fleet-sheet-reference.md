@@ -74,7 +74,13 @@ a census is still measuring later repos postdates that repo's
 compares and stays attributable on the next census. The census
 also re-reads the run record after measurement finishes, so a
 sync recorded while the census was running is not lost to a
-stale pre-census copy. When a mirror sync and a develop movement
+stale pre-census copy. The window is bounded on both sides: a
+record counts only if it falls after the row's previous
+verification and not after the current row's own measurement
+time — a sync applied after its repo was measured (while later
+repos were still being processed) cannot explain the movement
+that observation recorded, and stays unconsumed for the next
+census, which measures the synced head. When a mirror sync and a develop movement
 are observed in the same census, column M still records the sync,
 but column N reads `unknown (external change)`: fork-sync never
 touches `develop`, so the bot cannot be credited with the last
