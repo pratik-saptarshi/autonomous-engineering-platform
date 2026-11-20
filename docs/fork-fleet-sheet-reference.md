@@ -80,7 +80,10 @@ verification and not after the current row's own measurement
 time — a sync applied after its repo was measured (while later
 repos were still being processed) cannot explain the movement
 that observation recorded, and stays unconsumed for the next
-census, which measures the synced head. When a mirror sync and a develop movement
+census, which measures the synced head. The same bound governs
+first observations: a record newer than a newly discovered
+repo's first measurement is not copied into column M until a
+later census observes its movement. When a mirror sync and a develop movement
 are observed in the same census, column M still records the sync,
 but column N reads `unknown (external change)`: fork-sync never
 touches `develop`, so the bot cannot be credited with the last

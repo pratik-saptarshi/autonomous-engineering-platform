@@ -573,7 +573,15 @@ def build_rows(census, prev_rows, sync_record, verified_at):
                 actor = "unknown (external change)"
         else:
             applied = record_repos.get(row["repo"], {}).get("last_applied_at")
-            if applied:
+            # The measurement-time upper bound applies here too:
+            # a record from after this first observation (the
+            # refreshed record can describe an overlapping sync)
+            # must not be consumed into M before its movement can
+            # be observed, or the next census would label the
+            # synced head external.
+            if applied and not _after(
+                applied, row.get("measured_at") or verified_at
+            ):
                 last_sync = applied
         notes = row["error"] or ""
         return [
