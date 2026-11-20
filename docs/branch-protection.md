@@ -26,7 +26,7 @@ ls .github/workflows/
 ## Protection table (live state on 2026-11-16)
 
 | Setting | `main` | `develop` (default) |
-|---|---|---|
+| --- | --- | --- |
 | Required status checks (strict) | `true` | `true` |
 | Required checks | `docs-lint`, `shell-lint`, `script-tests`, `go-checks`, `security`, `vendor-integrity`, `skills-freshness`, `skills-routing-check` | Same 8 as `main`, plus `policy-delta` |
 | Required approving reviews | 1 | 1 |

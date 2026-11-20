@@ -69,7 +69,7 @@ Guards: at most 6 iterations per run. Three failed attempts on one task stops th
 Implemented means present in this repo; Absent means referenced but not present; External-only means it lives on the deployed VM, not in this repo. The canonical verifier is `scripts/mechanical_verify.py` (see [verifier of record](docs/decisions/verifier-of-record.md)).
 
 | Component | Location in this repo | Status |
-|---|---|---|
+| --- | --- | --- |
 | Skill library (96 entries: 95 skill dirs + `skills/README.md`) | `skills/` | Implemented |
 | Ralph loop orchestrator skill | `skills/ralph_loop/` | Implemented |
 | Ralph loop task-listing helper | none — repo-wide filename search (including `reference/`) finds no such helper; the only `backlog*` match is `reference/esf/docs/backlog/`, a vendored docs page | Absent |
@@ -87,7 +87,7 @@ The per-source skill counts previously listed here were unverified against this 
 The paths below describe the persistent Linux VM where the environment was built and verified. They are historical deployment notes, not contents of this repo.
 
 | Item | Deployed location | Last reported state on VM |
-|---|---|---|
+| --- | --- | --- |
 | Skill library (deployed copy) | `~/workspace/custom-skills/` | Reported installed on VM |
 | Ralph loop (deployed copy) | `~/workspace/ralph/` | Reported scheduled every 2 h on VM |
 | NeuroStrata engine (v1.9.0 prebuilt binary) | `~/workspace/neurostrata/` | Reported live on VM |
