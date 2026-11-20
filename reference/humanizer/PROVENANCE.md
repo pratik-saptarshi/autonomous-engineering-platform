@@ -25,3 +25,12 @@ Clean. A credential-pattern grep over the pinned tree matched nothing. The tree 
 - 15 upstream files; no symlinks. New file `package.json` is part of the faithful snapshot.
 - Instruction surfaces (`AGENTS.md`, `.claude-plugin/`, `.cursor-plugin/`) are retained as inert reference data under `reference/` — they are not at any active AEP path. AEP is governed by its own root `AGENTS.md`.
 - Secret scan: clean; no allowlist entries needed.
+
+## Freshness
+
+This file is the single source of truth for this tree's pin. The one-line `vendor-freshness` block above is machine-readable and is parsed by `scripts/vendor_graph.py` and `scripts/vendor_freshness.py`. Every re-vendor updates the block's `pin` in the same PR.
+
+- **Current state:** **repin** — re-vendored at the current fork head on 2026-11-19; next freshness review 2026-12-19.
+- **Owner:** the AEP maintainer (repository owner).
+- **SLA:** a weekly non-gating detector opens or updates one tracking issue within 7 days of detected drift; it never auto-syncs or auto-merges.
+- **Known out-of-scope drift for this lane:** `harness2` (2 behind upstream), `neurostrata` (170 behind, 604 ahead), and `craft-anything` (decision due) are reported by the detector, not fixed by the 2026-11-19 migration.
