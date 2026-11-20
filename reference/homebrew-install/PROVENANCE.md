@@ -15,3 +15,12 @@ This tree changes only by re-vendoring: replace it wholesale with a new pinned s
 Branch note: the fork (`pratik-saptarshi/install`) currently carries a single branch, `main`, which is a pristine upstream mirror — at this pin it is identical to upstream `main` at `3ef3676` — the fork was synced from `Homebrew/install` on 2026-11-19 before this re-vendor (6 upstream commits pulled in: actionlint workflow, Ruby version and installer/tests updates). Upstream updates are pulled into the fork's `main` (`gh repo sync --branch main`); if the fork ever carries its own changes, they land fork-first (a `develop` branch on the fork, per the pattern used for the NeuroStrata and ESF forks) and a re-vendor pins that state instead, with the delta recorded here.
 
 <!-- vendor-freshness: {"branch": "main", "decision_date": "2026-11-19", "parent": "Homebrew/install", "parent_branch": "main", "pin": "3ef3676f8028811d38eae05d3b3b4f97d72a0f61", "policy": "sync-then-repin", "repo": "pratik-saptarshi/install", "review_due": "2026-12-19", "tree": "homebrew-install"} -->
+
+## Freshness
+
+This file is the single source of truth for this tree's pin. The one-line `vendor-freshness` block above is machine-readable and is parsed by `scripts/vendor_graph.py` and `scripts/vendor_freshness.py`. Every re-vendor updates the block's `pin` in the same PR.
+
+- **Current state:** **sync-then-repin** — re-vendored at the current fork head on 2026-11-19; next freshness review 2026-12-19.
+- **Owner:** the AEP maintainer (repository owner).
+- **SLA:** a weekly non-gating detector opens or updates one tracking issue within 7 days of detected drift; it never auto-syncs or auto-merges.
+- **Known out-of-scope drift for this lane:** `harness2` (2 behind upstream), `neurostrata` (170 behind, 604 ahead), and `craft-anything` (decision due) are reported by the detector, not fixed by the 2026-11-19 migration.
