@@ -53,7 +53,14 @@ fails to measure keeps its last measured head as the baseline in
 the derived sheet row (counts blank, status ``unknown``) and the
 row's verification stamp does not advance, so a sync applied
 during a failed observation is still attributable when measurement
-recovers. An axis with no measured baseline yet (blank head cell,
+recovers. The verification stamp an observation leaves behind
+(column O) is its observation-START watermark, not its completion
+time: an observation's compares may snapshot a head at any point
+inside its window, so a sync landing after the snapshot but before
+the measurement completes postdates the recorded head yet must
+stay attributable when the next census measures the synced head;
+the current observation's own attribution window is still bounded
+above by its measurement-completion time. An axis with no measured baseline yet (blank head cell,
 because every earlier observation of it failed) treats its first
 successful measurement as initialization, not movement: an absent
 baseline is distinguished from a changed head.
@@ -335,13 +342,22 @@ def run_census(runner) -> dict:
     )
     rows = []
     for repo in eligible:
+        # Per-repo observation window. `observed_from` is captured
+        # BEFORE the repo's first API call: the compares may
+        # snapshot a head at any point inside the window, so the
+        # start is the conservative watermark column O carries for
+        # the NEXT census's attribution lower bound -- a sync that
+        # lands after the compares snapshotted the old head but
+        # before the measurement completes postdates the recorded
+        # head yet must stay attributable when its head is measured.
+        # `measured_at` (window end) remains this observation's own
+        # attribution upper bound. Both are per-repo, not the run's
+        # completion time: a sync applied while the remaining repos
+        # are still being measured postdates this repo's window
+        # entirely (see build_rows).
+        observed_from = datetime.now(CHICAGO).isoformat(timespec="seconds")
         row = census_repo(repo, runner)
-        # Per-repo measurement time. The attribution window is
-        # bounded by when THIS repo was measured, not by when the
-        # whole run finished: a sync fork-sync applies while the
-        # remaining repos are still being measured postdates this
-        # repo's compares, and must stay attributable on the next
-        # census (column O carries this stamp; see build_rows).
+        row["observed_from"] = observed_from
         row["measured_at"] = datetime.now(CHICAGO).isoformat(timespec="seconds")
         rows.append(row)
     return {
@@ -474,12 +490,19 @@ def build_rows(census, prev_rows, sync_record, verified_at):
     def census_sheet_row(row: dict, prev: list | None) -> list:
         last_sync = ""
         actor = "fork-fleet-census"
-        # Column O is the repo's own measurement time when the
-        # census recorded one (rows from older censuses fall back
-        # to the run-level stamp): the attribution window compares
-        # sync records against it, and a run-completion stamp would
-        # exclude syncs applied while the run was still measuring.
-        verified = row.get("measured_at") or verified_at
+        # Column O is the repo's observation-START watermark when
+        # the census recorded one (rows from older censuses fall
+        # back to their measurement time, then the run-level
+        # stamp): the next census's attribution window compares
+        # sync records against it as its lower bound, and a
+        # run-completion -- or even measurement-completion -- stamp
+        # would exclude syncs applied while this repo was still
+        # being measured. The current observation's own upper
+        # bound stays its measurement-completion time
+        # (`attribution_bound` below), separately.
+        verified = (
+            row.get("observed_from") or row.get("measured_at") or verified_at
+        )
         m_behind, m_unique, m_head = (
             _cell(row["mirror_behind"]),
             _cell(row["mirror_unique"]),
@@ -554,7 +577,13 @@ def build_rows(census, prev_rows, sync_record, verified_at):
             # Such a record cannot explain the movement measured
             # here and must stay unconsumed for the next census.
             # (Not the row's `verified`, which a partial row froze
-            # to the previous stamp.)
+            # to the previous stamp.) The window's lower bound is
+            # the previous row's column O -- the previous
+            # observation's START watermark, not its completion:
+            # that observation's compares may have snapshotted the
+            # old head at any point inside its window, so a sync
+            # landing after the snapshot but before completion is
+            # still inside this window.
             attribution_bound = row.get("measured_at") or verified_at
             if mirror_moved:
                 applied = record_repos.get(row["repo"], {}).get(

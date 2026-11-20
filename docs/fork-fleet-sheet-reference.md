@@ -36,7 +36,7 @@ the plan in `docs/plans/2026-11-18-fork-fleet-sheet-plan.html`.
 | L | Develop head SHA |
 | M | Last sync applied at (from fork-sync's JSON run record) |
 | N | Last updated by (bot name; attribution rules below) |
-| O | Row last verified at — advances only when the run actually measured the row; a failed observation keeps the last verified stamp |
+| O | Row last verified at — the measuring run's observation-start watermark for the row (see Attribution); advances only when the run actually measured the row, and a failed observation keeps the last verified stamp |
 | P | Machine notes (error class for `unknown` rows, retired date) |
 
 Mirror status: `current` (mirror head == upstream head), `behind`
@@ -68,10 +68,11 @@ Run-record timestamps are ISO 8601 with a UTC offset (fork-sync
 writes America/Chicago local time); the census compares them as
 datetimes, never as bare strings. The "previous verification" a
 sync record is compared against is the row's own measurement
-time (column O carries the per-repo `measured_at` the census
-recorded), not the run's completion time — a sync applied while
-a census is still measuring later repos postdates that repo's
-compares and stays attributable on the next census. The census
+time (column O carries the per-repo observation-start
+watermark, `observed_from`, the census recorded), not the run's
+completion time — a sync applied while a census is still
+measuring later repos postdates that repo's compares and stays
+attributable on the next census. The census
 also re-reads the run record after measurement finishes, so a
 sync recorded while the census was running is not lost to a
 stale pre-census copy. The window is bounded on both sides: a
@@ -80,7 +81,15 @@ verification and not after the current row's own measurement
 time — a sync applied after its repo was measured (while later
 repos were still being processed) cannot explain the movement
 that observation recorded, and stays unconsumed for the next
-census, which measures the synced head. The same bound governs
+census, which measures the synced head. The lower bound is the
+previous observation's start, not its completion, for the same
+reason one level down: an observation's compares may snapshot a
+head at any point inside its window, so a sync that lands after
+the snapshot but before that measurement completes postdates
+the head the observation recorded, yet is inside the window the
+next census attributes against. Column O therefore carries the
+start watermark; the current observation's upper bound remains
+its own measurement-completion time (`measured_at`). The same bound governs
 first observations: a record newer than a newly discovered
 repo's first measurement is not copied into column M until a
 later census observes its movement. When a mirror sync and a develop movement

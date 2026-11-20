@@ -875,3 +875,71 @@ class CodexRegressionTests(unittest.TestCase):
         )
         self.assertEqual(rows3[0][13], "fork-sync")
         self.assertEqual(rows3[0][12], "2026-11-18T08:00:00-06:00")
+
+    def test_sync_during_measurement_window_still_attributes(self):
+        # fork-sync overlaps THIS repo's own measurement: the
+        # compares snapshot the pre-sync mirror head, the sync lands
+        # at 19:47, and the measurement completes at 19:50
+        # (measured_at). The head census N records is unchanged, so
+        # nothing is consumed that night -- but column O must carry
+        # the conservative observation-START watermark (19:40), not
+        # the completion time. On census N+1 the synced head is
+        # measured as a movement, and the 19:47 record must fall
+        # inside the window (after the previous watermark): with
+        # the completion stamp it predates column O, fails the
+        # lower-bound check, and the legitimate sync is permanently
+        # labeled external with M blank.
+        rows0, _ = ffc.build_rows(
+            census_doc([census_row()]), [], {}, "2026-11-17T19:50:00-06:00"
+        )
+        record = {"repos": {"pratik-saptarshi/x": {"last_applied_at": "2026-11-18T19:47:00-06:00"}}}
+        during = census_row(
+            observed_from="2026-11-18T19:40:00-06:00",
+            measured_at="2026-11-18T19:50:00-06:00",
+        )
+        rows1, _ = ffc.build_rows(
+            census_doc([during], generated_at="2026-11-18T20:00:00-06:00"),
+            rows0, record, "2026-11-18T20:00:00-06:00",
+        )
+        self.assertEqual(rows1[0][6], SHA_A[:12])  # pre-sync head recorded
+        self.assertEqual(rows1[0][13], "fork-fleet-census")  # no movement
+        self.assertEqual(rows1[0][12], "")  # record not consumed yet
+        self.assertEqual(rows1[0][14], "2026-11-18T19:40:00-06:00")  # O = start
+        synced = census_row(
+            mirror_head=SHA_D, mirror_behind=2,
+            measured_at="2026-11-19T19:50:00-06:00",
+        )
+        rows2, _ = ffc.build_rows(
+            census_doc([synced], generated_at="2026-11-19T20:00:00-06:00"),
+            rows1, record, "2026-11-19T20:00:00-06:00",
+        )
+        self.assertEqual(rows2[0][13], "fork-sync")
+        self.assertEqual(rows2[0][12], "2026-11-18T19:47:00-06:00")
+
+    def test_sync_before_observation_start_is_not_attributed(self):
+        # Guard: the start watermark does not resurrect stale
+        # records. A sync applied BEFORE the previous observation
+        # began is outside the window: an external movement measured
+        # later must not be attributed to it.
+        rows0, _ = ffc.build_rows(
+            census_doc([census_row()]), [], {}, "2026-11-17T19:50:00-06:00"
+        )
+        stale = {"repos": {"pratik-saptarshi/x": {"last_applied_at": "2026-11-18T19:30:00-06:00"}}}
+        during = census_row(
+            observed_from="2026-11-18T19:40:00-06:00",
+            measured_at="2026-11-18T19:50:00-06:00",
+        )
+        rows1, _ = ffc.build_rows(
+            census_doc([during], generated_at="2026-11-18T20:00:00-06:00"),
+            rows0, stale, "2026-11-18T20:00:00-06:00",
+        )
+        external = census_row(
+            mirror_head="e" * 40, mirror_behind=1,
+            measured_at="2026-11-19T19:50:00-06:00",
+        )
+        rows2, _ = ffc.build_rows(
+            census_doc([external], generated_at="2026-11-19T20:00:00-06:00"),
+            rows1, stale, "2026-11-19T20:00:00-06:00",
+        )
+        self.assertEqual(rows2[0][13], "unknown (external change)")
+        self.assertEqual(rows2[0][12], "")
