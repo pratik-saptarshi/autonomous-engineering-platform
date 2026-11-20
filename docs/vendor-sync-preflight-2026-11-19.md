@@ -77,7 +77,7 @@ The pre-sync SHAs above are also held by the mirror-clone tags and inside the bu
 
 ## Ordering record
 
-- Rollback runbook commit SHA and timestamp: **pending — filled after this document is committed.**
+- Rollback runbook commit SHA and timestamp: `ac826a392bec341b2397d2f412af1bd01bec0a16` / `2026-11-19T20:00:34-06:00`.
 - First external mutation (Task 3 `gh repo sync`): **not yet performed.** The runbook commit is strictly earlier than any mutation.
 
 ## Sign-off
