@@ -85,11 +85,21 @@ def build(root, findings=False, live=True):
                 continue
             repo, branch = e["repo"], e["branch"]
             e["fork_vs_head"] = _compare(repo, e["pin"], branch)
+            if "error" in e["fork_vs_head"]:
+                problems.append({
+                    "tree": e["tree"],
+                    "why": f"compare failed for {repo} {e['pin']}...{branch}: {e['fork_vs_head']['error']}",
+                })
             if e.get("parent"):
                 owner = repo.split("/")[0]
                 e["fork_vs_upstream"] = _compare(
                     e["parent"], e["parent_branch"], f"{owner}:{branch}"
                 )
+                if "error" in e["fork_vs_upstream"]:
+                    problems.append({
+                        "tree": e["tree"],
+                        "why": f"compare failed for {e['parent']} {e['parent_branch']}...{owner}:{branch}: {e['fork_vs_upstream']['error']}",
+                    })
     if findings:
         return {"entries": entries, "findings": problems}
     return entries
