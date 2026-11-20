@@ -70,7 +70,7 @@ OpenChamber is a multi-surface workspace (web/PWA, desktop, VS Code, mobile) lay
 
 - **OpenCode already installed and set up** — the binary is at `~/.opencode/bin/opencode`, version >= 2.2.4 (v2.3.0 verified). This section attaches to an existing install; it does not install OpenCode.
 - **A connected provider** — at least one provider is authenticated in OpenCode (here: OpenCode Go, connected via `opencode auth login`). Without a provider, the workspace opens but sessions cannot run a model. Provider credentials are operator-supplied and never live in this repo.
-- **The OpenCode background service configured** — its state is at `~/.local/state/opencode/service.json`; its password is held in the file's stored env map, and OpenChamber consumes it at startup. The service does not survive VM restarts; wake it before launching, as described in the launch note below.
+- **The OpenCode background service configured** — its state is at `~/.local/state/opencode/service.json`; OpenChamber does not read a password from that file (its auth is covered in the launch note below). The service does not survive VM restarts; wake it before launching, as described in the launch note below.
 - **Node.js and Bun on PATH** — the CLI launches under Node (v24 verified), and the daemon runs under Bun (1.4 verified). Both ship in the Muse VM image; on any other machine, install Node >= 20 and Bun first.
 - **Network access to the npm registry** for the install step below. The vendored snapshot under `reference/openchamber/` is a source reference, NOT an install path: running from it would require a Bun dependency install and build (not documented here), and it deliberately omits one credential-bearing file (see its `PROVENANCE.md` for the declared exclusion and local-regeneration instructions).
 - **Your own UI password** — set `OPENCHAMBER_UI_PASSWORD` to an operator-chosen value and store it locally in a chmod-600 file; never commit it.
@@ -93,7 +93,7 @@ export OPENCHAMBER_UI_PASSWORD='<set your own>'        # keep it in a chmod-600 
 node node_modules/@openchamber/web/build/bin/cli.js serve --hostname 127.0.0.1 --port 3411
 ```
 
-OpenChamber picks up the service password from the service's stored environment in `~/.local/state/opencode/service.json` at startup — the file's env map carries `OPENCODE_SERVER_PASSWORD`, which is what its auth initializes from — so there is no need to pass or export it. Pairing: OpenCode >= 2.2.4 required, upstream tests against 2.3.2; v2.3.0 verified attached with no warnings (2026-11-19).
+OpenChamber does not read the service password from `~/.local/state/opencode/service.json` — in the vendored OpenChamber 2.7.3 code, no code path reads a password from that file (in the local file it sits as a top-level field), and the file's env map (variables set via `opencode service set env`) does not carry it. OpenChamber's auth initializes from `OPENCODE_SERVER_PASSWORD` / `OPENCODE_PASSWORD` in its own process environment when set; its managed local OpenCode instance generates its own password. For the documented launch, there is no need to pass or export the background service's password. Pairing: OpenCode >= 2.2.4 required, upstream tests against 2.3.2; v2.3.0 verified attached with no warnings (2026-11-19).
 
 Security: a signed-in OpenChamber session is effectively full machine access (upstream's own threat model). Bind to 127.0.0.1 only; reach it remotely via tailnet or its built-in E2EE relay — never port-forward it.
 
