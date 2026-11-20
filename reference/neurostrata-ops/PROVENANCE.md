@@ -72,3 +72,12 @@ regenerate `.github/vendor-neurostrata-ops.sha256` from inside this directory
 with the change that motivated the refresh.
 
 <!-- vendor-freshness: {"branch": null, "decision_date": null, "parent": null, "parent_branch": null, "pin": null, "policy": "local", "repo": null, "review_due": null, "tree": "neurostrata-ops"} -->
+
+## Freshness
+
+This file is the single source of truth for this tree's pin. The one-line `vendor-freshness` block above is machine-readable and is parsed by `scripts/vendor_graph.py` and `scripts/vendor_freshness.py`. Every re-vendor updates the block's `pin` in the same PR.
+
+- **Current state:** **Local snapshot** — no commit pin and no remote; freshness checking is not applicable.
+- **Owner:** the AEP maintainer (repository owner).
+- **SLA:** a weekly non-gating detector opens or updates one tracking issue within 7 days of detected drift; it never auto-syncs or auto-merges.
+- **Known out-of-scope drift for this lane:** `harness2` (2 behind upstream), `neurostrata` (170 behind, 604 ahead), and `craft-anything` (decision due) are reported by the detector, not fixed by the 2026-11-19 migration.

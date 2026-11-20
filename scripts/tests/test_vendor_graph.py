@@ -66,11 +66,12 @@ class VendorGraphTest(unittest.TestCase):
         self.assertIsNone(local["pin"])
         self.assertEqual(local["policy"], "local")
 
-    def test_block_pin_matches_prose_pin(self):
+    def test_block_pin_mismatch_with_prose_is_a_finding(self):
+        # The test fixture writes prose "deadbeef" against block pin 388583d:
+        # the parser must report the mismatch, not silently return the block.
         with mock.patch.object(vendor_graph, "run_gh", side_effect=self.fake_gh):
-            graph = vendor_graph.build(self.root)
-        esf = next(e for e in graph if e["tree"] == "esf")
-        self.assertEqual(esf["pin"], "388583d")
+            report = vendor_graph.build(self.root, findings=True)
+        self.assertTrue(any(f.get("tree") == "esf" and "pin" in f.get("why", "") for f in report["findings"]))
 
     def test_malformed_block_is_a_finding_not_a_skip(self):
         p = self.root / "reference" / "esf" / "PROVENANCE.md"

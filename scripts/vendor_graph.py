@@ -49,8 +49,11 @@ def parse_blocks(root):
             findings.append({"tree": d.name, "why": f"malformed vendor-freshness block: {exc}"})
             continue
         found_pin = re.search(r"[0-9a-f]{7,40}", text)
-        if block.get("pin") and found_pin and block["pin"] not in found_pin.group(0):
-            findings.append({"tree": d.name, "why": "block pin does not match prose pin"})
+        pin = block.get("pin")
+        if pin and found_pin:
+            prose = found_pin.group(0)
+            if not (pin.startswith(prose) or prose.startswith(pin)):
+                findings.append({"tree": d.name, "why": "block pin does not match prose pin"})
         entries.append(block)
     return entries, findings
 

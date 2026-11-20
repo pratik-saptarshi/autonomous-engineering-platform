@@ -27,3 +27,12 @@ Secret scan: gitleaks v8.24.3 with the default rules — the same engine and ver
 Neither is a credential; both exist to prove the masker works. No other file in the snapshot is allowlisted, and no credential files exist in the tree. The `test/capture.test.js` file also contains a fake PAT-shaped string in the same masking test; gitleaks v8.24.3's default rules do not flag that line, so the two findings above are the complete set.
 
 <!-- vendor-freshness: {"branch": "main", "decision_date": "2026-11-19", "parent": null, "parent_branch": null, "pin": "847bd8f", "policy": "repin", "repo": "afurmanov/harness-profiler", "review_due": "2026-12-19", "tree": "harness-profiler"} -->
+
+## Freshness
+
+This file is the single source of truth for this tree's pin. The one-line `vendor-freshness` block above is machine-readable and is parsed by `scripts/vendor_graph.py` and `scripts/vendor_freshness.py`. Every re-vendor updates the block's `pin` in the same PR.
+
+- **Current state:** **repin** — re-vendored at the current fork head on 2026-11-19; next freshness review 2026-12-19.
+- **Owner:** the AEP maintainer (repository owner).
+- **SLA:** a weekly non-gating detector opens or updates one tracking issue within 7 days of detected drift; it never auto-syncs or auto-merges.
+- **Known out-of-scope drift for this lane:** `harness2` (2 behind upstream), `neurostrata` (170 behind, 604 ahead), and `craft-anything` (decision due) are reported by the detector, not fixed by the 2026-11-19 migration.

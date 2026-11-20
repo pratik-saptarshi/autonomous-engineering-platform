@@ -1,7 +1,7 @@
 # Provenance — vendored Craft Anything reference snapshot
 
 - **Upstream:** https://github.com/storytold/craft-anything
-- **Pinned source:** Pratik's fork, https://github.com/pratik-saptarshi/craft-anything (a pristine sync-only mirror of upstream; AEP pins track the fork — Decision D2)
+- **Source (fork):** https://github.com/pratik-saptarshi/craft-anything (sync-only mirror at pin time; AEP pins track the fork — Decision D2. At the 2026-11-19 audit the fork had drifted 3 commits behind upstream, so the mirror premise must be re-reviewed.)
 - **Pinned commit:** `2e4afc535cebb6ee556c5ea3f6b4e454487853f9` ("A plain HTML site passes the build check as it is, with nothing to build (#500)", 2026-11-02), read back via the GitHub API at snapshot time
 - **Corresponding upstream release:** ≈ v0.3.0 + 73 main commits — the fork head is a descendant of tag v0.3.0 by 73 commits and 148 commits behind v0.4.0 (compare API, verified at snapshot time). It corresponds to no single release; v0.3.0 is the nearest release at or below the pin. Upstream's current release at snapshot time is v0.5.0 (2026-11-06).
 - **Snapshot date:** 2026-11-07
@@ -91,3 +91,12 @@ This snapshot (with the protocol skill) is removed via a removal PR owned by the
 Issues about Craft Anything itself — defects, questions, requests — are filed on the fork or upstream (`pratik-saptarshi/craft-anything` / `storytold/craft-anything`), never on AEP. AEP issues are for AEP's own vendoring machinery (manifest, CI step, this provenance record).
 
 <!-- vendor-freshness: {"branch": "develop", "decision_date": "2026-11-19", "parent": "storytold/craft-anything", "parent_branch": "main", "pin": "2e4afc5", "policy": "keep", "repo": "pratik-saptarshi/craft-anything", "review_due": "2026-11-19", "tree": "craft-anything"} -->
+
+## Freshness
+
+This file is the single source of truth for this tree's pin. The one-line `vendor-freshness` block above is machine-readable and is parsed by `scripts/vendor_graph.py` and `scripts/vendor_freshness.py`. Every re-vendor updates the block's `pin` in the same PR.
+
+- **Current state:** **Decision due 2026-11-19** — D2 ACCEPT-STALENESS at its budget boundary; the fork is no longer a pristine mirror (3 commits behind upstream at the 2026-11-19 audit). A keep-or-re-pin decision is owed; this is not a permanent exemption.
+- **Owner:** the AEP maintainer (repository owner).
+- **SLA:** a weekly non-gating detector opens or updates one tracking issue within 7 days of detected drift; it never auto-syncs or auto-merges.
+- **Known out-of-scope drift for this lane:** `harness2` (2 behind upstream), `neurostrata` (170 behind, 604 ahead), and `craft-anything` (decision due) are reported by the detector, not fixed by the 2026-11-19 migration.

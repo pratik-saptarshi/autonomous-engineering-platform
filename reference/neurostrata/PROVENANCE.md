@@ -79,3 +79,12 @@ snapshot and was included in the scan: no credential patterns. No other
 files in the vendored tree match the credential patterns.
 
 <!-- vendor-freshness: {"branch": "develop", "decision_date": "2026-11-19", "parent": "Cognilogical/NeuroStrata", "parent_branch": "main", "pin": "0754125", "policy": "keep", "repo": "pratik-saptarshi/NeuroStrata", "review_due": "2027-02-19", "tree": "neurostrata"} -->
+
+## Freshness
+
+This file is the single source of truth for this tree's pin. The one-line `vendor-freshness` block above is machine-readable and is parsed by `scripts/vendor_graph.py` and `scripts/vendor_freshness.py`. Every re-vendor updates the block's `pin` in the same PR.
+
+- **Current state:** **Intentional divergence** — the fork is 604 commits ahead and 170 behind upstream; a re-pin is out of scope. Next review 2027-02-19.
+- **Owner:** the AEP maintainer (repository owner).
+- **SLA:** a weekly non-gating detector opens or updates one tracking issue within 7 days of detected drift; it never auto-syncs or auto-merges.
+- **Known out-of-scope drift for this lane:** `harness2` (2 behind upstream), `neurostrata` (170 behind, 604 ahead), and `craft-anything` (decision due) are reported by the detector, not fixed by the 2026-11-19 migration.
