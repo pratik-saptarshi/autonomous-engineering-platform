@@ -797,3 +797,81 @@ class CodexRegressionTests(unittest.TestCase):
         )
         self.assertEqual(rows2[0][13], "fork-sync")
         self.assertEqual(rows2[0][12], "2026-11-18T10:30:00-06:00")
+
+    def test_first_measurement_after_blank_baseline_is_initialization(self):
+        # A newly discovered fork whose first census fails outright
+        # (repo info unreadable) gets a sheet row with blank head
+        # cells -- no measured baseline on either axis. On recovery
+        # the branches have NOT moved; there was simply nothing to
+        # compare against. The first successful measurement of an
+        # axis is initialization: it establishes the baseline, and
+        # must not be stamped as an external movement -- and no
+        # false attribution may appear on later unchanged
+        # observations either.
+        failed = census_row(
+            upstream=None, mirror_branch=None,
+            mirror_status="unknown", develop_status="unknown",
+            mirror_behind=None, mirror_unique=None,
+            develop_behind=None, develop_fork_local=None,
+            mirror_head=None, upstream_head=None, develop_head=None,
+            error="repo-info: HTTP 500",
+        )
+        rows1, _ = ffc.build_rows(
+            census_doc([failed], generated_at="2026-11-16T09:00:00-06:00"),
+            [], {}, "2026-11-16T09:00:00-06:00",
+        )
+        self.assertEqual(rows1[0][6], "")  # no mirror baseline
+        self.assertEqual(rows1[0][11], "")  # no develop baseline
+        self.assertEqual(rows1[0][13], "fork-fleet-census")
+        self.assertEqual(rows1[0][12], "")
+        rows2, _ = ffc.build_rows(
+            census_doc([census_row()], generated_at="2026-11-17T09:00:00-06:00"),
+            rows1, {}, "2026-11-17T09:00:00-06:00",
+        )
+        self.assertEqual(rows2[0][6], SHA_A[:12])  # baseline established
+        self.assertEqual(rows2[0][11], SHA_C[:12])
+        self.assertEqual(rows2[0][13], "fork-fleet-census")  # NOT external
+        self.assertEqual(rows2[0][12], "")  # M untouched
+        # A later unchanged observation keeps the initialization
+        # stamp: the false attribution never appears or persists.
+        rows3, _ = ffc.build_rows(
+            census_doc([census_row()], generated_at="2026-11-18T09:00:00-06:00"),
+            rows2, {}, "2026-11-18T09:00:00-06:00",
+        )
+        self.assertEqual(rows3[0][13], "fork-fleet-census")
+        self.assertEqual(rows3[0][12], "")
+
+    def test_movement_after_blank_baseline_attributes_normally(self):
+        # Baselines are per-axis. Night 1 measures develop but the
+        # mirror compare fails, so only the mirror baseline is
+        # blank. Night 2 measures the mirror for the first time
+        # (initialization, not movement) while develop genuinely
+        # moves against its real baseline -- the develop movement
+        # still attributes. Night 3: the mirror genuinely moves
+        # against the baseline night 2 established, with a sync
+        # record inside the window -- attributed to fork-sync.
+        t1 = "2026-11-16T09:00:00-06:00"
+        partial = census_row(
+            mirror_status="unknown", mirror_behind=None,
+            mirror_unique=None, mirror_head=None, upstream_head=None,
+            error="mirror-compare: HTTP 500",
+        )
+        rows1, _ = ffc.build_rows(census_doc([partial]), [], {}, t1)
+        self.assertEqual(rows1[0][6], "")  # mirror baseline absent
+        self.assertEqual(rows1[0][11], SHA_C[:12])  # develop baselined
+        moved = census_row(develop_head=SHA_D, develop_behind=4)
+        rows2, _ = ffc.build_rows(
+            census_doc([moved], generated_at="2026-11-17T09:00:00-06:00"),
+            rows1, {}, "2026-11-17T09:00:00-06:00",
+        )
+        self.assertEqual(rows2[0][6], SHA_A[:12])  # mirror baseline set
+        self.assertEqual(rows2[0][13], "unknown (external change)")
+        record = {"repos": {"pratik-saptarshi/x": {"last_applied_at": "2026-11-18T08:00:00-06:00"}}}
+        synced = census_row(mirror_head=SHA_B, mirror_behind=2,
+                            develop_head=SHA_D, develop_behind=4)
+        rows3, _ = ffc.build_rows(
+            census_doc([synced], generated_at="2026-11-18T09:00:00-06:00"),
+            rows2, record, "2026-11-18T09:00:00-06:00",
+        )
+        self.assertEqual(rows3[0][13], "fork-sync")
+        self.assertEqual(rows3[0][12], "2026-11-18T08:00:00-06:00")

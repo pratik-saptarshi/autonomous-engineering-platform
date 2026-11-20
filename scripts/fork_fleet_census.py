@@ -53,7 +53,10 @@ fails to measure keeps its last measured head as the baseline in
 the derived sheet row (counts blank, status ``unknown``) and the
 row's verification stamp does not advance, so a sync applied
 during a failed observation is still attributable when measurement
-recovers.
+recovers. An axis with no measured baseline yet (blank head cell,
+because every earlier observation of it failed) treats its first
+successful measurement as initialization, not movement: an absent
+baseline is distinguished from a changed head.
 
 Exit codes: 0 = census complete, every repo measured; 1 = census
 complete but at least one repo has an unknown/skip axis or a partial
@@ -522,11 +525,26 @@ def build_rows(census, prev_rows, sync_record, verified_at):
                 row["develop_status"] != "unknown"
                 and row["develop_head"] is not None
             )
+            # A blank previous head cell is an absent baseline, not
+            # a head the branch moved away from: the repo's earlier
+            # observation(s) never measured that axis (a newly
+            # discovered fork's first census may have failed
+            # outright). The first successful measurement of an axis
+            # is initialization -- it establishes the baseline later
+            # movements are attributed against -- and must not be
+            # classified as a movement, or a recovered repo would be
+            # stamped `unknown (external change)` for branches that
+            # never moved, and the false stamp would persist on
+            # every later unchanged observation.
+            mirror_baseline = str(prev[6]).strip()
+            develop_baseline = str(prev[11]).strip()
             mirror_moved = mirror_measured and (
-                _short(row["mirror_head"]) != str(prev[6]).strip()
+                bool(mirror_baseline)
+                and _short(row["mirror_head"]) != mirror_baseline
             )
             develop_moved = develop_measured and (
-                _short(row["develop_head"]) != str(prev[11]).strip()
+                bool(develop_baseline)
+                and _short(row["develop_head"]) != develop_baseline
             )
             # The attribution window is bounded above by this
             # observation's own measurement time (the run stamp for

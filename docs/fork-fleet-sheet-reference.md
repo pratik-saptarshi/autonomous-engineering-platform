@@ -91,7 +91,13 @@ change when an external movement is part of what was observed. An axis that fail
 keeps its last measured head as the baseline in the sheet (counts
 blank, status `unknown`, verification stamp not advanced), so a
 sync applied during a failed observation is still attributable
-when measurement recovers.
+when measurement recovers. A blank head cell is an absent
+baseline, not a previous head: when an axis has never been
+measured successfully (a newly discovered fork's first census
+may have failed outright), its first successful measurement is
+initialization — it establishes the baseline and is not
+classified as a movement, so a recovered repo is not stamped
+`unknown (external change)` for branches that never moved.
 First-observation rows are stamped `fork-fleet-census`. Develop
 movements are not bot-made today, so a develop change with no
 recorded bot action is `unknown (external change)` — a person is
