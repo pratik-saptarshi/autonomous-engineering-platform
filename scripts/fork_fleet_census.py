@@ -63,7 +63,13 @@ the current observation's own attribution window is still bounded
 above by its measurement-completion time. An axis with no measured baseline yet (blank head cell,
 because every earlier observation of it failed) treats its first
 successful measurement as initialization, not movement: an absent
-baseline is distinguished from a changed head.
+baseline is distinguished from a changed head. On a first
+observation, only a sync record predating the observation may be
+copied into column M (it is already reflected in the measured
+head); a record landing inside the observation window is
+ambiguous -- the compares may have snapshotted the old head
+before it -- so it stays unconsumed until a later census observes
+its movement.
 
 Exit codes: 0 = census complete, every repo measured; 1 = census
 complete but at least one repo has an unknown/skip axis or a partial
@@ -620,15 +626,22 @@ def build_rows(census, prev_rows, sync_record, verified_at):
                 actor = "unknown (external change)"
         else:
             applied = record_repos.get(row["repo"], {}).get("last_applied_at")
-            # The measurement-time upper bound applies here too:
-            # a record from after this first observation (the
-            # refreshed record can describe an overlapping sync)
-            # must not be consumed into M before its movement can
-            # be observed, or the next census would label the
-            # synced head external.
-            if applied and not _after(
-                applied, row.get("measured_at") or verified_at
-            ):
+            # Only a record that predates this first observation
+            # may be consumed into M: such a sync is already
+            # reflected in the head measured here. A record landing
+            # inside the observation window (after the start
+            # watermark this row carries in column O) is ambiguous
+            # -- the compares may have snapshotted the old head
+            # before it -- so its movement was not necessarily
+            # observed; consuming it would leave the next census
+            # unable to attribute the synced head (the record no
+            # longer postdates M or column O) and permanently
+            # label the movement external. In-window records stay
+            # unconsumed until a later census observes their
+            # movement; records after the window stay unconsumed
+            # for the same reason (the measurement-time bound is
+            # subsumed by the start watermark).
+            if applied and not _after(applied, verified):
                 last_sync = applied
         notes = row["error"] or ""
         return [

@@ -943,3 +943,56 @@ class CodexRegressionTests(unittest.TestCase):
         )
         self.assertEqual(rows2[0][13], "unknown (external change)")
         self.assertEqual(rows2[0][12], "")
+
+    def test_first_observation_leaves_in_window_sync_record_unconsumed(self):
+        # A newly discovered repo whose first observation spans
+        # 10:00-10:01: the compares snapshot the pre-sync mirror
+        # head, but a sync lands at 10:00:30, inside the window.
+        # That record's head was never observed, so copying it into
+        # column M would consume it: the next census measures the
+        # synced head as a movement, but the record no longer
+        # postdates M (nor column O, the observation start), fails
+        # the lower-bound check, and the movement is permanently
+        # labeled external. In-window records stay unconsumed on
+        # first observation; the next census attributes them.
+        record = {"repos": {"pratik-saptarshi/x": {"last_applied_at": "2026-11-18T10:00:30-06:00"}}}
+        first = census_row(
+            observed_from="2026-11-18T10:00:00-06:00",
+            measured_at="2026-11-18T10:01:00-06:00",
+        )
+        rows1, _ = ffc.build_rows(
+            census_doc([first], generated_at="2026-11-18T10:05:00-06:00"),
+            [], record, "2026-11-18T10:05:00-06:00",
+        )
+        self.assertEqual(rows1[0][6], SHA_A[:12])  # pre-sync head recorded
+        self.assertEqual(rows1[0][12], "")  # in-window sync NOT consumed
+        self.assertEqual(rows1[0][13], "fork-fleet-census")
+        self.assertEqual(rows1[0][14], "2026-11-18T10:00:00-06:00")  # O = start
+        synced = census_row(
+            mirror_head=SHA_D, mirror_behind=2,
+            measured_at="2026-11-19T10:00:00-06:00",
+        )
+        rows2, _ = ffc.build_rows(
+            census_doc([synced], generated_at="2026-11-19T10:05:00-06:00"),
+            rows1, record, "2026-11-19T10:05:00-06:00",
+        )
+        self.assertEqual(rows2[0][13], "fork-sync")
+        self.assertEqual(rows2[0][12], "2026-11-18T10:00:30-06:00")
+
+    def test_first_observation_consumes_sync_record_predating_window(self):
+        # Guard: the in-window rule does not defer records that
+        # predate the first observation entirely. A sync applied
+        # before the observation began is already reflected in the
+        # measured head, so it is copied into column M on first
+        # observation, exactly as before.
+        record = {"repos": {"pratik-saptarshi/x": {"last_applied_at": "2026-11-18T09:59:00-06:00"}}}
+        first = census_row(
+            observed_from="2026-11-18T10:00:00-06:00",
+            measured_at="2026-11-18T10:01:00-06:00",
+        )
+        rows1, _ = ffc.build_rows(
+            census_doc([first], generated_at="2026-11-18T10:05:00-06:00"),
+            [], record, "2026-11-18T10:05:00-06:00",
+        )
+        self.assertEqual(rows1[0][12], "2026-11-18T09:59:00-06:00")
+        self.assertEqual(rows1[0][13], "fork-fleet-census")

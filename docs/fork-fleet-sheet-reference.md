@@ -89,10 +89,13 @@ the snapshot but before that measurement completes postdates
 the head the observation recorded, yet is inside the window the
 next census attributes against. Column O therefore carries the
 start watermark; the current observation's upper bound remains
-its own measurement-completion time (`measured_at`). The same bound governs
-first observations: a record newer than a newly discovered
-repo's first measurement is not copied into column M until a
-later census observes its movement. When a mirror sync and a develop movement
+its own measurement-completion time (`measured_at`). First observations are
+bounded more tightly, by the observation start: only a record
+predating a newly discovered repo's first observation is copied
+into column M (it is already reflected in the measured head),
+while a record landing inside that first window is ambiguous —
+the compares may have snapshotted the old head before it — and
+stays unconsumed until a later census observes its movement. When a mirror sync and a develop movement
 are observed in the same census, column M still records the sync,
 but column N reads `unknown (external change)`: fork-sync never
 touches `develop`, so the bot cannot be credited with the last
