@@ -1,5 +1,5 @@
-# Dependabot version updates — deliberately scoped to the repo's only live
-# dependency manifest, skills/archify (npm). Everything under reference/ is a
+# Dependabot version updates — deliberately scoped to the repo's live
+# dependency surfaces: skills/archify (npm) plus GitHub Actions. Everything under reference/ is a
 # byte-pinned snapshot (see .github/vendor-*.sha256) and is intentionally
 # absent: omission, not an ignore entry, is the posture for trees that must
 # never be edited in place — snapshot changes land only by re-vendoring.
@@ -13,3 +13,8 @@ updates:
     directory: "/skills/archify"
     schedule:
       interval: "weekly"
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3

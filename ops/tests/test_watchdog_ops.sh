@@ -240,6 +240,18 @@ check "(e) backup staged" ls "$(fixture_ns)/backups"/db-*.db
 check_not "(e) no Drive watermark recorded" test -f "$(fixture_ns)/.last-drive-sha256"
 kill_fixture_daemons
 
+note "case (g): wedged daemon on changed-DB path — loud failure, no backup"
+new_fixture g
+set_changed
+set_last_use 1
+touch "$(fixture_ns)/.stub-ignore-term"
+start_fixture_daemon
+run_watchdog
+[ "$RC" -ne 0 ] && ok "(g) nonzero exit on stop failure (got $RC)" || fail "(g) nonzero exit on stop failure (got $RC)"
+check "(g) run reports stop failure" grep -q "would not stop" "$OUT"
+check "(g) no backup staged" test -z "$(ls "$(fixture_ns)/backups"/db-*.db 2>/dev/null || true)"
+kill_fixture_daemons
+
 note "case (f): regression pins over every run above — no 127, no 'command not found'"
 F_OK=1
 for rc in "${CASE_RCS[@]}"; do

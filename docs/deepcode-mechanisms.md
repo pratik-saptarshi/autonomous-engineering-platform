@@ -133,9 +133,9 @@ Every claim manifest records the outcome as `policy_integrity`, with `policy_pat
 
 - Match → `BOOT-GATE: policy ok: <path> (sha256 <digest prefix>)`, followed by the token line `BOOT-GATE-RESULT: POLICY-OK`.
 - Differ, or the committed blob cannot be read → `BOOT-GATE: policy FAIL: ...` and the gate exits non-zero (no token line). An uncommitted policy edit fails the gate **by design**.
-- No policy file at the configured path → `BOOT-GATE: policy SKIP: no policy data at ... (launch-policy integrity inactive)`, followed by `BOOT-GATE-RESULT: POLICY-INACTIVE`, and the gate proceeds (exit unaffected). SKIP means the integrity check is inactive, not that policy passed.
+- No policy file at the configured path → `BOOT-GATE: policy FAIL: no policy data at ... (launch-policy integrity inactive — failing closed)` and the gate exits 1. A host without policy is refused, never waved through: there is no SKIP path, and no token line is printed on failure. Break-glass for a policy-less host: see `docs/boot-gate-policy.md`.
 
-The token line is the machine-readable form of the outcome — a SKIP is distinguishable from a pass without parsing prose. The gate's exit contract is unchanged: SKIP still exits 0.
+The token line is the machine-readable confirmation of a pass — `BOOT-GATE-RESULT: POLICY-OK` is printed only when the policy check passed.
 
 Scope statement: this check runs whenever an operator or a cron invokes `boot-gate.sh`. Wiring boot-gate into crons is issue #17 and is **not** delivered here — nothing in this mechanism claims cron enforcement.
 
@@ -250,7 +250,7 @@ What is **not** fenced: any lane, worktree, or process not launched through the 
 Merging code is not activation. After this branch lands, verify each item against the **live** environment:
 
 - [ ] Both skill copies carry the wiring (Tasks 3 and 8 edited the repo copies in `skills/` and the live copies the runtime loads in `~/workspace/custom-skills/`). Check with the Acceptance Criterion 6 greps against the live files: `mechanical_verify.py` appears 2× in the live SDD skill; `lane-coord.sh` appears 3× in the live overnight-parallel-lanes skill.
-- [ ] Run one real `bash scripts/boot-gate.sh` and confirm the fifth check line is `BOOT-GATE: policy ok: ...` (or an understood SKIP).
+- [ ] Run one real `bash scripts/boot-gate.sh` and confirm the fifth check line is `BOOT-GATE: policy ok: ...` (a missing policy file fails the gate — see `docs/boot-gate-policy.md`).
 - [ ] Run one real claim against a scratch repo — `lane-coord.sh claim ... --exec true` — and confirm the `LANE: claimed ...` line on launch and the `LANE: released ... (worker exit 0)` line when it finishes.
 - [ ] Confirm the `script-tests` CI job is green on the merge PR (docs-lint, shell-lint, go-checks, security, vendor-integrity, script-tests — six jobs).
 
