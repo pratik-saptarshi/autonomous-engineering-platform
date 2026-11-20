@@ -124,7 +124,14 @@ such a recovery, column M likewise initializes from the latest
 sync record predating the successful observation (the baseline
 head already reflects it), unbounded by the reconciliation
 window above — that window bounds only established baselines,
-and a failed first observation may be a day old.
+and a failed first observation may be a day old. When the
+recovery is partial — the mirror first measures while the
+other axis still fails — the row's verification stamp takes
+the establishing observation's start watermark instead of the
+frozen stamp of the older failed observation, so a sync record
+deferred inside the establishing window can still reconcile on
+a later unchanged observation; the stamp otherwise stays
+frozen whenever an axis fails to measure.
 First-observation rows are stamped `fork-fleet-census`. Develop
 movements are not bot-made today, so a develop change with no
 recorded bot action is `unknown (external change)` — a person is

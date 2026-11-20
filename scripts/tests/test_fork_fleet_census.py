@@ -1131,6 +1131,116 @@ class CodexRegressionTests(unittest.TestCase):
         self.assertEqual(rows2[0][12], "")  # M untouched
         self.assertEqual(rows2[0][13], "fork-fleet-census")
 
+    def test_partial_recovery_preserves_baseline_establishing_window(self):
+        # Census 1 fails on both axes: both head cells blank, the
+        # row frozen at census 1's stamp (10:00). Census 2 first
+        # measures the synced mirror (baseline established) while
+        # develop still fails; a sync landing inside census 2's own
+        # window (10:00:30) is deferred, exactly as on a full first
+        # observation. But the partial row's stamp stays frozen at
+        # census 1's, so on census 3 (full recovery, mirror
+        # unchanged) the deferred reconciliation tests the record
+        # against census 1's one-hour window and rejects it --
+        # column O then advances past the record and M stays blank
+        # permanently. The row must preserve the window of the
+        # observation that actually established the mirror baseline:
+        # census 2's start watermark, not the frozen row-wide stamp.
+        failed = census_row(
+            upstream=None, mirror_branch=None,
+            mirror_status="unknown", develop_status="unknown",
+            mirror_behind=None, mirror_unique=None,
+            develop_behind=None, develop_fork_local=None,
+            mirror_head=None, upstream_head=None, develop_head=None,
+            error="repo-info: HTTP 500",
+            observed_from="2026-11-18T10:00:00-06:00",
+            measured_at="2026-11-18T10:01:00-06:00",
+        )
+        rows1, _ = ffc.build_rows(
+            census_doc([failed], generated_at="2026-11-18T10:05:00-06:00"),
+            [], {}, "2026-11-18T10:05:00-06:00",
+        )
+        self.assertEqual(rows1[0][6], "")  # no mirror baseline
+        self.assertEqual(rows1[0][11], "")  # no develop baseline
+        self.assertEqual(rows1[0][14], "2026-11-18T10:00:00-06:00")
+        record = {"repos": {"pratik-saptarshi/x": {"last_applied_at": "2026-11-19T10:00:30-06:00"}}}
+        partial = census_row(
+            mirror_head=SHA_D, mirror_behind=2,
+            develop_status="unknown", develop_behind=None,
+            develop_fork_local=None, develop_head=None,
+            error="develop-compare: HTTP 500",
+            observed_from="2026-11-19T10:00:00-06:00",
+            measured_at="2026-11-19T10:01:00-06:00",
+        )
+        rows2, _ = ffc.build_rows(
+            census_doc([partial], generated_at="2026-11-19T10:05:00-06:00"),
+            rows1, record, "2026-11-19T10:05:00-06:00",
+        )
+        self.assertEqual(rows2[0][6], SHA_D[:12])  # mirror baseline established
+        self.assertEqual(rows2[0][11], "")  # develop still unmeasured
+        self.assertEqual(rows2[0][12], "")  # in-window sync deferred
+        # The establishing observation's start watermark is preserved:
+        self.assertEqual(rows2[0][14], "2026-11-19T10:00:00-06:00")
+        recovered = census_row(
+            mirror_head=SHA_D, mirror_behind=2,
+            observed_from="2026-11-20T10:00:00-06:00",
+            measured_at="2026-11-20T10:01:00-06:00",
+        )
+        rows3, changed = ffc.build_rows(
+            census_doc([recovered], generated_at="2026-11-20T10:05:00-06:00"),
+            rows2, record, "2026-11-20T10:05:00-06:00",
+        )
+        self.assertEqual(rows3[0][12], "2026-11-19T10:00:30-06:00")  # M reconciled
+        self.assertEqual(rows3[0][13], "fork-fleet-census")  # no movement classified
+        self.assertEqual(changed, [0])
+
+    def test_record_outside_baseline_establishing_window_does_not_reconcile(self):
+        # Guard: preserving the establishing window does not widen
+        # reconciliation. Same partial-recovery shape, but the sync
+        # record lands BETWEEN census 2 and census 3 (15:00, five
+        # hours after the establishing window): against the
+        # now-established baseline an unchanged head means that sync
+        # explains nothing the sheet tracks, so M stays blank.
+        failed = census_row(
+            upstream=None, mirror_branch=None,
+            mirror_status="unknown", develop_status="unknown",
+            mirror_behind=None, mirror_unique=None,
+            develop_behind=None, develop_fork_local=None,
+            mirror_head=None, upstream_head=None, develop_head=None,
+            error="repo-info: HTTP 500",
+            observed_from="2026-11-18T10:00:00-06:00",
+            measured_at="2026-11-18T10:01:00-06:00",
+        )
+        rows1, _ = ffc.build_rows(
+            census_doc([failed], generated_at="2026-11-18T10:05:00-06:00"),
+            [], {}, "2026-11-18T10:05:00-06:00",
+        )
+        partial = census_row(
+            mirror_head=SHA_D, mirror_behind=2,
+            develop_status="unknown", develop_behind=None,
+            develop_fork_local=None, develop_head=None,
+            error="develop-compare: HTTP 500",
+            observed_from="2026-11-19T10:00:00-06:00",
+            measured_at="2026-11-19T10:01:00-06:00",
+        )
+        rows2, _ = ffc.build_rows(
+            census_doc([partial], generated_at="2026-11-19T10:05:00-06:00"),
+            rows1, {}, "2026-11-19T10:05:00-06:00",
+        )
+        self.assertEqual(rows2[0][6], SHA_D[:12])  # baseline established
+        self.assertEqual(rows2[0][12], "")
+        record = {"repos": {"pratik-saptarshi/x": {"last_applied_at": "2026-11-19T15:00:00-06:00"}}}
+        recovered = census_row(
+            mirror_head=SHA_D, mirror_behind=2,
+            observed_from="2026-11-20T10:00:00-06:00",
+            measured_at="2026-11-20T10:01:00-06:00",
+        )
+        rows3, _ = ffc.build_rows(
+            census_doc([recovered], generated_at="2026-11-20T10:05:00-06:00"),
+            rows2, record, "2026-11-20T10:05:00-06:00",
+        )
+        self.assertEqual(rows3[0][12], "")  # M untouched
+        self.assertEqual(rows3[0][13], "fork-fleet-census")
+
 
 class BlankRowPositionTests(unittest.TestCase):
     """Round-12 regressions: blank prev rows keep physical positions.

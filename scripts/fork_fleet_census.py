@@ -79,6 +79,13 @@ head and the head never moves again, reconciles it into column M
 on an unchanged observation (the record must fall inside the
 window of the observation that established the baseline head;
 records landing between observations are never reconciled).
+When the establishing observation was itself partial -- the
+mirror first measured while the other axis still failed -- the
+row's verification stamp takes that observation's start
+watermark instead of the frozen stamp of the older failed
+observation, so the establishing window is the one preserved
+in the sheet; the stamp otherwise stays frozen whenever an
+axis fails to measure.
 
 Exit codes: 0 = census complete, every repo measured; 1 = census
 complete but at least one repo has an unknown/skip axis or a partial
@@ -579,13 +586,47 @@ def build_rows(census, prev_rows, sync_record, verified_at):
             # status unknown), and the row's verification stamp only
             # advances when both axes measured -- a failed observation
             # must not erase the baseline a later recovery is
-            # attributed against.
+            # attributed against. Sole exception: a partial
+            # observation that establishes the mirror's first
+            # measured baseline takes its own start watermark (see
+            # the freeze block below), preserving the establishing
+            # observation's window for deferred reconciliation.
             if row["mirror_status"] == "unknown":
                 m_behind, m_unique, m_head = "", "", prev[6]
             if row["develop_status"] == "unknown":
                 d_behind, d_local, d_head = "", "", prev[11]
             if "unknown" in (row["mirror_status"], row["develop_status"]):
                 verified = prev[COL_VERIFIED] or verified_at
+                if (
+                    row["mirror_status"] != "unknown"
+                    and row["mirror_head"] is not None
+                    and not str(prev[6]).strip()
+                ):
+                    # Partial recovery that establishes the mirror
+                    # baseline: the mirror axis measured for the
+                    # first time while another axis failed. The
+                    # stamp takes THIS observation's start watermark
+                    # after all -- the frozen stamp belongs to an
+                    # older observation that never measured the
+                    # mirror, and the deferred reconciliation on a
+                    # later unchanged observation anchors its window
+                    # at the previous row's stamp: freezing here
+                    # would test an in-window sync record from this
+                    # establishing observation against that older
+                    # window and reject it permanently. The freeze's
+                    # protection is not weakened: sync attribution
+                    # is mirror-only, the mirror axis DID measure
+                    # here (any earlier record is consumed by the
+                    # blank-baseline initialization branch below or
+                    # already reflected in the baseline head), and
+                    # the failed axis keeps its baseline head cell
+                    # above. Established mirror baselines never take
+                    # this branch -- the stamp stays frozen for them.
+                    verified = (
+                        row.get("observed_from")
+                        or row.get("measured_at")
+                        or verified_at
+                    )
             # Attribution is per-axis: each axis is attributable on
             # its own measurement, independently of the other axis.
             # fork-sync moves mirrors only, so a develop-axis failure
