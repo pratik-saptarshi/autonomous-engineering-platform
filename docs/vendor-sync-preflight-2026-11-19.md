@@ -97,7 +97,7 @@ The pre-sync SHAs above are also held by the mirror-clone tags and inside the bu
 |---|---|---|---|---|
 | 3 | install | `gh repo sync --branch main --source Homebrew/install` | `3ef3676f8028811d38eae05d3b3b4f97d72a0f61` | fork `main` == upstream `main` (0 behind, 0 ahead) |
 | 4 | docs-mcp-server | forward merge `main`→`develop` (`--no-ff`) | `5e1ce5268f6dd84e2aeee1738d6ac2bac51896fb` | all 10 fork-only SHAs + upstream head ancestors; follow-redirects 1.16.2, minimatch 11.0.5, lockfile 3.4.1, `patternMatcher.ts` all present |
-| 5 | esf | pending | — | — |
+| 5 | esf | **BLOCKED — not pushed** | fork `develop` unchanged at `25e2ef8707c6f491b5abe235b74d652b0b7bd418` | 30+ merge conflicts including a directory rename `internal/controlplane/web`→`internal/console/web` and modify/delete on files carrying fork remediations (vite/undici pins). Per the plan's stop guard, no conflict was resolved silently; the merge was aborted. |
 
 ## Sign-off
 
