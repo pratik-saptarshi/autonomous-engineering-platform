@@ -24,10 +24,10 @@
 
 ## Review Focus
 
-1. **Content loss during merge** — a conflict resolution can keep a fork-only commit as an ancestor while dropping its patch. Tasks 3–4 diff remediation versions before/after; Acceptance Criteria gate on content, not ancestry.
+1. **Content loss during merge** — a conflict resolution can keep a fork-only commit as an ancestor while dropping its patch. Tasks 4–5 diff remediation versions before/after; Acceptance Criteria gate on content, not ancestry.
 2. **Irreversible external mutation** — a mis-aimed sync destroys public fork commits. Task 1 preserves objects and emits an executable rollback runbook before any mutation; Task 2 pre-flights every target.
-3. **New upstream content as instruction/secret surface** — incoming AGENTS.md/hooks/workflows could govern AEP if left live. Tasks 5–8 include a disposition gate and synthetic-fixture verification before any allowlist.
-4. **A detector that silently skips** — missing metadata, a changed repo/branch, or a removed tree must produce a finding. Task 10 enumerates expected trees from `reference/*/` and mutation-tests each failure path in CI (`--self-test`).
+3. **New upstream content as instruction/secret surface** — incoming AGENTS.md/hooks/workflows could govern AEP if left live. Tasks 6–10 include a disposition gate and synthetic-fixture verification before any allowlist, with a Test Plan bullet and Acceptance Criterion.
+4. **A detector that silently skips** — missing metadata, a changed repo/branch, or a removed tree must produce a finding. Task 12 enumerates expected trees from `reference/*/` and mutation-tests each failure path in CI (`--self-test`).
 5. **Stale-at-birth data** — humanizer and craft-anything moved during the audit. Task 1 re-derives everything live; no task trusts a froze-table value.
 
 ---
@@ -42,14 +42,15 @@
 - Modify: `.github/workflows/ci.yml` (validate freshness blocks)
 - Test: `scripts/tests/test_vendor_graph.py`
 
-- [ ] **Step 1:** Write a failing test that, with mocked `gh api` responses, asserts the parser reads the `vendor-freshness` block from every `reference/*/PROVENANCE.md` (13 top-level files) and returns exactly 13 entries, with `neurostrata-ops` as `{"pin":null,"policy":"local"}` and the 3 nested `harness2/third_party/*/PROVENANCE.md` files ignored.
+- [ ] **Step 1:** Write a failing test that, using **temporary fixture provenance files in a temp dir** (with mocked `gh api` responses), asserts the parser reads the `vendor-freshness` block from 13 fixture files and returns exactly 13 entries, with `neurostrata-ops` as `{"pin":null,"policy":"local"}` and 3 nested `third_party/*/PROVENANCE.md` fixtures ignored. Do **not** read the real provenance files here — the real blocks do not exist until Step 5 of this task, and the test must pass at this step.
 - [ ] **Step 2:** Run it; confirm failure on the missing module/blocks.
 - [ ] **Step 3:** Implement `vendor_graph.py`: glob `reference/*/PROVENANCE.md`; parse a one-line HTML comment `<!-- vendor-freshness: {…} -->` with `json.loads`; fields `tree, pin, repo, branch, parent, parent_branch, policy, decision_date, review_due`. For each entry with a `pin`, call `gh api repos/<repo>/compare/<pin>...<branch>` (pin vs fork head) and, when `parent` is set, `gh api repos/<parent>/compare/<parent_branch>...<owner>:<branch>` (fork vs upstream). Output deterministic JSON.
 - [ ] **Step 4:** Run the test; confirm it passes. Add a test that a malformed or missing block produces a finding (not a skip).
-- [ ] **Step 5:** Run `vendor_graph.py` **live** and commit its output as `docs/vendor-sync-preflight-2026-11-19.md`. This is the authoritative starting state; if it disagrees with this plan's tables, the live output wins and Task 2 reclassifies accordingly.
-- [ ] **Step 6:** For each fork that will be mutated, preserve objects: `git clone --mirror <fork> /tmp/vendor-backup-<tree>-2026-11-19.git` and `git -C <clone> tag backup/pre-sync-2026-11-19 <working-sha> <mirror-sha>`; record the commands and resulting SHAs in the preflight doc. Write the executable rollback runbook (revert the merge commit on the working branch; separately-authorized restore of a mirror from the bundle) into that doc.
-- [ ] **Step 7:** Add a CI step validating that every `reference/*/PROVENANCE.md` has a parseable freshness block and that its `pin` matches the commit named in the prose. Count-assert 13 entries and assert the presence of the `local` entry — content, not just counts.
-- [ ] **Step 8:** Commit.
+- [ ] **Step 5:** **Add all 13 freshness blocks — this task is the sole owner of block creation.** For each top-level `reference/*/PROVENANCE.md`, add `<!-- vendor-freshness: {…} -->` using the pin already recorded in that file's prose and the repo/branch/parent re-verified live (Task 2 will reclassify actions if needed). `neurostrata-ops` gets `{"tree":"neurostrata-ops","pin":null,"policy":"local"}`. The 3 nested `harness2/third_party/*/PROVENANCE.md` files are not independently pinned and get no block. No re-vendor task adds a block — each only updates its own `pin` field in the same PR (Tasks 6–10), so no block is ever born stale or double-added.
+- [ ] **Step 6:** Run `vendor_graph.py` **live** and commit its output as `docs/vendor-sync-preflight-2026-11-19.md`. This is the authoritative starting state; if it disagrees with this plan's tables, the live output wins and Task 2 reclassifies accordingly.
+- [ ] **Step 7:** For each fork that will be mutated, preserve objects **outside `/tmp`**: `git clone --mirror <fork> <backup-root>/vendor-backup-<tree>-2026-11-19.git`, `git -C <backup-root>/vendor-backup-<tree>-2026-11-19.git bundle create <backup-root>/pre-sync-<tree>-2026-11-19.bundle --all`, then tag **one object per tag** with distinct names: `git -C <clone> tag backup/pre-sync-<tree>-mirror <mirror-sha>` and `git -C <clone> tag backup/pre-sync-<tree>-working <working-sha>`. Record every command and SHA in the preflight doc. Write the executable rollback runbook **referencing the bundle actually created** (revert the merge commit on the working branch; separately-authorized restore of a mirror from that bundle). Commit the runbook doc **before any external mutation**; record its commit SHA/timestamp in the preflight doc.
+- [ ] **Step 8:** Add a CI step validating that every `reference/*/PROVENANCE.md` has a parseable freshness block and that its `pin` matches the commit named in the prose. Count-assert 13 entries and assert the presence of the `local` entry — content, not just counts. This gate lands **in the same task that creates the blocks**, so no PR is red while blocks are missing.
+- [ ] **Step 9:** Commit.
 
 ### Task 2: Pre-flight each fork and classify actions
 
@@ -94,19 +95,19 @@ Each task: re-run `verify-target`; back up; perform the classified action; run `
 
 ## Phase B — Re-vendor the affected trees
 
-One PR per tree. Every task includes the disposition gate and manifest regeneration. Canonical manifest command (from inside the tree): `find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > ../../.github/vendor-<tree>.sha256`, then CI's `sha256sum -c` + unlisted-files `comm` check must pass.
+One PR per tree. Every task includes the disposition gate and manifest regeneration. **Each re-vendor updates the `pin` field of its own freshness block (created in Task 1) in the same PR; tasks here never add a block or leave a stale pin.** Canonical manifest command (from inside the tree): `find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > ../../.github/vendor-<tree>.sha256`, then CI's `sha256sum -c` + unlisted-files `comm` check must pass.
 
 ### Task 6: Re-vendor `homebrew-install` at synced fork `main`
 
 - [ ] **Step 1:** Fetch the synced head; enumerate instruction surfaces and secrets in the new tree; quarantine/document per Global Constraints.
 - [ ] **Step 2:** Replace `reference/homebrew-install/` wholesale (exclude `.git`; no symlinks per existing provenance).
 - [ ] **Step 3:** Regenerate `.github/vendor-homebrew-install.sha256`; verify tree↔commit byte-fidelity against a fresh `git archive` of the pin (exclusions aside).
-- [ ] **Step 4:** Rewrite `PROVENANCE.md`: new pin, snapshot date, sync record, freshness block with `policy: repin`. Keep `.env.example`-style faithful content; secret scan clean.
+- [ ] **Step 4:** Rewrite `PROVENANCE.md`: new pin, snapshot date, sync record; update the `pin` field of the **existing** freshness block written in Task 1 (do not add a second block) in this same PR. Keep `.env.example`-style faithful content; secret scan clean.
 - [ ] **Step 5:** Run `vendor-integrity`, `security`, `docs-lint`. Commit, push, open PR, link it.
 
 ### Task 7: Re-vendor `humanizer` at fork head (reclassified `repin`, no sync)
 
-- [ ] **Step 1–5:** as Task 6. Preserve the note that AEP's `skills/humanizer/` carries local amendments that never land in the reference tree; verify that directory is untouched. Confirm the `feat/scope-and-file-mode-amendments` branch SHA is unchanged.
+- [ ] **Step 1–5:** as Task 6, including the freshness-block `pin` update in the same PR. Preserve the note that AEP's `skills/humanizer/` carries local amendments that never land in the reference tree; verify that directory is untouched. Confirm the `feat/scope-and-file-mode-amendments` branch SHA is unchanged.
 - [ ] **Step 6:** Record that the fork is now identical to upstream, so this is a re-pin, not a sync.
 
 ### Task 8: Re-vendor `docs-mcp-server` at synced fork `develop`
@@ -118,7 +119,7 @@ One PR per tree. Every task includes the disposition gate and manifest regenerat
 - [ ] **Step 1:** Fetch the synced head; disposition gate (instruction surfaces, lifecycle-script deps).
 - [ ] **Step 2:** Replace `reference/esf/` wholesale; exclude `.git` and `bin/` (current manifest has 0 `bin/` entries).
 - [ ] **Step 3:** Regenerate `.github/vendor-esf.sha256`; verify byte-fidelity.
-- [ ] **Step 4:** Update `PROVENANCE.md` with the new pin, the 57-commit forward-merge record, the update-history entry, and the freshness block.
+- [ ] **Step 4:** Update `PROVENANCE.md` with the new pin, the 57-commit forward-merge record, and the update-history entry; update the `pin` field of the existing freshness block from Task 1 in this same PR (no new block).
 - [ ] **Step 5:** Re-run the secret scan. The allowlisted synthetic fixtures in `internal/factory/redact_test.go` / `evidence_test.go` must still be the only hits; any new hit must be proven synthetic (input-and-assertion, annotated) before a path allowlist. Commit, push, PR, link.
 
 ### Task 10: Re-pin pins that trail a current fork (no sync needed)
@@ -127,7 +128,7 @@ One PR per tree. Every task includes the disposition gate and manifest regenerat
 
 - [ ] **Step 1:** For each, re-run the live compare. If a fork has drifted behind upstream since the audit, stop and route it to the sync path instead.
 - [ ] **Step 2:** Re-vendor the documented subset per tree, regenerate manifests, verify byte-fidelity.
-- [ ] **Step 3:** Update `PROVENANCE.md` (new pin, date, sync record, freshness block). `elephant-goldfish-model`: drop the "pure mirror" note only if no longer true. `ub-mode`: re-confirm "License: NONE"; if a license appeared, stop and report rather than leave a stale note. `grim-prompter`: re-confirm the clean secret-scan annotation.
+- [ ] **Step 3:** Update `PROVENANCE.md` (new pin, date, sync record; update the existing freshness block's `pin` from Task 1 in the same PR — do not add a block). `elephant-goldfish-model`: drop the "pure mirror" note only if no longer true. `ub-mode`: re-confirm "License: NONE"; if a license appeared, stop and report rather than leave a stale note. `grim-prompter`: re-confirm the clean secret-scan annotation.
 - [ ] **Step 4:** Run `vendor-integrity`, `security`, `docs-lint` for each. Commit, push, one PR per tree, link each.
 
 ---
@@ -138,9 +139,9 @@ One PR per tree. Every task includes the disposition gate and manifest regenerat
 
 **Files:** all 13 top-level `reference/*/PROVENANCE.md` (the 3 nested `harness2/third_party/*` files are NOT independently pinned and are out of scope).
 
-- [ ] **Step 1:** Add the one-line `vendor-freshness` block to each of the 13 files. For the 12 pinned trees: `tree, pin, repo, branch, parent, parent_branch, policy, decision_date, review_due`. For `neurostrata-ops`: `{"tree":"neurostrata-ops","pin":null,"policy":"local"}`.
+- [ ] **Step 1:** Verify all 13 freshness blocks are present and parseable (created in Task 1, pins updated by Tasks 6–10); **do not add blocks here** — that would double-add. Check each of the 12 pinned blocks carries `tree, pin, repo, branch, parent, parent_branch, policy, decision_date, review_due` and that `neurostrata-ops` is `{"tree":"neurostrata-ops","pin":null,"policy":"local"}`.
 - [ ] **Step 2:** Add `**True upstream:** <parent>` to `reference/esf/PROVENANCE.md` and `reference/harness2/PROVENANCE.md` (they currently label the fork as "Upstream" without naming `mitkox/esf` / `google-research/harness2`). Normalize `craft-anything` to `**Source (fork):** …` while retaining the `storytold` upstream line.
-- [ ] **Step 3:** Add a `## Freshness` section explaining the block, the owner (repo maintainer), and the 7-day SLA. For `craft-anything`, record that the D2 keep decision is **due for review now** (fork is no longer a pristine mirror — it moved 3 behind upstream mid-audit): `policy: keep` with `review_due: 2026-11-19`, not a silent permanent exemption. For `neurostrata`, record the intentional 604-ahead divergence with a quarterly `review_due`.
+- [ ] **Step 3:** Add a `## Freshness` section explaining the block, the owner (repo maintainer), and the 7-day SLA. For `craft-anything`, record that the D2 keep decision is **due for review now** (fork is no longer a pristine mirror — it moved 3 behind upstream mid-audit): `policy: keep` with `review_due: 2026-11-19`, not a silent permanent exemption. For `neurostrata`, record the intentional 604-ahead divergence with a quarterly `review_due`. Also record that `harness2` (2 behind `google-research/harness2`) and `neurostrata` (170 behind, alongside 604 ahead) are **known, detector-reported, out-of-scope drifts** — the baseline will surface them; they are not silent omissions or sync targets in this plan.
 - [ ] **Step 4:** Run the Task 1 CI validator; confirm 13 parseable blocks. docs-lint clean. Commit, push, PR, link.
 
 ### Task 12: Add the weekly detector (non-gating, issues: write)
@@ -154,7 +155,7 @@ One PR per tree. Every task includes the disposition gate and manifest regenerat
 - [ ] **Step 2:** Run them; confirm failures.
 - [ ] **Step 3:** Implement `vendor_freshness.py` using `vendor_graph.py` for live data. Emit deterministic JSON + a Markdown issue body with a stable marker. `--self-test` runs all mutation cases in CI.
 - [ ] **Step 4:** Make all tests pass, including the missing-block mutation. Deleting a provenance block must produce a finding — prove it in the test.
-- [ ] **Step 5:** Add `.github/workflows/vendor-freshness.yml`: `schedule: cron` weekly + `workflow_dispatch`; **permissions: `contents: read` and `issues: write` (and nothing else)** — the repo's `dependabot-reference-guard.yml` and `actionlint.yml` use this exact pattern because issue creation is a write; a read-only token would 403 and the non-gating job would silently die. Opens or updates one tracking issue keyed by a stable marker; reopens a closed issue; concurrency group prevents duplicate runs. No required check, no auto-merge, no PR creation.
+- [ ] **Step 5:** Add `.github/workflows/vendor-freshness.yml`: `schedule: cron` weekly + `workflow_dispatch`; **permissions: `contents: read` and `issues: write` (and nothing else)** — issue create/update/reopen is a write, so a read-only token 403s and the non-gating job would silently die. Precedent, accurately stated: `dependabot-reference-guard.yml` uses `issues: write` alongside `pull-requests: write`, and `actionlint.yml` alongside `checks: write` and `pull-requests: write`; this workflow needs only `contents: read` + `issues: write` because it touches neither PRs nor checks. Opens or updates one tracking issue keyed by a stable marker; reopens a closed issue; concurrency group prevents duplicate runs. No required check, no auto-merge, no PR creation.
 - [ ] **Step 6:** actionlint the workflow. Verify by `workflow_dispatch`: first run creates the issue, second updates the same issue. Commit, push, PR, link.
 
 ---
@@ -177,18 +178,20 @@ One PR per tree. Every task includes the disposition gate and manifest regenerat
 - **Graph/parse tests (Task 1):** 13 top-level blocks parsed, nested files ignored, malformed/missing block → finding.
 - **Content gates (Tasks 3–5):** explicit version assertions for every known remediation; a downgrade fails the merge even when ancestry passes.
 - **Byte-fidelity (Tasks 6–10):** manifest regenerated from the final tree, then compare to a fresh `git archive` of the pin (exclusions aside). CI's `vendor-integrity` must pass.
+- **Disposition gate (Tasks 6–10):** each re-vendor PR records an enumeration of the new tree's instruction surfaces and their quarantine disposition; every new secret-shaped hit is proven synthetic (input-and-assertion, annotated) before any `.gitleaks.toml` path allowlist; manifest exclusions match the documented disposition. Checked by review of each PR's disposition log plus a grep for unannotated allowlist entries.
 - **Detector tests (Task 12):** 7 cases incl. missing-block, keep-past-due, and a count assertion; run as CI `--self-test`, not a one-off manual mutation.
 - **Workflow smoke (Task 12):** real `workflow_dispatch` proves issue create + update with `issues: write`.
 
 ## Acceptance Criteria
 
 1. `vendor_graph.py` parses freshness blocks from all 13 top-level provenance files; nested third-party provenances are ignored; `neurostrata-ops` is `policy: local`.
-2. Every fork mutation that Task 2 classified as real is complete; its working branch contains the upstream head **and** all pre-sync fork-only commits **and** all known remediation content at >= prior versions. No-op syncs are not performed.
+2. Every fork mutation that Task 2 classified as real is complete; its working branch contains the upstream head **and** all pre-sync fork-only commits **and** all known remediation content at >= prior versions. The Task 2 Step 5 classify-and-skip log is committed in the preflight doc and names each no-op target — that log is the evidence that no no-op sync was performed.
 3. The re-vendored trees (`homebrew-install`, `humanizer`, `docs-mcp-server`, `esf`, `elephant-goldfish-model`, `grim-prompter`, `ub-mode` — final list per Task 1/2 live data) each match a single pinned commit byte-for-byte (exclusions aside), with regenerated manifests and passing `vendor-integrity`.
 4. All 13 provenance files carry a parseable freshness block; `esf`/`harness2` name their true upstreams; `craft-anything` records `review_due: 2026-11-19` as a decision due, not a permanent keep.
 5. `vendor_freshness.py` passes its 7 tests incl. mutations; the weekly workflow has `issues: write`, is non-gating, and demonstrably creates/updates one owned issue.
-6. No PR merges with an unresolved review thread or failing required check; all PR/issue text signed per `AGENTS.md`.
-7. A post-merge baseline report exists and an executable rollback runbook was committed before any external mutation.
+6. Required checks are green on every merged PR, verifiable with `gh pr checks`; PR/issue text signatures are grep-checkable per `AGENTS.md`. "No unresolved review thread" is a **review-process gate attested by the maintainer**, not a command-checkable claim.
+7. A post-merge baseline report exists. The preflight doc records the rollback runbook's commit SHA/timestamp and the first external-mutation SHA/timestamp, with the runbook commit strictly earlier — a mechanically checkable ordering.
+8. Every re-vendored tree's disposition log is present: instruction surfaces quarantined per the definition, manifest exclusions match the disposition, and any new secret-shaped hit is annotated as a synthetic fixture before an allowlist change.
 
 ## Out of Scope
 
