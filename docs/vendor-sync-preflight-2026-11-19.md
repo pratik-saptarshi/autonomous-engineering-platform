@@ -78,7 +78,7 @@ The pre-sync SHAs above are also held by the mirror-clone tags and inside the bu
 ## Ordering record
 
 - Rollback runbook commit SHA and timestamp: `ac826a392bec341b2397d2f412af1bd01bec0a16` / `2026-11-19T20:00:34-06:00`.
-- First external mutation (Task 3 `gh repo sync`): completed, recorded in commit `8264a8c` (`docs(vendor): record install sync result`, `2026-11-19T20:05:00-06:00`). The runbook commit `ac826a39` is strictly earlier than the first mutation, satisfying the ordering gate.
+- First external mutation (Task 3 `gh repo sync`): completed, recorded in commit `8264a8c` (`docs(vendor): record install sync result`, `2026-11-19T20:09:42-06:00`). The runbook commit `ac826a39` is strictly earlier than the first mutation, satisfying the ordering gate.
 
 ## Task 2 verify-target log (live, immediately before migration)
 
