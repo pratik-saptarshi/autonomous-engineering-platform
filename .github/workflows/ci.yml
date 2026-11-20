@@ -48,9 +48,14 @@ jobs:
         with:
           go-version: '1.27.2'
       - run: python3 -m unittest discover -s scripts/tests -v
+      - name: Vendor freshness blocks (13 provenance files, no live API)
+        run: python3 scripts/vendor_graph.py --root . --no-live --strict
+      - name: Vendor freshness detector self-test
+        run: python3 scripts/vendor_freshness.py --self-test
       - run: bash scripts/lane-coord.sh --self-test
       - run: bash scripts/boot-gate.sh --self-test --offline
       - run: bash scripts/tests/test_watchdog.sh
+      - run: bash scripts/tests/test_vendor_sync.sh
       - run: bash scripts/tests/test_package_vm.sh
       - run: bash scripts/tests/test_package_oci.sh
       - run: bash scripts/tests/test_makefile.sh

@@ -1,6 +1,7 @@
 # Provenance — vendored Harness² reference snapshot
 
 - **Upstream:** https://github.com/pratik-saptarshi/harness2
+- **True upstream:** https://github.com/google-research/harness2
 - **Pinned commit:** `e5cda48c48d1072f6d855ff4cb88eabdc2ede147` ("Merge pull request #2 from pratik-saptarshi/chore/deps-litellm-1.108.3")
 - **Snapshot date:** 2026-11-09 (re-vendor; first snapshot 2026-10-26 at `1cfe254e8d25b15f37048c3730134686abe60335`)
 - **License:** Apache License 2.0 (copyright the Harness² authors — see `LICENSE`). `LICENSE` is preserved verbatim in this tree; `third_party/` carries its own per-component licenses (`third_party/licenses/` and per-runner `LICENSE` files), also preserved verbatim.
@@ -16,3 +17,14 @@ Branch note: the source repo's default branch is `develop`; this snapshot is the
 ## Secret-scan annotation (2026-11-09)
 
 Secret scan (gitleaks v8.24.3, default rules — the same configuration the repo CI security job runs — over the full pinned tree, ~4.03 MB scanned): **no leaks found**. A supplementary credential-pattern grep (GitHub/AWS token shapes, private-key headers, `sk-` keys, password/key assignments) also found no hits. No credential files exist in the tree; the only env-shaped file is the source's `.env.example` template with empty placeholder values. Nothing in this snapshot is allowlisted in `.gitleaks.toml`; no allowlist change was needed.
+
+<!-- vendor-freshness: {"branch": "develop", "decision_date": "2026-11-19", "parent": "google-research/harness2", "parent_branch": "main", "pin": "e5cda48", "policy": "keep", "repo": "pratik-saptarshi/harness2", "review_due": "2026-12-19", "tree": "harness2"} -->
+
+## Freshness
+
+This file is the single source of truth for this tree's pin. The one-line `vendor-freshness` block above is machine-readable and is parsed by `scripts/vendor_graph.py` and `scripts/vendor_freshness.py`. Every re-vendor updates the block's `pin` in the same PR.
+
+- **Current state:** **Keep with known drift** — 0 behind upstream, 2 ahead; no sync needed. Next review 2026-12-19.
+- **Owner:** the AEP maintainer (repository owner).
+- **SLA:** a weekly non-gating detector opens or updates one tracking issue within 7 days of detected drift; it never auto-syncs or auto-merges.
+- **Known out-of-scope drift for this lane:** `harness2` (2 behind upstream), `neurostrata` (170 behind, 604 ahead), and `craft-anything` (decision due) are reported by the detector, not fixed by the 2026-11-19 migration.
