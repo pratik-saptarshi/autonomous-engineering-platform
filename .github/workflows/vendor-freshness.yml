@@ -1,0 +1,47 @@
+name: Vendor freshness
+
+on:
+  schedule:
+    - cron: '17 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: vendor-freshness
+  cancel-in-progress: true
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Self-test the detector
+        run: python3 scripts/vendor_freshness.py --self-test
+      - name: Generate report
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: python3 scripts/vendor_freshness.py --issue-body > vendor-freshness.md
+      - name: Create or update the tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          marker='<!-- vendor-freshness-report -->'
+          number=$(gh api -X GET search/issues \
+            -f q="repo:$GH_REPO is:issue in:body \"$marker\"" \
+            --jq '.items[0].number // empty' || true)
+          if [ -z "$number" ]; then
+            gh issue create --title "Vendor pin freshness report" --body-file vendor-freshness.md
+          else
+            gh issue edit "$number" --body-file vendor-freshness.md
+            state=$(gh issue view "$number" --json state --jq .state)
+            if [ "$state" = "CLOSED" ]; then
+              gh issue reopen "$number"
+            fi
+          fi
