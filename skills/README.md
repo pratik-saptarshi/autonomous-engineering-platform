@@ -15,7 +15,7 @@ The Source column names pratik-saptarshi forks (default branch `develop`) wherev
 ## Skills
 
 | Skill | Source | License | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | agent_operations | pratik-saptarshi/12-factor-agents | CC BY-SA 4.0 | |
 | aim | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | archify | pratik-saptarshi/archify | MIT | Vendored verbatim (25cf370); needs ARCHIFY_CHROME env for browser-check gate |
@@ -55,6 +55,8 @@ The Source column names pratik-saptarshi forks (default branch `develop`) wherev
 | outgoing-text-gate | Authored locally | MIT | Publication gate for issue and PR text: humanizer, factcheck, and conciseness under an independent validator |
 | overnight-parallel-lanes | Authored locally | MIT | Unattended parallel-run setup: isolated worktree per lane, parallel workers, independent reviewers, explicit stop conditions |
 | plan_review_integrator | pratik-saptarshi/opencode-rountable-review | MIT | |
+| plannotator-gate | Authored locally | MIT | Mechanical plan-approval gate over the pinned Plannotator tool: owner reviews and annotates plans, decision archive preserved; pattern in ops/tool-adoption/ |
+| plannotator-inbox | Authored locally | MIT | Asynchronous owner decision queue over the Plannotator Inbox: batched rulings routed back to the asking session; pattern in ops/tool-adoption/ |
 | post-merge-spot-check | Authored locally | MIT | Gate battery on a merged PR at its pinned head: merged-tree behaviour, byte comparison, independent oracle, attribution proof |
 | prism | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | pr-fleet-review | Authored locally | MIT | Batch review of a repo's open PRs: pinned inventory, one reviewer per PR, fixed verdict taxonomy, gated publication |

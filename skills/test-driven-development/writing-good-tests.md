@@ -8,7 +8,7 @@ adding cleanup/helper methods for tests.
 A test exists to catch a specific break. Two principles govern everything
 here:
 
-```
+```text
 1. Every test names the break it catches
 2. Every test exercises the real thing
 ```
@@ -64,7 +64,7 @@ otherwise assert the first consumer-visible result that depends on them.
 
 ### Gate Function
 
-```
+```text
 BEFORE writing the test body:
   Name the production change that would make this test fail.
 
@@ -134,7 +134,7 @@ mock here?"
 
 ### Gate Function
 
-```
+```text
 BEFORE adding a mock or test helper:
   List the real method's side effects; keep the ones the test
   depends on real — mock the slow/external level below them.
@@ -171,7 +171,7 @@ test as tautological.
 ## Quick Reference
 
 | When you... | Do |
-|-------------|-----|
+| ------------- | ----- |
 | Write any test | Name the break it catches — a bug, not a decision |
 | Build an expected value | Derive it by hand; never with the code under test |
 | Test a script or document | Run it / pressure-test its consumer; never grep its text |

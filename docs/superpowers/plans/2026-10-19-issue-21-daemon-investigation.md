@@ -1,7 +1,7 @@
 # Daemon Death Investigation (Issue #21) Plan
 
 > **SUPERSEDED** by `2026-10-21-issue-21-daemon-investigation-revised.md` (2026-10-21). The idle reaper (deployed 10-19) refuted H4; log paths were wrong; Tasks 1–2 never executed. Do not use this version.
-
+>
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Determine the root cause of the NeuroStrata daemon's silent deaths and fix the evidence-destruction that keeps the cause unknown.
@@ -10,7 +10,7 @@
 
 **Tech Stack:** bash, the deployed watchdog script (`~/workspace/neurostrata/bin/watchdog-backup.sh`), daemon logs, system memory stats.
 
-**Spec:** https://github.com/pratik-saptarshi/autonomous-engineering-platform/issues/21
+**Spec:** <https://github.com/pratik-saptarshi/autonomous-engineering-platform/issues/21>
 
 ## Background evidence (verified 2026-10-19)
 
@@ -28,12 +28,14 @@
 - **H4 — Watchdog false positive / watchdog-is-the-killer:** the health check misreports a live daemon as down, then the watchdog kills the healthy daemon during "cleanup." Predicts: daemon actually alive just before the watchdog's check; deaths align EXACTLY to watchdog runs (as observed on 10-19); WAL "not clean" caused by the watchdog's own kill.
 
 ## Global Constraints
+
 - Do NOT change the deployed watchdog's restart behavior until the cause is known — it is the only thing keeping the daemon up.
 - Do NOT run experiments that risk extended daemon downtime during the user's working hours (weekdays 08:00–18:00 America/Chicago); schedule disruptive tests for off-hours or note them as such.
 - Every diagnostic change must be reversible; document what was changed.
 - Conventional Commits for any repo changes.
 
 ## Review Focus
+
 - **The 10-19 pattern (deaths exactly on the 2h grid) vs the 10-18 pattern (two deaths off-grid)** — H4 explains the first but not the second. Both patterns must be accounted for; a single-hypothesis conclusion that ignores one is wrong.
 - **Evidence destruction is the meta-bug:** every restart truncates the log that would show the crash. Task 1 is the highest-leverage step — without it, Tasks 3-6 are guessing.
 - **The deployed watchdog is the OLD version** (`~/workspace/neurostrata/bin/watchdog-backup.sh`, always-on model) — investigate THAT script's health-check logic, not the repo's newer on-demand version.
@@ -54,9 +56,11 @@
 ### Task 1: Stop destroying evidence (log rotation)
 
 **Files:**
+
 - Modify: `~/workspace/neurostrata/bin/watchdog-backup.sh` (deployed copy)
 
 **Interfaces:**
+
 - Consumes: nothing (first task)
 - Produces: daemon.log preserved across restarts — every later task depends on this.
 
@@ -70,6 +74,7 @@ Expected: find the line(s) that truncate/redirect the log on restart (likely `> 
 - [ ] **Step 2: Change truncation to timestamped rotation**
 
 Before the daemon is (re)started, add:
+
 ```bash
 if [ -f ~/workspace/neurostrata/daemon.log ]; then
   mv ~/workspace/neurostrata/daemon.log ~/workspace/neurostrata/daemon.log.$(date +%Y%m%d-%H%M%S)
@@ -77,6 +82,7 @@ fi
 # keep the last 10 rotations
 ls -1t ~/workspace/neurostrata/daemon.log.* 2>/dev/null | tail -n +11 | xargs -r rm -f
 ```
+
 (Adapt to the script's actual variable names for the log path.)
 
 - [ ] **Step 3: Verify the change is syntactically valid and document it**
@@ -91,15 +97,18 @@ Then append a line to `~/workspace/neurostrata/OPERATIONS.md` (or the local ops 
 ### Task 2: Instrument resource usage
 
 **Files:**
+
 - Create: `~/workspace/neurostrata/daemon-rss.log` (via a lightweight sampler; RSS = Resident Set Size, the daemon's actual RAM footprint)
 
 **Interfaces:**
+
 - Consumes: Task 1 (evidence preservation in place)
 - Produces: time-series of daemon RSS + system memory, correlatable with death times.
 
 - [ ] **Step 1: Create the sampler**
 
 Write `~/workspace/neurostrata/bin/sample-daemon-rss.sh`:
+
 ```bash
 #!/usr/bin/env bash
 # Sample daemon RSS + system memory every 5 min. Appended to daemon-rss.log.
@@ -124,9 +133,11 @@ Verify: `tail -2 ~/workspace/neurostrata/daemon-rss.log` shows a fresh sample li
 ### Task 3: Test H4 — is the daemon really dead when the watchdog says so?
 
 **Files:**
+
 - Modify: `~/workspace/neurostrata/bin/watchdog-backup.sh` (deployed copy — temporary instrumentation, reverted after)
 
 **Interfaces:**
+
 - Consumes: Tasks 1-2 (evidence + instrumentation running)
 - Produces: verdict on H4 (false positive vs real death).
 
@@ -135,9 +146,11 @@ Verify: `tail -2 ~/workspace/neurostrata/daemon-rss.log` shows a fresh sample li
 - [ ] **Step 1: Instrument the health check to log raw evidence**
 
 In the deployed script's health-check function, before it returns "down", add logging of:
+
 ```bash
 echo "$(date): health-check raw: pgrep_count=$(pgrep -fc 'neurostrata-mcp daemon' || echo 0), port_34343=$(ss -ltn 2>/dev/null | grep -c 127.0.0.1:34343 || echo 0)" >> ~/workspace/neurostrata/watchdog.log
 ```
+
 (Adapt to the script's actual check; the point is to record process existence AND port state at decision time.)
 
 - [ ] **Step 2: Wait for 2 watchdog cycles (4h), then read the evidence**
@@ -155,12 +168,14 @@ Run: `grep 'health-check raw' ~/workspace/neurostrata/watchdog.log | tail -4`
 ### Task 4: Test H1 — OOM killer
 
 **Interfaces:**
+
 - Consumes: Task 2's RSS log (needs ≥1 death captured)
 - Produces: verdict on H1.
 
 - [ ] **Step 1: Try every available OOM-evidence source**
 
 Run each; record which are accessible:
+
 ```bash
 dmesg 2>&1 | grep -i oom | tail -5
 journalctl -k 2>&1 | grep -i 'killed process' | tail -5
@@ -171,6 +186,7 @@ grep -i 'killed process' /var/log/kern.log 2>&1 | tail -5
 - [ ] **Step 2: Correlate deaths with memory pressure**
 
 For each death timestamp in watchdog.log, pull the nearest RSS-log samples:
+
 ```bash
 grep 'daemon down' ~/workspace/neurostrata/watchdog.log | tail -3
 # for each timestamp T, show daemon-rss.log lines within ±15 min of T
@@ -187,6 +203,7 @@ grep 'daemon down' ~/workspace/neurostrata/watchdog.log | tail -3
 ### Task 5: Test H2/H3 — crash vs external killer
 
 **Interfaces:**
+
 - Consumes: Task 1's preserved logs (need ≥1 post-fix death with intact pre-restart log)
 - Produces: verdict on H2 (bug) vs H3 (external killer).
 
@@ -198,6 +215,7 @@ Look for: Rust panic traces, `ERROR` lines, `invalid peer certificate`, stack tr
 - [ ] **Step 2: Audit for external killers**
 
 Run:
+
 ```bash
 # what's scheduled around :01 (when deaths are found)?
 grep -rl '01' ~/workspace/cron.d/hourly/ ~/workspace/system-cron.d/hourly/ 2>/dev/null
@@ -215,10 +233,12 @@ ps aux | grep -iE 'oom|reaper|supervisord|monit' | grep -v grep
 ### Task 6: Fix and harden (only after a hypothesis is confirmed)
 
 **Interfaces:**
+
 - Consumes: verdict from Tasks 3-5
 - Produces: targeted fix — NOT a speculative rewrite.
 
 Do not write this task's steps in advance. The fix depends entirely on the confirmed cause:
+
 - H1 confirmed → reduce memory footprint, add early-warning restart, or document the constraint.
 - H2 confirmed → pin a fixed upstream version or file the upstream issue with the preserved trace.
 - H3 confirmed → remove/disable the killer or guard the daemon against it.
@@ -233,10 +253,12 @@ Do not write this task's steps in advance. The fix depends entirely on the confi
 ### Task 7: Report and update docs
 
 **Files:**
+
 - Modify (repo): `docs/limitation-analysis.md` §1(f) — repo checkout at `~/workspace/repos/autonomous-engineering-platform` (or the active PR worktree; use whichever is on `main`)
 - Modify (repo): `scripts/watchdog-backup.sh` — only if Task 1's rotation should land here too
 
 **Interfaces:**
+
 - Consumes: findings from Tasks 3-6
 - Produces: issue #21 updated; docs reflect reality.
 

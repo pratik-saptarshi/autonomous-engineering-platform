@@ -1,0 +1,11 @@
+{
+ "base": "57adcfb6e0e718b6d18349a5039c402483e716df",
+ "head": "c14d931",
+ "newly_allowed": [],
+ "newly_denied": [],
+ "notes": [
+  "skills-sync-scope.txt created (whole scope set is new)"
+ ],
+ "pr": 83,
+ "commit": "c14d931"
+}

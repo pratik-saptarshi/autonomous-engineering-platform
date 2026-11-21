@@ -183,6 +183,15 @@ async function main() {
   // caused a 100%-error baseline run with better-sqlite3 ABI mismatches. The
   // exec-provider shim consumes these vars and invokes Node directly.
   const viteNodeCli = resolve("node_modules/vite-node/dist/cli.mjs");
+  const isDirectApiOrProxy =
+    !!process.env.OPENAI_BASE_URL ||
+    !!process.env.OPENAI_API_BASE ||
+    process.env.DOCS_MCP_DIRECT_API === "true" ||
+    process.env.DOCS_MCP_DIRECT_API === "1" ||
+    process.env.DOCS_MCP_NO_API_KEY === "true" ||
+    process.env.DOCS_MCP_NO_API_KEY === "1" ||
+    process.env.DOCS_EVAL_DIRECT_API === "true" ||
+    process.env.DOCS_EVAL_DIRECT_API === "1";
   const env = {
     ...process.env,
     DOCS_EVAL_JUDGE_RESOLVED: judge.id,
@@ -192,6 +201,9 @@ async function main() {
     // via {{env.…}} so we can switch providers without parallel configs.
     DOCS_EVAL_PROMPTFOO_PROVIDER: providerSpec.promptfooId,
     DOCS_EVAL_PROMPTFOO_LABEL: providerSpec.label,
+    ...(isDirectApiOrProxy && !process.env.OPENAI_API_KEY
+      ? { OPENAI_API_KEY: "direct-api-proxy" }
+      : {}),
   };
   // Default concurrency 1: each provider invocation cold-starts vite-node AND
   // re-initialises docService (which runs a schema-migration write through

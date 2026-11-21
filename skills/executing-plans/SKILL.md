@@ -306,7 +306,7 @@ Use superpowers:finishing-a-development-branch.
 ## Common Rationalizations
 
 | Excuse | Reality |
-|--------|---------|
+| -------- | --------- |
 | "I remember what Task N says" | You remember a summary. The brief has the exact values. Read it. |
 | "The plan's code is right, skip watching the test fail" | A test you never saw fail proves nothing. It is one step. Run it. |
 | "I'll run the full suite at the end instead of per step" | Per-step runs are how you learn which step broke it. The end-of-task run is the contract, not a substitute. |
@@ -322,7 +322,7 @@ Use superpowers:finishing-a-development-branch.
 
 ## Example Workflow
 
-```
+```text
 You: I'm using the executing-plans skill to implement this plan inline.
 
 [Setup: worktree verified]

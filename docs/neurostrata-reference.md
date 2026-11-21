@@ -9,7 +9,7 @@ Vendored snapshot: [PROVENANCE.md](../reference/neurostrata/PROVENANCE.md) — f
 ## Mapping to the AEP loop
 
 | NeuroStrata | AEP (this environment) |
-|---|---|
+| --- | --- |
 | persistent graph memory across sessions | the memory layer every agent session boots against |
 | task gate — `done` requires an extracted lesson | per-task evidence + review gates before anything ships |
 | behavioral rules enforced pre-action | standing rules (deletion rule, push authorization) in agent instructions |

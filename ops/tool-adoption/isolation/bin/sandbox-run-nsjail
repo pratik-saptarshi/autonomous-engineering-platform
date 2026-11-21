@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# sandbox-run-nsjail — fail-closed launcher for the nsjail profile of the
+# untrusted-evaluation lane (rank 3a isolation adoption, 2026-11-14).
+#
+# Sibling of ~/workspace/bin/sandbox-run (the Stage-1 composite launcher),
+# with the same contract: ALL shell/exec work for an untrusted-evaluation
+# run goes through this launcher; the payload never runs unjailed.
+#
+# Usage:
+#   sandbox-run-nsjail --work DIR --out DIR [--skills DIR]
+#                      [--time-limit SECONDS] [--rlimit-as MIB]
+#                      [--cgroup-variant] [--dry-run] -- CMD [ARGS...]
+#
+#   --work DIR        fresh eval worktree (host path), bound rw at /work
+#   --out DIR         outputs dir (host path, created), bound rw at /out
+#   --skills DIR      skills tree bound ro at /skills
+#                     (default: ~/workspace/custom-skills)
+#   --time-limit N    nsjail time_limit in seconds (default 600)
+#   --rlimit-as MIB   RLIMIT_AS for the payload (default 4096)
+#   --cgroup-variant  render the config with use_cgroupv2 + a 512 MiB
+#                     cgroup_mem_max (the cgroup honesty test; on this
+#                     runtime cgroup caps are expected NOT to enforce —
+#                     see ~/workspace/nsjail/ADOPTION.md)
+#   --dry-run         render the config, print its path, do not run
+#
+# Fail-closed: if the nsjail binary or the config template is missing,
+# or rendering fails, this script exits 64 WITHOUT running the payload.
+# The nsjail process itself is started under a scrubbed environment
+# (env -i, PATH only); the rendered config additionally sets
+# keep_env=false with an allowlist, so no credential-shaped variable
+# can reach the payload through either layer. nsjail is never handed a
+# GitHub write token by this launcher.
+set -euo pipefail
+
+NSJAIL_HOME="${NSJAIL_HOME:-$HOME/workspace/nsjail}"
+NSJAIL_BIN="${NSJAIL_BIN:-$NSJAIL_HOME/src/nsjail}"
+TEMPLATE="$NSJAIL_HOME/eval-lane.cfg.tmpl"
+
+WORK=""; OUT=""; SKILLS="$HOME/workspace/custom-skills"
+TIME_LIMIT=600; RLIMIT_AS=4096; CGROUP_VARIANT=0; DRY_RUN=0
+
+die_closed() { echo "sandbox-run-nsjail: FAIL-CLOSED: $*" >&2; exit 64; }
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --work) WORK="${2:?--work needs a value}"; shift 2;;
+    --out) OUT="${2:?--out needs a value}"; shift 2;;
+    --skills) SKILLS="${2:?--skills needs a value}"; shift 2;;
+    --time-limit) TIME_LIMIT="${2:?--time-limit needs a value}"; shift 2;;
+    --rlimit-as) RLIMIT_AS="${2:?--rlimit-as needs a value}"; shift 2;;
+    --cgroup-variant) CGROUP_VARIANT=1; shift;;
+    --dry-run) DRY_RUN=1; shift;;
+    --) shift; break;;
+    *) die_closed "unknown argument: $1";;
+  esac
+done
+[ $# -ge 1 ] || die_closed "no payload command given (expected -- CMD...)"
+[ -n "$WORK" ] || die_closed "--work is required"
+[ -n "$OUT" ] || die_closed "--out is required"
+[ -d "$WORK" ] || die_closed "work dir does not exist: $WORK"
+[ -d "$SKILLS" ] || die_closed "skills dir does not exist: $SKILLS"
+[ -x "$NSJAIL_BIN" ] || die_closed "nsjail binary missing/not executable: $NSJAIL_BIN"
+[ -f "$TEMPLATE" ] || die_closed "config template missing: $TEMPLATE"
+
+mkdir -p "$OUT"
+WORK="$(cd "$WORK" && pwd)"; OUT="$(cd "$OUT" && pwd)"; SKILLS="$(cd "$SKILLS" && pwd)"
+
+RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+RUN_DIR="$NSJAIL_HOME/runs/$RUN_ID"
+mkdir -p "$RUN_DIR"
+CFG="$RUN_DIR/eval-lane.cfg"
+
+if [ "$CGROUP_VARIANT" -eq 1 ]; then CGROUPV2=true; CGROUP_MEM_MAX=536870912; else CGROUPV2=false; CGROUP_MEM_MAX=0; fi
+
+sed -e "s|@WORKTREE@|$WORK|g" \
+    -e "s|@SKILLS@|$SKILLS|g" \
+    -e "s|@OUT@|$OUT|g" \
+    -e "s|@TIME_LIMIT@|$TIME_LIMIT|g" \
+    -e "s|@RLIMIT_AS@|$RLIMIT_AS|g" \
+    -e "s|@CGROUPV2@|$CGROUPV2|g" \
+    -e "s|@CGROUP_MEM_MAX@|$CGROUP_MEM_MAX|g" \
+    "$TEMPLATE" > "$CFG" || die_closed "config render failed"
+grep -q '@[A-Z_]*@' "$CFG" && die_closed "config render left placeholders unsubstituted: $CFG"
+
+echo "sandbox-run-nsjail: run dir: $RUN_DIR" >&2
+echo "sandbox-run-nsjail: config:  $CFG" >&2
+if [ "$DRY_RUN" -eq 1 ]; then echo "sandbox-run-nsjail: dry run; payload NOT executed" >&2; exit 0; fi
+
+# Scrubbed environment for the nsjail process itself (defence in depth;
+# the payload additionally gets only the config's allowlist).
+set +e
+env -i PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+  "$NSJAIL_BIN" --config "$CFG" -- "$@"
+rc=$?
+set -e
+echo "sandbox-run-nsjail: payload exit code: $rc" >&2
+exit "$rc"

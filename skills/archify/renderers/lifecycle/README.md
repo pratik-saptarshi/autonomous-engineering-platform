@@ -40,7 +40,7 @@ A complete example lives at `archify/examples/deployment-release.lifecycle.json`
 The geometry follows from the structure alone:
 
 | Element | Placement |
-|---------|-----------|
+| --------- | ----------- |
 | Main path | One left-to-right row. Each gap fits its transition label. The first state receives the UML initial marker. |
 | Loops and skips | A transition between two non-consecutive main-path states (or back to an earlier one, or a self-transition) is an arc above the row. Shorter arcs nest inside longer ones; ports order so an outer riser never crosses an inner arc. |
 | Other states | One row per distance from the main path. A state starts under the states it connects to in the row above; overlapping states pack side by side. |

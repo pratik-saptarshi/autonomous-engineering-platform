@@ -65,7 +65,7 @@ muted text color.
 ## Layout budget
 
 | Constant | Value |
-|----------|-------|
+| ---------- | ------- |
 | viewBox | automatic height fits content + legend (minimum 327px readable band); taller when late content needs more room; automatic width packs to 560–800px for 2–3 short-label participants (4+ default 920; long labels still widen). Schema minimum `[480, 480]` |
 | Participant boxes | `spread` (default): viewBox-relative width from 86px up to 190px; `fixed`: 86px wide; both 60px tall at y 72 |
 | Participant columns | `fixed`: centers at x = 62 + index×108; `spread`: columns distribute across the available viewBox width with at least a 16px card gutter |

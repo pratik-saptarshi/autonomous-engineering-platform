@@ -1938,6 +1938,19 @@ describe("DocumentStore - Embedding Model Change Safety", () => {
     });
   });
 
+  it("initializes embeddings when app.directApi is enabled in config without OPENAI_API_KEY", async () => {
+    delete process.env.OPENAI_API_KEY;
+    const cfg = loadConfig();
+    cfg.app.embeddingModel = "openai:text-embedding-3-small";
+    cfg.app.directApi = true;
+    cfg.embeddings.vectorDimension = 1536;
+    markVectorDimensionSource(cfg, true);
+    store = new DocumentStore(":memory:", cfg);
+    await store.initialize();
+    expect(store.getActiveEmbeddingConfig()).not.toBeNull();
+    expect(store.getActiveEmbeddingConfig()?.model).toBe("text-embedding-3-small");
+  });
+
   describe("checkEmbeddingModelChange", () => {
     it("throws EmbeddingModelChangedError when the stored model or dimension differs", async () => {
       store = await createStore("openai:text-embedding-3-small");

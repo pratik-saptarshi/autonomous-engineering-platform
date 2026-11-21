@@ -1,0 +1,5 @@
+name: "product-roadmapping"
+title: "Product Roadmapping"
+description: "Use when turning a feature list, source plan, or product idea into a staged roadmap that agents will execute against — when capabilities need evidence-checking, features need acceptance criteria and eval levels, stages need exit gates, or open decisions block later stages. Also use when a roadmap draft may have paraphrased, re-cut, or silently dropped parts of its source plan."
+category: "Work and knowledge"
+include_in_prompt: true

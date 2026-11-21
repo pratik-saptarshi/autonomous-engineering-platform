@@ -9,7 +9,7 @@ Vendored snapshot: [PROVENANCE.md](../reference/esf/PROVENANCE.md) — upstream 
 ## Mapping to the AEP loop
 
 | ESF | AEP (README) |
-|---|---|
+| --- | --- |
 | factory runs — bounded, durable, cancellable | ralph-loop lane — bounded iterations, 3-strike stop |
 | deterministic verification gates | TDD + review gates before anything ships |
 | patch + evidence artifacts | build ledger + per-run records |

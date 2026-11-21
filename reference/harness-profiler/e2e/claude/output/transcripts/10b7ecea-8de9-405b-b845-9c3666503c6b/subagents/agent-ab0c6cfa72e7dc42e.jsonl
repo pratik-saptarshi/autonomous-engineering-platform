@@ -1,0 +1,4 @@
+{"type":"assistant","message":{"id":"msg_011CgvLcotmdkuEJdyW14mcX","usage":{"input_tokens":32,"cache_read_input_tokens":47289,"cache_creation_input_tokens":263,"output_tokens":56},"content":[{"type":"tool_use","id":"toolu_01FAjt1gUQutbszUCi5uexAz"}]}}
+{"type":"assistant","message":{"id":"msg_011CgvLd4837fiTbsesbGm9s","usage":{"input_tokens":4,"cache_read_input_tokens":47552,"cache_creation_input_tokens":650,"output_tokens":130},"content":[]}}
+{"type":"assistant","message":{"id":"msg_011CgvLd4837fiTbsesbGm9s","usage":{"input_tokens":4,"cache_read_input_tokens":47552,"cache_creation_input_tokens":650,"output_tokens":130},"content":[{"type":"tool_use","id":"toolu_01MkbFytZhNhzYZKvUzivR7n"}]}}
+{"type":"assistant","message":{"id":"msg_011CgvLdCs8ph5pHhBqdR74m","usage":{"input_tokens":32,"cache_read_input_tokens":48202,"cache_creation_input_tokens":188,"output_tokens":186},"content":[]}}

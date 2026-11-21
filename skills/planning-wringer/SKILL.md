@@ -23,6 +23,7 @@ When NOT to use: trivial or reversible changes, plans the author will execute in
 **Phase 1 — Draft the plan.** REQUIRED: use the writing-plans skill. Extensive, test-first tasks with exact values, per-task verification, plus an explicit Test Plan and Acceptance Criteria section. Self-review per the skill before proceeding.
 
 **Phase 2 — Adversarial panel.** Dispatch 3 parallel persona reviewers against the plan, each instructed to verify the plan's load-bearing claims with tools (read the code, the decision records, the issue notes) — never to trust the plan's assertions. Minimum set:
+
 - **Feasibility Analyst** — backward-reason from the desired outcome; verdict FEASIBLE / FEASIBLE-WITH-CHANGES / INFEASIBLE.
 - **Risk Assessor** — rank failure modes by likelihood × impact; flag downstream/autonomous consequences of the plan succeeding.
 - **Devil's Advocate** — try to kill the plan. Challenge its core premises, compare against known failure patterns (closing on fixture-only evidence, encoding undecided values as decided, conflating mechanical with substantive readiness).
@@ -38,7 +39,7 @@ Synthesize as judge: adjudicate disagreements against ground truth, keep every P
 ## Quick Reference
 
 | Phase | Input | Output | Kill signal |
-|-------|-------|--------|-------------|
+| ------- | ------- | -------- | ------------- |
 | Draft | writing-plans skill | Extensive plan + test plan + AC | — |
 | Panel | Plan + ground truth | Findings w/ severity + evidence | Devil's Advocate verdict |
 | Refine | Findings | Clean v0 plan | Disproved task survives |

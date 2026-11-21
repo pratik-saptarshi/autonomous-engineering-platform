@@ -11,6 +11,18 @@ echo 'export PATH="$HOME/workspace/bin:$PATH"' >> ~/.bashrc
 
 ### beads (issue tracker)
 
+`bd` collects anonymous usage metrics **on by default**, and events are captured from the very first command — so the opt-out config must exist *before* `bd` is ever invoked, including the version check right after install. Pre-seed it with exactly the block `bd metrics off` writes (this config location is bd v1.3.1 behavior; a future version may move it):
+
+```bash
+mkdir -p ~/.config/bd
+cat > ~/.config/bd/config.yaml <<'EOF'
+metrics:
+    disabled: true
+    endpoint: https://gastownhall-eventsapi.com/mp/collect
+    notice_shown: true
+EOF
+```
+
 ```bash
 cd /tmp
 curl -sL -o beads.tar.gz https://github.com/gastownhall/beads/releases/download/v1.3.1/beads_1.3.1_linux_amd64.tar.gz
@@ -18,6 +30,13 @@ curl -sL -o checksums.txt https://github.com/gastownhall/beads/releases/download
 grep linux_amd64 checksums.txt | sha256sum -c -
 tar xzf beads.tar.gz bd && install -m 755 bd ~/workspace/bin/bd
 bd --version   # bd version 1.3.1
+```
+
+Belt and braces: run `bd metrics off` explicitly — it is idempotent, and it covers environments where the pre-seed path differed; the expected status output shows metrics OFF:
+
+```bash
+bd metrics off
+bd metrics   # expect: "Anonymous usage metrics: OFF"
 ```
 
 Verify: `bd ping` returns ok; `bd init` in a scratch git repo, then create/show/close one issue.
@@ -41,6 +60,54 @@ cd /tmp
 # neurostrata-mcp-linux-amd64.tar.gz from the v1.9.0 release; verify SHA256
 tar xzf neurostrata-mcp-linux-amd64.tar.gz -C ~/workspace/neurostrata/bin
 ~/workspace/neurostrata/bin/neurostrata-mcp --version  # neurostrata-mcp 1.9.0
+```
+
+### OpenChamber (optional OpenCode workspace)
+
+OpenChamber is a multi-surface workspace (web/PWA, desktop, VS Code, mobile) layered over OpenCode — a UI and session manager, not a runtime. Here it runs in external-attach mode against the existing OpenCode background service instead of spawning its own server. Optional; skip unless you want a browser workspace over the local OpenCode sessions.
+
+**Prerequisites**
+
+- **OpenCode already installed and set up** — the binary is at `~/.opencode/bin/opencode`, version >= 2.2.4 (v2.3.0 verified). This section attaches to an existing install; it does not install OpenCode.
+- **A connected provider** — at least one provider is authenticated in OpenCode (here: OpenCode Go, connected via `opencode auth login`). Without a provider, the workspace opens but sessions cannot run a model. Provider credentials are operator-supplied and never live in this repo.
+- **The OpenCode background service configured** — its state is at `~/.local/state/opencode/service.json`; OpenChamber does not read a password from that file (its auth is covered in the launch note below). The service does not survive VM restarts; wake it before launching, as described in the launch note below.
+- **Node.js and Bun on PATH** — the CLI launches under Node (v24 verified), and the daemon runs under Bun (1.4 verified). Both ship in the Muse VM image; on any other machine, install Node >= 20 and Bun first.
+- **Network access to the npm registry** for the install step below. The vendored snapshot under `reference/openchamber/` is a source reference, NOT an install path: running from it would require a Bun dependency install and build (not documented here), and it deliberately omits one credential-bearing file (see its `PROVENANCE.md` for the declared exclusion and local-regeneration instructions).
+- **Your own UI password** — set `OPENCHAMBER_UI_PASSWORD` to an operator-chosen value and store it locally in a chmod-600 file; never commit it.
+
+Install the published npm package `@openchamber/web` (prebuilt; no monorepo build) into a local app dir:
+
+```bash
+mkdir -p ~/workspace/openchamber/app && cd ~/workspace/openchamber/app
+npm install @openchamber/web@2.7.3
+```
+
+The background service must be up first: it does not survive VM restarts, and any `opencode api` call wakes it (e.g. `opencode api GET /api/session`). Launch in attach mode, bound to localhost only:
+
+```bash
+cd ~/workspace/openchamber/app
+export OPENCODE_HOST=http://127.0.0.1:49374            # the background service
+export OPENCODE_SKIP_START=true                        # attach; never spawn a second server
+export OPENCODE_BINARY="$HOME/.opencode/bin/opencode"  # required even with SKIP_START; launch exits without it
+export OPENCHAMBER_UI_PASSWORD='<set your own>'        # keep it in a chmod-600 file; never commit it
+node node_modules/@openchamber/web/build/bin/cli.js serve --hostname 127.0.0.1 --port 3411
+```
+
+OpenChamber does not read the service password from `~/.local/state/opencode/service.json` — in the vendored OpenChamber 2.7.3 code, no code path reads a password from that file (in the local file it sits as a top-level field), and the file's env map (variables set via `opencode service set env`) does not carry it. OpenChamber's auth initializes from `OPENCODE_SERVER_PASSWORD` / `OPENCODE_PASSWORD` in its own process environment when set; its managed local OpenCode instance generates its own password. For the documented launch, there is no need to pass or export the background service's password. Pairing: OpenCode >= 2.2.4 required, upstream tests against 2.3.2; v2.3.0 verified attached with no warnings (2026-11-19).
+
+Security: a signed-in OpenChamber session is effectively full machine access (upstream's own threat model). Bind to 127.0.0.1 only; reach it remotely via tailnet or its built-in E2EE relay — never port-forward it.
+
+Verify attach — the session list in the UI must show the service's existing sessions, proving attach rather than a fresh instance:
+
+```bash
+curl -s http://127.0.0.1:3411/health   # expect "openCodeRunning":true, "openCodePort":49374
+```
+
+Stop (OpenChamber only, not the OpenCode service) and relaunch by repeating the launch block:
+
+```bash
+cd ~/workspace/openchamber/app
+node node_modules/@openchamber/web/build/bin/cli.js stop -p 3411
 ```
 
 ## 2. Embedding model cache (proxy workaround)
@@ -127,9 +194,11 @@ Start on demand (`start.sh`, ~20 s), discover actions (`oc.py list <service>` / 
 ## 8. Verification checklist
 
 - [ ] `bd ping` ok; issue lifecycle (create/show/close) works; per-repo isolation confirmed
+- [ ] `bd` metrics OFF, proven by BOTH signals: `bd metrics` reports OFF, **and** `~/.config/bd/config.yaml` carries `disabled: true` under `metrics:` — assert with `grep -A2 '^metrics:' ~/.config/bd/config.yaml | grep -q 'disabled: true'` (exits non-zero when the flag is absent). If either check fails, setup has FAILED — stop and fix before continuing onboarding. A future bd version that moves the setting or changes the default must break setup visibly here, not silently phone home
 - [ ] `ocr delegate preview` returns a review spec with no API key
 - [ ] `neurostrata-mcp status` healthy; MCP store/search/fetch/archive round-trip passes
 - [ ] `backlog.py next` returns the expected task as JSON
 - [ ] Scheduler shows the `ralph-loop` job with a next run time
 - [ ] Scheduler shows the `neurostrata-watchdog` job; a manual run backs up to Google Drive on DB change
 - [ ] A scheduled run with an empty backlog ends quietly; a run with tasks reports a summary
+- [ ] (Optional) OpenChamber: `curl -s http://127.0.0.1:3411/health` reports `"openCodeRunning":true` with `"openCodePort":49374`, and the UI session list shows the background service's existing sessions

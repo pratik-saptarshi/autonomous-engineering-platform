@@ -1,0 +1,342 @@
+#!/usr/bin/env node
+import { spawn, spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import net from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { configureDevDataDir } from '../dev-data-dir.mjs';
+import { createShellEnvironmentLoader } from '../shell-environment.mjs';
+import { injectedEnvKeys } from '@openchamber/web/server/lib/injected-env.js';
+import { waitForHmrApi } from './hmr-readiness.mjs';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const repoRoot = path.resolve(__dirname, '../../..');
+const electronDir = path.join(repoRoot, 'packages/electron');
+const bundledOpenCodeServerDir = path.join(electronDir, 'resources', 'opencode-server');
+const preferredHmrUiPort = Number(process.env.OPENCHAMBER_HMR_UI_PORT || '5173');
+const preferredHmrApiPort = Number(process.env.OPENCHAMBER_HMR_API_PORT || '3901');
+
+const quoteWindowsCommandArg = (value) => `"${String(value).replace(/"/g, '""')}"`;
+
+function resolveWindowsCommand(command) {
+  if (process.platform !== 'win32' || path.isAbsolute(command)) {
+    return command;
+  }
+
+  const result = spawnSync('where.exe', [command], { encoding: 'utf8', windowsHide: true });
+  if (result.error || result.status !== 0) {
+    return command;
+  }
+
+  const candidates = String(result.stdout || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  return candidates.find((entry) => /\.(exe|cmd|bat)$/i.test(entry)) || candidates[0] || command;
+}
+
+function spawnProcess(command, args, options = {}) {
+  const resolvedCommand = resolveWindowsCommand(command);
+  const isWindowsCommandScript = process.platform === 'win32' && /\.(cmd|bat)$/i.test(resolvedCommand);
+  const spawnCommand = isWindowsCommandScript ? (process.env.ComSpec || 'cmd.exe') : resolvedCommand;
+  const spawnArgs = isWindowsCommandScript
+    ? ['/d', '/s', '/c', ['call', quoteWindowsCommandArg(resolvedCommand), ...args.map(quoteWindowsCommandArg)].join(' ')]
+    : args;
+
+  return spawn(spawnCommand, spawnArgs, {
+    cwd: repoRoot,
+    env: { ...process.env, OPENCHAMBER_ELECTRON_DEV: '1' },
+    stdio: 'inherit',
+    detached: process.platform !== 'win32',
+    windowsVerbatimArguments: isWindowsCommandScript,
+    ...options,
+  });
+}
+
+function resolveBundledOpenCodeServerEnv() {
+  const entry = path.join(bundledOpenCodeServerDir, 'serve.mjs');
+  if (!fs.existsSync(entry)) {
+    console.warn(
+      `[electron:dev] bundled OpenCode server missing at ${entry}; falling back to PATH. ` +
+        'Run `bun run --cwd packages/electron prepare:opencode-server` to stage it.',
+    );
+    return {};
+  }
+  return { OPENCHAMBER_BUNDLED_OPENCODE_SERVER_DIR: bundledOpenCodeServerDir };
+}
+
+function ensureElectronInstalled() {
+  const result = spawnSync('node', [path.join(__dirname, 'ensure-electron.mjs')], {
+    cwd: repoRoot,
+    stdio: 'inherit',
+  });
+  if (result.error) {
+    throw result.error;
+  }
+  if (result.status !== 0) {
+    throw new Error(
+      '[electron:dev] electron binary is missing or incomplete and could not be repaired. ' +
+        'Run `bun run --cwd packages/electron ensure:electron` (or `bun install`) with a network connection.',
+    );
+  }
+}
+
+function runProcess(command, args, options = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: repoRoot,
+      env: { ...process.env, OPENCHAMBER_ELECTRON_DEV: '1' },
+      stdio: 'inherit',
+      ...options,
+    });
+    child.on('error', reject);
+    child.on('exit', (code, signal) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(new Error(`${command} ${args.join(' ')} exited with code ${code ?? 'null'} signal ${signal ?? 'none'}`));
+    });
+  });
+}
+
+function waitForExit(child, timeoutMs) {
+  return new Promise((resolve) => {
+    if (!child || child.exitCode !== null || child.signalCode !== null) {
+      resolve();
+      return;
+    }
+
+    const onExit = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+
+    const timer = setTimeout(() => {
+      child.off('exit', onExit);
+      resolve();
+    }, timeoutMs);
+
+    child.once('exit', onExit);
+  });
+}
+
+function isPortAvailable(port) {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.once('error', () => resolve(false));
+    server.once('listening', () => {
+      server.close(() => resolve(true));
+    });
+    server.listen(port, '127.0.0.1');
+  });
+}
+
+async function findAvailablePort(preferredPort) {
+  const start = Number.isFinite(preferredPort) && preferredPort > 0 ? preferredPort : 0;
+  if (start === 0) {
+    return new Promise((resolve, reject) => {
+      const server = net.createServer();
+      server.once('error', reject);
+      server.once('listening', () => {
+        const address = server.address();
+        const port = typeof address === 'object' && address ? address.port : 0;
+        server.close(() => resolve(port));
+      });
+      server.listen(0, '127.0.0.1');
+    });
+  }
+
+  for (let port = start; port < start + 50; port += 1) {
+    if (await isPortAvailable(port)) {
+      if (port !== start) {
+        console.warn(`[electron:dev] port ${start} is unavailable, using ${port} instead.`);
+      }
+      return port;
+    }
+  }
+
+  throw new Error(`No available port found near ${start}`);
+}
+
+function killWindowsProcessTree(pid) {
+  if (!pid) return;
+  try {
+    spawnSync('taskkill.exe', ['/PID', String(pid), '/T', '/F'], {
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+  } catch {
+  }
+}
+
+function signalChild(child, signal) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) {
+    return;
+  }
+
+  try {
+    if (process.platform !== 'win32') {
+      process.kill(-child.pid, signal);
+      return;
+    }
+  } catch {
+  }
+
+  try {
+    child.kill(signal);
+  } catch {
+  }
+}
+
+async function stopChildTree(child) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) {
+    return;
+  }
+
+  signalChild(child, 'SIGINT');
+  await waitForExit(child, 2500);
+
+  if (process.platform === 'win32' && child.exitCode === null && child.signalCode === null) {
+    killWindowsProcessTree(child.pid);
+    await waitForExit(child, 1000);
+  }
+
+  if (child.exitCode === null && child.signalCode === null) {
+    signalChild(child, 'SIGTERM');
+    await waitForExit(child, 2500);
+  }
+
+  if (child.exitCode === null && child.signalCode === null) {
+    signalChild(child, 'SIGKILL');
+    await waitForExit(child, 1000);
+  }
+}
+
+async function main() {
+  const useBundledUi = process.env.OPENCHAMBER_ELECTRON_USE_BUNDLED_UI === '1';
+  const hmrStartFile = useBundledUi ? '' : path.join(os.tmpdir(), `openchamber-hmr-${randomUUID()}`);
+  const shellEnvPromise = !useBundledUi && !process.env.OPENCHAMBER_DATA_DIR?.trim() && process.platform !== 'win32'
+    ? createShellEnvironmentLoader({ loadWindowsEnv: () => null })()
+    : Promise.resolve(null);
+  let devServer = null;
+  let hmrApiPort = '';
+  let hmrUiPort = '';
+
+  ensureElectronInstalled();
+  const bundledOpenCodeServerEnv = resolveBundledOpenCodeServerEnv();
+
+  if (useBundledUi) {
+    await runProcess('bun', ['run', '--cwd', 'packages/electron', 'build:web-assets']);
+  } else {
+    hmrApiPort = String(await findAvailablePort(preferredHmrApiPort));
+    hmrUiPort = String(await findAvailablePort(preferredHmrUiPort));
+  }
+
+  const relaunchExitCode = 75;
+  const startElectron = () => spawnProcess('bun', ['x', 'electron', './entry.mjs'], {
+    cwd: electronDir,
+    env: {
+      ...process.env,
+      ...bundledOpenCodeServerEnv,
+      OPENCHAMBER_ELECTRON_DEV: '1',
+      NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --conditions=openchamber-source --import=${pathToFileURL(path.join(repoRoot, 'packages/web/scripts/register-server-sources.mjs')).href}`.trim(),
+      OPENCHAMBER_ELECTRON_DEV_RELAUNCH_EXIT_CODE: String(relaunchExitCode),
+      OPENCHAMBER_ELECTRON_HMR_START_FILE: hmrStartFile,
+      ...(useBundledUi ? { OPENCHAMBER_ELECTRON_USE_BUNDLED_UI: '1' } : {}),
+      OPENCHAMBER_HMR_UI_PORT: hmrUiPort,
+      OPENCHAMBER_HMR_API_PORT: hmrApiPort,
+      OPENCHAMBER_DISABLE_PWA_DEV: '1',
+    },
+  });
+
+  let electron = null;
+  let cleaning = false;
+  const teardown = async (code) => {
+    if (cleaning) {
+      return;
+    }
+    cleaning = true;
+
+    await Promise.all([stopChildTree(electron), stopChildTree(devServer)]);
+    if (hmrStartFile) {
+      fs.rmSync(hmrStartFile, { force: true });
+      fs.rmSync(`${hmrStartFile}.tmp`, { force: true });
+    }
+    process.exit(typeof code === 'number' ? code : 0);
+  };
+
+  const onChildExit = (label) => (code, signal) => {
+    if (code !== 0 || signal) {
+      console.warn(`[electron:dev] ${label} exited with code ${code ?? 'null'} signal ${signal ?? 'none'}.`);
+    }
+    void teardown(code ?? 1);
+  };
+
+  const onElectronExit = onChildExit('electron');
+  const launchElectron = () => {
+    electron = startElectron();
+    electron.on('exit', (code, signal) => {
+      if (code === relaunchExitCode && !cleaning) {
+        console.log('[electron:dev] relaunching electron.');
+        launchElectron();
+        return;
+      }
+      onElectronExit(code, signal);
+    });
+    electron.on('error', (error) => {
+      console.error('[electron:dev] failed to start electron:', error);
+      void teardown(1);
+    });
+  };
+
+  launchElectron();
+
+  for (const [signal, exitCode] of Object.entries({ SIGINT: 130, SIGTERM: 143, SIGQUIT: 131, SIGHUP: 129 })) {
+    process.on(signal, () => {
+      void teardown(exitCode);
+    });
+  }
+
+  if (!useBundledUi) {
+    const shellEnv = await shellEnvPromise;
+    if (!process.env.OPENCHAMBER_DATA_DIR?.trim() && shellEnv?.OPENCHAMBER_DATA_DIR?.trim()) {
+      process.env.OPENCHAMBER_DATA_DIR = shellEnv.OPENCHAMBER_DATA_DIR;
+    }
+    configureDevDataDir(process.env, false);
+    if (cleaning) return;
+    devServer = spawnProcess('node', ['./scripts/dev-web-hmr.mjs'], {
+      env: {
+        ...process.env,
+        ...bundledOpenCodeServerEnv,
+        OPENCHAMBER_ELECTRON_DEV: '1',
+        OPENCHAMBER_ELECTRON_DEV_DATA_DIR: process.env.OPENCHAMBER_DATA_DIR,
+        OPENCHAMBER_HMR_UI_PORT: hmrUiPort,
+        OPENCHAMBER_HMR_API_PORT: hmrApiPort,
+        OPENCHAMBER_DISABLE_PWA_DEV: '1',
+      },
+    });
+    devServer.on('exit', onChildExit('dev server'));
+    devServer.on('error', (error) => {
+      console.error('[electron:dev] failed to start dev server:', error);
+      void teardown(1);
+    });
+    try {
+      await waitForHmrApi(hmrApiPort);
+      if (cleaning) return;
+      fs.writeFileSync(`${hmrStartFile}.tmp`, JSON.stringify({
+        directory: process.env.OPENCHAMBER_DATA_DIR,
+        injected: injectedEnvKeys(process.env).has('OPENCHAMBER_DATA_DIR'),
+      }), { mode: 0o600 });
+      fs.renameSync(`${hmrStartFile}.tmp`, hmrStartFile);
+    } catch (error) {
+      console.error('[electron:dev] failed to start HMR:', error);
+      await teardown(1);
+    }
+  }
+}
+
+main().catch((error) => {
+  console.error('[electron:dev] unexpected error:', error);
+  process.exit(1);
+});

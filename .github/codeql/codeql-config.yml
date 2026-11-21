@@ -1,0 +1,9 @@
+name: "AEP CodeQL config"
+
+# Vendored trees under reference/ are byte-exact pinned snapshots of external
+# repositories (see each tree's PROVENANCE.md). They are never edited in place
+# and never executed from reference/; defects in them are fixed fork-first and
+# arrive by deliberate re-vendor. Scanning them produces alert noise that
+# cannot be actioned in this repo, so they are excluded from analysis.
+paths-ignore:
+  - "reference/**"

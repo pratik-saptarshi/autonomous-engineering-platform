@@ -16,10 +16,13 @@ jobs:
   docs-lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: npx --yes markdownlint-cli2@0.24.0 "**/*.md" "!reference/esf/**/*.md" "!reference/neurostrata/**/*.md" "!reference/neurostrata-ops/**/*.md" "!reference/harness2/**/*.md" "!reference/security-audit-skill/**/*.md" "!reference/ub-mode/**/*.md" "!reference/grim-prompter/**/*.md" "!reference/docs-mcp-server/**/*.md" "!reference/humanizer/**/*.md" "!reference/homebrew-install/**/*.md" "!reference/elephant-goldfish-model/**/*.md" "!skills/archify/**/*.md" "!skills/diagnosing-superpowers/**/*.md" "!skills/neurogenesis/**/*.md" "!skills/overseer/**/*.md" "!skills/retro/**/*.md" "!skills/egm-bootstrap/**/*.md" "!skills/egm-brainstorm/**/*.md" "!skills/egm-draft/**/*.md" "!skills/egm-drift-report/**/*.md" "!skills/egm-resolve/**/*.md" "!skills/egm-review/**/*.md" "!skills/egm-review-loop/**/*.md" "!docs/egm-adoption/**/*.md"
+      # reference/** is excluded because those trees are byte-pinned vendored
+      # snapshots (see .github/vendor-*.sha256): lint must never force an
+      # edit there. Everything else in the repo is linted.
+      - run: npx --yes markdownlint-cli2@0.24.0 "**/*.md" "!reference/**"
       - name: Design invariants
         run: |
           python3 scripts/check_design_invariants.py --self-test
@@ -28,7 +31,7 @@ jobs:
   shell-lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
@@ -41,16 +44,21 @@ jobs:
   script-tests:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: '1.27.2'
+          go-version: '1.27.4'
       - run: python3 -m unittest discover -s scripts/tests -v
+      - name: Vendor freshness blocks (13 provenance files, no live API)
+        run: python3 scripts/vendor_graph.py --root . --no-live --strict
+      - name: Vendor freshness detector self-test
+        run: python3 scripts/vendor_freshness.py --self-test
       - run: bash scripts/lane-coord.sh --self-test
       - run: bash scripts/boot-gate.sh --self-test --offline
       - run: bash scripts/tests/test_watchdog.sh
+      - run: bash scripts/tests/test_vendor_sync.sh
       - run: bash scripts/tests/test_package_vm.sh
       - run: bash scripts/tests/test_package_oci.sh
       - run: bash scripts/tests/test_makefile.sh
@@ -62,12 +70,12 @@ jobs:
   go-checks:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: '1.27.2'
+          go-version: '1.27.4'
       - run: test -z "$(gofmt -l cmd internal reference/esf)"
       - run: go vet ./...
       - run: go test -v ./...
@@ -76,7 +84,7 @@ jobs:
   security:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install gitleaks (checksum-verified)
@@ -93,7 +101,7 @@ jobs:
   vendor-integrity:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - run: |
@@ -156,10 +164,102 @@ jobs:
           sha256sum -c ../../.github/vendor-homebrew-install.sha256
           comm -23 <(find . -type f | sort) <(cut -d' ' -f3- ../../.github/vendor-homebrew-install.sha256 | sed 's|^\./|./|' | sort) | grep -q . && { echo "ERROR: unlisted files"; exit 1; } || true
           find . -type l | while read -r link; do test -e "$link" || { echo "ERROR: broken symlink $link"; exit 1; }; done
+      - run: |
+          cd reference/harness-profiler
+          sha256sum -c ../../.github/vendor-harness-profiler.sha256
+          comm -23 <(find . -type f | sort) <(cut -d' ' -f3- ../../.github/vendor-harness-profiler.sha256 | sed 's|^\./|./|' | sort) | grep -q . && { echo "ERROR: unlisted files"; exit 1; } || true
+          find . -type l | while read -r link; do test -e "$link" || { echo "ERROR: broken symlink $link"; exit 1; }; done
+      - run: |
+          cd reference/openchamber
+          sha256sum -c ../../.github/vendor-openchamber.sha256
+          comm -23 <(find . -type f | sort) <(cut -d' ' -f3- ../../.github/vendor-openchamber.sha256 | sed 's|^\./|./|' | sort) | grep -q . && { echo "ERROR: unlisted files"; exit 1; } || true
+          find . -type l | while read -r link; do test -e "$link" || { echo "ERROR: broken symlink $link"; exit 1; }; done
       - name: Run vendored security-audit validator suites
         run: |
           node --test reference/security-audit-skill/skills/security-audit/validate-findings.test.cjs
           node --test reference/security-audit-skill/skills/security-audit/validate-coverage-ledger.test.cjs
+
+  # Bounded claim: the vendored tree's own unit suite passes under the Node
+  # version AEP's CI runs. No `npm install`: the suite has no runtime
+  # dependencies (playwright is an upstream devDependency of the e2e render
+  # only, which this command does not touch), so the tree the integrity job
+  # hashes is the tree the tests run. Node 22 because 18 and 20 are past
+  # end-of-life as of 2026-11; upstream's floor stays `engines: >=18`.
+  vendor-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26'
+      - name: Run vendored harness-profiler unit suite
+        # Explicit glob: Node 22+ treats positional --test arguments as glob
+        # patterns, so a bare directory argument fails with
+        # "Cannot find module .../test" there. The glob yields the same
+        # 4 test files (51 tests) on Node 18, 20, 22, 24 and 26. CI pins
+        # Node 26, the current stable line; the wrapper's own floor stays
+        # node 18+ (upstream engines).
+        run: node --test reference/harness-profiler/test/*.test.js
+
+  # Bounded claim: the adoption's own suites pass under the Node version CI
+  # runs. Through Phase D they were local-only (`task-D1-report.md`, concern 4)
+  # while the plan's Test Plan listed them as gates; this job makes them
+  # PR-gating, so a handler or wrapper regression fails the PR instead of
+  # merely failing a reviewer's terminal. Neither job is a required check on
+  # `develop` yet; that is a promotion-time decision. No `npm install`: both
+  # suites are dependency-free and use the pinned tree in place. Node 26
+  # matches `vendor-tests` (current stable line; the wrapper floor stays
+  # node 18+).
+  profile-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26'
+      - name: Run harness-profile handler suite
+        # The four files are named explicitly, as `script-tests` names each
+        # shell test, and their presence is checked first: Node 22+ treats each
+        # positional `--test` argument as a glob, and a non-matching pattern is
+        # silently skipped (verified on 26: a deleted gate.test.js still exited
+        # 0), so the explicit list alone would shrink quietly. The runner's pass
+        # count is then asserted: the list and `test -f` catch a deleted FILE,
+        # never a deleted TEST inside one. Four files, 58 tests today.
+        run: |
+          files=(
+            tools/harness-profile/gate.test.js
+            tools/harness-profile/handle.test.js
+            tools/harness-profile/hygiene.test.js
+            tools/harness-profile/translate.test.js
+          )
+          for f in "${files[@]}"; do
+            test -f "$f" || { echo "ERROR: missing test file $f"; exit 1; }
+          done
+          expected=58
+          out=$(node --test "${files[@]}" 2>&1) || { printf '%s\n' "$out"; echo "ERROR: harness-profile suite failed"; exit 1; }
+          printf '%s\n' "$out"
+          passes=$(printf '%s\n' "$out" | sed -n 's/^[^0-9]*pass \([0-9][0-9]*\)$/\1/p' | tail -n 1)
+          if [ -z "$passes" ]; then
+            echo "ERROR: could not read the pass count from node --test output"
+            exit 1
+          fi
+          if [ "$passes" -ne "$expected" ]; then
+            echo "ERROR: harness-profile suite ran $passes passing tests, expected $expected; a test was deleted or skipped"
+            exit 1
+          fi
+      - name: Run profile-tree wrapper evals
+        # E14/E14b/E14c: root walk from scripts/, the node floor with no node
+        # on PATH (and a fake node whose `--version` fails), `--help`
+        # without node, and explicit-destination handling (in-repo rejected,
+        # external honored). Seven assertions; the script fails unless it actually
+        # ran that many, so deleting an eval block cannot pass.
+        run: bash scripts/tests/test_profile_tree.sh
 
   # Bounded claim: this gate proves the repo skills/ tree equals the manifest
   # generated from the repo tree immediately after the last sync copied from
@@ -168,7 +268,7 @@ jobs:
   skills-freshness:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - run: python3 scripts/check_skills_manifest.py --root skills --check
@@ -182,7 +282,7 @@ jobs:
   skills-routing-check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - run: python3 scripts/check_skills_phantom_capability.py --root skills

@@ -52,7 +52,7 @@ receiving-review, the `coil/` loop skills with the ralph lanes and retro.
 ### depth/ — one artifact, now
 
 | Skill | What it does | Invoked by |
-|---|---|---|
+| --- | --- | --- |
 | re0 | Rewrite a drifted artifact into a clean v0, not another patch | model |
 | readchk | Check the model's read of the request; surface only a real surviving fork | model |
 | aim | Read handed-over data and propose the intent to confirm, instead of asking | model |
@@ -76,13 +76,13 @@ receiving-review, the `coil/` loop skills with the ralph lanes and retro.
 ### breadth/ — many artifacts, now
 
 | Skill | What it does | Invoked by |
-|---|---|---|
+| --- | --- | --- |
 | ssotize | Audit scatter, then consolidate to one home and point the rest at it | model |
 
 ### coil/ — one project, across iterations
 
 | Skill | What it does | Invoked by |
-|---|---|---|
+| --- | --- | --- |
 | re0-plan | Open a new iteration folder with DESIGN/WORKFLOW/EVIDENCE before the first turn | user |
 | re0-loop | Run the build → QA → memo → work loop so learning compounds, not code | model |
 | re0-memo | Pull the lessons and anti-patterns from a finished or failed cycle | model |
@@ -93,7 +93,7 @@ receiving-review, the `coil/` loop skills with the ralph lanes and retro.
 ### mesh/ — many minds, across rounds
 
 | Skill | What it does | Invoked by |
-|---|---|---|
+| --- | --- | --- |
 | prism | Split one artifact across independent lenses; return where they clash and the question that resolves it | user |
 
 ## Updating

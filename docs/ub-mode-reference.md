@@ -15,7 +15,7 @@ The source tree carries **no LICENSE file and grants no license**. Nothing in th
 The skill is a thin orchestration layer. Its "Make it Right" gates are three separate companion repositories, **none of which are vendored here**:
 
 | Companion tool | Gate it enforces |
-|---|---|
+| --- | --- |
 | [pratik-saptarshi/crapper](https://github.com/pratik-saptarshi/crapper) | CRAP score per function — every function under 10, by splitting, testing, or both |
 | [pratik-saptarshi/dryer](https://github.com/pratik-saptarshi/dryer) | structural duplication — blocks at 0.8 similarity or above are eliminated |
 | [pratik-saptarshi/mutator](https://github.com/pratik-saptarshi/mutator) | mutation testing — cover the uncovered, kill the survivors, delete dead code |

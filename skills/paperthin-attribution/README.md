@@ -1,6 +1,6 @@
 # paperthin skills — vendored 2026-10-18
 
-- Source: https://github.com/LilMGenius/paperthin
+- Source: <https://github.com/LilMGenius/paperthin>
 - Commit: 7d5dc6235990230e45a24a25c527d81701da5458 (main)
 - License: MIT (see LICENSE below)
 - Vendored verbatim: all 28 SKILL.md files, no modifications. Per-skill frontmatter (including `disable-model-invocation` on the 12 user-invoked skills) preserved.

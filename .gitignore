@@ -1,1 +1,13 @@
 dist/
+
+# Harness capture ledger. Two layers: this committed entry covers a fresh clone
+# and a runtime write that cannot land, while the handler also writes
+# `.harness-profile/` into the common git dir's `info/exclude` on first event and
+# verifies it before writing any record. A per-directory .gitignore outranks
+# `$GIT_DIR/info/exclude`, so in this checkout `git check-ignore -v` names this
+# file; E10 proves the runtime write in its own throwaway repo, whose .gitignore
+# contains only `dist/`.
+/.harness-profile/
+
+# .superpowers/ — local SDD workspace, never committed
+.superpowers/

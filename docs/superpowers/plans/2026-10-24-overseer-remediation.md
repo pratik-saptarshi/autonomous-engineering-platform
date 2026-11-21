@@ -36,12 +36,14 @@
 ### Task 1: Receipts bind to the commit (R1, first half — closes P0-1)
 
 **Files:**
+
 - Modify: `scripts/mechanical_verify.py` — `append_run_start` (:487, called from `main()` ~:695), `append_completion` (called from `main()` on rc 0), `check_receipts` (:529), the run-start/completion field sets (near :363–:388), `main()` (:635) CLI.
 - Modify: `skills/subagent-driven-development/SKILL.md` (repo copy) — the receipts completion paragraph and the `check-receipts` invocation (:51 region).
 - Modify: `docs/deepcode-mechanisms.md` — receipts section (binding semantics as implemented here).
 - Test: `scripts/tests/test_receipts.py`, `scripts/tests/test_mechanical_verify.py`.
 
 **Interfaces:**
+
 - Produces: `tree_binding(root: Path) -> dict` → `{"root": str (Path.resolve() of root), "head": str | None, "tree_digest": str, "mode": "git" | "fs"}`.
   - **git mode** (root is inside a git worktree): `head` = `git -C root rev-parse HEAD`; `tree_digest` = sha256 over, for each entry of `git ls-tree -r -z <head>` (NUL-terminated, raw path bytes — immune to `core.quotePath` config drift), the bytes `mode + " " + blob_sha + " " + path + "\n"` in ls-tree's own order. Computable from git objects at any later time; working-tree content is never read.
   - **fs mode** (no git): `head` = None; `tree_digest` = sha256 over sorted relative paths of `relpath + "\0" + sha256(bytes) + "\0"` (symlinks: target string, not followed), excluding any path component in `{".git", "__pycache__", ".pytest_cache", ".mypy_cache", "target", "node_modules", "coverage", "htmlcov", "dist", "build", ".tox", ".venv"}` and the receipts file itself.
@@ -65,10 +67,12 @@
 ### Task 2: Reap detached descendants on every exit path (R1, second half — closes P1-5; completes P0-1)
 
 **Files:**
+
 - Modify: `scripts/mechanical_verify.py` — the per-command executor `run_verification(root, command, timeout_seconds) -> VerificationResult` (:220–:296), `VerificationResult` (gains a field), `main()` (subreaper setup), the receipt body writer.
 - Test: `scripts/tests/test_mechanical_verify.py` — Task 2's new tests run the verifier through a SUBPROCESS harness (a small driver script under `scripts/tests/`) so subreaper state never touches the test-runner process.
 
 **Interfaces:**
+
 - Produces: `VerificationResult.survivors_killed: tuple[int, ...]` (default empty), written into the command's receipt record when non-empty.
 - Subreaper: set ONCE in `main()` before `append_run_start`: `ctypes.CDLL(None).prctl(36, 1)` (PR_SET_CHILD_SUBREAPER), Linux + try/except; the run-start record carries `"subreaper": true|false`. Library/in-process callers do NOT set the flag; the sweep below is snapshot-scoped so it is safe either way.
 - Sweep (runs strictly AFTER the command leader's `proc.wait()` has returned and BEFORE any next command spawns — never concurrently with a live Popen; this ordering is a stated invariant, because a stray reap of a live Popen child corrupts its reported exit code): iterate until no adoptees remain or 2 s elapse: (1) scan `/proc` for processes with `ppid == os.getpid()` that were NOT in the pre-spawn snapshot (the snapshot is taken immediately before this command's Popen) — these are adoptees of this command; (2) for each, read `(pid, start_time)` from `/proc/<pid>/stat`, re-read immediately before signalling, SIGKILL only on an exact `(pid, start_time)` match (the repo's pid-identity discipline); (3) reap killed adoptees with `waitpid(pid, WNOHANG)` per pid. Also SIGKILL any remaining members of the leader's process group (pgid probe), with the same start-time verification. Processes that existed before the snapshot (harness helpers, the test runner's own children) are NEVER signalled. If adoptees still remain when the 2 s bound expires, the command's verdict is FAIL (`survivors remain after reap bound`) — the bound may never silently pass a live survivor.
@@ -84,11 +88,13 @@
 ### Task 3: Coordinator state leaves the worktrees tree (R2 — closes P1-4 to the extent placement can; residual stated in AC 6)
 
 **Files:**
+
 - Modify: `scripts/lane-coord.sh` — `LANES_DIR` default (:51), claim/release/reap/status entry points, `--self-test` (new cases), header comment.
 - Modify: `docs/deepcode-mechanisms.md` — state location, migration rule, and the residual-risk paragraph.
 - Test: lane self-test cases (in-script).
 
 **Interfaces:**
+
 - Produces: default `LANES_DIR="${AEP_LANES_DIR:-$HOME/.local/state/aep/lanes}"`, created on demand (mkdir -p, then chmod 700 if this run created it). `AEP_LANES_DIR` override behavior unchanged.
 - Produces: the legacy rule. `LEGACY_LANES_DIR="$HOME/workspace/worktrees/.lanes"`. When `AEP_LANES_DIR` is unset AND the legacy dir contains any `*.json`: `claim`, `release`, and `reap` refuse (exit 1) with one shared message naming the legacy path, the new default, and the two remedies (move the directory's contents to the new default — inspect them first; or set `AEP_LANES_DIR` to the legacy path to keep operating there deliberately). `status` still lists legacy lanes read-only, marked `legacy`. No code path reads or writes legacy state for any mutating operation — there is no dual-dir threading (a lane is settled only after migration, under the normal gates).
 
@@ -101,10 +107,12 @@
 ### Task 4: Rule 5 proves execution, not routing (R3 — closes P1-1)
 
 **Files:**
+
 - Modify: `scripts/mechanical_verify.py` — classification inside `discover_verification_commands` (:64; the partition region :135–:160), command construction, and outcome evaluation in the run flow.
 - Test: `scripts/tests/test_mechanical_verify.py`.
 
 **Interfaces:**
+
 - Classification is per-module, by AST, and follows the RUNNERS' collection semantics:
   - **unittest leg** iff the module defines a class whose bases include a dotted name ending in `TestCase` (direct `unittest.TestCase`, `TestCase` imported from unittest, or an alias of either). **Imports alone never create the leg** — `import unittest.mock` by itself creates NO leg here.
   - **pytest leg (module triggers the pytest command)** iff the module defines module-level (or async) `test_*` functions, OR classes named `Test*` containing `test_*` methods that are NOT TestCase subclasses, OR the module has no leg at all (default). A module whose only collectable content is TestCase subclasses does NOT by itself trigger the pytest command (RC2 — pure-unittest trees keep byte-identical argv); when the bare pytest command exists for other reasons it collects those modules too, which is how mixed trees get full coverage.
@@ -121,10 +129,12 @@
 ### Task 5: Compose the env scrub into the verifier (R4 — closes P1-2)
 
 **Files:**
+
 - Modify: `scripts/mechanical_verify.py` — env construction in the executor (:225), plus a new policy reader.
 - Test: `scripts/tests/test_mechanical_verify.py`.
 
 **Interfaces:**
+
 - Produces: `policy_env_scrub(policy_path) -> tuple[str, ...]` — a NEW Python reader for the `[env-scrub]` section of `policy.data`. (A section parser exists embedded in lane-coord's `load_policy` as a python3 heredoc, `lane-coord.sh:301–338`, but it is not importable from `mechanical_verify.py`; the new reader ports its semantics.) Match semantics mirror `lane-coord.sh`'s `auth_occurrence_is_sensitive` (:386–:401) + `name_is_sensitive` (:408–:420) EXACTLY: case-insensitive substring match of each fragment against the variable NAME, with lane-coord's AUTH boundary exemptions (names whose sensitive occurrence is only the spared AUTH contexts — `SSH_AUTH_SOCK`, `GIT_AUTHOR_*` — are NOT scrubbed; `AUTHORITY` IS). The implementer ports lane-coord's truth table; tests pin every row of it.
 - Produces: `build_run_env(policy_path) -> dict` = `os.environ` minus scrubbed names, unless `AEP_VERIFY_FULL_ENV=1` (full env; mirrors `AEP_LANE_FULL_ENV`). The run-start record states the mode in all cases: `"env": "scrubbed" | "full (AEP_VERIFY_FULL_ENV)" | "unscrubbed (no policy)"` — the record never claims a scrub that did not happen. Policy path: `${AEP_POLICY_DATA}` else `policy.data` beside the script; missing file → no fragments, mode `unscrubbed (no policy)`.
 
@@ -137,11 +147,13 @@
 ### Task 6: Bind the policy at the enforcement point (R5 — closes P1-3)
 
 **Files:**
+
 - Modify: `scripts/lane-coord.sh` — `load_policy` (:299–:360; its path resolution at :300 is a plain `dirname "${BASH_SOURCE[0]}"` today — switching it to the existing `canonical_path()` helper (:363) is a design instruction of this task, not current behavior), claim path (:600), manifest writer.
 - Modify: `scripts/boot-gate.sh` — the policy result line (SKIP distinguishability, output token only).
 - Test: lane self-test cases (new fixture-repo harness), boot-gate self-test (token assertion).
 
 **Interfaces:**
+
 - Claim-side integrity (in `load_policy`'s caller on the claim path only — release/reap act on already-claimed state and do not re-check):
   - Resolve the policy file as today (`${AEP_POLICY_DATA}` else `policy.data` beside the script, script dir via `canonical_path()`). All git probes in this task run as `git -C <canonical script dir> …` so a linked worktree's OWN HEAD is what resolves (RC7) — never the parent repo's.
   - "Set" means non-empty throughout: `AEP_POLICY_DATA` participates via the `${VAR:-}` idiom, so `AEP_POLICY_DATA=""` is UNSET (N5).
@@ -163,11 +175,13 @@
 ### Task 7: Watchdog — make the body keep the header's promises (R6 — closes P1-6; P1-7's repo half)
 
 **Files:**
+
 - Modify: `scripts/watchdog-backup.sh` — definition order (call :204, `stop_daemon` :212), change-path `stop_daemon || exit 0` (:235), `start_daemon` (:51, currently callerless), the main flow (:194ff).
 - Create: `scripts/tests/test_watchdog.sh`.
 - Modify: `docs/deepcode-mechanisms.md` or a watchdog note in `docs/operations.md` — the reference↔adaptation delta mapping (see Step 4).
 
 **Interfaces:**
+
 - Structure: every function defined before the main flow (move the flow below the last function definition — the prologue globals/lock stay at top; the reorder changes nothing else).
 - Lifecycle (portable form of the deployed contract — the repo header at :5 and :12–13 already promises restart-if-down and restart-after-backup; the body is what changes). **Composition with the script's existing early gates (RC4) — the decision order is pinned:**
   1. The daemon-ACTIVE gate (:176–183 — a session is in flight) survives verbatim and runs first among the daemon-state checks: the run defers exactly as today.
@@ -190,12 +204,14 @@
 ### Task 8: The bundle, repaired (R7 — closes P2-1 (residue), P3-1, P2-7, P2-8, P2-9)
 
 **Files:**
+
 - Modify: `scripts/mechanical_verify.py` — `main()` (:635) receipts placement; `check_receipts` validation (:529–:565); `MARKDOWNLINT_ARGV` (:34).
 - Modify: `scripts/boot-gate.sh` — self-test gains `--offline` mode.
 - Modify: `.github/workflows/ci.yml` — docs-lint `npx` line (:13), `uses:` pins, permissions, checkout options, script-tests job.
 - Test: `scripts/tests/test_receipts.py`, `scripts/tests/test_mechanical_verify.py`.
 
 **Interfaces:**
+
 - (a) Receipts placement: `verify` refuses (exit 2) when the receipts path is inside the root AND that file is tracked by git. Path computation pinned (N2): resolve the receipts path absolutely; take its path relative to the git toplevel of the root; run `git -C <toplevel> ls-files --error-unmatch -- <relpath>` — success means tracked → refuse. (This form is correct for root-as-repo, root-as-subdirectory, and symlinked receipts paths.) Untracked receipts inside the root — the SDD layout — are explicitly allowed. Non-git roots: no placement rule (fs-mode binding excludes the receipts file from its digest, Task 1).
 - (b) Strict field types in `check_receipts`, scoped to the SELECTED segment only (a historical oddity elsewhere in the file must not poison later segments). The type map is ENUMERATED IN CODE as an explicit table covering every field the writers can emit across the three record kinds AS EXTENDED by Tasks 1/2/4/5 (RC3b) — including `binding` (dict), `subreaper` (bool), `timed_out` (bool), `env` (str), `argv` (list), `survivors_killed` (list of int), `tests_collected` (int), and the pre-existing scalar fields. Known numeric fields validate with `type(v) is int` — EXCEPT `exit_code`, which may be `int` or `None` (a spawn-error receipt legitimately records null); known string fields with `type(v) is str`; bool/list/dict fields with their exact types. Unknown fields are IGNORED (forward compatibility — the schema must not freeze against issue #38 / P2-2 follow-ups). A violation → the segment is corrupt (exit 1), naming the field. A test produces a REAL bound segment via a fixture verify run and asserts it validates clean under this validation — the plan's own new records can never read as corrupt.
 - (c) CI supply chain: `markdownlint-cli2` pinned to an exact version in the `npx` invocation; every `uses:` pinned to a full-length commit SHA (resolve SHAs for the currently-used tags at implementation time via `gh api repos/<owner>/<repo>/git/ref/tags/<tag>` — never from memory); top-level `permissions: contents: read`; `persist-credentials: false` on every `actions/checkout`. Scope note (N8): the `apt-get install shellcheck` line is distro-pinned by the runner image and OUT of scope; the `go install …@v3.10.0` shfmt line is already an exact version and stands.
@@ -211,6 +227,7 @@
 ### Task 9: Documentation verification (no new prose obligations)
 
 **Files:**
+
 - Verify (edit only on a failed check): `docs/deepcode-mechanisms.md`, `docs/daemon-lifecycle-contract.md`, `docs/operations.md`, `skills/subagent-driven-development/SKILL.md`.
 
 - [ ] **Step 1:** For every doc the earlier tasks touched, re-read the FINAL code and confirm each behavioral claim (binding modes, state location + migration, scrub semantics + exemptions, policy outcomes, SKIP token, watchdog lifecycle + marker). Fix any claim the code doesn't keep. This step is also where Task 3's two operator notes live or die: assert the stale-lane-coord-copies warning and the `~/.local/state` backup-path note are present in the operator doc, or strike them from Task 3's definition of done in the ledger (N10).

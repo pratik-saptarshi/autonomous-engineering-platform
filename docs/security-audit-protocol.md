@@ -480,7 +480,7 @@ Every unit is in exactly one of eight statuses, with the invariants
 below (enforced by the vendored validator exactly):
 
 | Status | Unit `agent_id` | `reviewed_paths` / `local_checks` | `result_fingerprints` | `unresolved` |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | `planned` | null | empty | empty | empty |
 | `in_progress` | canonical owner | empty | empty | empty |
 | `blocked` | canonical owner | both nonempty owned partial evidence | empty | nonempty blocker |

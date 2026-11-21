@@ -31,7 +31,7 @@ Rules marked **[fleet]** are this fleet's standing rules. Unmarked rules general
 Fetch upstream fresh and verify first-hand. The fork's mirror branch, tree, and memory are hypotheses, never evidence. All four must hold:
 
 | # | Check | Evidence required |
-|---|---|---|
+| --- | --- | --- |
 | a | Target present | The defect / change target is still present and substantially identical in upstream's **current** code — cite upstream file, function, and line state at the fetched tip |
 | b | Not already covered | Search upstream issues **and** PRs (open and closed) for the defect; nothing already files or fixes it |
 | c | Invariants hold | Every invariant the fork design leans on still holds upstream — name them per change (e.g. an ordering guarantee in upstream's startup path), verified in upstream's code, not the fork's |
@@ -110,7 +110,7 @@ If a fact in the title or body later becomes false, edit the artifact itself and
 ## Rationalizations — Stop When You Hear These
 
 | Excuse | Reality |
-|---|---|
+| --- | --- |
 | "The owner said 'upstream this eventually' — close enough" | Consent is per-action and names this filing. "Eventually" is a direction, not consent. |
 | "The maintainer is online and waiting; delay loses the window" | Urgency is not consent; an unassessed filing is a public record you cannot unpublish. |
 | "The fork's mirror branch shows the code byte-identical" | A mirror describes the last sync, not upstream now. Fetch and cite the live tip. |

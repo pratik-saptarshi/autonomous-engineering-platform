@@ -25,6 +25,7 @@ Do NOT use for: one-line fixes (do them directly), exploratory spikes (no PR pla
 ## Prerequisites
 
 This skill orchestrates five companion workflow skills. At Stage 0, confirm each is installed (or that you know its procedure):
+
 - `writing-plans` — implementation plans with task-level tests
 - `subagent-driven-development` — fresh implementer subagent + reviewer per task
 - `test-driven-development` — RED → GREEN → refactor
@@ -35,7 +36,7 @@ If a companion is missing, install it or substitute its documented procedure bef
 
 ## The Pipeline
 
-```
+```text
 Stage 0: Setup      → worktree + branch from the repo's default branch, verify base
 Stage 1: Plan       → writing-plans (TDD checks per task)
 Stage 2: Implement  → subagent-driven-development + test-driven-development

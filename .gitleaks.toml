@@ -15,11 +15,49 @@
 # docs/designs/2026-10-27-ranked-improvement-list.md line 15 is
 # prose ("secret and PII hits, junk/duplicate detection") whose word pair
 # trips the generic-api-key entropy heuristic. Not a credential.
+#
+# The vendored harness-profiler tree (pin 847bd8f6) carries two synthetic
+# fixtures in its masker unit tests, documented in
+# reference/harness-profiler/PROVENANCE.md: test/capture.test.js:155 (a
+# fake "Bearer abcdefghijkl" passed to mask(), flagged curl-auth-header)
+# and :160 (a fake "token=abc123456789" tool_response, flagged
+# generic-api-key). Both are inputs to assertions that mask() redacts
+# them; neither is a credential.
+#
+# The vendored OpenChamber tree (pin cf18602, v2.7.3) trips the same
+# heuristics in 13 files, documented in
+# reference/openchamber/PROVENANCE.md: nine test suites carry synthetic
+# fixtures (seeded gatekeeper tokens in curl headers, sequential hex
+# keys such as "0123456789abcdef", literal upload secrets); the iOS
+# Podfile.lock entry is a CocoaPods spec checksum; cli-network.ts holds
+# the UI-password character set (an alphabet string, not a key);
+# google-services.json is upstream's shipped Firebase client config
+# (a public app identifier by design); and linear/auth.ts:81 is
+# upstream's Linear OAuth client ID — a public identifier the
+# linear-client-secret rule mislabels (the secret itself is read from
+# the environment in that file). None is a usable credential. The one
+# production file at the pin that does carry credential values
+# (quota/providers/google/oauth.ts) is excluded from the snapshot
+# entirely, per the owner direction recorded in PROVENANCE.md.
 [extend]
 useDefault = true
 [allowlist]
-description = "Synthetic fixtures in vendored redaction tests (ESF, NeuroStrata)"
+description = "Synthetic fixtures in vendored redaction tests (ESF, NeuroStrata, harness-profiler, OpenChamber)"
 paths = ['''reference/esf/internal/factory/redact_test.go''', '''reference/esf/internal/factory/evidence_test.go''',
 '''reference/neurostrata/src/secrets.rs''',
 '''reference/neurostrata/src/buffer.rs''',
-'''reference/neurostrata/docs/designs/2026-10-27-ranked-improvement-list.md''']
+'''reference/neurostrata/docs/designs/2026-10-27-ranked-improvement-list.md''',
+'''reference/harness-profiler/test/capture.test.js''',
+'''reference/openchamber/packages/web/server/lib/spaces/tools-filler.test.js''',
+'''reference/openchamber/packages/web/server/lib/spaces/places/grants.docker.live.test.js''',
+'''reference/openchamber/packages/web/server/lib/spaces/places/docker.test.js''',
+'''reference/openchamber/packages/web/server/lib/spaces/places/docker-disk.test.js''',
+'''reference/openchamber/packages/web/server/lib/spaces/labels.test.js''',
+'''reference/openchamber/packages/web/server/lib/spaces/hardening.test.js''',
+'''reference/openchamber/packages/web/server/lib/source-control/provider-routes.gitlab.test.js''',
+'''reference/openchamber/packages/web/server/lib/gitlab/resources.test.js''',
+'''reference/openchamber/packages/ui/src/components/references/projectUploads.test.ts''',
+'''reference/openchamber/packages/web/server/lib/linear/auth.ts''',
+'''reference/openchamber/packages/web/bin/lib/cli-network.ts''',
+'''reference/openchamber/packages/mobile/ios/App/Podfile.lock''',
+'''reference/openchamber/packages/mobile/android/app/google-services.json''']
