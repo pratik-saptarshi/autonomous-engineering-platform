@@ -1005,6 +1005,16 @@ install_env_block() {
           unset 'region_stack[${#region_stack[@]}-1]'
           region_stack=("${region_stack[@]}")
           if [ "${#region_stack[@]}" -eq 0 ]; then
+            # The region ends on this line, and its controlled
+            # statement can share the line (`*) return;; esac`):
+            # inspect the line before discarding the region, or the
+            # guard is missed and the block strands behind it.
+            case "$rtrim" in
+            *return*)
+              guard_at=$region_start
+              break
+              ;;
+            esac
             region_start=-1
           fi
         fi

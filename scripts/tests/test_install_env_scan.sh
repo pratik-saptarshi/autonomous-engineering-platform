@@ -443,6 +443,49 @@ run_env install_env_block
 check "R3T8a second run rc 0" test "$RC" -eq 0
 check "R3T8a fixed point" test "$(file_sha "$FH/.bashrc")" = "$SHA"
 
+# ================= PR #191 R4-F1: guard return on the closing line =================
+
+note "PR191-R4F1a: a guard ending '*) return;; esac' on one line is recognized"
+new_home r4f1a
+cat >"$FH/.bashrc" <<'EOF'
+case $- in
+  *i*) ;;
+  *) return;; esac
+export AFTER=1
+EOF
+run_env install_env_block
+check "R4F1a rc 0" test "$RC" -eq 0
+check_out "R4F1a env ok" 'INSTALL-RE: env ok' "$OUT"
+BLOCK_LINE="$(line_of '# >>> re-runtime >>>')"
+GUARD_LINE="$(line_of 'case $- in')"
+check "R4F1a block before the guard" test "$BLOCK_LINE" -lt "$GUARD_LINE"
+JAVA_VAL="$(env -i HOME="$FH" /bin/bash -c '. "$HOME/.bashrc"; printf %s "${JAVA_HOME:-}"' 2>/dev/null)"
+check "R4F1a block reachable in a noninteractive source" test "$JAVA_VAL" = "$FH/opt/jdk-$TEMURIN_VERSION"
+SHA="$(file_sha "$FH/.bashrc")"
+run_env install_env_block
+check "R4F1a second run rc 0" test "$RC" -eq 0
+check "R4F1a fixed point" test "$(file_sha "$FH/.bashrc")" = "$SHA"
+
+note "PR191-R4F1b: an if-guard whose return shares the 'fi' closing line is recognized"
+new_home r4f1b
+cat >"$FH/.bashrc" <<'EOF'
+if [ -z "$PS1" ]; then
+  return; fi
+export AFTER=1
+EOF
+run_env install_env_block
+check "R4F1b rc 0" test "$RC" -eq 0
+check_out "R4F1b env ok" 'INSTALL-RE: env ok' "$OUT"
+BLOCK_LINE="$(line_of '# >>> re-runtime >>>')"
+GUARD_LINE="$(line_of 'if [ -z "$PS1" ]')"
+check "R4F1b block before the guard" test "$BLOCK_LINE" -lt "$GUARD_LINE"
+JAVA_VAL="$(env -i HOME="$FH" /bin/bash -c '. "$HOME/.bashrc"; printf %s "${JAVA_HOME:-}"' 2>/dev/null)"
+check "R4F1b block reachable in a noninteractive source" test "$JAVA_VAL" = "$FH/opt/jdk-$TEMURIN_VERSION"
+SHA="$(file_sha "$FH/.bashrc")"
+run_env install_env_block
+check "R4F1b second run rc 0" test "$RC" -eq 0
+check "R4F1b fixed point" test "$(file_sha "$FH/.bashrc")" = "$SHA"
+
 # ================= #121: formatted marker recognition =================
 
 note "#121a: indented markers are recognized and normalized"
