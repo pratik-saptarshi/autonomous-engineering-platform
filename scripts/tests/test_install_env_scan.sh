@@ -380,6 +380,38 @@ run_env install_env_block
 check "R2F1a second run rc 0" test "$RC" -eq 0
 check "R2F1a fixed point" test "$(file_sha "$FH/.bashrc")" = "$SHA"
 
+# ================= PR #191 R3-T5: closers after preceding commands =================
+
+note "PR191-R3T5: unit-level closer grammar (a closer after a command separator pops)"
+check "R3T5 :; } pops" closer_pops ':; }' '}'
+check "R3T5 command; fi pops" closer_pops 'true; fi' 'fi'
+check "R3T5 command; esac pops" closer_pops 'true; esac' 'esac'
+check "R3T5 command; done pops" closer_pops 'true; done' 'done'
+
+note "PR191-R3T5a: a function ending ':; }' does not strand the block"
+new_home r3t5a
+cat >"$FH/.bashrc" <<'EOF'
+myhelper() {
+:; }
+case $- in
+  *i*) ;;
+  *) return;;
+esac
+export AFTER=1
+EOF
+run_env install_env_block
+check "R3T5a rc 0" test "$RC" -eq 0
+check_out "R3T5a env ok" 'INSTALL-RE: env ok' "$OUT"
+BLOCK_LINE="$(line_of '# >>> re-runtime >>>')"
+GUARD_LINE="$(line_of 'case $- in')"
+check "R3T5a block before the guard" test "$BLOCK_LINE" -lt "$GUARD_LINE"
+JAVA_VAL="$(env -i HOME="$FH" /bin/bash -c '. "$HOME/.bashrc"; printf %s "${JAVA_HOME:-}"' 2>/dev/null)"
+check "R3T5a block reachable in a noninteractive source" test "$JAVA_VAL" = "$FH/opt/jdk-$TEMURIN_VERSION"
+SHA="$(file_sha "$FH/.bashrc")"
+run_env install_env_block
+check "R3T5a second run rc 0" test "$RC" -eq 0
+check "R3T5a fixed point" test "$(file_sha "$FH/.bashrc")" = "$SHA"
+
 # ================= #121: formatted marker recognition =================
 
 note "#121a: indented markers are recognized and normalized"

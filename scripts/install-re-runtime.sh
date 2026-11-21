@@ -735,12 +735,15 @@ ctrl_opener_closer() {
   return 1
 }
 
-# True when $1 is the closer named by $2 (optionally followed by `;`).
-# A trailing comment is stripped first: a `#` at a word start (after
-# whitespace) comments out the rest of the line in bash, while a `#`
-# glued to the word is part of the word, not a comment.
+# True when $1 is the closer named by $2 (optionally followed by `;`),
+# either at the start of the line or as the command after the line's
+# last `;` separator (`:; }` ends a one-line function body just as a
+# bare `}` does). A trailing comment is stripped first: a `#` at a
+# word start (after whitespace) comments out the rest of the line in
+# bash, while a `#` glued to the word is part of the word, not a
+# comment.
 ctrl_closer_line() {
-  local s="$1"
+  local s="$1" tail
   case "$s" in
   *[[:space:]]'#'*)
     s="${s%%[[:space:]]'#'*}"
@@ -749,6 +752,15 @@ ctrl_closer_line() {
   esac
   case "$s" in
   "$2" | "$2;"* | "$2;;"*) return 0 ;;
+  esac
+  case "$s" in
+  *';'*)
+    tail="${s##*';'}"
+    tail="${tail#"${tail%%[![:space:]]*}"}"
+    case "$tail" in
+    "$2" | "$2;"* | "$2;;"*) return 0 ;;
+    esac
+    ;;
   esac
   return 1
 }
