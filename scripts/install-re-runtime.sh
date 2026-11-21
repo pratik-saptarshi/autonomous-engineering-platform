@@ -431,6 +431,7 @@ profile_sources_bashrc() {
           src="${src#\"}"
           src="${src%\'}"
           src="${src#\'}"
+          src="${src/\$\{HOME\}/$HOME}"
           src="${src/\$HOME/$HOME}"
           src="${src/#\~/$HOME}"
           case "$src" in

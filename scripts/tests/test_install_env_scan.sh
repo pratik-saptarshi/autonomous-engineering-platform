@@ -604,6 +604,66 @@ check "123k rc 0" test "$RC" -eq 0
 check_out "123k shadowing SKIP line" 'login startup is shadowed by' "$OUT"
 check "123k no block composed" test "$(marker_count '>>>')" -eq 0
 
+note "#123l: a braced \${HOME} sourcing .bash_profile is recognized (PR #191 R2-F2)"
+new_home 123l
+printf '. "${HOME}/.bashrc"\n' >"$FH/.bash_profile"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+run_env install_env_block
+check "123l rc 0" test "$RC" -eq 0
+check_out "123l env ok" 'INSTALL-RE: env ok' "$OUT"
+check_no_out "123l no shadowing SKIP" 'login startup is shadowed by' "$OUT"
+check "123l block written" test "$(marker_count '>>>')" -eq 1
+
+note "#123m: the braced \${HOME} && segment form is recognized (PR #191 R2-F2)"
+new_home 123m
+printf '[ -f "${HOME}/.bashrc" ] && . "${HOME}/.bashrc"\n' >"$FH/.bash_profile"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+run_env install_env_block
+check "123m rc 0" test "$RC" -eq 0
+check_out "123m env ok" 'INSTALL-RE: env ok' "$OUT"
+check_no_out "123m no shadowing SKIP" 'login startup is shadowed by' "$OUT"
+check "123m block written" test "$(marker_count '>>>')" -eq 1
+
+note "#123n: the braced \${HOME} single-line if form is recognized (PR #191 R2-F2)"
+new_home 123n
+printf 'if [ -f "${HOME}/.bashrc" ]; then . "${HOME}/.bashrc"; fi\n' >"$FH/.bash_profile"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+run_env install_env_block
+check "123n rc 0" test "$RC" -eq 0
+check_out "123n env ok" 'INSTALL-RE: env ok' "$OUT"
+check_no_out "123n no shadowing SKIP" 'login startup is shadowed by' "$OUT"
+check "123n block written" test "$(marker_count '>>>')" -eq 1
+
+note "#123o: a commented-out braced \${HOME} sourcing line still does not count (PR #191 R2-F2)"
+new_home 123o
+printf '# . "${HOME}/.bashrc"\n' >"$FH/.bash_profile"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+run_env install_env_block
+check "123o rc 0" test "$RC" -eq 0
+check_out "123o shadowing SKIP line" 'login startup is shadowed by' "$OUT"
+check "123o no block composed" test "$(marker_count '>>>')" -eq 0
+
+note "PR191-R2F2: unit-level profile_sources_bashrc probes for braced forms"
+profile_detected() { # profile_detected <profile-line>
+  local pdir="$SB/psb-probe"
+  rm -rf "$pdir"
+  mkdir -p "$pdir"
+  printf '%s\n' "$1" >"$pdir/.bash_profile"
+  (
+    HOME="$pdir"
+    export HOME
+    # shellcheck disable=SC1090 # the fixture library is generated above
+    source "$LIB"
+    set +eu
+    profile_sources_bashrc "$pdir/.bash_profile"
+  ) >/dev/null 2>&1
+}
+profile_not_detected() { ! profile_detected "$1"; }
+check "R2F2 unquoted braced form detected" profile_detected '. ${HOME}/.bashrc'
+check "R2F2 source-keyword braced form detected" profile_detected 'source "${HOME}/.bashrc"'
+check "R2F2 braced || chain not detected (unchanged)" profile_not_detected '[ -f "${HOME}/.bashrc" ] || . "${HOME}/.bashrc"'
+check "R2F2 braced mention without a source command not detected" profile_not_detected 'echo ". \"${HOME}/.bashrc\""'
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "test_install_env_scan: ALL PASS (sandbox $SB)"
