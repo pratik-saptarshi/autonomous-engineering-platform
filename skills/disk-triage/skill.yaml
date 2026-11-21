@@ -1,0 +1,5 @@
+name: "disk-triage"
+title: "Disk Triage"
+description: "Survey storage on this VM read-only first, reconcile du against df, categorize every deletion candidate, delete only under an explicit owner ruling naming the category, and verify exclusions and physical reclaim afterwards. Use when disk pressure, EDQUOT, or accumulating Rust target/ caches require a governed cleanup, or when planning deletions across clones and worktrees."
+category: "Work and knowledge"
+include_in_prompt: true
