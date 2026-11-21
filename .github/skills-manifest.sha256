@@ -113,8 +113,8 @@ b7f2be52c61e4ced665ea62bb0670b4c2615a6c706127246a44bbcffdf65f8be  ./archify/loca
 83d870452e9ff3459a3cae88be6900d9a98b268e6cfba94b608a7c10f484e485  ./archify/locales/zh-CN.json
 0db367aec82cf92b08d4335d5ed021480801f7ae79b1e2c1a0c79b27d4eafb2e  ./archify/locales/zh-TW.json
 0eec02057b8490afca9b093de5ea6e636c7fad2361cd28a04cf2f3e4b6197434  ./archify/migrations/workflow-v2.mjs
-3ab61c421ff19094b6e51bec018c7533fca419750134610893c0dd619809f06e  ./archify/package-lock.json
-856dcd317c8ee18f6621b4358bd57bfd87742fa289eaf3653ebad011c677d9ae  ./archify/package.json
+5b01ebce822dcaa163f51e89c452d028f46738d2a15b4f8bf340a76838897cee  ./archify/package-lock.json
+cbc4b53eb33a74c941a26013d185825983b3857dbe01d7cd0c0b78ecc2126655  ./archify/package.json
 1e93ba15d0782be535251bfb406cf8cc056291d84d77d33ca9dca01df743528f  ./archify/recipes/scenarios.mjs
 6c90caa232c004fa43b8770c745b83672919deaf8909f2592a3ad5fcd4031953  ./archify/references/architecture-layout-repair.md
 c7c9918ee28e213defd4cb504f0440ae366a8db4665938d2a0db0b62da565901  ./archify/references/authoring-contract.md
