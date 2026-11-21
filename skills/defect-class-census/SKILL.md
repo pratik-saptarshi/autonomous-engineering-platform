@@ -1,11 +1,12 @@
 ---
 name: defect-class-census
-version: 1.0.0
+version: 1.0.1
 author: pratik-saptarshi
 description: >-
   Sibling-defect census seeded from one confirmed bug: extract the seed's
   mechanism, enumerate every sibling site sharing that mechanism, and
-  classify each candidate CONFIRMED (reproduced with controls), PLAUSIBLE
+  classify each candidate CONFIRMED (reproduced with controls), PARTIALLY
+  CONFIRMED (mechanism proven for part of the claimed behaviour), PLAUSIBLE
   (traced by reading, unreproduced), or REFUTED (evidence it cannot occur).
   Only the confirmed set is filed, grouped by theme; plausible candidates
   are parked for an owner-directed reproduction run and refuted ones are
@@ -28,6 +29,7 @@ Do NOT use for: the seed defect itself (fix or file it through its own lane), a 
 
 - **The seed is a mechanism, not a symptom.** The census hunts the mechanism's other manifestations; a sibling that merely looks similar does not belong to the class.
 - **Only CONFIRMED candidates are filed.** Plausible candidates are never filed and never mentioned in the confirmed filings. Refuted candidates are never filed.
+- **A partial proof files only the part it proves.** A PARTIALLY CONFIRMED candidate is filed, if at all, with its language narrowed to the proven part only; the unproven part is never carried into the filing as if established.
 - **Every candidate gets a classification and an evidence note** — no candidate leaves the census unclassified.
 - **Interaction is scoping, never a fix claim.** Where an in-flight fix changes how a candidate would manifest, state that as scoping ("with fix X landed, this surfaces as an error instead of a panic") and never as evidence the candidate is fixed.
 
@@ -59,17 +61,20 @@ Stage 5: Report     → counts and evidence per class, bounded next step
 | Class | Evidence bar |
 |---|---|
 | CONFIRMED | Reproduced against the current code with controls: the failure occurs, a control case behaves correctly, and test output or a minimal repro is recorded. |
+| PARTIALLY CONFIRMED | The mechanism is proven for part of the claimed behaviour but not all of it: e.g. the operation segfaults, but not via every claimed path. The record states exactly which part is proven and which is not. |
 | PLAUSIBLE | The pattern is real and the path is traced by reading, but no reproduction has been run (or the repro is inconclusive). |
 | REFUTED | Positive evidence it cannot occur: a guard, an invariant, a type constraint, or a failed reproduction under the conditions the mechanism requires. |
 
 - Run reproductions for candidates in severity order where the mechanism's reach differs; a candidate whose reproduction is blocked by environment limits is PLAUSIBLE with the blocker recorded, never silently dropped.
 - Where a sibling candidate shares the seed's exact code path, say so — it may extend the seed's filing rather than stand alone.
+- For a PARTIALLY CONFIRMED candidate, narrow every claim to the operation actually exercised: if the proof covers one operation (e.g. a read via CAST AS STRING), the record and any filing claim that operation, not the broader behaviour it was drawn from. Precedents: the ladybug similar-types census, where UNION was PARTIALLY CONFIRMED; the PR #184 panel's 15 CONFIRMED / 2 PARTIALLY CONFIRMED at the live head.
 - **Gate:** every enumerated candidate classified, with its evidence note.
 
 ### Stage 3 — File the confirmed set only
 
 - File the CONFIRMED candidates, grouped by theme (one issue per coherent theme, per-candidate detail inside), through the standard upstream-issue-filing practice: each text passes the outgoing-text gate (factcheck, humanizer, conciseness) and carries the publication signature.
 - Each filing states the mechanism, the reproduction evidence, and the affected sites. Plausible candidates do not appear in these filings, even as asides.
+- A PARTIALLY CONFIRMED candidate's filing is narrowed to its proven part only; the unproven part appears, if at all, only as explicitly unproven.
 - **Gate:** filings cover exactly the confirmed set — count in the report matches count filed.
 
 ### Stage 4 — Park and record
@@ -81,9 +86,26 @@ Stage 5: Report     → counts and evidence per class, bounded next step
 
 ### Stage 5 — Report
 
-- Report counts per class (confirmed / plausible / refuted) with the evidence index, the filings made (links), and the parked list.
+- Report counts per class (confirmed / partially confirmed / plausible / refuted) with the evidence index, the filings made (links), and the parked list.
 - Close with the **bounded next step** as an option for the owner: one scoped reproduction run per plausible candidate or per plausible theme, with its estimated effort — offered, never started without direction.
 - **Gate:** report delivered; no reproduction run, filing, or code change beyond the confirmed set has been started.
+
+## Census Inside a Remediation Round
+
+A census may run as a round of a remediation cycle, seeded from that round's confirmed findings instead of from a single defect.
+
+- **The census itself is read-only and fixes nothing.** It enumerates and classifies siblings of the round's confirmed findings; it does not remediate any of them, however clear the fix looks.
+- **Only the owner-ruled subset is fixed, in the follow-on round.** The census produces the candidate set and the evidence; the owner's ruling selects which siblings the next round takes up.
+- **Every unruled sibling is carried as a named residual.** Record it by name with its classification and the reason it waits, explicitly not claimed covered — no silent drops, no implied coverage by the round that found it or by the round that fixes its ruled siblings.
+- Precedent: PR #148 — the round-3 census of 19 rows found 10 gap-CONFIRMED siblings, 5 refuted, and 2 unexamined; none were fixed in round 3. Round 4 re-verified all 10 at the new head and closed them. Round 2's named residuals — await callees, attribute-source aliases — were recorded as not-claimed-covered.
+
+## Census as Pilot-Subject Selection
+
+The same census mechanics can feed a pre-registered pilot's subject choice (see the preregistered-pilot skill).
+
+- Classify real work instead of defect sites: e.g. 100 recent fix commits by class × component × catchability, plus an inventory of the controls already in place.
+- Let the census, not a prior favourite, select the subject: the favoured candidate enters as one row among the rest and wins or loses on the classification.
+- Precedent: Kani Stage 0 — the census selected the secrets scanner as the pilot subject; the favoured candidate was one row among six.
 
 ## Stop Conditions
 

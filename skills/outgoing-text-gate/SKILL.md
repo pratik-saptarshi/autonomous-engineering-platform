@@ -1,6 +1,6 @@
 ---
 name: outgoing-text-gate
-version: 1.0.0
+version: 1.0.1
 author: pratik-saptarshi
 description: >-
   Composite publication gate for every text destined to be published —
@@ -19,7 +19,8 @@ description: >-
 ## When to Use
 
 Use for every material text destined for publication: issue bodies, PR
-descriptions, issue and PR comments, and review comments.
+descriptions, issue and PR comments, and review comments. Also use it in
+Inward Audit Mode (below) on an existing PR body during a cycle.
 
 Do NOT use for: private notes, internal plans, chat messages to the user, or
 one-line acknowledgements with no factual content.
@@ -111,6 +112,36 @@ the fact (for example, an audit sweep over a set of recently filed issues):
    against the approved revision (Step 7).
 5. Record the sweep in the run's plan directory: URLs, before/after verdicts,
    approvals, and verification results.
+
+## Inward Audit Mode — Auditing an Existing PR Body During a Cycle
+
+The gate also runs inward: on a PR body that already exists, mid-cycle,
+when the body's claims need checking against what CI actually did.
+
+1. **Extract every factual claim** in the body — statuses, counts, check
+   outcomes, causal claims about why a leg passed or failed.
+2. **Verify each claim against the actual CI job logs** — the per-job log
+   output, not the summary rollup. A rollup's green/red does not establish
+   what a job ran, skipped, or failed on.
+3. **Grade each claim:**
+   - **CONFIRMED** — the logs establish it as written.
+   - **PARTIALLY CONFIRMED** — true as far as it goes, with a material
+     omission; name the omission explicitly.
+   - **REFUTED** — the logs contradict it.
+4. **Reconcile local-gate wording against the CI leg.** A local gate result
+   does not predict the corresponding CI leg; a body that conflates the two
+   — stating a local result as if it were the CI outcome — is a correction,
+   even when the local claim itself is accurate.
+5. **Apply corrections as an artefact trio:** save the body as found
+   (body-before), the corrected draft (body-after), and, after the edit is
+   posted, the fetched live body (body-live) in the run's directory. The
+   trio is the audit's record; an inward correction without it is not
+   complete.
+6. Precedents: PR #105's body cross-check graded claim 5.1 PARTIALLY
+   CONFIRMED — materially incomplete for the CI leg — and the body was
+   corrected; the #163/#184 cycles kept the body-before/body-after/body-live
+   trio; panels on PRs #262/#263 graded body accuracy as findings (stale
+   test counts, a carried-over sentence false at the current head).
 
 ## Hard Rules
 

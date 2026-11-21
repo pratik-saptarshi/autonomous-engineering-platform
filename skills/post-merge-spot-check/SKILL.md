@@ -1,6 +1,6 @@
 ---
 name: post-merge-spot-check
-version: 1.0.0
+version: 1.0.1
 author: pratik-saptarshi
 description: >-
   Run a gate battery against a merged PR's base at its pinned head:
@@ -53,6 +53,32 @@ Report per leg: PASS / FAIL / NOT RUN (reason). Then the attribution statement, 
 - **Clean** — all legs pass; nothing to attribute.
 - **Defects, pre-existing** — named defects, each with the Leg 5 proof (identical failure on the pre-change build). These become tracked follow-ups; they are not the merged PR's fault and never a reason to revert on their own.
 - **Defects, introduced** — named defects present only on the merged tree. This is a merge incident: report immediately with the introducing PR identified; remediation runs under the remediation cycle, and revert is the owner's decision.
+
+## Merge-Condition Honour Audit
+
+A second battery, distinct from the tree gate battery above. That battery asks whether the merged tree is sound; this one asks whether the merge honoured its conditions. After a batch of merges, audit each merged PR against its **recorded panel/judge merge conditions at the merge instant**:
+
+- the exact head merged vs the judged pin;
+- gate receipts present;
+- review threads resolved;
+- PR-body corrections applied;
+- auto-merge state at merge time.
+
+Classify each PR:
+
+- **HONORED** — every recorded condition held at the merge instant.
+- **PARTIALLY HONORED** — name the specific breach (e.g. substance discharged but judged-head discipline breached).
+- **NOT HONORED** — a gating condition did not hold at the merge instant.
+
+Governance breaches — body corrections never applied, receipts counted from a review's own markers — are **report-only** records, not new filings. Only genuinely new defects discovered by the audit get filed.
+
+Precedent: the 2026-11-18 post-merge audit found no bypass at any merge instant — #262 HONORED at its exact pin, #263 HONORED at its merge instant, #206/#219 PARTIALLY HONORED on substance with a judged-head discipline breach, #218's body corrections never applied (report-only) — and filed 11 genuinely new issues, #284–#294.
+
+### Stop-on-merge branch
+
+If a PR merges mid-review at exactly the pinned head, stop the pre-merge verification on the merge. Only on a fresh owner direction, resume the same battery as a post-merge verification, issuing FOLLOW-UP FINDINGS / revert verdicts rather than a pre-merge verdict.
+
+Precedent: PR #164 merged mid-verification at the pinned head — verification stopped, then resumed post-merge on the owner's direction; the third merged-while-reviewing case after #127/#142.
 
 ## Evidence Standard
 

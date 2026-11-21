@@ -1,6 +1,6 @@
 ---
 name: stacked-pr-restack
-version: 1.0.0
+version: 1.0.1
 author: pratik-saptarshi
 description: >-
   Rebuild a reviewed PR branch onto a moved base carrying exactly the
@@ -54,6 +54,22 @@ Compare the rebuilt branch's three-dot diff against the new base with the saved 
 ### Step 5 — Disclose on the PR
 
 Post a signed comment on the PR (through the outgoing-text gate: humanizer, fact-check, conciseness) stating: the old head and old base, the new head and new base, why the restack happened, and the Step 3 equivalence result — residual line counts and the byte-identity claim. The review verdict now applies to the new head *because of this proof*, and the comment is the record of that transfer. If the original PR was mechanically closed when its base branch was deleted, open the replacement PR against the new base and put the disclosure there, linking the closed original.
+
+### Step 6 — Judged-commit re-pin inside a running cycle
+
+A variant of the same transfer, inside a running remediation cycle: the cycle's base moves mid-cycle — e.g. the author lane merges `develop` into the branch — after a commit has already been judged.
+
+- Carry the judged commit onto the new base by cherry-pick, and prove the cherry-picked patch **byte-identical** to the judged patch, as in Step 3. A patch that differs is not the judged change.
+- Re-run the combined gate green at the rebased head.
+- Name the **actual final head** in the PR body and the gate line. The rebase changes the hash — claiming the judged hash as the pushed head would be false.
+- On the strength of the byte-identity proof plus the gate re-run, the judge's verdict carries to the rebased head **without re-judging**.
+- Precedent: the PR #184 freshness cycle — judged `ccd2e8e2` cherry-picked onto `68b8eecd`, patch byte-identical, combined gate green, pushed as `35a9646e`.
+
+### Fork-base retarget rejection — correct the record
+
+- If GitHub rejects retargeting a PR's base to a fork-only branch (HTTP 422), any earlier disclosure that promised that retarget is now false. Do not let the misstatement stand.
+- Post signed **correction** comments on the affected PRs stating that the retarget was rejected, what the bases actually remain, and what happens instead — through the outgoing-text gate, as with any disclosure under Step 5.
+- Precedent: ladybug-rust #56/#57 — the bases remained `main`; correction comments were posted on both PRs.
 
 ## Evidence Standard
 

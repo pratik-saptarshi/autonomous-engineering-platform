@@ -38,6 +38,50 @@
 
 - Label anything you could not read directly as unverified instead of folding it into a passing verdict.
 
+## New-head baseline taxonomy
+
+- After any re-pin or new head, rebuild the baseline before judging the change: run the full suite threaded, then re-run every failure solo.
+
+- Classify each failure as (a) timing/load flake, (b) environmental/upstream-baseline, or (c) introduced by the change. The counts must sum to the failure total, and UNCLASSIFIED = 0 is the exit bar before any blocker work begins.
+
+- Re-check judged-fix tests explicitly against the new baseline floor; a fix proven at an old head is not proven at the new one until its tests are located in the new run.
+
+- Precedents: PR #120 Round 2 baseline 2630/15/8 — all 15 classified (a)3/(b)9/(c)3; Round 3 — 2638/18/8, (a)6/(b)11/(c)1, unclassified 0.
+
+## Flake rulings are gated dispositions
+
+- An out-of-baseline-set failure is neither auto-failed nor auto-ignored. Prove its mechanism in source, solo-pass it, and put the ruling to the panel.
+
+- The panel seat rules the failure admissible or not; the judge accepts or rejects that ruling. A gate PASS may be made conditional on that acceptance, and is reported as conditional until it lands.
+
+- Precedent: PR #120 combined gate — one out-of-set solo-passing flake, the testing seat's flake rulings accepted by the judge, gate PASS conditional on them.
+
+## Coordinated-landing and self-healing failures are not defects
+
+- Some failures clear only on a planned landing step: CodeQL SARIF uploads failing while the default setup is still enabled ("advanced configurations cannot be processed when the default setup is enabled"), or a gate-receipt check failing on a base-branch bootstrap that self-heals on merge.
+
+- Classify these as coordinated-landing conditions, not defects. Keep them out of cycle scope, and HOLD any thread replies that depend on them until the post-push run confirms the condition resolved.
+
+- Precedents: PR #182 Item 3 condition 3.2; PR #120 gate-receipt ×7 bootstrap, "zero signal".
+
+## Failure-name-set invariant
+
+- Where a baseline has pre-existing failures, save the failure NAMES ex ante and judge the post-change run by "zero new names" across two independent runs.
+
+- Counts flake; name sets don't. A shifting failure count with a stable, subset-only name set is count flakiness, not regression.
+
+- Precedent: PR #163 F1 — 49-name baseline; both post-fix runs' failure-name sets were strict subsets with zero new names, and the judge accepted the count-flakiness caveat on exactly this basis.
+
+## Baseline attribution
+
+- A failure is attributable to the change only if it does NOT reproduce identically on the pristine base / both parents. Identical-on-baseline is REFUTED as a change defect, however real it is as a repo defect.
+
+- Name what the diagnosis does NOT explain; an attribution that silently covers unrelated failures is not an attribution.
+
+- A "green" verdict on a head that predates the current vulnerability-DB or toolchain state is STALE, not clean. Re-check currency before citing it.
+
+- Precedents: PR #105 — all four failing legs log-verified pre-existing on same-day develop runs; dap go-security — main itself red on GO-2026-6859 at go1.27.3, so PR #213's clean status was stale.
+
 ## Available connectors
 
 - [GitHub](/opt/hatch/connectors/github/CONNECTOR.md) for reading pull request check runs, review state and merge status for the pinned head.

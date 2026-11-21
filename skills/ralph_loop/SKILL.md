@@ -25,6 +25,12 @@ What to do and why.
 - The backlog file is the source of truth for status. Never track task status in a separate file.
 - A task is blocked while any of its `depends-on` tasks is not `done`. Never pick a blocked task.
 
+## Verify blockers in the live store, not the export
+
+- In blocked-state idle runs, confirm every blocker in the source-of-truth store (`bd show`) rather than the exported file. An export is a snapshot; the store is the state.
+- Where the export disagrees with the store, record the discrepancy itself as a named, persistent blocker — it gates work exactly like a code blocker — instead of resolving it in favour of either source.
+- Precedent: dap-jo9.2.5.10 is OPEN in bd but closed in the jsonl export since 2026-10-27 — the discrepancy itself gates RALPH-015 across ~30 runs.
+
 ## Run one iteration
 
 - Pick the next task with `python3 ~/workspace/ralph/bin/backlog.py next`. It prints the highest-priority unblocked `to-do` task as JSON. If it prints nothing, there is no work: stop the loop.
@@ -57,6 +63,12 @@ What to do and why.
 - Independent verification (standing rule, 2026-10-17): after an iteration is verified and marked done, spawn one independent verification subagent per iteration. Brief it with the task ID, title, full acceptance criteria, and the changed files/evidence — and instruct it to verify each criterion independently against the actual repo/environment state, without trusting the worker's report. It reports VERIFIED or lists failed criteria with evidence. Spawn it and continue immediately (non-blocking); collect completed verdicts for the run report. On failed criteria, add a focused fix task to the backlog (failure evidence as acceptance criteria), or note it in the report if it needs Dano's decision. The verifier is a second check, never a replacement for the worker's own verification.
 - End every iteration by updating the backlog: set the status, append a dated comment describing what happened, and adjust labels such as `needs-tests` or `ralph-blocked` when they apply.
 - Append each run to `~/workspace/ralph/runs.md` with the date, task ID, role used, and outcome in one line.
+
+## Delivery-time repair of the run's own bookkeeping
+
+- If a run's log appends (`runs.md` / the daily log) are interrupted — e.g. an exec denial — restore both entries at delivery time from the run report, and DISCLOSE the repair in the restored entry. A silently backfilled log claims a continuity it did not have.
+- A repair claim must itself be checked: a later run corrects it if the claim overreached.
+- Precedent: third instance recorded 2026-11-17; a follow-up correction narrowed an earlier repair's closing claim.
 
 ## Reflect and watch the loop
 

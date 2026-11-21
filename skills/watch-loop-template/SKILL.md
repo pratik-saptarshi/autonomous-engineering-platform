@@ -1,6 +1,6 @@
 ---
 name: watch-loop-template
-version: 1.0.0
+version: 1.0.1
 author: pratik-saptarshi
 description: >-
   Template for periodic watch loops that monitor an external surface (open
@@ -40,6 +40,12 @@ A watch loop polls a surface on a cadence and speaks only when something changed
 - A suppressed report does not advance the marker: if a run computed a report but did not deliver it (dark window, delivery failure), the items stay pending and the next delivered report still carries them. Never mark as reported what the owner never saw.
 - Record the run in the log either way, so a silent run is distinguishable from a run that never happened.
 
+## Delivered-once, never re-report
+
+- An item already delivered is not re-reported unless its state materially changed. A repeat with no material change is noise, however important the item still is.
+- Unchanged flags persist silently in the watermark and run log; they stay tracked without being re-delivered.
+- Silent runs still update the watermark and the run log, so the record shows the watch ran and held the item, not that it missed it.
+
 ## Dark window
 
 - A watch may declare a dark window (for example overnight hours). Runs inside it still observe and log, but deliver nothing and do not advance the marker.
@@ -49,6 +55,23 @@ A watch loop polls a surface on a cadence and speaks only when something changed
 
 - A watch observes and reports. It does not fix, post, push, merge, or reconfigure unless the owner has explicitly granted that specific authority to that specific watch.
 - Where a watch feeds a larger process (verification, remediation planning), state that hand-off in its spec; the watch itself still stops at the report.
+
+## Watch-side verification protocol
+
+- A watch does not merely relay reviewer findings. For each new actionable item, run intake verification at the PR's current head before reporting it as a finding.
+- Reproduce where feasible, using the synthetic-reproduction triplet: the claim shape must exhibit the defect (e.g. exit 0 where it should be caught); a direct control must be caught (exit 2); and a precision control must NOT false-positive (exit 0). A claim that cannot clear the triplet is not confirmed.
+- Classify each item CONFIRMED, REFUTED, or NEEDS-INFO, with concrete evidence (file:line, exit codes) — never a verdict on the reviewer's authority alone.
+- Label every verdict with its proof depth: unit-reproduced, E2E-reproduced, or trace-only. A trace-only verdict is reported as trace-only, never dressed as a reproduction.
+- For CONFIRMED items, draft the remediation plan and STOP. The watch makes no code changes, posts, pushes, or merges; execution gates on the owner's ruling.
+- Precedent: the AEP PR-comment watch's ~108 in-window runs — attack exit 0 vs control 2, precision 0 across dozens of Codex P2 verifications.
+
+## Self-terminating probe-by-attempt watcher
+
+- When no read-only detection exists for an external toggle, the watcher's probe may be the operation itself — but only if the attempt is proven harmless while the toggle is off: verified to change no external state and to fail with a known code.
+- The watcher stays silent while the probe fails with that known code. On success it performs the pending action, verifies the result, and REMOVES ITSELF.
+- It also self-removes, with a report, if the watched objects merge or close first and the pending action is moot.
+- It never performs the dangerous sibling operation (e.g. never `gh stack merge`); the probe authorizes only the one pending action it was set to complete.
+- Precedent: the daily gh-stack watcher — probe `gh stack link 55 56` exits 9 while Stacked PRs is disabled; on enablement it would link, verify the bases, and remove itself.
 
 ## Instantiating a watch
 

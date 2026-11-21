@@ -1,6 +1,6 @@
 ---
 name: rust-pre-pr-gate
-version: 1.0.0
+version: 1.0.1
 author: pratik-saptarshi
 description: >-
   The standing pre-PR gate for Rust repos: before opening or pushing to a PR,
@@ -43,3 +43,17 @@ A clone without the hook is a gate that exists only on paper; check for the syml
 - Run the gate against the exact tree being pushed, from the repo root; the script refuses to run outside a Rust repo root.
 - Fix blocking failures and re-run; report-only failures (clippy, deny) are surfaced in the PR context, not silently dropped and not treated as blockers until their baselines are remediated.
 - **No concurrent cargo builds during long gate runs.** This VM has ~8 GB RAM; a release link was OOM-killed under concurrent cargo load on 2026-11-07. Before starting a long build or gate, check for running cargo/rustc processes and wait for a quiet window rather than racing another lane's build.
+
+## The baseline-record verdict
+
+- When the gate FAILS overall but every failing leg is proven identical-or-better against the pristine base head — the same failure reproduced on base, byte-compared where possible (fmt backlog counts, identical advisory set, the windows ort-sys prebuilt absence reproduced on base) — record the result explicitly as a BASELINE RECORD, alongside the judge's gate verdict.
+
+- A baseline record is not a pass and not a merge-readiness finding. Never silently waive a failing leg, and never report a baseline record as PASS.
+
+- Precedents: upstream PR #184's cycle gate record vs pristine c1fba663; PR #206 remediation "pre-PR gate baseline record"; the checkpoint fix's windows leg reproduced identically on pristine develop.
+
+## Quiet-window discipline
+
+- Before a long gate run, check for concurrent cargo/rustc processes and wait for a quiet window. This VM has ~6–8 GB RAM; a release link was OOM-killed under concurrent cargo load.
+
+- If another lane starts mid-run anyway, DISCLOSE the load in the report and corroborate any flakes with solo re-runs rather than claiming the threaded result as clean evidence.

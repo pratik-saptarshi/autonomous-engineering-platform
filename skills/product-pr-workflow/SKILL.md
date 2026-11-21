@@ -1,6 +1,6 @@
 ---
 name: product-pr-workflow
-version: 1.0.0
+version: 1.0.1
 author: pratik-saptarshi
 description: >-
   The PR-lifecycle umbrella: sequence an open PR — or a fleet of them — from
@@ -74,11 +74,22 @@ Before any merge: poll CI under `ci_gate_polling` discipline — pinned head SHA
 
 ### Stage 8 — Post-merge spot check
 
-After landing, run `post-merge-spot-check` against the base at its new pinned head: behavioural battery on the merged tree, plus a pre-change build so any defect the battery surfaces is attributed — introduced by this PR or pre-existing — with proof, not by assumption.
+After landing, run `post-merge-spot-check` against the base at its new pinned head: behavioural battery on the merged tree, plus a pre-change build so any defect the battery surfaces is attributed — introduced by this PR or pre-existing — with proof, not by assumption. Post-merge condition disputes are audited by `post-merge-spot-check`'s honour-audit battery.
 
 ### Stage 9 — Superseded closure
 
 Any PR displaced by the landed work closes via `superseded-pr-closure`: signed record comment preserving the verification chain, explicit branch-retention decision, close unmerged, verify `mergedAt` is null.
+
+## Guard-Collision Adjudication
+
+An automation guard may close a PR for doing exactly what the owner ruled. The guard has no opt-out and cannot see the ruling, so the closure is a collision to adjudicate, not a verdict on the work:
+
+1. **Verify the guard behaved as designed, first-hand** — its rule, its trigger, and the PR's state at the moment it fired. A guard that misfired is a defect; a guard that fired correctly is a routing decision made without the ruling.
+2. **Preserve the executed work on the branch.** Nothing is lost by the closure itself: the branch, its commits, and its record survive a closed PR.
+3. **Put the disposition to the owner as a clean choice** — ACCEPT the guard's closure (the work routes to the lane the guard exists to feed) vs EXEMPT-AND-REOPEN. Note plainly that reopening re-triggers the guard, so an exemption must change the guard or the PR's shape, not just the owner's preference.
+4. **When the owner accepts a closure, close the item cleanly** and do not re-pitch it.
+
+Precedent: PR #157 — the owner ruled REFRESH the vendored manifest and keep the PR open; the refresh was pushed (`2cf577c`) and the Dependabot Reference Guard closed the PR 9 seconds later (Dependabot author + any `reference/**` file = label + comment + close, no opt-out in `decide()`). The owner ACCEPTED the closure — the manifest is preserved on the branch, the update routed to the re-vendor lane, no exemption.
 
 ## Authorization Model
 

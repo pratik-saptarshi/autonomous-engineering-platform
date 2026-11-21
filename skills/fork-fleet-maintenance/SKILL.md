@@ -1,6 +1,6 @@
 ---
 name: fork-fleet-maintenance
-version: 1.0.0
+version: 1.0.1
 author: pratik-saptarshi
 description: >-
   Adjudicate the fork fleet under the fork model: license gate before any
@@ -52,6 +52,32 @@ No fork is pulled forward until its license position is settled:
 ### 4. Unknown means unknown
 
 - A fork whose state cannot be established (unreachable upstream, ambiguous license text, detector disagreement) is reported as **unknown**, with the reason. Never guess a state to complete a table, and never let an unknown silently become a candidate or an exclusion.
+
+### 5. State file as scope — a missing fork is invisible
+
+- The sync checker scopes to its state file; it does not freshly enumerate the fleet. A fork missing from the file is therefore invisible forever — no run ever flags it — and the omission self-perpetuates into every downstream board built from the file.
+- When a fork is found missing, correct the state file **first**, before any adjudication that relies on fleet totals: verify its parent, default branch, and mirror heads live via the API, and record the **true** ahead/behind counts — never assume 0/0 for an unmeasured fork.
+- Read-back verify the corrected entry before the next run, and restate the fleet totals it changes.
+- Precedent: the nuclei fork, on-model since 2026-11-13, was missing from `fork-sync-check-state.json`; corrected to 0 ahead / 1 behind from live measurement, returning the fleet to 147 covered.
+
+### 6. Standing-exception encoding
+
+- A flagged divergence is not closed on a verbal "by design". First verify it live as by-design, first-hand: the head, the authorizing PR, and the integration history.
+- Once verified, close the monitor item and encode the exception durably in the checker's Known section. Future runs record the fork in the state file only — never as a finding — so the same divergence is not re-flagged and re-adjudicated every cycle.
+- Precedent: the NeuroStrata fork's `main`, diverged by design as the integration branch under the 2026-11-04 ruling; the exception was encoded and read-back verified on 2026-11-15.
+
+### 7. Mirror-sync execution proof
+
+- Syncing a mirror is not done when the push succeeds. Afterwards, prove the divergence from upstream is **exactly** the fork's intentional files — as an exact line multiset / patch identity against upstream, not a file list recalled from memory.
+- Re-run the fork's governance assertions on the merged tree; a sync that passes arithmetic but fails governance is not complete.
+- Precedent: the PR #114 syncs — divergence was exactly 3 workflow files with zero Rust divergence, the patch was line-identical across pins, and governance assertions passed 4/4 on the merged tree.
+
+### 8. Integration-branch exception — merge, never reset
+
+- The standing-exception fork (NeuroStrata `main`) is pulled forward by **merge**, never by reset or force. It carries owner work by design, so the mirror-reset rule in §2 does not apply to it.
+- Merge rules: upstream wins where only upstream changed; the fork's changes stand where upstream did not touch them; any both-sides-changed conflict **stops** for the owner's ruling — never resolve one unilaterally.
+- Verify build and test in a quiet window before pushing, and prove `behind_by=0` by API afterwards.
+- Precedent: the fork-main pull lane, PR #114.
 
 ## Output shape
 
