@@ -39,6 +39,7 @@ defect-class-census
 detool
 diagnosing-superpowers
 direct_drive_execution
+disk-triage
 dispatching-parallel-agents
 domain-modeling
 egm-bootstrap
@@ -73,6 +74,7 @@ neurogenesis
 neurogenesis_teams
 neurostrata_memory
 open-code-review-delegate
+opencode-runner
 outgoing-text-gate
 overnight-parallel-lanes
 overseer

@@ -244,6 +244,7 @@ a92d0339fecaa191cdfb95b848e252d9ff370e61fced7e1153996d17b4f13170  ./diagnosing-s
 38295d0fd785e8608f330815c59ebd7047942002ec7085aecbed54681f56b0c1  ./diagnosing-superpowers/templates/report.md
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  ./direct_drive_execution/.write-lock
 0b8a72df853acc282064ae15c3d258cefe944f4527b15603fc29c4ca5d49878a  ./direct_drive_execution/SKILL.md
+8122668a7dc58195af8facaaaf23d617a329169872ecbc3e096a51d87f94ccc4  ./disk-triage/SKILL.md
 1968923066f3b707eb01d1992cdf4c42284c3855f70253b9cd5000ff45fca13c  ./dispatching-parallel-agents/SKILL.md
 944c92aa790e8fbdc9199640b170979abb8a34ba8d0fe18c2a01a63bce140ca0  ./domain-modeling/ADR-FORMAT.md
 21dcc40cdec8e151a829b98ab1517c1867bc444e3665134a98c6983411996801  ./domain-modeling/GLOSSARY-FORMAT.md
@@ -298,6 +299,7 @@ e6d3180b746ee14d721078641d01d37ef216df00750997cb3bb3b75c978867ba  ./neurogenesis
 a789890e6629456a09de62c1227a68cc3a161ee5f9b3a94593e964eab66e892d  ./neurostrata_memory/LICENSE
 be279452e666988cdc0e5568ce9295238f956bef9a0746cf630c4d8dba58654f  ./neurostrata_memory/SKILL.md
 1ad19cca0a584e3175e171616a314ee8de5d4fb90c31971a40eff9bb2fb1f2f8  ./open-code-review-delegate/SKILL.md
+7e531768dfedeba6574cf18e07633898c9518676061cd7a914acffaf71000393  ./opencode-runner/SKILL.md
 6494d75cb4be41c7b036629e23a19ca62912e6f90bbc8b946a8f7ce6a82ada69  ./outgoing-text-gate/SKILL.md
 c33cc50b4dcfefb954fd82a5ab2408a8a42eecc8aa0bc691934f19c4cec1541b  ./overnight-parallel-lanes/FORK.md
 a789890e6629456a09de62c1227a68cc3a161ee5f9b3a94593e964eab66e892d  ./overnight-parallel-lanes/LICENSE
