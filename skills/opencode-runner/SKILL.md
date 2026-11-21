@@ -195,7 +195,7 @@ gated, never allowlisted): claude-haiku-5-5, gemini-4-argon and
 grok-4.7. The Go endpoint shrank from 30 to 19 models.
 
 **Defaults:** bulk/mechanical work → `glm-5.3-flash`; quality
-lanes → `glm-5.3` or `kimi-k3`; probes → a free model. Go models
+lanes → `glm-5.3` or `kimi-k2.7-code`; probes → a free model. Go models
 draw on per-model monthly allowances ($15–$100 of usage); be
 mindful on long lanes. The interactive CLI default
 (deepseek-v4.1-flash) is the owner's choice for his own sessions,
