@@ -59,7 +59,7 @@ git -C "vendor-backup-$tree-2026-11-19.git" tag "backup/pre-sync-$tree-working" 
    ```sh
    git clone "https://github.com/pratik-saptarshi/<tree>.git" rollback-<tree>
    cd rollback-<tree>
-   git revert --no-edit <merge-commit-sha>       # the --no-ff merge made by Task 4/5
+   git revert --no-edit -m 1 <merge-commit-sha>   # the --no-ff merge made by Task 4/5; -m 1 = working-branch parent
    git push origin <working-branch>
    ```
 
@@ -74,6 +74,8 @@ git -C "vendor-backup-$tree-2026-11-19.git" tag "backup/pre-sync-$tree-working" 
 3. Verify restoration with `gh api repos/<fork>/compare/<pre-sync-sha>...<branch>` → `identical`, and confirm all recorded fork-only SHAs are present.
 
 The pre-sync SHAs above are also held by the mirror-clone tags and inside the bundles, so a moved ref cannot lose them to GC.
+
+> **Errata (2026-11-20):** the sentence above is wrong for the bundles created on 2026-11-19. The commands in the block above created each bundle **before** its tags, so the `backup/pre-sync-*` tags are **not** inside those bundles — they exist only in the mirror clones (`vendor-backup-<tree>-2026-11-19.git`). A restore that clones from a 2026-11-19 bundle cannot resolve `backup/pre-sync-<tree>-mirror`; restore from the mirror clone instead. The command block itself is the historical record and is unchanged. Future backups use `scripts/vendor_sync.sh backup`, which tags first, bundles second, and verifies both tag refs are in the bundle.
 
 ## Ordering record
 

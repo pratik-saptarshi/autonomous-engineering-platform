@@ -94,10 +94,28 @@ class VendorFreshnessTest(unittest.TestCase):
         self.assertIn("<!-- vendor-freshness-report -->", body)
         self.assertIn("alpha", body)
 
+    def test_single_compare_failure_is_only_compare_error(self):
+        fixture_tree(self.root, "alpha", block("alpha"))
+        with mock.patch.object(vendor_graph, "run_gh", side_effect=RuntimeError("mocked gh API failure (HTTP 500)")):
+            report = vendor_freshness.build(self.root)
+        compare_errors = [f for f in report["findings"] if f["kind"] == "compare-error" and f["tree"] == "alpha"]
+        malformed = [f for f in report["findings"] if f["kind"] == "malformed-block"]
+        self.assertEqual(len(compare_errors), 1)
+        self.assertEqual(malformed, [])
+
+    def test_both_compare_failures_are_only_one_compare_error(self):
+        fixture_tree(self.root, "beta", block("beta", parent="upstream/beta"))
+        with mock.patch.object(vendor_graph, "run_gh", side_effect=RuntimeError("mocked gh API failure (HTTP 500)")):
+            report = vendor_freshness.build(self.root)
+        compare_errors = [f for f in report["findings"] if f["kind"] == "compare-error" and f["tree"] == "beta"]
+        malformed = [f for f in report["findings"] if f["kind"] == "malformed-block"]
+        self.assertEqual(len(compare_errors), 1)
+        self.assertEqual(malformed, [])
+
     def test_test_count_asserted(self):
         src = Path(__file__).read_text(encoding="utf-8")
         needle = "    def " + "test_"
-        self.assertEqual(src.count(needle), 8)
+        self.assertEqual(src.count(needle), 10)
 
 
 if __name__ == "__main__":
