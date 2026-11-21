@@ -906,21 +906,84 @@ ni_test_line() {
   return 1
 }
 
+# Print $1 with any trailing comment removed. A `#` begins a comment
+# only where bash would begin one on a code line: outside single and
+# double quotes, not backslash-escaped, and at a word start (line
+# start or after whitespace). A `#` inside quotes, escaped, or glued
+# to a word is literal text and never cuts the line — cutting there
+# deletes real code after the `#` (the strip this replaces cut at the
+# first whitespace-`#`, quoted or not, and lost real openers and
+# closers that followed a quoted `#` on the same line). When a comment
+# is cut, the whitespace that preceded it is trimmed too.
+strip_trailing_comment() {
+  local s="$1" out="" ch
+  local sq=0 dq=0 wstart=1 cut=0 i
+  for ((i = 0; i < ${#s}; i++)); do
+    ch="${s:i:1}"
+    if [ "$sq" -eq 1 ]; then
+      [ "$ch" = "'" ] && sq=0
+      out+="$ch"
+      continue
+    fi
+    if [ "$ch" = "\\" ]; then
+      # An escape consumes the next character, inside double quotes
+      # and out (inside single quotes it never reaches here).
+      if [ $((i + 1)) -lt ${#s} ]; then
+        out+="$ch${s:i+1:1}"
+        i=$((i + 1))
+        wstart=0
+        continue
+      fi
+    fi
+    if [ "$dq" -eq 1 ]; then
+      [ "$ch" = '"' ] && dq=0
+      out+="$ch"
+      continue
+    fi
+    case "$ch" in
+    "'")
+      sq=1
+      wstart=0
+      ;;
+    '"')
+      dq=1
+      wstart=0
+      ;;
+    '#')
+      if [ "$wstart" -eq 1 ]; then
+        cut=1
+        break
+      fi
+      out+="$ch"
+      ;;
+    [[:space:]])
+      out+="$ch"
+      wstart=1
+      ;;
+    *)
+      out+="$ch"
+      wstart=0
+      ;;
+    esac
+  done
+  if [ "$cut" -eq 1 ]; then
+    out="${out%"${out##*[![:space:]]}"}"
+  fi
+  printf '%s' "$out"
+}
+
 # Print the closer (`}`, `fi`, `esac`) when $1 opens a function, if, or
 # case body; return 1 otherwise. Kept permissive on purpose: a false
-# opener only moves the block earlier in top-level files, where it still
-# executes, while a missed opener strands the block (issue #119).
-# A trailing comment is stripped first, exactly as in ctrl_closer_line:
+# opener usually only moves the block earlier in top-level files, where
+# it still executes — but a phantom frame can also strand the block, by
+# making a following top-level guard read as nested (census mechanism
+# N1) — while a missed opener strands the block directly (issue #119).
+# A trailing comment is stripped first (strip_trailing_comment):
 # opener keywords inside comment text open nothing, and a comment after
 # a real opener does not suppress it.
 ctrl_opener_closer() {
-  local s="$1"
-  case "$s" in
-  *[[:space:]]'#'*)
-    s="${s%%[[:space:]]'#'*}"
-    s="${s%"${s##*[![:space:]]}"}"
-    ;;
-  esac
+  local s
+  s="$(strip_trailing_comment "$1")"
   if [[ "$s" =~ ^function[[:space:]]+[A-Za-z_][A-Za-z0-9_]*([[:space:]]*\(\))?[[:space:]]*\{[[:space:]]*$ ]]; then
     printf '}'
     return 0

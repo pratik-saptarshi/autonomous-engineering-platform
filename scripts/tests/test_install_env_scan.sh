@@ -916,6 +916,59 @@ check "R3T7 single-quoted HOME remains literal and is not detected" profile_not_
 check "R5T1 direct ./ source in the profile detected" profile_detected '. ./.bashrc'
 check "R5T1 absolute path with a .. component detected" profile_detected '. "$HOME/.config/../.bashrc"'
 
+# ================= PR #191 R6: quoted '#' is not a comment (bridge Finding A) =================
+
+note "PR191-R6A: unit-level opener grammar (a quoted '#' does not cut the line)"
+check "R6A mid-line quoted hash, case opens" opener_eq 'echo "step # 1"; case $- in' 'esac'
+check "R6A case subject with quoted hash opens" opener_eq 'case "$- # flags" in' 'esac'
+check "R6A case subject with single-quoted hash opens" opener_eq "case 'mode # 1' in" 'esac'
+check "R6A quoted hash in an if condition, if opens" opener_eq 'if [ "$mode" = "a # b" ]; then' 'fi'
+check "R6A real comment after a quoted hash still cuts" opener_eq 'echo "step # 1" # case foo in' ''
+
+note "PR191-R6A1: a quoted '#' before the guard's case opener does not strand the block"
+new_home r6a1
+cat >"$FH/.bashrc" <<'EOF'
+echo "setup # 1" >/dev/null; case $- in
+  *i*) ;;
+  *) return;;
+esac
+export AFTER=1
+EOF
+run_env install_env_block
+check "R6A1 rc 0" test "$RC" -eq 0
+check_out "R6A1 env ok" 'INSTALL-RE: env ok' "$OUT"
+BLOCK_LINE="$(line_of '# >>> re-runtime >>>')"
+GUARD_LINE="$(line_of 'case $- in')"
+check "R6A1 block before the guard" test "$BLOCK_LINE" -lt "$GUARD_LINE"
+JAVA_VAL="$(env -i HOME="$FH" /bin/bash -c '. "$HOME/.bashrc"; printf %s "${JAVA_HOME:-}"' 2>/dev/null)"
+check "R6A1 block reachable in a noninteractive source" test "$JAVA_VAL" = "$FH/opt/jdk-$TEMURIN_VERSION"
+SHA="$(file_sha "$FH/.bashrc")"
+run_env install_env_block
+check "R6A1 second run rc 0" test "$RC" -eq 0
+check "R6A1 fixed point" test "$(file_sha "$FH/.bashrc")" = "$SHA"
+
+note "PR191-R6A2: a quoted '#' in the guard's case subject does not strand the block"
+new_home r6a2
+cat >"$FH/.bashrc" <<'EOF'
+case "$- # flags" in
+  *i*) ;;
+  *) return;;
+esac
+export AFTER=1
+EOF
+run_env install_env_block
+check "R6A2 rc 0" test "$RC" -eq 0
+check_out "R6A2 env ok" 'INSTALL-RE: env ok' "$OUT"
+BLOCK_LINE="$(line_of '# >>> re-runtime >>>')"
+GUARD_LINE="$(line_of 'case "$- # flags" in')"
+check "R6A2 block before the guard" test "$BLOCK_LINE" -lt "$GUARD_LINE"
+JAVA_VAL="$(env -i HOME="$FH" /bin/bash -c '. "$HOME/.bashrc"; printf %s "${JAVA_HOME:-}"' 2>/dev/null)"
+check "R6A2 block reachable in a noninteractive source" test "$JAVA_VAL" = "$FH/opt/jdk-$TEMURIN_VERSION"
+SHA="$(file_sha "$FH/.bashrc")"
+run_env install_env_block
+check "R6A2 second run rc 0" test "$RC" -eq 0
+check "R6A2 fixed point" test "$(file_sha "$FH/.bashrc")" = "$SHA"
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "test_install_env_scan: ALL PASS (sandbox $SB)"
