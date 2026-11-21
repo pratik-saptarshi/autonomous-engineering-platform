@@ -5,8 +5,10 @@ author: pratik-saptarshi
 description: >-
   Rebuild a reviewed PR branch onto a moved base carrying exactly the
   reviewed residual: capture the three-dot diff first, rebuild as a single
-  commit on the new base, prove the new diff byte-identical to the reviewed
-  residual, push force-with-lease behind a head tripwire, and disclose the
+  commit on the new base, prove the new diff equivalent to the reviewed
+  residual — byte-identical under `cmp`, or accounted for line by line under
+  Step 3's sole named exception for base-reflecting differences — push
+  force-with-lease behind a head tripwire, and disclose the
   restack on the PR. Use when a branch's base has advanced (its parent PR
   merged, the stack shifted) and the branch must be re-based without
   re-reviewing content nobody changed.
@@ -43,9 +45,12 @@ Before touching anything, record the reviewed change exactly:
 The proof is an ordered byte comparison of the two three-dot diffs. Nothing weaker transfers the verdict.
 
 - Save the rebuilt branch's three-dot diff the same way as Step 1: `git diff <new-base>...<rebuilt-head> > rebuilt.diff`.
-- Byte-compare the two saved diffs: `cmp reviewed.diff rebuilt.diff`. Exit 0 — identical bytes — is the only passing proof, and only this result may be called **byte-identical**.
-- Any difference fails the proof and the verdict does **not** transfer. Diagnose whether it's a conflict-resolution slip (redo Step 2) or a genuine behaviour change (stop, per Step 2's condition). Never edit the residual to make the proof pass and still call it the reviewed change.
-- One legitimate difference class exists: the two diffs are taken against different bases, so index lines and context that merely reflect the base move can differ on a faithful rebuild. Such a difference passes only when the operator shows — and records in the Step 5 disclosure — that every differing byte is confined to those base-reflecting lines and the added/removed payload is identical **in order**. Any other difference, or no recorded showing, fails the proof.
+- Byte-compare the two saved diffs: `cmp reviewed.diff rebuilt.diff`. Exit 0 — identical bytes — is the primary passing proof, and only this result may be called **byte-identical**. The sole exception to this rule is the named base-reflection accounting in the bullet after next; no other showing passes.
+- Any difference fails the proof — unless it passes the base-reflection accounting below — and the verdict does **not** transfer. Diagnose whether it's a conflict-resolution slip (redo Step 2) or a genuine behaviour change (stop, per Step 2's condition). Never edit the residual to make the proof pass and still call it the reviewed change.
+- **Sole named exception — the base-reflection accounting.** The two diffs are taken against different bases, so index lines, `@@` hunk-header lines, and context lines can differ on a faithful rebuild even though the reviewed change is unchanged. When `cmp` differs, the difference passes only under this accounting, performed mechanically and recorded in full in the Step 5 disclosure:
+  1. Take a line-level diff of the two saved diffs (`diff reviewed.diff rebuilt.diff`). Every differing line must be accounted for as exactly one of: an `index` line; an `@@` hunk-header line whose line-number shifts are explained by the base move (the shift equals the net line change the base move makes above that hunk); or a context line whose differing content is traced to the base move — the accounting must exhibit the matching line in the diff between the old base and the new base (`git diff <old-base>..<new-base>`), not merely assert the trace.
+  2. A differing payload line disqualifies the transfer: any added or removed line (`+`/`-` content, or a file-header line) that differs between the two diffs — **including a payload line that merely changed position**, appearing at a different position in the rebuilt diff than in the reviewed diff — fails the accounting, the residual is not equivalent, and the verdict does not transfer. No reading of the accounting may pass a moved payload line.
+  3. Any differing line that fits none of the three accounted classes, any `@@` shift the base move does not explain, any context difference the base-move diff does not exhibit, or no recorded accounting at all, fails the proof.
 - Per-file added/removed counts and added/removed line multisets may be computed to localise a `cmp` failure, as a labelled **diagnostic only**. A multiset is order- and position-blind: its match is never the proof, never transfers a verdict, and must never be reported as "byte-identical".
 
 ### Step 4 — Push behind a tripwire
@@ -59,7 +64,7 @@ Post a signed comment on the PR (through the outgoing-text gate: humanizer, fact
 
 ### Step 6 — Judged-commit re-pin inside a running cycle
 
-A variant of the same transfer, inside a running remediation cycle: the cycle's base moves mid-cycle — e.g. the author lane merges `develop` into the branch — after a commit has already been judged.
+A variant of the same transfer, inside a running remediation cycle: the cycle's base moves mid-cycle — e.g. the parent PR below this one in the stack merges and this branch is re-pinned by cherry-picking the judged commit onto the advanced base, which does not touch this patch's tree effect — after a commit has already been judged.
 
 - Carry the judged commit onto the new base by cherry-pick, and prove the carry by **tree-hash equality**: pin the judged commit's tree hash (`git rev-parse <judged-head>^{tree}`) at judging time, and after the cherry-pick show the rebased head's tree hash equals it. A tree hash commits to every file's full ordered content, so — unlike a line-multiset comparison — reordering and context moves change it. (Step 3's `cmp` of patch text is not used here: the base legitimately moves under a cherry-picked patch, so patch bytes can differ on a faithful carry; the judged object is the resulting tree.) A tree that differs is not the judged change, and the verdict does not carry.
 - Re-run the combined gate green at the rebased head.
