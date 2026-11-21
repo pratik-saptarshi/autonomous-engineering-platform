@@ -699,6 +699,16 @@ check "123o rc 0" test "$RC" -eq 0
 check_out "123o shadowing SKIP line" 'login startup is shadowed by' "$OUT"
 check "123o no block composed" test "$(marker_count '>>>')" -eq 0
 
+note "#123p: a quoted-fragment \${HOME} sourcing .bash_profile is recognized (PR #191 R3-T7)"
+new_home 123p
+printf '. "$HOME"/.bashrc\n' >"$FH/.bash_profile"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+run_env install_env_block
+check "123p rc 0" test "$RC" -eq 0
+check_out "123p env ok" 'INSTALL-RE: env ok' "$OUT"
+check_no_out "123p no shadowing SKIP" 'login startup is shadowed by' "$OUT"
+check "123p block written" test "$(marker_count '>>>')" -eq 1
+
 note "PR191-R2F2: unit-level profile_sources_bashrc probes for braced forms"
 profile_detected() { # profile_detected <profile-line>
   local pdir="$SB/psb-probe"
@@ -719,6 +729,12 @@ check "R2F2 unquoted braced form detected" profile_detected '. ${HOME}/.bashrc'
 check "R2F2 source-keyword braced form detected" profile_detected 'source "${HOME}/.bashrc"'
 check "R2F2 braced || chain not detected (unchanged)" profile_not_detected '[ -f "${HOME}/.bashrc" ] || . "${HOME}/.bashrc"'
 check "R2F2 braced mention without a source command not detected" profile_not_detected 'echo ". \"${HOME}/.bashrc\""'
+check "R3T7 quoted HOME fragment detected" profile_detected '. "$HOME"/.bashrc'
+check "R3T7 quoted suffix fragment detected" profile_detected '. "$HOME/"'"'"'.bashrc'"'"''
+check "R3T7 unquoted HOME plus quoted suffix detected" profile_detected '. $HOME"/.bashrc"'
+check "R3T7 braced HOME plus unquoted suffix detected" profile_detected '. "${HOME}/".bashrc'
+check "R3T7 tilde plus quoted suffix detected" profile_detected '. ~/".bashrc"'
+check "R3T7 single-quoted HOME remains literal and is not detected" profile_not_detected ". '\$HOME'/.bashrc"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then

@@ -375,6 +375,91 @@ install_radare2() {
 # re-derive "pre-existing" for a profile the run itself just created.
 PROFILE_ORIGIN=""
 
+# Print $1 as a sourced path word after shell-style quote removal.
+# Quoted and unquoted fragments may be concatenated anywhere in the
+# word (`"$HOME"/.bashrc`, `$HOME"/.bashrc"`, `"$HOME/"'.bashrc'`).
+# $HOME/${HOME} expand only where bash would expand them (unquoted or
+# inside double quotes); a leading tilde expands only when unquoted.
+normalize_source_word() {
+  local word="$1" out="" ch nxt i=0 sq=0 dq=0
+  while [ "$i" -lt "${#word}" ]; do
+    ch="${word:i:1}"
+    if [ "$sq" -eq 1 ]; then
+      if [ "$ch" = "'" ]; then
+        sq=0
+      else
+        out+="$ch"
+      fi
+      i=$((i + 1))
+      continue
+    fi
+    if [ "$dq" -eq 0 ] && [ "$ch" = "'" ]; then
+      sq=1
+      i=$((i + 1))
+      continue
+    fi
+    if [ "$ch" = '"' ]; then
+      if [ "$dq" -eq 1 ]; then
+        dq=0
+      else
+        dq=1
+      fi
+      i=$((i + 1))
+      continue
+    fi
+    if [ "$ch" = "\\" ]; then
+      nxt="${word:i+1:1}"
+      if [ "$dq" -eq 1 ]; then
+        case "$nxt" in
+        '$' | '`' | '"' | '\')
+          out+="$nxt"
+          i=$((i + 2))
+          continue
+          ;;
+        esac
+        out+="$ch"
+      elif [ -n "$nxt" ]; then
+        out+="$nxt"
+        i=$((i + 2))
+        continue
+      else
+        out+="$ch"
+      fi
+      i=$((i + 1))
+      continue
+    fi
+    if [ "$ch" = '$' ]; then
+      if [ "${word:i:7}" = '${HOME}' ]; then
+        out+="$HOME"
+        i=$((i + 7))
+        continue
+      fi
+      if [ "${word:i:5}" = '$HOME' ]; then
+        nxt="${word:i+5:1}"
+        case "$nxt" in
+        [A-Za-z0-9_]*) ;;
+        *)
+          out+="$HOME"
+          i=$((i + 5))
+          continue
+          ;;
+        esac
+      fi
+    fi
+    if [ "$ch" = '~' ] && [ "$i" -eq 0 ] && [ "$dq" -eq 0 ]; then
+      nxt="${word:i+1:1}"
+      if [ -z "$nxt" ] || [ "$nxt" = "/" ]; then
+        out+="$HOME"
+        i=$((i + 1))
+        continue
+      fi
+    fi
+    out+="$ch"
+    i=$((i + 1))
+  done
+  printf '%s' "$out"
+}
+
 # True when $1 (the first existing login startup file) sources ~/.bashrc,
 # following chains of sourced files with a cycle guard. Used only to
 # NAME a shadowing state: a pre-existing profile is never modified.
@@ -427,13 +512,7 @@ profile_sources_bashrc() {
         case "$seg" in
         '.'[[:space:]]* | source[[:space:]]*)
           read -r _ src _ <<<"$seg"
-          src="${src%\"}"
-          src="${src#\"}"
-          src="${src%\'}"
-          src="${src#\'}"
-          src="${src/\$\{HOME\}/$HOME}"
-          src="${src/\$HOME/$HOME}"
-          src="${src/#\~/$HOME}"
+          src="$(normalize_source_word "$src")"
           case "$src" in
           /*) ;;
           *) src="$dir/$src" ;;
