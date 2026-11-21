@@ -463,12 +463,40 @@ normalize_source_word() {
   printf '%s' "$out"
 }
 
+# Lexically resolve the "." and ".." components of an absolute path:
+# "." components vanish and ".." cancels the preceding component, the
+# way the shell's file lookup resolves them. Symlinks are not
+# consulted — the scan only needs to recognize ~/.bashrc under its
+# equivalent spellings ("./.bashrc" from $HOME, "$HOME/.config/../.bashrc").
+normalize_path_components() {
+  local path="$1" comp="" out="" ch i=0
+  while [ "$i" -le "${#path}" ]; do
+    if [ "$i" -eq "${#path}" ]; then
+      ch="/"
+    else
+      ch="${path:i:1}"
+    fi
+    if [ "$ch" = "/" ]; then
+      case "$comp" in
+      "" | .) ;;
+      ..) out="${out%/*}" ;;
+      *) out+="/$comp" ;;
+      esac
+      comp=""
+    else
+      comp+="$ch"
+    fi
+    i=$((i + 1))
+  done
+  printf '%s' "${out:-/}"
+}
+
 # True when $1 (the first existing login startup file) sources ~/.bashrc,
 # following chains of sourced files with a cycle guard. Used only to
 # NAME a shadowing state: a pre-existing profile is never modified.
 profile_sources_bashrc() {
   local -a queue=("$1") seen=()
-  local file item dup=0 line src dir seg rest wtxt wch wi wsq wdq
+  local file item dup=0 line src seg rest wtxt wch wi wsq wdq
   while [ "${#queue[@]}" -gt 0 ]; do
     file="${queue[0]}"
     queue=("${queue[@]:1}")
@@ -482,7 +510,6 @@ profile_sources_bashrc() {
     done
     [ "$dup" -eq 0 ] || continue
     seen+=("$file")
-    dir="${file%/*}"
     while IFS= read -r line || [ -n "$line" ]; do
       line="${line#"${line%%[![:space:]]*}"}"
       # A commented-out line never counts as sourcing.
@@ -556,10 +583,19 @@ profile_sources_bashrc() {
             wi=$((wi + 1))
           done
           src="$(normalize_source_word "$src")"
+          # Bash resolves a relative source path against the shell's
+          # working directory, not against the directory of the file
+          # doing the sourcing (a slash-less name is searched in PATH
+          # first, which the scan does not model). The login shell
+          # this scan models starts in $HOME, so a relative path
+          # resolves against $HOME wherever in the chain it appears;
+          # the resolved path is then normalized so a spelling like
+          # $HOME/./.bashrc is recognized as ~/.bashrc.
           case "$src" in
           /*) ;;
-          *) src="$dir/$src" ;;
+          *) src="$HOME/$src" ;;
           esac
+          src="$(normalize_path_components "$src")"
           case "$src" in
           "$HOME/.bashrc") return 0 ;;
           *) queue+=("$src") ;;

@@ -805,6 +805,55 @@ check_out "R4F2b env ok" 'INSTALL-RE: env ok' "$OUT"
 check_no_out "R4F2b no shadowing SKIP" 'login startup is shadowed by' "$OUT"
 check "R4F2b block written" test "$(marker_count '>>>')" -eq 1
 
+note "PR191-R5T1a: a relative source path in a chained file resolves against the working directory (PR #191 R3)"
+new_home r5t1a
+mkdir -p "$FH/.config/bash"
+printf '. "$HOME/.config/bash/login"\n' >"$FH/.bash_profile"
+printf '. ./.bashrc\n' >"$FH/.config/bash/login"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+run_env install_env_block
+check "R5T1a rc 0" test "$RC" -eq 0
+check_out "R5T1a env ok" 'INSTALL-RE: env ok' "$OUT"
+check_no_out "R5T1a no shadowing SKIP" 'login startup is shadowed by' "$OUT"
+check "R5T1a block written" test "$(marker_count '>>>')" -eq 1
+
+note "PR191-R5T1b: a relative source path two chain levels deep still resolves against the working directory"
+new_home r5t1b
+mkdir -p "$FH/d1/d2" "$FH/d3"
+printf '. "$HOME/d1/d2/one"\n' >"$FH/.bash_profile"
+printf '. "$HOME/d3/two"\n' >"$FH/d1/d2/one"
+printf '. ./.bashrc\n' >"$FH/d3/two"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+run_env install_env_block
+check "R5T1b rc 0" test "$RC" -eq 0
+check_out "R5T1b env ok" 'INSTALL-RE: env ok' "$OUT"
+check_no_out "R5T1b no shadowing SKIP" 'login startup is shadowed by' "$OUT"
+check "R5T1b block written" test "$(marker_count '>>>')" -eq 1
+
+note "PR191-R5T1c: a chained '../..' source path lands outside HOME under working-directory resolution and does not count"
+new_home r5t1c
+mkdir -p "$FH/.config/bash"
+printf '. "$HOME/.config/bash/login"\n' >"$FH/.bash_profile"
+printf '. ../../.bashrc\n' >"$FH/.config/bash/login"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+run_env install_env_block
+check "R5T1c rc 0" test "$RC" -eq 0
+check_out "R5T1c shadowing SKIP line" 'login startup is shadowed by' "$OUT"
+check "R5T1c no block composed" test "$(marker_count '>>>')" -eq 0
+
+note "PR191-R5T1d: a slash-less source name in a chained file resolves against the working directory"
+new_home r5t1d
+mkdir -p "$FH/.config/bash"
+printf '. "$HOME/.config/bash/login"\n' >"$FH/.bash_profile"
+printf '. setup\n' >"$FH/.config/bash/login"
+printf '. "$HOME/.bashrc"\n' >"$FH/setup"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+run_env install_env_block
+check "R5T1d rc 0" test "$RC" -eq 0
+check_out "R5T1d env ok" 'INSTALL-RE: env ok' "$OUT"
+check_no_out "R5T1d no shadowing SKIP" 'login startup is shadowed by' "$OUT"
+check "R5T1d block written" test "$(marker_count '>>>')" -eq 1
+
 note "PR191-R2F2: unit-level profile_sources_bashrc probes for braced forms"
 profile_detected() { # profile_detected <profile-line>
   local pdir="$SB/psb-probe"
@@ -831,6 +880,8 @@ check "R3T7 unquoted HOME plus quoted suffix detected" profile_detected '. $HOME
 check "R3T7 braced HOME plus unquoted suffix detected" profile_detected '. "${HOME}/".bashrc'
 check "R3T7 tilde plus quoted suffix detected" profile_detected '. ~/".bashrc"'
 check "R3T7 single-quoted HOME remains literal and is not detected" profile_not_detected ". '\$HOME'/.bashrc"
+check "R5T1 direct ./ source in the profile detected" profile_detected '. ./.bashrc'
+check "R5T1 absolute path with a .. component detected" profile_detected '. "$HOME/.config/../.bashrc"'
 
 echo
 if [ "$FAILURES" -eq 0 ]; then
