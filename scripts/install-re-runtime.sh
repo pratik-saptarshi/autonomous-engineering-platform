@@ -410,6 +410,7 @@ normalize_source_word() {
     if [ "$ch" = "\\" ]; then
       nxt="${word:i+1:1}"
       if [ "$dq" -eq 1 ]; then
+        # shellcheck disable=SC1003 # the '\' below is a literal backslash in a case pattern list, not an escaped quote
         case "$nxt" in
         '$' | '`' | '"' | '\')
           out+="$nxt"
@@ -429,11 +430,13 @@ normalize_source_word() {
       continue
     fi
     if [ "$ch" = '$' ]; then
+      # shellcheck disable=SC2016 # comparing against the literal ${HOME} spelling is the point — no expansion wanted here
       if [ "${word:i:7}" = '${HOME}' ]; then
         out+="$HOME"
         i=$((i + 7))
         continue
       fi
+      # shellcheck disable=SC2016 # comparing against the literal $HOME spelling is the point — no expansion wanted here
       if [ "${word:i:5}" = '$HOME' ]; then
         nxt="${word:i+5:1}"
         case "$nxt" in
