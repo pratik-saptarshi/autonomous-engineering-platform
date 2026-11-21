@@ -71,6 +71,17 @@ A root manifest's suite covers the workspace members it declares — but an inde
 
 **Relocation:** prefer moving over copying — a copy leaves two sources of truth that drift. Step 6 is mandatory after every move: references break silently, including in ADRs and decision records (updating a moved path doesn't alter the decision; a broken link in a day-old ADR serves nobody).
 
+## Post-Publication History-Rewrite Variant
+
+The playbook above scrubs the working tree before publication. When the leak — machine paths, personal identity — is already in a **published** branch's history, a follow-up commit does not scrub it: the leaked lines stay reachable in every earlier commit. Use this variant instead.
+
+1. **Scope the leak first-hand.** Pin it to exact lines and commits with `grep` over the tree and `git log -S` over history before proposing anything. Check the other published branches for the same leak — a clean branch needs no rewrite.
+2. **Put the choice to the owner.** Follow-up commit vs history rewrite is an explicit owner choice, stated as such. A rewrite rewrites every downstream commit hash and breaks anyone based on the old history, so it is the owner's call, never the lane's.
+3. **On a rewrite ruling, rewrite and verify.** Rewrite with `git filter-repo --replace-text`, then force-push under a lease pinned to the old head (`--force-with-lease=<ref>:<old-head>`) so the push can only land if the remote is exactly where it was left. Verify both: zero remaining occurrences in the rewritten history (`git log -S` and `grep` both empty), and a head-tree diff against the old head of **exactly** the scrubbed lines — nothing more, nothing less.
+4. **Record the caveat.** The host may retain the old commits as unreachable objects for a time after the force-push. Erasure by rewrite is strong, not absolute — say so in the report rather than claiming the leak is gone everywhere.
+
+**Precedent:** the Kani PR #113 branch — the leak scoped to exactly 3 lines in 2 files, `git filter-repo` replaced `/Users/neo/` with `~/`, force-pushed with lease `609dd1c8` → `e3f32441`, and the tree diff was exactly those 3 lines. The other published Kani branches were grep-clean and needed no rewrite.
+
 ## Common Mistakes
 
 | Mistake | Why it hurts | Fix |

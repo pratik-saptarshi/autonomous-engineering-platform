@@ -1,0 +1,5 @@
+name: "fix-validation-protocol"
+title: "Fix Validation Protocol"
+description: "Validate a fix someone else landed against the findings it claims to close: map every finding to its diff hunk, prove the tests non-vacuous by mutation, re-list review threads at the latest head, verify thread state as well as code state, and leave the working tree clean. Use when a reviewer, bot, maintainer, or parallel session has pushed a fix and the question is whether the findings are actually closed — \"tests pass\" is never sufficient evidence on its own."
+category: "Work and knowledge"
+include_in_prompt: true

@@ -1,0 +1,7 @@
+name: "plan-review-integrator"
+title: "Plan-Review Integrator"
+description: "Integrate structured review panel findings into an implementation plan document. Takes output from overseer (or any structured review with severity-rated findings), cross-references each finding against the plan, classifies it into an action category, applies concrete edits, and produces a traceability summary. Trigger when the user asks to update a plan with review findings, incorporate review feedback into a plan, or reconcile review output against the plan. Does NOT trigger for running a review panel, writing a plan from scratch, or general code review."
+category: "Work and knowledge"
+include_in_prompt: false
+fork_of: "pratik-saptarshi/opencode-rountable-review skills/plan-review-integrator"
+fork_version: 2
