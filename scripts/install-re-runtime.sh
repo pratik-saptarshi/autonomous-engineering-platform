@@ -500,7 +500,9 @@ EOF
 # Heredoc bookkeeping for the guard scan in install_env_block:
 # appends one (delimiter, <<- flag) pair to the caller's hd_delims /
 # hd_dash arrays (bash dynamic scoping) for every heredoc opened on
-# the line in $1. The scan is a small hand lexer over the line:
+# the line in $1, and carries the caller's hd_arith_depth across
+# calls so a multiline arithmetic expansion stays in arithmetic
+# context on its later physical lines. The scan is a small hand lexer over the line:
 # quotes and backslash escapes are honored (a << inside quotes opens
 # nothing), an unquoted # at a word start ends the code part of the
 # line, <<< herestrings have no body and are skipped, and << inside
@@ -518,8 +520,9 @@ EOF
 # string spanning lines can be misread (an unbalanced quote fails
 # the stage's bash -n damage check before the scan runs).
 collect_heredoc_openers() { # $1 = one kept line
-  local s="$1" len=${#1} i=0 ch sq=0 dq=0 depth=0
+  local s="$1" len=${#1} i=0 ch sq=0 dq=0
   local j dash delim q boundary word_seen wch nxt ansi
+  : "${hd_arith_depth:=0}"
   while [ "$i" -lt "$len" ]; do
     ch="${s:i:1}"
     if [ "$sq" -eq 1 ]; then
@@ -553,18 +556,18 @@ collect_heredoc_openers() { # $1 = one kept line
       ;;
     '(')
       if [ "${s:i+1:1}" = "(" ]; then
-        depth=$((depth + 1))
+        hd_arith_depth=$((hd_arith_depth + 1))
         i=$((i + 1))
       fi
       ;;
     ')')
-      if [ "$depth" -gt 0 ] && [ "${s:i+1:1}" = ")" ]; then
-        depth=$((depth - 1))
+      if [ "$hd_arith_depth" -gt 0 ] && [ "${s:i+1:1}" = ")" ]; then
+        hd_arith_depth=$((hd_arith_depth - 1))
         i=$((i + 1))
       fi
       ;;
     '<')
-      if [ "$depth" -eq 0 ] && [ "${s:i+1:1}" = "<" ]; then
+      if [ "$hd_arith_depth" -eq 0 ] && [ "${s:i+1:1}" = "<" ]; then
         if [ "${s:i+2:1}" = "<" ]; then
           # Herestring: no body follows.
           i=$((i + 2))
@@ -793,6 +796,7 @@ install_env_block() {
   # flag array (1 = heredoc body/terminator) consumed by the guard scan.
   local -a lines=() kept=() kept_body=()
   local -a hd_delims=() hd_dash=() hd_lines=()
+  local hd_arith_depth=0
   local line trimmed norm in_block=0 seen_block=0 insert_at=-1
   local unmarked=0 prior_profile="" hd_probe before line_no
   if [ -e "$bashrc" ]; then

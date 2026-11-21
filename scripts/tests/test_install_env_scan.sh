@@ -512,6 +512,30 @@ check "122 file left untouched" cmp -s "$SB/case-122/orig" "$FH/.bashrc"
 check "122 backup holds as-found bytes" cmp -s "$SB/case-122/orig" "$FH/.bashrc.install-re-runtime.bak"
 check "122 no block composed" test ! -f "$FH/.bashrc.install-re-runtime.tmp"
 
+# ================= PR #191 R3-T6: multiline arithmetic is not a heredoc =================
+
+note "PR191-R3T6: a multiline arithmetic expansion is not rejected as an unterminated heredoc"
+new_home r3t6
+cat >"$FH/.bashrc" <<'EOF'
+x=$((
+  1 << 2
+))
+export AFTER=1
+EOF
+check "R3T6 fixture parses" bash -n "$FH/.bashrc"
+run_env install_env_block
+check "R3T6 rc 0" test "$RC" -eq 0
+check_out "R3T6 env ok" 'INSTALL-RE: env ok' "$OUT"
+check_no_out "R3T6 no unterminated-heredoc failure" 'unterminated heredoc' "$OUT"
+check "R3T6 arithmetic lines kept" grep -qxF '  1 << 2' "$FH/.bashrc"
+check "R3T6 block written" test "$(marker_count '>>>')" -eq 1
+JAVA_VAL="$(env -i HOME="$FH" /bin/bash -c '. "$HOME/.bashrc"; printf %s "${JAVA_HOME:-}"' 2>/dev/null)"
+check "R3T6 block reachable in a noninteractive source" test "$JAVA_VAL" = "$FH/opt/jdk-$TEMURIN_VERSION"
+SHA="$(file_sha "$FH/.bashrc")"
+run_env install_env_block
+check "R3T6 second run rc 0" test "$RC" -eq 0
+check "R3T6 fixed point" test "$(file_sha "$FH/.bashrc")" = "$SHA"
+
 # ================= #123: login profile shadowing =================
 
 note "#123a: a non-sourcing .bash_profile is named instead of failing opaquely"
