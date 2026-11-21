@@ -349,9 +349,9 @@ check "R2F1 function form opens }" opener_eq 'foo() {' '}'
 check "R2F1 function keyword form opens }" opener_eq 'function foo {' '}'
 check "R2F1 case opens esac" opener_eq 'case $- in' 'esac'
 check "R2F1 while does not open (no loop openers, unchanged)" opener_eq 'while true; do' ''
-check "R2F1 residual#1 parked: if with trailing comment still does not open" opener_eq 'if [ -f "$HOME/.optional" ]; then # comment' ''
-check "R2F1 residual#1 parked: function with trailing comment still does not open" opener_eq 'foo() { # comment' ''
-check "R2F1 residual#1 parked: case with trailing comment still does not open" opener_eq 'case $- in # comment' ''
+check "R2F1 residual#1 discharged by R3T8: if with trailing comment opens" opener_eq 'if [ -f "$HOME/.optional" ]; then # comment' 'fi'
+check "R2F1 residual#1 discharged by R3T8: function with trailing comment opens" opener_eq 'foo() { # comment' '}'
+check "R2F1 residual#1 discharged by R3T8: case with trailing comment opens" opener_eq 'case $- in # comment' 'esac'
 
 note "PR191-R2F1a: an if/elif/fi conditional before the stock guard does not strand the block"
 new_home r2f1a
@@ -411,6 +411,37 @@ SHA="$(file_sha "$FH/.bashrc")"
 run_env install_env_block
 check "R3T5a second run rc 0" test "$RC" -eq 0
 check "R3T5a fixed point" test "$(file_sha "$FH/.bashrc")" = "$SHA"
+
+# ================= PR #191 R3-T8: openers inside comments =================
+
+note "PR191-R3T8: unit-level opener grammar (comment text opens nothing)"
+check "R3T8 colon comment case does not open" opener_eq ': # case foo in' ''
+check "R3T8 trailing comment case does not open" opener_eq 'echo hi # case foo in' ''
+check "R3T8 assignment comment case does not open" opener_eq 'x=1 # case $- in' ''
+check "R3T8 glued hash is not a comment and case still opens" opener_eq 'case $# in' 'esac'
+
+note "PR191-R3T8a: a comment mentioning 'case ... in' does not strand the block"
+new_home r3t8a
+cat >"$FH/.bashrc" <<'EOF'
+: # case foo in
+case $- in
+  *i*) ;;
+  *) return;;
+esac
+export AFTER=1
+EOF
+run_env install_env_block
+check "R3T8a rc 0" test "$RC" -eq 0
+check_out "R3T8a env ok" 'INSTALL-RE: env ok' "$OUT"
+BLOCK_LINE="$(line_of '# >>> re-runtime >>>')"
+GUARD_LINE="$(line_of 'case $- in')"
+check "R3T8a block before the guard" test "$BLOCK_LINE" -lt "$GUARD_LINE"
+JAVA_VAL="$(env -i HOME="$FH" /bin/bash -c '. "$HOME/.bashrc"; printf %s "${JAVA_HOME:-}"' 2>/dev/null)"
+check "R3T8a block reachable in a noninteractive source" test "$JAVA_VAL" = "$FH/opt/jdk-$TEMURIN_VERSION"
+SHA="$(file_sha "$FH/.bashrc")"
+run_env install_env_block
+check "R3T8a second run rc 0" test "$RC" -eq 0
+check "R3T8a fixed point" test "$(file_sha "$FH/.bashrc")" = "$SHA"
 
 # ================= #121: formatted marker recognition =================
 

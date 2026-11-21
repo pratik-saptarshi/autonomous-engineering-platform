@@ -796,8 +796,17 @@ ni_test_line() {
 # case body; return 1 otherwise. Kept permissive on purpose: a false
 # opener only moves the block earlier in top-level files, where it still
 # executes, while a missed opener strands the block (issue #119).
+# A trailing comment is stripped first, exactly as in ctrl_closer_line:
+# opener keywords inside comment text open nothing, and a comment after
+# a real opener does not suppress it.
 ctrl_opener_closer() {
   local s="$1"
+  case "$s" in
+  *[[:space:]]'#'*)
+    s="${s%%[[:space:]]'#'*}"
+    s="${s%"${s##*[![:space:]]}"}"
+    ;;
+  esac
   if [[ "$s" =~ ^function[[:space:]]+[A-Za-z_][A-Za-z0-9_]*([[:space:]]*\(\))?[[:space:]]*\{[[:space:]]*$ ]]; then
     printf '}'
     return 0
