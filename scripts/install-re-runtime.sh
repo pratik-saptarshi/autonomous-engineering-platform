@@ -1006,18 +1006,16 @@ ctrl_opener_closer() {
 # True when $1 is the closer named by $2 (optionally followed by `;`),
 # either at the start of the line or as the command after the line's
 # last `;` separator (`:; }` ends a one-line function body just as a
-# bare `}` does). A trailing comment is stripped first: a `#` at a
-# word start (after whitespace) comments out the rest of the line in
-# bash, while a `#` glued to the word is part of the word, not a
-# comment.
+# bare `}` does). A trailing comment is stripped first
+# (strip_trailing_comment): a `#` at a word start comments out the
+# rest of the line in bash, while a `#` inside quotes, escaped, or
+# glued to the word is part of the word, not a comment — the
+# quote-blind cut this replaces lost a closer that followed a quoted
+# `#` on the same line (the bridge Finding A mechanism at this site;
+# pre-existing here — the opener strip was copied from this one).
 ctrl_closer_line() {
-  local s="$1" tail
-  case "$s" in
-  *[[:space:]]'#'*)
-    s="${s%%[[:space:]]'#'*}"
-    s="${s%"${s##*[![:space:]]}"}"
-    ;;
-  esac
+  local s tail
+  s="$(strip_trailing_comment "$1")"
   case "$s" in
   "$2" | "$2;"* | "$2;;"*) return 0 ;;
   esac

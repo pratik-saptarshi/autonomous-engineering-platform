@@ -969,6 +969,35 @@ run_env install_env_block
 check "R6A2 second run rc 0" test "$RC" -eq 0
 check "R6A2 fixed point" test "$(file_sha "$FH/.bashrc")" = "$SHA"
 
+note "PR191-R6B: unit-level closer grammar (a quoted '#' does not cut the line)"
+check "R6B quoted hash before a closer tail pops" closer_pops 'echo "note # 1"; fi' 'fi'
+check "R6B single-quoted hash before a closer tail pops" closer_pops "echo 'note # 1'; esac" 'esac'
+check "R6B closer inside a real comment after a quoted hash does not pop" closer_stuck 'echo "note # 1" # fi' 'fi'
+
+note "PR191-R6B1: a quoted '#' on the line that closes an if body does not strand the block"
+new_home r6b1
+cat >"$FH/.bashrc" <<'EOF'
+if [ -f "$HOME/.optional" ]; then
+  echo "step # 1"; fi
+case $- in
+  *i*) ;;
+  *) return;;
+esac
+export AFTER=1
+EOF
+run_env install_env_block
+check "R6B1 rc 0" test "$RC" -eq 0
+check_out "R6B1 env ok" 'INSTALL-RE: env ok' "$OUT"
+BLOCK_LINE="$(line_of '# >>> re-runtime >>>')"
+GUARD_LINE="$(line_of 'case $- in')"
+check "R6B1 block before the guard" test "$BLOCK_LINE" -lt "$GUARD_LINE"
+JAVA_VAL="$(env -i HOME="$FH" /bin/bash -c '. "$HOME/.bashrc"; printf %s "${JAVA_HOME:-}"' 2>/dev/null)"
+check "R6B1 block reachable in a noninteractive source" test "$JAVA_VAL" = "$FH/opt/jdk-$TEMURIN_VERSION"
+SHA="$(file_sha "$FH/.bashrc")"
+run_env install_env_block
+check "R6B1 second run rc 0" test "$RC" -eq 0
+check "R6B1 fixed point" test "$(file_sha "$FH/.bashrc")" = "$SHA"
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "test_install_env_scan: ALL PASS (sandbox $SB)"
