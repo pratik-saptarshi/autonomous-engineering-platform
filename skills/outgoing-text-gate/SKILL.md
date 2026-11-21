@@ -33,7 +33,7 @@ verification. It does not restate their internals — invoke each as written:
 
 - `humanizer` — removes AI writing patterns from prose.
 - `factchk` — traces every factual claim to a verified source.
-- `paperthin` — conciseness: reads for bloat and cuts what earns nothing.
+- `debloat` — conciseness: reads for bloat and cuts what earns nothing.
 
 ## The Pipeline
 
@@ -62,9 +62,14 @@ Draft → Humanize → Factcheck → Conciseness → Mechanical rules → Post �
 
 ### Step 4 — Conciseness pass
 
-- A validator runs `paperthin` over the text: bloat, repetition, and
+- A validator runs `debloat` over the text: bloat, repetition, and
   throat-clearing are cut. Mechanical fixes found here are applied to the
   draft before posting, not noted for later.
+- Disclosure: `debloat` is marked `disable-model-invocation: true`
+  (user-invoked class) upstream. This gate invokes it deliberately, by
+  name, through the independent validator (Step 5), on publication-bound
+  text only — that explicit invocation is the intended use of this pass.
+  It does not license invoking `debloat` as a standing reflex elsewhere.
 
 ### Step 5 — Validator independence
 
