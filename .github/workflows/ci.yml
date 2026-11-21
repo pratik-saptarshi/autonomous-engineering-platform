@@ -58,6 +58,7 @@ jobs:
       - run: bash scripts/lane-coord.sh --self-test
       - run: bash scripts/boot-gate.sh --self-test --offline
       - run: bash scripts/tests/test_watchdog.sh
+      - run: bash scripts/tests/test_watchdog_bin_guard.sh
       - run: bash scripts/tests/test_vendor_sync.sh
       - run: bash scripts/tests/test_package_vm.sh
       - run: bash scripts/tests/test_package_oci.sh

@@ -32,7 +32,7 @@
 # daemon would not stop for the copy.
 set -euo pipefail
 
-BIN="$HOME/workspace/neurostrata/bin/neurostrata-mcp"
+BIN="$HOME/go/bin/neurostrata-mcp"
 DB="$HOME/.config/NeuroStrata/data/db/ladybug.db"
 STAGE="$HOME/workspace/neurostrata/backups"
 SHA_FILE="$HOME/workspace/neurostrata/.last-db-sha256"
@@ -52,6 +52,14 @@ export HF_HUB_OFFLINE=1
 
 log() { echo "[$(date '+%F %T')] $*" | tee -a "$LOG"; }
 mkdir -p "$STAGE"
+
+# Fail fast on a bad binary path. Without this check a missing $BIN makes
+# daemon_healthy() always fail, so the run takes the "daemon idle" branch,
+# does no backup, and exits 0 while reporting success (issue #15).
+if [ ! -x "$BIN" ]; then
+  log "FATAL: daemon binary not executable at $BIN — refusing to run (fix BIN or install the binary)"
+  exit 1
+fi
 
 # Concurrency guard: two overlapping runs must never SIGTERM/copy together.
 # NOTE: fd 9 must not leak into the daemon (see 9>&- in start_daemon) — an
