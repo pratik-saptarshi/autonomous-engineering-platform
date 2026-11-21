@@ -90,8 +90,11 @@ DRY_RUN=0
 # Set by install_env_block: "ok" after a written block, "skip" when the
 # adoption guard fired (unmarked RE exports). main's verify rebuild
 # cycle reads it to tell a retryable env failure from the SKIP state,
-# which is terminal for the run (manual adoption).
+# which is terminal for the run. ENV_SKIP_REASON carries the specific
+# reason so main does not misattribute a shadowing SKIP to unmarked
+# exports.
 ENV_OUTCOME=""
+ENV_SKIP_REASON=""
 
 fail() { # $1 = check name, $2 = reason
   echo "INSTALL-RE: $1 FAIL: $2"
@@ -326,26 +329,17 @@ install_radare2() {
     git -C "$src" fetch origin tag "$R2_VERSION" ||
       fail radare2 "cannot fetch tag $R2_VERSION for staged clone $src"
   fi
-  git -C "$src" checkout "$R2_VERSION" ||
-    fail radare2 "checkout failed for tag $R2_VERSION"
-  head=$(git -C "$src" rev-parse HEAD) ||
-    fail radare2 "cannot resolve HEAD in $src"
-  if [ "$head" != "$R2_COMMIT" ]; then
-    fail radare2 "HEAD $head != pinned $R2_COMMIT"
-  fi
-  # The reuse contract is that the checkout restores the pinned
-  # state, but a plain checkout of the already-checked-out tag
-  # restores nothing: a clone sitting at the pinned commit with
-  # local working-tree changes (an interrupted patch, a hand edit)
-  # would pass the HEAD assert above and be built as-is, silently
-  # voiding the pin. So a dirty tree is restored loudly, never
-  # built: forced checkout for tracked changes, clean for untracked
-  # files, then HEAD and cleanliness are re-asserted. The check
-  # cannot false-positive on a legitimate reuse — a completed build
-  # leaves the clone's porcelain status empty, because every build
-  # output is gitignored. Named residual: files git ignores are
-  # invisible to status --porcelain, so a tampered gitignored
-  # generated file inside the clone is outside this check's reach.
+  # Restore a dirty staged clone BEFORE the first checkout. A plain
+  # checkout refuses to move HEAD when it would overwrite local
+  # changes — exactly the pin-bump upgrade shape (dirty clone left at
+  # the previous release) — so a restore placed after the checkout
+  # could never heal it. The forced checkout both discards tracked
+  # edits and lands on the pinned tag; clean removes untracked files.
+  # A clone already at the pinned commit is healed by the same block
+  # (the f122570 case). Never build a dirty tree: a completed build
+  # leaves porcelain status empty, because build outputs are ignored.
+  # Named residual: gitignored files are invisible to status, so a
+  # tampered ignored generated file stays outside this check.
   if [ -n "$(git -C "$src" status --porcelain 2>/dev/null)" ]; then
     echo "INSTALL-RE: radare2 note: staged clone had local changes; restoring the pinned tree"
     git -C "$src" checkout -f "$R2_VERSION" ||
@@ -361,6 +355,13 @@ install_radare2() {
       fail radare2 "staged clone $src could not be restored to the pinned state"
     fi
   fi
+  git -C "$src" checkout "$R2_VERSION" ||
+    fail radare2 "checkout failed for tag $R2_VERSION"
+  head=$(git -C "$src" rev-parse HEAD) ||
+    fail radare2 "cannot resolve HEAD in $src"
+  if [ "$head" != "$R2_COMMIT" ]; then
+    fail radare2 "HEAD $head != pinned $R2_COMMIT"
+  fi
   (cd "$src" && ./configure --prefix="$dir") ||
     fail radare2 "configure failed"
   (cd "$src" && make -j2) || fail radare2 "build failed (make -j2)"
@@ -374,7 +375,80 @@ install_radare2() {
 # re-derive "pre-existing" for a profile the run itself just created.
 PROFILE_ORIGIN=""
 
+# True when $1 (the first existing login startup file) sources ~/.bashrc,
+# following chains of sourced files with a cycle guard. Used only to
+# NAME a shadowing state: a pre-existing profile is never modified.
+profile_sources_bashrc() {
+  local -a queue=("$1") seen=()
+  local file item dup=0 line src dir
+  while [ "${#queue[@]}" -gt 0 ]; do
+    file="${queue[0]}"
+    queue=("${queue[@]:1}")
+    [ -f "$file" ] || continue
+    dup=0
+    for item in "${seen[@]}"; do
+      if [ "$item" = "$file" ]; then
+        dup=1
+        break
+      fi
+    done
+    [ "$dup" -eq 0 ] || continue
+    seen+=("$file")
+    dir="${file%/*}"
+    while IFS= read -r line || [ -n "$line" ]; do
+      line="${line#"${line%%[![:space:]]*}"}"
+      case "$line" in
+      '.'[[:space:]]* | source[[:space:]]*)
+        read -r _ src _ <<<"$line"
+        src="${src%\"}"
+        src="${src#\"}"
+        src="${src%\'}"
+        src="${src#\'}"
+        src="${src/\$HOME/$HOME}"
+        src="${src/#\~/$HOME}"
+        case "$src" in
+        /*) ;;
+        *) src="$dir/$src" ;;
+        esac
+        case "$src" in
+        "$HOME/.bashrc") return 0 ;;
+        *) queue+=("$src") ;;
+        esac
+        ;;
+      esac
+    done <"$file"
+  done
+  return 1
+}
+
 ensure_profile() {
+  # Shadowing is re-checked on every call: main's verify cycle can call
+  # the env stage twice in one process, and a cached origin must not
+  # turn a terminal SKIP into a written-but-unreachable block.
+  # Bash reads the FIRST existing of ~/.bash_profile, ~/.bash_login and
+  # ~/.profile. A pre-existing .profile is ours to leave alone, but a
+  # pre-existing .bash_profile/.bash_login that does not source
+  # ~/.bashrc shadows both the profile and the env block: name that
+  # state instead of writing a healthy-looking block that verify_env
+  # can never reach.
+  local candidate="" first=""
+  for candidate in .bash_profile .bash_login .profile; do
+    if [ -e "$HOME/$candidate" ]; then
+      first="$candidate"
+      break
+    fi
+  done
+  case "$first" in
+  .bash_profile | .bash_login)
+    if ! profile_sources_bashrc "$HOME/$first"; then
+      echo "INSTALL-RE: env SKIP: login startup is shadowed by $HOME/$first, which does not source ~/.bashrc"
+      ENV_OUTCOME="skip"
+      ENV_SKIP_REASON="login startup shadowed by $HOME/$first, which does not source ~/.bashrc"
+      PROFILE_ORIGIN="pre-existing"
+      return 0
+    fi
+    ;;
+  esac
   if [ -n "$PROFILE_ORIGIN" ]; then
     return 0
   fi
@@ -596,8 +670,53 @@ collect_heredoc_openers() { # $1 = one kept line
   done
 }
 
+# True when $1 (a code line with leading whitespace stripped) contains a
+# noninteractive-shell test token, braced or not. Bash spells the test
+# both `$-` / `$PS1` and `${-}` / `${PS1:-}`; scanning only the first
+# form misses effective guards in hand-written files (issue #119).
+ni_test_line() {
+  case "$1" in
+  *"\$-"* | *"\${-"* | *"\$PS1"* | *"\${PS1"*) return 0 ;;
+  esac
+  return 1
+}
+
+# Print the closer (`}`, `fi`, `esac`) when $1 opens a function, if, or
+# case body; return 1 otherwise. Kept permissive on purpose: a false
+# opener only moves the block earlier in top-level files, where it still
+# executes, while a missed opener strands the block (issue #119).
+ctrl_opener_closer() {
+  local s="$1"
+  if [[ "$s" =~ ^function[[:space:]]+[A-Za-z_][A-Za-z0-9_]*([[:space:]]*\(\))?[[:space:]]*\{[[:space:]]*$ ]]; then
+    printf '}'
+    return 0
+  fi
+  if [[ "$s" =~ ^[A-Za-z_][A-Za-z0-9_]*\(\)[[:space:]]*\{[[:space:]]*$ ]]; then
+    printf '}'
+    return 0
+  fi
+  if [[ "$s" =~ case[[:space:]]+.*[[:space:]]in([[:space:]]*;.*)?$ ]]; then
+    printf 'esac'
+    return 0
+  fi
+  if [[ "$s" =~ if[[:space:]]+.*[[:space:]]then([[:space:]]*;.*)?$ ]]; then
+    printf 'fi'
+    return 0
+  fi
+  return 1
+}
+
+# True when $1 is the closer named by $2 (optionally followed by `;`).
+ctrl_closer_line() {
+  case "$1" in
+  "$2" | "$2;"* | "$2;;"*) return 0 ;;
+  esac
+  return 1
+}
+
 install_env_block() {
   ENV_OUTCOME=""
+  ENV_SKIP_REASON=""
   local bashrc="$HOME/.bashrc"
   local bak="$HOME/.bashrc.install-re-runtime.bak"
   local tmp="$HOME/.bashrc.install-re-runtime.tmp"
@@ -613,16 +732,52 @@ install_env_block() {
   # carried through verbatim) and the block itself (replaced whole).
   # A start marker with no end marker is a torn block: everything from
   # the start marker on is block content and is rewritten whole.
-  local -a lines=() kept=()
-  local line trimmed in_block=0 seen_block=0 insert_at=-1
-  local unmarked=0 prior_profile=""
+  #
+  # The splitter and the guard scan share ONE heredoc model: hd_delims /
+  # hd_dash are the pending delimiter queue (delimiter and <<- flag),
+  # filled by collect_heredoc_openers for every top-level code line, and
+  # hd_lines records the physical opener line of each queued heredoc.
+  # Lines inside a heredoc body are data: never marker candidates, never
+  # adoption evidence, never guard candidates. kept_body is a parallel
+  # flag array (1 = heredoc body/terminator) consumed by the guard scan.
+  local -a lines=() kept=() kept_body=()
+  local -a hd_delims=() hd_dash=() hd_lines=()
+  local line trimmed norm in_block=0 seen_block=0 insert_at=-1
+  local unmarked=0 prior_profile="" hd_probe before line_no
   if [ -e "$bashrc" ]; then
     while IFS= read -r line || [ -n "$line" ]; do
       lines+=("$line")
     done <"$bashrc"
   fi
-  for line in "${lines[@]}"; do
-    if [ "$line" = "# >>> re-runtime >>>" ]; then
+  for ((line_no = 0; line_no < ${#lines[@]}; line_no++)); do
+    line="${lines[line_no]}"
+    if [ "${#hd_delims[@]}" -gt 0 ]; then
+      # Heredoc body (or its terminator): keep verbatim, but mark it as
+      # data. Only the queue head's delimiter on a line of its own
+      # closes the heredoc (leading tabs stripped for <<-).
+      kept+=("$line")
+      kept_body+=(1)
+      hd_probe="$line"
+      if [ "${hd_dash[0]}" = "1" ]; then
+        while [ "${hd_probe:0:1}" = $'\t' ]; do
+          hd_probe="${hd_probe:1}"
+        done
+      fi
+      if [ "$hd_probe" = "${hd_delims[0]}" ]; then
+        hd_delims=("${hd_delims[@]:1}")
+        hd_dash=("${hd_dash[@]:1}")
+        hd_lines=("${hd_lines[@]:1}")
+      fi
+      continue
+    fi
+    # Markers are recognized whole-line but modulo leading/trailing
+    # whitespace and a trailing CR (hand-reindented blocks and CRLF
+    # .bashrc files). The composed replacement always uses the canonical
+    # byte-exact form, so recognition converges such a file in one run.
+    norm="${line%$'\r'}"
+    norm="${norm#"${norm%%[![:space:]]*}"}"
+    norm="${norm%"${norm##*[![:space:]]}"}"
+    if [ "$norm" = "# >>> re-runtime >>>" ]; then
       if [ "$in_block" -eq 0 ]; then
         in_block=1
         if [ "$seen_block" -eq 0 ]; then
@@ -632,26 +787,35 @@ install_env_block() {
       fi
       continue
     fi
-    if [ "$line" = "# <<< re-runtime <<<" ]; then
+    # An orphan end marker (no open block) is user data, not block
+    # content: keep it instead of silently consuming it.
+    if [ "$norm" = "# <<< re-runtime <<<" ] && [ "$in_block" -eq 1 ]; then
       in_block=0
       continue
     fi
     if [ "$in_block" -eq 1 ]; then
-      case "$line" in
+      case "$norm" in
       "# profile: created-by-install-re-runtime" | "# profile: pre-existing")
         if [ -z "$prior_profile" ]; then
-          prior_profile="${line#'# profile: '}"
+          prior_profile="${norm#'# profile: '}"
         fi
         ;;
       esac
       continue
     fi
     kept+=("$line")
+    kept_body+=(0)
     trimmed="${line#"${line%%[![:space:]]*}"}"
     case "$trimmed" in
     '#'*) ;;
     *JAVA_HOME=* | *GHIDRA_INSTALL_DIR=*) unmarked=1 ;;
     esac
+    before=${#hd_delims[@]}
+    collect_heredoc_openers "$line"
+    while [ "$before" -lt "${#hd_delims[@]}" ]; do
+      hd_lines+=("$((line_no + 1))")
+      before=$((before + 1))
+    done
   done
   # Insertion point, with the stock-skel reachability rule. On
   # Debian/Ubuntu homes the stock .bashrc (/etc/skel/.bashrc) returns
@@ -664,57 +828,76 @@ install_env_block() {
   # there. A block already at or before the guard keeps its position,
   # so the relocated layout is the fixed point: re-runs stay
   # byte-identical on stock and guard-free homes alike.
-  local block_at=$insert_at guard_at=-1 scan
-  # The scan is heredoc-aware. Lines inside a heredoc body are data,
-  # never guard candidates: a guard-shaped body line (stock guard
-  # text quoted inside a heredoc) must not attract the block into
-  # the body, where it would be swallowed as heredoc text — the
-  # exports would never execute, yet the stage would report ok.
-  # hd_delims / hd_dash are the pending heredoc queue (delimiter and
-  # its <<- flag), filled by collect_heredoc_openers for every code
-  # line the scan passes; heredoc openers and closers themselves are
-  # ordinary kept lines.
-  # Named residual: the guard patterns are line-shaped — they match
-  # guard text inside strings and comments as well as code, and any
-  # `case` over $- counts as the guard even without a return arm. At
-  # the top level a false match only moves the block earlier than
-  # strictly needed (it still executes). Guard spellings the
-  # patterns do not cover, and guards nested in functions or
-  # conditionals, are tracked as GitHub issues (env-scan residuals,
-  # PR #112), not accepted here.
-  local -a hd_delims=() hd_dash=()
-  local hd_probe
+  local block_at=$insert_at guard_at=-1 scan rtrim opener
+  # Guard recognition is region-based: a noninteractive test whose
+  # controlled statement is on the same line or in the body of the
+  # following if/case is a guard, wherever the opener sits on that line.
+  # Two stacks are kept: struct_stack is the structural nesting of every
+  # function/if/case body (a guard candidate is only accepted at depth
+  # zero — issue #120), and region_stack tracks the if/case opened by a
+  # candidate so its `return` arm can close the region. Heredoc body
+  # lines are skipped via flags from the splitter above.
+  local -a struct_stack=() region_stack=()
+  local region_start=-1
   for ((scan = 0; scan < ${#kept[@]}; scan++)); do
-    if [ "${#hd_delims[@]}" -gt 0 ]; then
-      # Heredoc body line: never a guard candidate. Only the queue
-      # head's delimiter on a line of its own closes that heredoc
-      # (leading tabs stripped when it was opened with <<-); the
-      # terminator line is consumed as the closer.
-      hd_probe="${kept[scan]}"
-      if [ "${hd_dash[0]}" = "1" ]; then
-        while [ "${hd_probe:0:1}" = $'\t' ]; do
-          hd_probe="${hd_probe:1}"
-        done
-      fi
-      if [ "$hd_probe" = "${hd_delims[0]}" ]; then
-        hd_delims=("${hd_delims[@]:1}")
-        hd_dash=("${hd_dash[@]:1}")
-      fi
-      continue
-    fi
+    [ "${kept_body[scan]}" -eq 1 ] && continue
     trimmed="${kept[scan]#"${kept[scan]%%[![:space:]]*}"}"
-    case "$trimmed" in
-    '#'*) ;;
-    'case '*"\$-"*)
-      guard_at=$scan
-      break
-      ;;
-    *"\$-"*'return'* | *"\$PS1"*'return'*)
-      guard_at=$scan
-      break
-      ;;
+    rtrim="${trimmed%"${trimmed##*[![:space:]]}"}"
+    case "$rtrim" in
+    '#'*) continue ;;
     esac
-    collect_heredoc_openers "${kept[scan]}"
+    opener=""
+    if opener=$(ctrl_opener_closer "$rtrim"); then :; else opener=""; fi
+
+    # A closer pops both stacks; the candidate region ends when its own
+    # opener is popped.
+    if [ "${#struct_stack[@]}" -gt 0 ]; then
+      if ctrl_closer_line "$rtrim" "${struct_stack[${#struct_stack[@]} - 1]}"; then
+        unset 'struct_stack[${#struct_stack[@]}-1]'
+        struct_stack=("${struct_stack[@]}")
+        if [ "${#region_stack[@]}" -gt 0 ]; then
+          unset 'region_stack[${#region_stack[@]}-1]'
+          region_stack=("${region_stack[@]}")
+          if [ "${#region_stack[@]}" -eq 0 ]; then
+            region_start=-1
+          fi
+        fi
+      fi
+    fi
+
+    if [ "$region_start" -ge 0 ]; then
+      # Inside a candidate region: any return is the guard's controlled
+      # statement. The block belongs before the region opener.
+      case "$rtrim" in
+      *return*)
+        guard_at=$region_start
+        break
+        ;;
+      esac
+      if [ -n "$opener" ]; then
+        region_stack+=("$opener")
+      fi
+    elif [ "${#struct_stack[@]}" -eq 0 ] && ni_test_line "$rtrim"; then
+      # One-line guards (Arch/PS1 forms, braced or not).
+      case "$rtrim" in
+      *return*)
+        guard_at=$scan
+        break
+        ;;
+      esac
+      # Multi-line guard: remember the opener; its body decides.
+      if [ -n "$opener" ]; then
+        region_start=$scan
+        region_stack+=("$opener")
+      fi
+    fi
+
+    # Structural nesting is tracked for every code line, after the
+    # candidate decision (a line that both tests and opens is still a
+    # depth-zero candidate).
+    if [ -n "$opener" ]; then
+      struct_stack+=("$opener")
+    fi
   done
   if [ "$guard_at" -ge 0 ] &&
     { [ "$block_at" -lt 0 ] || [ "$block_at" -gt "$guard_at" ]; }; then
@@ -733,6 +916,14 @@ install_env_block() {
     ! printf '%s\n' "${kept[@]}" | bash -n >/dev/null 2>&1; then
     fail env "$bashrc is damaged outside the re-runtime block (kept content fails bash -n); refusing to rewrite it; as-found backup at $bak"
   fi
+  # bash -n exits 0 with only a warning on an unterminated heredoc, so
+  # the syntax check above cannot catch it. The scan already knows: a
+  # non-empty pending delimiter queue means every later line is body,
+  # and composing the block there would silently strand it. Fail in
+  # the damage style, naming the opener and the as-found backup.
+  if [ "${#hd_delims[@]}" -gt 0 ]; then
+    fail env "$bashrc has an unterminated heredoc opened on line ${hd_lines[0]}; refusing to compose a block into its body; as-found backup at $bak"
+  fi
 
   # Adoption guard: RE exports outside any marker block are a hand
   # install (the live VM's state). Never silently duplicate them —
@@ -741,10 +932,16 @@ install_env_block() {
   if [ "$unmarked" -eq 1 ]; then
     echo "INSTALL-RE: env SKIP: unmarked RE exports present — manual adoption required"
     ENV_OUTCOME="skip"
+    ENV_SKIP_REASON="unmarked RE exports present — manual adoption required"
     return 0
   fi
 
   ensure_profile
+  # A shadowing login file is a terminal SKIP: do not compose a block
+  # that no login shell can ever reach.
+  if [ "$ENV_OUTCOME" = "skip" ]; then
+    return 0
+  fi
   # The recorded profile origin is sticky in one direction only: a
   # block written when this script created ~/.profile keeps saying so
   # on later runs (when the profile now pre-exists relative to the
@@ -2822,7 +3019,7 @@ main() {
     if [ "$component" = "env" ]; then
       install_env_block
       if [ "$ENV_OUTCOME" = "skip" ]; then
-        fail verify "env stage SKIP: unmarked RE exports present — manual adoption required"
+        fail verify "env stage SKIP: ${ENV_SKIP_REASON:-unmarked RE exports present — manual adoption required}"
       fi
       continue
     fi

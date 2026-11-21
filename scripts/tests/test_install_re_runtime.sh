@@ -98,7 +98,14 @@ case "${1:-}" in
 rev-parse)
   [ -f "$dir/.stub-git-ok" ] || exit 128
   if [ "${2:-}" = "HEAD" ]; then
-    printf '%s\n' "${STUB_R2_HEAD:?}"
+    # .stub-head-differs models a reused clone left at the previous
+    # release by a pin bump: HEAD resolves, but it must move to reach
+    # the pinned tag (issue #125).
+    if [ -f "$dir/.stub-head-differs" ]; then
+      printf '%s\n' "${STUB_R2_OLD_HEAD:-old-head}"
+    else
+      printf '%s\n' "${STUB_R2_HEAD:?}"
+    fi
   fi
   # Tag-presence form: rev-parse --verify -q refs/tags/<v> fails
   # while .stub-tag-absent is set — a clone that predates the
@@ -136,13 +143,25 @@ checkout)
   # checkout still exits 0 but clears nothing — a restore that
   # reports success without healing the tree, as real git does
   # e.g. when clean -fd refuses an untracked nested git repo.
+  forced=0
   for arg in "$@"; do
     if [ "$arg" = "-f" ] || [ "$arg" = "--force" ]; then
+      forced=1
       if [ ! -f "$dir/.stub-unrestorable" ]; then
         rm -f "$dir/.stub-dirty-tracked"
+        # A forced checkout also lands on the pinned commit.
+        rm -f "$dir/.stub-head-differs"
       fi
     fi
   done
+  # A plain checkout of a dirty clone refuses when HEAD has to move
+  # (real git: local changes would be overwritten). The restore must
+  # therefore run BEFORE the first checkout (issue #125).
+  if [ "$forced" -eq 0 ] && [ -f "$dir/.stub-head-differs" ] &&
+    [ -f "$dir/.stub-dirty-tracked" ]; then
+    printf 'error: Your local changes to the following files would be overwritten by checkout:\n\tfixture.c\nPlease commit your changes or stash them before you switch branches.\nAborting\n' >&2
+    exit 1
+  fi
   ;;
 clean)
   [ -f "$dir/.stub-git-ok" ] || exit 128
@@ -537,6 +556,30 @@ J_FETCH_LN="$(grep -nF "fetch origin tag $R2_VERSION" "$FH/.stub-calls.log" | he
 J_CHECKOUT_LN="$(grep -nF "checkout $R2_VERSION" "$FH/.stub-calls.log" | head -1 | cut -d: -f1)"
 check "(j) fetch precedes the checkout" test "$J_FETCH_LN" -lt "$J_CHECKOUT_LN"
 check "(j) tag present in the clone afterwards" test ! -e "$FH/opt/dist/radare2-src/.stub-tag-absent"
+
+note "case (k): a dirty staged clone at an old pin is restored before the checkout"
+new_fixture k
+mkdir -p "$FH/opt/dist/radare2-src"
+printf '#!/bin/bash\nexit 0\n' >"$FH/opt/dist/radare2-src/configure"
+chmod +x "$FH/opt/dist/radare2-src/configure"
+: >"$FH/opt/dist/radare2-src/.stub-git-ok"
+: >"$FH/opt/dist/radare2-src/.stub-dirty-tracked"
+: >"$FH/opt/dist/radare2-src/.stub-head-differs"
+run_installer "$SERVE_DIR"
+check "(k) exit 0" test "$RC" -eq 0
+check "(k) radare2 ok line" grep -qxF "INSTALL-RE: radare2 ok" "$OUT"
+check "(k) verify ok is the last line" test "$(tail -1 "$OUT")" = "INSTALL-RE: verify ok"
+check_no_checkout_refusal() { ! grep -qF "checkout failed for tag" "$OUT"; }
+check "(k) no checkout refusal" check_no_checkout_refusal
+check "(k) dirty-clone notice printed" grep -qF "INSTALL-RE: radare2 note: staged clone had local changes" "$OUT"
+check "(k) tracked changes force-restored" grep -qF "checkout -f $R2_VERSION" "$FH/.stub-calls.log"
+K_RESTORE_LN="$(grep -nF "checkout -f $R2_VERSION" "$FH/.stub-calls.log" | head -1 | cut -d: -f1)"
+K_PLAIN_LN="$(grep -nF " checkout $R2_VERSION" "$FH/.stub-calls.log" | head -1 | cut -d: -f1)"
+check "(k) restore precedes the plain checkout" test -n "$K_PLAIN_LN" -a "$K_RESTORE_LN" -lt "$K_PLAIN_LN"
+check "(k) build saw a clean tree" grep -qF "built-dirty=0" "$FH/.stub-calls.log"
+check "(k) build never saw a dirty tree" test -z "$(grep -F "built-dirty=1" "$FH/.stub-calls.log")"
+check "(k) clone landed on the pinned HEAD" test ! -e "$FH/opt/dist/radare2-src/.stub-head-differs"
+check "(k) tracked dirt removed" test ! -e "$FH/opt/dist/radare2-src/.stub-dirty-tracked"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then
