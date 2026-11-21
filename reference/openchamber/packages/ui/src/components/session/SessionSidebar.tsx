@@ -1,0 +1,830 @@
+import React from 'react';
+import { MobilePinToSheet } from '@/apps/mobileSidebar/MobilePinToSheet';
+import { NewFolderDialog } from './sidebar/folders/NewFolderDialog';
+import { NewPinListDialog } from './sidebar/sections/NewPinListDialog';
+import { toast } from '@/components/ui';
+import { useI18n } from '@/lib/i18n';
+import { useDeviceInfo } from '@/lib/device';
+import { isDesktopShell, isVSCodeRuntime } from '@/lib/desktop';
+import { sessionEvents } from '@/lib/sessionEvents';
+import { cn } from '@/lib/utils';
+import { useSessionUIStore } from '@/sync/session-ui-store';
+import { useDirectoryStore } from '@/stores/useDirectoryStore';
+import { useProjectsStore } from '@/stores/useProjectsStore';
+import { useConfigStore } from '@/stores/useConfigStore';
+import { useUIStore } from '@/stores/useUIStore';
+import { getDeferredSafeStorage } from '@/stores/utils/safeStorage';
+import { useGitStore, useGitAllBranches, useGitRepoStatusMap } from '@/stores/useGitStore';
+import { TooltipProvider } from '@/components/ui/tooltip';
+import { Button } from '@/components/ui/button';
+import { Icon } from '@/components/icon/Icon';
+import { NewWorktreeDialog } from './NewWorktreeDialog';
+import { useSessionSearchEffects } from './sidebar/shell/useSessionSearchEffects';
+import { useSessionMultiSelectStore } from '@/stores/useSessionMultiSelectStore';
+import { updateDesktopSettings } from '@/lib/persistence';
+import { useKeybinds } from '@/hooks/useKeybind';
+import { useSessionProjectViewState } from './sidebar/projects/useSessionProjectViewState';
+import { useProjectRepoStatus } from './sidebar/projects/useProjectRepoStatus';
+import { ProjectEditDialog } from '@/components/layout/ProjectEditDialog';
+import { UpdateDialog } from '@/components/ui/UpdateDialog';
+import { SidebarHeader } from './sidebar/shell/SidebarHeader';
+import { SidebarFooter } from './sidebar/shell/SidebarFooter';
+import { SidebarSearchEmptyState } from './sidebar/shell/SidebarSearchEmptyState';
+import { SessionProjectCollection } from './sidebar/list/SessionProjectCollection';
+import type { SessionProjectListProps } from './sidebar/projects/SessionProjectScroller';
+import { useUpdateStore } from '@/stores/useUpdateStore';
+import { useShallow } from 'zustand/react/shallow';
+import {
+  listProjectWorktrees,
+  partitionWorktreesByRegisteredProject,
+  worktreeMapsEqual,
+  type ProjectRef,
+} from '@/lib/worktrees/worktreeManager';
+import { resolveProjectForCreatedSession, resolveProjectsForWorktreeChange } from '@/lib/worktrees/worktreeTopologyRefresh';
+import type { WorktreeMetadata } from '@/types/worktree';
+import { checkIsGitRepository } from '@/lib/gitApi';
+import { resolveSidebarGrouping, useSessionDisplayStore } from '@/stores/useSessionDisplayStore';
+import { normalizePath } from './sidebar/utils';
+import { recordWorktreesSeen } from './sidebar/projects/worktreeFirstSeen';
+import { captureRuntimeInstance, getRuntimeKey } from '@/lib/runtime-switch';
+import { streamPerfCount, streamPerfMark } from '@/stores/utils/streamDebug';
+import { runBackgroundNetworkTask } from '@/lib/background-network';
+import { buildKnownSessionDirectories } from './sidebar/list/sessionListDirectories';
+import { sortProjectsByOrder } from './sidebar/list/projectSort';
+import { z } from 'zod';
+import { subscribeOpenchamberEvents } from '@/lib/openchamberEvents';
+import {
+  commitDiscoveredRawWorktreesByProject,
+  ensureRawWorktreesByProjectScope,
+  refreshProjectWorktreeTopology,
+  resolveSessionWorktreeMenuProject,
+  startSessionWorktreeMenuLoad,
+  type RawWorktreesByProjectScope,
+  type StartSessionWorktreeMenuLoadArgs,
+} from './sidebar/sessionWorktreeMenu';
+import { publishSessionWorktreeMenuLoader } from './sidebar/sessionWorktreeMenuLoader';
+import { resolveProjectRef } from '@/lib/worktreeSessionCreator';
+import type { SearchScope } from '@/lib/search/omniQuery';
+import { effectiveSearchScope, useSearchScopes } from '@/components/search/searchScopes';
+import type { ContentSearchStatus } from '@/hooks/useConversationSearch';
+
+const PROJECT_ACTIVE_SESSION_STORAGE_KEY = 'oc.sessions.activeSessionByProject';
+const activeSessionByProjectSchema = z.record(z.string(), z.string().min(1).catch(''));
+
+interface SessionSidebarProps {
+  isVisible?: boolean;
+  mobileVariant?: boolean;
+  onSessionSelected?: (sessionId: string) => void;
+  allowReselect?: boolean;
+  hideDirectoryControls?: boolean;
+  showOnlyMainWorkspace?: boolean;
+  listControlsSlot?: HTMLElement | null;
+  phone?: {
+    searchQuery: string;
+    searchScope: SearchScope;
+    clearSearch: () => void;
+    onSearchStatusChange: (status: ContentSearchStatus) => void;
+    renderList: (props: SessionProjectListProps) => React.ReactNode;
+  };
+}
+
+const IDLE_SEARCH_STATUS: ContentSearchStatus = { kind: 'idle' };
+
+const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
+  isVisible = true,
+  mobileVariant = false,
+  onSessionSelected,
+  allowReselect = false,
+  hideDirectoryControls = false,
+  showOnlyMainWorkspace = false,
+  listControlsSlot = null,
+  phone,
+}) => {
+  streamPerfMark('react.session_sidebar_render');
+  streamPerfCount('ui.session_sidebar.render');
+  streamPerfCount(`ui.session_sidebar.render.${mobileVariant ? 'mobile' : 'desktop'}`);
+  streamPerfCount(`ui.session_sidebar.render.${isVisible ? 'visible' : 'hidden'}`);
+  const { t } = useI18n();
+  const [sessionSearchText, setSessionSearchText] = React.useState('');
+  const [sessionSearchScope, setSessionSearchScope] = React.useState<SearchScope>('everything');
+  const [searchMatchCount, setSearchMatchCount] = React.useState<number | null>(0);
+  const [searchStatus, setSearchStatus] = React.useState<ContentSearchStatus>(IDLE_SEARCH_STATUS);
+  const sessionSearchInputRef = React.useRef<HTMLInputElement | null>(null);
+  const [editingProjectDialogId, setEditingProjectDialogId] = React.useState<string | null>(null);
+  const safeStorage = React.useMemo(() => getDeferredSafeStorage(), []);
+  const [projectRepoStatus, setProjectRepoStatus] = React.useState<Map<string, boolean | null>>(new Map());
+  const newWorktreeDialogOpen = useUIStore((state) => state.isNewWorktreeDialogOpen);
+  const setNewWorktreeDialogOpen = useUIStore((state) => state.setNewWorktreeDialogOpen);
+  const [updateDialogOpen, setUpdateDialogOpen] = React.useState(false);
+  const initialActiveSessionByProject = React.useMemo<Map<string, string>>(() => {
+    try {
+      const raw = safeStorage.getItem(PROJECT_ACTIVE_SESSION_STORAGE_KEY);
+      if (!raw) {
+        return new Map();
+      }
+      const parsed = activeSessionByProjectSchema.safeParse(JSON.parse(raw));
+      if (!parsed.success) return new Map();
+      const next = new Map<string, string>();
+      Object.entries(parsed.data).forEach(([projectId, sessionId]) => {
+        if (sessionId) next.set(projectId, sessionId);
+      });
+      return next;
+    } catch {
+      return new Map();
+    }
+  }, [safeStorage]);
+  const persistActiveSessionByProject = React.useCallback((value: Map<string, string>) => {
+    try {
+      safeStorage.setItem(PROJECT_ACTIVE_SESSION_STORAGE_KEY, JSON.stringify(Object.fromEntries(value.entries())));
+    } catch { /* ignored */ }
+  }, [safeStorage]);
+
+  const [projectRootBranches, setProjectRootBranches] = React.useState<Map<string, string>>(new Map());
+
+  const homeDirectory = useDirectoryStore((state) => state.homeDirectory);
+
+  const projects = useProjectsStore((state) => state.projects);
+  const activeProjectId = useProjectsStore((state) => state.activeProjectId);
+  const removeProject = useProjectsStore((state) => state.removeProject);
+  const setActiveProjectIdOnly = useProjectsStore((state) => state.setActiveProjectIdOnly);
+  const updateProjectMeta = useProjectsStore((state) => state.updateProjectMeta);
+  const reorderProjects = useProjectsStore((state) => state.reorderProjects);
+
+  const clearPhoneSearch = phone?.clearSearch;
+  const resetSessionSearch = React.useCallback(() => {
+    setSessionSearchText('');
+    setSessionSearchScope('everything');
+    clearPhoneSearch?.();
+  }, [clearPhoneSearch]);
+  const applySessionSearchText = React.useCallback((text: string) => {
+    setSessionSearchText(text);
+    if (text === '') setSessionSearchScope('everything');
+  }, []);
+
+  const setSettingsDialogOpen = useUIStore((state) => state.setSettingsDialogOpen);
+  const setSessionSwitcherOpen = useUIStore((state) => state.setSessionSwitcherOpen);
+  const setWorktreesPageProjectId = useUIStore((state) => state.setWorktreesPageProjectId);
+
+  const searchQuery = phone ? phone.searchQuery : sessionSearchText;
+  const searchScopes = useSearchScopes();
+  const searchScope = effectiveSearchScope(phone ? phone.searchScope : sessionSearchScope, searchScopes);
+  const searchText = searchQuery.trim();
+  const hasSessionSearchQuery = searchText.length > 0;
+
+  useSessionSearchEffects({
+    enabled: isVisible && !phone,
+    sessionSearchInputRef,
+  });
+
+  const gitBranches = useGitAllBranches(isVisible);
+
+  const isVSCode = React.useMemo(() => isVSCodeRuntime(), []);
+  const worktreeMetadata = useSessionUIStore((state) => state.worktreeMetadata);
+  const availableWorktreesByProject = useSessionUIStore((state) => state.availableWorktreesByProject);
+  const openNewSessionDraft = useSessionUIStore((state) => state.openNewSessionDraft);
+  const knownSessionDirectories = React.useMemo(
+    () => buildKnownSessionDirectories(projects, availableWorktreesByProject, { includeWorktrees: !isVSCode }),
+    [availableWorktreesByProject, isVSCode, projects],
+  );
+  const openNewSessionDraftFromTree = React.useCallback<typeof openNewSessionDraft>((options) => {
+    useUIStore.getState().closeMainSurfaces();
+    openNewSessionDraft(options);
+    if (isVSCode) {
+      window.dispatchEvent(new CustomEvent('openchamber:navigate', { detail: { view: 'chat' } }));
+    }
+  }, [isVSCode, openNewSessionDraft]);
+  const updateStore = useUpdateStore(useShallow((s) => ({
+    checkForUpdates: s.checkForUpdates,
+    available: s.available,
+    runtimeType: s.runtimeType,
+    info: s.info,
+    downloading: s.downloading,
+    downloaded: s.downloaded,
+    installing: s.installing,
+    progress: s.progress,
+    error: s.error,
+    downloadUpdate: s.downloadUpdate,
+    restartToUpdate: s.restartToUpdate,
+  })));
+
+  const runtimeKey = getRuntimeKey();
+  const projectWorktreeDiscoveryKey = React.useMemo(
+    () => `${runtimeKey}|${projects
+      .map((project) => `${project.id}:${normalizePath(project.path) ?? ''}`)
+      .join('|')}`,
+    [projects, runtimeKey],
+  );
+  const [resolvedWorktreeTopologyKey, setResolvedWorktreeTopologyKey] = React.useState<string | null>(
+    isVSCode ? projectWorktreeDiscoveryKey : null,
+  );
+  const [worktreeDiscoveryRevision, requestWorktreeDiscovery] = React.useReducer((revision) => revision + 1, 0);
+  const isWorktreeTopologyLoading = !isVSCode && resolvedWorktreeTopologyKey !== projectWorktreeDiscoveryKey;
+  const [unresolvedWorktreeProjectPaths, setUnresolvedWorktreeProjectPaths] = React.useState<ReadonlySet<string>>(new Set());
+  const unresolvedWorktreeProjectPathsRef = React.useRef(unresolvedWorktreeProjectPaths);
+  unresolvedWorktreeProjectPathsRef.current = unresolvedWorktreeProjectPaths;
+  const isConnected = useConfigStore((state) => state.isConnected);
+  const rawWorktreesByProjectRef = React.useRef<RawWorktreesByProjectScope>({
+    runtimeKey: null,
+    revision: 0,
+    worktreesByProject: new Map(),
+  });
+
+  React.useEffect(() => {
+    let cancelled = false;
+
+    const discoverWorktrees = async () => {
+      const discoveryRuntimeKey = runtimeKey;
+      const isCurrent = captureRuntimeInstance();
+      const connectedAtStart = useConfigStore.getState().isConnected;
+      const projectEntries = useProjectsStore.getState().projects;
+      useSessionUIStore.setState({ worktreeDiscoveryByProject: new Map(projectEntries.map((project) => [normalizePath(project.path) ?? project.path, 'loading'])) });
+      if (projectEntries.length === 0 || isVSCode) {
+        if (!cancelled) {
+          rawWorktreesByProjectRef.current = {
+            runtimeKey: null,
+            revision: 0,
+            worktreesByProject: new Map(),
+          };
+          setUnresolvedWorktreeProjectPaths(new Set());
+          setResolvedWorktreeTopologyKey(projectWorktreeDiscoveryKey);
+        }
+        return;
+      }
+
+      const knownPublishedWorktreesByProject = useSessionUIStore.getState().availableWorktreesByProject;
+      const seededRawScope = ensureRawWorktreesByProjectScope({
+        rawWorktreesByProjectRef,
+        publishedWorktreesByProject: knownPublishedWorktreesByProject,
+        runtimeKey: discoveryRuntimeKey,
+      });
+      const capturedRawRevision = seededRawScope.revision;
+      const worktreesByProject = new Map(seededRawScope.worktreesByProject);
+      const unresolvedProjectPaths = new Set<string>();
+
+      await runBackgroundNetworkTask(() => Promise.all(projectEntries.map(async (project) => {
+        const projectPath = normalizePath(project.path);
+        if (!projectPath) return;
+        try {
+          const cachedIsGitRepo = useGitStore.getState().directories.get(projectPath)?.isGitRepo;
+          const isGitRepo = cachedIsGitRepo ?? await checkIsGitRepository(projectPath);
+          if (cancelled || !isCurrent()) return;
+          if (!isGitRepo) {
+            worktreesByProject.delete(projectPath);
+            return;
+          }
+          const worktrees = await listProjectWorktrees({ id: project.id, path: projectPath });
+          if (cancelled || !isCurrent()) return;
+          if (worktrees.length === 0) {
+            worktreesByProject.delete(projectPath);
+          } else {
+            worktreesByProject.set(projectPath, worktrees);
+          }
+        } catch {
+          unresolvedProjectPaths.add(projectPath);
+        }
+      })));
+
+      if (cancelled || !isCurrent() || getRuntimeKey() !== discoveryRuntimeKey) return;
+
+      const activeProjectPaths = new Set(projectEntries.map((project) => normalizePath(project.path)).filter(Boolean));
+      for (const projectPath of worktreesByProject.keys()) {
+        if (!activeProjectPaths.has(projectPath)) {
+          worktreesByProject.delete(projectPath);
+        }
+      }
+      const committed = commitDiscoveredRawWorktreesByProject({
+        rawWorktreesByProjectRef,
+        runtimeKey: discoveryRuntimeKey,
+        capturedRevision: capturedRawRevision,
+        nextRawWorktreesByProject: worktreesByProject,
+        publishedWorktreesByProject: knownPublishedWorktreesByProject,
+        partitionWorktreesByRegisteredProject,
+        projects: projectEntries,
+        worktreeMapsEqual,
+        recordWorktreesSeen,
+        publishTopology: (next) => {
+          useSessionUIStore.setState(next);
+        },
+        requestRediscovery: () => {
+          requestWorktreeDiscovery();
+        },
+        now: () => Date.now(),
+      });
+      if (!committed) {
+        return;
+      }
+      setUnresolvedWorktreeProjectPaths(unresolvedProjectPaths);
+      useSessionUIStore.setState({ worktreeDiscoveryByProject: new Map(projectEntries.map((project) => {
+        const path = normalizePath(project.path) ?? project.path;
+        return [path, unresolvedProjectPaths.has(path) ? 'error' : 'ready'];
+      })) });
+      setResolvedWorktreeTopologyKey(projectWorktreeDiscoveryKey);
+      if (unresolvedProjectPaths.size > 0 && !connectedAtStart && useConfigStore.getState().isConnected) {
+        requestWorktreeDiscovery();
+      }
+    };
+
+    void discoverWorktrees();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isVSCode, projectWorktreeDiscoveryKey, runtimeKey, worktreeDiscoveryRevision]);
+
+  React.useEffect(() => {
+    if (isConnected && unresolvedWorktreeProjectPathsRef.current.size > 0) {
+      requestWorktreeDiscovery();
+    }
+  }, [isConnected]);
+
+  const isDesktopShellRuntime = React.useMemo(() => isDesktopShell(), []);
+
+  const { isTablet } = useDeviceInfo();
+  const alwaysShowSidebarActions = mobileVariant || isTablet;
+
+
+  const hasNoProjects = projects.length === 0;
+  const emptyState = React.useMemo(() => (hasNoProjects ? (
+    <div className="flex flex-col items-center py-6 text-center text-muted-foreground">
+      <p className="typography-ui-label font-semibold">{t('sessions.sidebar.empty.noProjects.title')}</p>
+      <p className="typography-meta mt-1">{t('sessions.sidebar.empty.noProjects.description')}</p>
+      <Button variant="outline" size="sm" className="mt-3" onClick={() => sessionEvents.requestDirectoryDialog()}>
+        <Icon name="folder-add" className="size-4" />
+        {t('sessions.sidebar.header.actions.addProject')}
+      </Button>
+    </div>
+  ) : (
+    <div className="py-6 text-center text-muted-foreground">
+      <p className="typography-ui-label font-semibold">{t('sessions.sidebar.empty.noSessions.title')}</p>
+      <p className="typography-meta mt-1">{t('sessions.sidebar.empty.noSessions.description')}</p>
+    </div>
+  )), [t, hasNoProjects]);
+
+  const editingProject = React.useMemo(
+    () => projects.find((project) => project.id === editingProjectDialogId) ?? null,
+    [projects, editingProjectDialogId],
+  );
+
+  const handleSaveProjectEdit = React.useCallback((data: {
+    label: string;
+    icon: string | null;
+    color: string | null;
+    iconBackground: string | null;
+    defaultAgent: string | null;
+    defaultModel: string | null;
+    defaultVariant: string | null;
+  }) => {
+    if (!editingProjectDialogId) {
+      return;
+    }
+    updateProjectMeta(editingProjectDialogId, {
+      label: data.label,
+      icon: data.icon,
+      color: data.color,
+      iconBackground: data.iconBackground,
+      defaultAgent: data.defaultAgent ?? null,
+      defaultModel: data.defaultModel ?? null,
+      defaultVariant: data.defaultVariant ?? null,
+    });
+  }, [editingProjectDialogId, updateProjectMeta]);
+
+  const openNewWorktreeDialog = React.useCallback(() => {
+    setNewWorktreeDialogOpen(true);
+  }, [setNewWorktreeDialogOpen]);
+
+  const handleOpenUpdateDialog = React.useCallback(() => {
+    const current = useUpdateStore.getState();
+    if (current.available && current.info) {
+      setUpdateDialogOpen(true);
+      return;
+    }
+
+    void updateStore.checkForUpdates().then(() => {
+      const { available, error } = useUpdateStore.getState();
+      if (error) {
+        toast.error(t('sessions.sidebar.updateCheck.errorTitle'), { description: error });
+        return;
+      }
+      if (!available) {
+        toast.success(t('sessions.sidebar.updateCheck.latestVersion'));
+        return;
+      }
+      setUpdateDialogOpen(true);
+    });
+  }, [t, updateStore]);
+
+  const handleOpenSettings = React.useCallback(() => {
+    if (mobileVariant) {
+      setSessionSwitcherOpen(false);
+    }
+    setSettingsDialogOpen(true);
+  }, [mobileVariant, setSessionSwitcherOpen, setSettingsDialogOpen]);
+
+  const showSidebarUpdateButton =
+    updateStore.available &&
+    (updateStore.runtimeType === 'desktop' || updateStore.runtimeType === 'web');
+
+
+  const normalizedProjects = React.useMemo(() => {
+    return projects.flatMap((project) => {
+      const normalizedPath = normalizePath(project.path);
+      if (!normalizedPath) return [];
+      return [{
+        id: project.id,
+        path: project.path,
+        label: project.label,
+        normalizedPath,
+        icon: project.icon ?? undefined,
+        color: project.color ?? undefined,
+        iconImage: project.iconImage ?? undefined,
+        iconBackground: project.iconBackground ?? undefined,
+        addedAt: project.addedAt,
+        lastOpenedAt: project.lastOpenedAt,
+        sidebarCollapsed: project.sidebarCollapsed,
+      }];
+    });
+  }, [projects]);
+
+  const normalizedProjectPaths = React.useMemo(
+    () => normalizedProjects.map((project) => project.normalizedPath),
+    [normalizedProjects],
+  );
+
+  const gitRepoStatus = useGitRepoStatusMap(normalizedProjectPaths, isVisible);
+  useProjectRepoStatus({
+    enabled: isVisible,
+    normalizedProjects,
+    gitRepoStatus,
+    setProjectRepoStatus,
+    setProjectRootBranches,
+  });
+
+  const isSessionsLoading = useSessionUIStore((state) => state.isLoading);
+  const lastRepoStatusRef = React.useRef(false);
+  if (activeProjectId && projectRepoStatus.has(activeProjectId)) {
+    lastRepoStatusRef.current = Boolean(projectRepoStatus.get(activeProjectId));
+  }
+
+  const showArchivedSessions = useSessionDisplayStore((state) => state.showArchivedSessions);
+  const storedProjectSortOrder = useSessionDisplayStore((state) => state.projectSortOrder);
+  const projectSortOrder = storedProjectSortOrder;
+  const manualProjectOrder = useProjectsStore((state) => state.manualProjectOrder);
+
+  const sidebarRenderSources = {
+    isVisible,
+    mobileVariant,
+    onSessionSelected,
+    allowReselect,
+    hideDirectoryControls,
+    showOnlyMainWorkspace,
+    t,
+    isTablet,
+    projects,
+    activeProjectId,
+    manualProjectOrder,
+    worktreeMetadata,
+    availableWorktreesByProject,
+    gitBranches,
+    gitRepoStatus,
+    updateStore,
+    showArchivedSessions,
+    projectSortOrder,
+    projectRepoStatus,
+    projectRootBranches,
+    resolvedWorktreeTopologyKey,
+    unresolvedWorktreeProjectPaths,
+    sessionSearchQuery: searchQuery,
+    editingProjectDialogId,
+    updateDialogOpen,
+  };
+  const previousSidebarRenderSourcesRef = React.useRef<typeof sidebarRenderSources | null>(null);
+  const previousSidebarRenderSources = previousSidebarRenderSourcesRef.current;
+  if (previousSidebarRenderSources) {
+    let attributed = false;
+    // SAFETY: Object.keys is constrained to the immediately constructed object's own keys.
+    for (const source of Object.keys(sidebarRenderSources) as Array<keyof typeof sidebarRenderSources>) {
+      if (!Object.is(previousSidebarRenderSources[source], sidebarRenderSources[source])) {
+        streamPerfCount(`ui.session_sidebar.source.${source}`);
+        attributed = true;
+      }
+    }
+    if (!attributed) {
+      streamPerfCount('ui.session_sidebar.source.parent_or_context');
+    }
+  }
+  previousSidebarRenderSourcesRef.current = sidebarRenderSources;
+
+  const sortedProjects = React.useMemo(
+    () => sortProjectsByOrder(normalizedProjects, projectSortOrder, manualProjectOrder),
+    [normalizedProjects, projectSortOrder, manualProjectOrder],
+  );
+  const projectView = useSessionProjectViewState({ isVSCode, projects: sortedProjects });
+
+  useKeybinds({
+    collapse_sessions_all: () => {
+      if (isVSCode) return false;
+      projectView.actions.collapseAll();
+      return true;
+    },
+    expand_sessions_all: () => {
+      if (isVSCode) return false;
+      projectView.actions.expandAll();
+      return true;
+    },
+    toggle_chats_section: () => {
+      if (isVSCode || !isVisible) return false;
+      const store = useSessionDisplayStore.getState();
+      const next = !store.showChatsSection;
+      store.setShowChatsSection(next);
+      void updateDesktopSettings({ sidebarShowChatsSection: next });
+    },
+    toggle_pinned_section: () => {
+      if (isVSCode || !isVisible) return false;
+      const store = useSessionDisplayStore.getState();
+      const next = !store.showPinnedSection;
+      store.setShowPinnedSection(next);
+      void updateDesktopSettings({ sidebarShowPinnedSection: next });
+    },
+    toggle_work_section: () => {
+      if (isVSCode || !isVisible) return false;
+      if (!useUIStore.getState().sessionWorkEnabled) return false;
+      const store = useSessionDisplayStore.getState();
+      const next = !store.showWorkSection;
+      store.setShowWorkSection(next);
+      void updateDesktopSettings({ sidebarShowWorkSection: next });
+    },
+    toggle_detailed_rows: () => {
+      if (isVSCode || !isVisible) return false;
+      const store = useSessionDisplayStore.getState();
+      const next = !store.detailedZoneRows;
+      store.setDetailedZoneRows(next);
+      void updateDesktopSettings({ sidebarDetailedZoneRows: next });
+    },
+    toggle_list_grouping: () => {
+      if (isVSCode || !isVisible) return false;
+      const store = useSessionDisplayStore.getState();
+      const next = resolveSidebarGrouping(store) === 'time' ? 'project' : 'time';
+      store.setSidebarGrouping(next);
+      void updateDesktopSettings({ sidebarGrouping: next });
+    },
+    toggle_project_display: () => {
+      if (isVSCode || !isVisible) return false;
+      const store = useSessionDisplayStore.getState();
+      if (resolveSidebarGrouping(store) === 'time') return false;
+      const next = store.projectDisplayMode === 'single' ? 'all' : 'single';
+      store.setProjectDisplayMode(next);
+      void updateDesktopSettings({ sidebarProjectDisplayMode: next });
+    },
+    cycle_project_sort: () => {
+      if (isVSCode || !isVisible) return false;
+      const store = useSessionDisplayStore.getState();
+      if (resolveSidebarGrouping(store) === 'time') return false;
+      const order = ['manual', 'a-z', 'z-a', 'date-added', 'recent'] as const;
+      const next = order[(order.indexOf(store.projectSortOrder) + 1) % order.length];
+      store.setProjectSortOrder(next);
+      void updateDesktopSettings({ sidebarProjectSortOrder: next });
+    },
+    toggle_selection_mode: () => {
+      if (isVSCode || !isVisible) return false;
+      useSessionMultiSelectStore.getState().toggleMode();
+    },
+  });
+
+  const searchEmptyState = React.useMemo(() => (
+    <SidebarSearchEmptyState />
+  ), []);
+
+  const showInlineArchived = isVSCode && showArchivedSessions;
+  const useGroupedSections = !isVSCode;
+  const desktopHeaderActionButtonClass =
+    'inline-flex h-6 w-6 cursor-pointer items-center justify-center rounded-md leading-none text-foreground hover:bg-interactive-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed';
+  const mobileHeaderActionButtonClass =
+    'inline-flex h-6 w-6 cursor-pointer items-center justify-center rounded-md leading-none text-muted-foreground hover:text-foreground hover:bg-interactive-hover/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed';
+  const headerActionButtonClass = mobileVariant ? mobileHeaderActionButtonClass : desktopHeaderActionButtonClass;
+  const headerActionIconClass = 'h-4 w-4';
+
+  const worktreeRefreshDependencies = React.useMemo(() => ({
+    projects,
+    getCurrentProjects: () => useProjectsStore.getState().projects,
+    rawWorktreesByProjectRef,
+    getPublishedWorktreesByProject: () => useSessionUIStore.getState().availableWorktreesByProject,
+    resolveProject: (directory: string) => resolveProjectRef(directory),
+    listProjectWorktrees,
+    partitionWorktreesByRegisteredProject,
+    worktreeMapsEqual,
+    recordWorktreesSeen,
+    publishTopology: (next: {
+      availableWorktrees: WorktreeMetadata[];
+      availableWorktreesByProject: Map<string, WorktreeMetadata[]>;
+    }) => {
+      useSessionUIStore.setState(next);
+    },
+    getRuntimeKey,
+    now: () => Date.now(),
+  }), [projects]);
+
+  const handleSessionWorktreeMenuLoad = React.useCallback((args: StartSessionWorktreeMenuLoadArgs) => {
+    const resolvedProject: ProjectRef | null = resolveSessionWorktreeMenuProject(args, {
+      projects,
+      resolveProject: resolveProjectRef,
+    });
+    return startSessionWorktreeMenuLoad(args, {
+      ...worktreeRefreshDependencies,
+      projectRootBranch: resolvedProject ? (projectRootBranches.get(resolvedProject.id) ?? null) : null,
+    });
+  }, [projectRootBranches, projects, worktreeRefreshDependencies]);
+  React.useEffect(() => publishSessionWorktreeMenuLoader(handleSessionWorktreeMenuLoad), [handleSessionWorktreeMenuLoad]);
+
+  React.useEffect(() => {
+    if (isVSCode) return;
+    const refreshProjects = (projects: ProjectRef[]) => {
+      for (const project of projects) {
+        const projectPath = normalizePath(project.path);
+        const refreshRuntime = getRuntimeKey();
+        const publishDiscovery = (status: 'loading' | 'ready' | 'error') => {
+          if (!projectPath || getRuntimeKey() !== refreshRuntime) return;
+          useSessionUIStore.setState((state) => ({ worktreeDiscoveryByProject: new Map(state.worktreeDiscoveryByProject).set(projectPath, status) }));
+        };
+        publishDiscovery('loading');
+        void refreshProjectWorktreeTopology(project, null, worktreeRefreshDependencies)
+          .then(() => {
+            if (!projectPath || getRuntimeKey() !== refreshRuntime) return;
+            publishDiscovery('ready');
+            setUnresolvedWorktreeProjectPaths((current) => {
+              if (!current.has(projectPath)) return current;
+              const next = new Set(current);
+              next.delete(projectPath);
+              return next;
+            });
+          })
+          .catch(() => {
+            if (!projectPath || getRuntimeKey() !== refreshRuntime) return;
+            publishDiscovery('error');
+            setUnresolvedWorktreeProjectPaths((current) => new Set(current).add(projectPath));
+          });
+      }
+    };
+
+    return subscribeOpenchamberEvents((event) => {
+      if (event.type === 'session-created') {
+        const project = resolveProjectForCreatedSession(event.directory, useProjectsStore.getState().projects);
+        if (!project) {
+          requestWorktreeDiscovery();
+          return;
+        }
+        refreshProjects([project]);
+        return;
+      }
+      if (event.type !== 'worktree-changed') return;
+
+      refreshProjects(resolveProjectsForWorktreeChange(event.directories));
+    });
+  }, [isVSCode, worktreeRefreshDependencies]);
+
+  const collection = (
+    <SessionProjectCollection
+      topology={{
+        projects: sortedProjects,
+        availableWorktreesByProject,
+        knownDirectories: knownSessionDirectories,
+        isVSCode,
+        worktreeMetadata,
+        gitBranches,
+        projectRepoStatus,
+        projectRootBranches,
+        lastRepoStatus: lastRepoStatusRef.current,
+      }}
+      view={{
+        isVisible,
+        hasSessionSearchQuery,
+        searchText,
+        searchScope,
+        activeProjectId,
+        showInlineArchived,
+        useGroupedSections,
+        homeDirectory,
+        mobileVariant,
+        hideDirectoryControls,
+        showOnlyMainWorkspace,
+        isDesktopShellRuntime,
+        projectSortOrder,
+        emptyState,
+        searchEmptyState,
+        isSessionsLoading,
+        isWorktreeTopologyLoading,
+        unresolvedWorktreeProjectPaths,
+        projectView: projectView.state,
+        onSearchMatchCountChange: setSearchMatchCount,
+        onSearchStatusChange: phone?.onSearchStatusChange ?? setSearchStatus,
+      renderList: phone?.renderList,
+      }}
+      actions={{
+        rowActions: {
+          allowReselect,
+          onSessionSelected,
+        },
+        alwaysShowActions: alwaysShowSidebarActions,
+        setActiveProjectIdOnly,
+        setSessionSwitcherOpen,
+        openNewSessionDraft: openNewSessionDraftFromTree,
+        openNewWorktreeDialog,
+        openWorktreesPage: (projectId) => {
+          if (mobileVariant) setSessionSwitcherOpen(false);
+          setWorktreesPageProjectId(projectId);
+        },
+        openProjectEditDialog: setEditingProjectDialogId,
+        removeProject,
+        reorderProjects,
+        startSessionWorktreeMenuLoad: handleSessionWorktreeMenuLoad,
+        initialActiveSessionByProject,
+        persistActiveSessionByProject,
+        projectViewActions: projectView.actions,
+      }}
+    />
+  );
+  if (phone) return <div className="flex min-h-0 flex-1 flex-col">{collection}</div>;
+
+  return (
+    <TooltipProvider delay={400} closeDelay={0} timeout={300}>
+    <div
+      className={cn(
+        'relative flex h-full flex-col text-foreground overflow-x-hidden',
+        mobileVariant ? '' : 'bg-transparent',
+      )}
+    >
+      <SidebarHeader
+        hideDirectoryControls={hideDirectoryControls}
+        showProjectDisplayControls={!isVSCode}
+        showSectionControls={!isVSCode}
+        showPagesSection={!mobileVariant && !isVSCode}
+        headerActionIconClass={headerActionIconClass}
+        headerActionButtonClass={headerActionButtonClass}
+        listControlsSlot={listControlsSlot}
+        closeSessionSearch={resetSessionSearch}
+        sessionSearchInputRef={sessionSearchInputRef}
+        sessionSearchQuery={sessionSearchText}
+        setSessionSearchQuery={applySessionSearchText}
+        searchScope={sessionSearchScope}
+        setSearchScope={setSessionSearchScope}
+        searchStatus={hasSessionSearchQuery ? searchStatus : IDLE_SEARCH_STATUS}
+        searchMatchCount={hasSessionSearchQuery ? searchMatchCount : null}
+        collapseAll={projectView.actions.collapseAll}
+        expandAll={projectView.actions.expandAll}
+      />
+
+      {collection}
+
+      <SidebarFooter
+        onOpenSettings={handleOpenSettings}
+        onOpenUpdate={handleOpenUpdateDialog}
+        showRuntimeButtons={!isVSCode}
+        showUpdateButton={showSidebarUpdateButton}
+      />
+
+      <UpdateDialog
+        open={updateDialogOpen}
+        onOpenChange={setUpdateDialogOpen}
+        info={updateStore.info}
+        downloading={updateStore.downloading}
+        downloaded={updateStore.downloaded}
+        installing={updateStore.installing}
+        progress={updateStore.progress}
+        error={updateStore.error}
+        onDownload={updateStore.downloadUpdate}
+        onRestart={updateStore.restartToUpdate}
+        runtimeType={updateStore.runtimeType}
+      />
+
+      <ProjectEditDialog
+        open={Boolean(editingProject)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setEditingProjectDialogId(null);
+          }
+        }}
+        project={editingProject}
+        onSave={handleSaveProjectEdit}
+      />
+
+      <NewWorktreeDialog
+        open={newWorktreeDialogOpen}
+        onOpenChange={setNewWorktreeDialogOpen}
+        onWorktreeCreated={(worktreePath) => {
+          useUIStore.getState().closeMainSurfaces();
+          if (mobileVariant) {
+            setSessionSwitcherOpen(false);
+          }
+          openNewSessionDraft({ directoryOverride: worktreePath, preserveDirectoryOverride: true });
+        }}
+      />
+
+      <NewPinListDialog />
+      <NewFolderDialog />
+      {mobileVariant ? <MobilePinToSheet /> : null}
+
+    </div>
+    </TooltipProvider>
+  );
+};
+
+export const SessionSidebar = React.memo(SessionSidebarComponent);
