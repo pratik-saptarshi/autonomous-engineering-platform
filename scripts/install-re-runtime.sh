@@ -727,7 +727,7 @@ ctrl_opener_closer() {
     printf 'esac'
     return 0
   fi
-  if [[ "$s" =~ if[[:space:]]+.*[[:space:]]then([[:space:]]*;.*)?$ ]]; then
+  if [[ "$s" =~ ^if[[:space:]]+.*[[:space:]]then([[:space:]]*;.*)?$ ]]; then
     printf 'fi'
     return 0
   fi

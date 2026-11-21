@@ -327,6 +327,59 @@ check "F1b block before the guard" test "$BLOCK_LINE" -lt "$GUARD_LINE"
 JAVA_VAL="$(env -i HOME="$FH" /bin/bash -c '. "$HOME/.bashrc"; printf %s "${JAVA_HOME:-}"' 2>/dev/null)"
 check "F1b block reachable in a noninteractive source" test "$JAVA_VAL" = "$FH/opt/jdk-$TEMURIN_VERSION"
 
+# ================= PR #191 R2-F1: elif is not an if opener =================
+
+note "PR191-R2F1: unit-level opener grammar (elif/xif do not open, plain if does)"
+opener_eq() { # opener_eq <line> <expected-output-or-empty>
+  local got
+  got="$(
+    (
+      # shellcheck disable=SC1090 # the fixture library is generated above
+      source "$LIB"
+      set +eu
+      ctrl_opener_closer "$1" || true
+    ) 2>/dev/null
+  )"
+  test "$got" = "$2"
+}
+check "R2F1 plain if opens fi" opener_eq 'if [ -f "$HOME/.optional" ]; then' 'fi'
+check "R2F1 elif does not open" opener_eq 'elif [ -f "$HOME/.other" ]; then' ''
+check "R2F1 xif does not open" opener_eq 'xif [ a ]; then' ''
+check "R2F1 function form opens }" opener_eq 'foo() {' '}'
+check "R2F1 function keyword form opens }" opener_eq 'function foo {' '}'
+check "R2F1 case opens esac" opener_eq 'case $- in' 'esac'
+check "R2F1 while does not open (no loop openers, unchanged)" opener_eq 'while true; do' ''
+check "R2F1 residual#1 parked: if with trailing comment still does not open" opener_eq 'if [ -f "$HOME/.optional" ]; then # comment' ''
+check "R2F1 residual#1 parked: function with trailing comment still does not open" opener_eq 'foo() { # comment' ''
+check "R2F1 residual#1 parked: case with trailing comment still does not open" opener_eq 'case $- in # comment' ''
+
+note "PR191-R2F1a: an if/elif/fi conditional before the stock guard does not strand the block"
+new_home r2f1a
+cat >"$FH/.bashrc" <<'EOF'
+if [ -f "$HOME/.optional" ]; then
+  . "$HOME/.optional"
+elif [ -f "$HOME/.other" ]; then
+  . "$HOME/.other"
+fi
+case $- in
+  *i*) ;;
+  *) return;;
+esac
+export AFTER=1
+EOF
+run_env install_env_block
+check "R2F1a rc 0" test "$RC" -eq 0
+check_out "R2F1a env ok" 'INSTALL-RE: env ok' "$OUT"
+BLOCK_LINE="$(line_of '# >>> re-runtime >>>')"
+GUARD_LINE="$(line_of 'case $- in')"
+check "R2F1a block before the guard" test "$BLOCK_LINE" -lt "$GUARD_LINE"
+JAVA_VAL="$(env -i HOME="$FH" /bin/bash -c '. "$HOME/.bashrc"; printf %s "${JAVA_HOME:-}"' 2>/dev/null)"
+check "R2F1a block reachable in a noninteractive source" test "$JAVA_VAL" = "$FH/opt/jdk-$TEMURIN_VERSION"
+SHA="$(file_sha "$FH/.bashrc")"
+run_env install_env_block
+check "R2F1a second run rc 0" test "$RC" -eq 0
+check "R2F1a fixed point" test "$(file_sha "$FH/.bashrc")" = "$SHA"
+
 # ================= #121: formatted marker recognition =================
 
 note "#121a: indented markers are recognized and normalized"
