@@ -272,15 +272,15 @@ allowlisted Go models) is now proven.
 
 Sessions always carry an explicit `location.directory` — never
 rely on the server's default location. (In v2.3.0 the default
-resolves to the home project, `/home/hatch`, and does not follow
+resolves to the home project, `$HOME`, and does not follow
 the service's working directory; a full service stop/start from
 `~/workspace` left it unchanged. Explicit per-session location is
 the mechanism that works.) The global config
 (`~/.config/opencode/opencode.jsonc`) registers the typical
 working set so cross-repo work isn't blocked by project-root
 sandboxing: `permissions` rules allow `read` and
-`external_directory` across `/home/hatch/workspace/*` and the
-opencode config dir, and `references` name the main repos (aep,
+`external_directory` across `$HOME/workspace/*` and
+`$HOME/.config/opencode/*`, and `references` name the main repos (aep,
 dap, neurostrata, rocinante, esf, custom-skills, plans).
 Verified 2026-11-15: sessions rooted at the AEP, dap, and
 Rocinante repos and at `~/workspace/plans` each booted their
@@ -294,8 +294,9 @@ not via external-directory reach into a live checkout.
 The global config also wires the owner's local assets into every
 session (backup: `opencode.jsonc.bak-2026-11-15-access`):
 
-- **Skills:** `skills: ["/home/hatch/workspace/custom-skills"]` —
-  the owner's 107-skill library is discovered in place (109 skills
+- **Skills:** `skills: ["$HOME/workspace/custom-skills"]` (the
+  config file itself carries the expanded absolute path) —
+  the owner's skill library is discovered in place (109 skills
   enumerated via `GET /api/skill`, including OpenCode's built-ins;
   a few root files like the library README enumerate as noise
   entries). The library stays single-sourced; never copy skills

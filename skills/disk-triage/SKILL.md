@@ -21,7 +21,7 @@ Disk use is rising, a programme has halted on EDQUOT, or build caches have accum
 
 Do NOT use for: deleting a single known file at the owner's direct instruction (just delete it), or any deletion without a survey and ruling — an unruled cleanup is not authorized by this skill.
 
-Filesystem facts for this VM (measured 2026-11-19): `/home/hatch` is overlayfs (`metacopy=on`) over btrfs with `compress-force=zstd:3`. `du` overstates physical occupancy ~3× — metacopy files report full `st_blocks` while consuming ~nothing, and compression shrinks real blocks. Trust `df` for capacity; use `du` only for ranking consumers. Recently written build output tracks `du` much more closely than old checked-out source. The recurring pressure source is Rust `target/` build caches accumulating across many clones and worktrees.
+Establish the filesystem's accounting model before trusting any number: check whether the home filesystem is overlayfs or a compressing filesystem (e.g. btrfs with zstd) via `df -T` and `mount`. On overlayfs with `metacopy=on`, files report full `st_blocks` while consuming ~nothing, and compression shrinks real blocks — `du` can overstate physical occupancy several-fold. Trust `df` for capacity; use `du` only for ranking consumers. Recently written build output tracks `du` much more closely than old checked-out source. A recurring pressure source is build caches (e.g. Rust `target/` directories) accumulating across many clones and worktrees.
 
 ## Procedure
 
