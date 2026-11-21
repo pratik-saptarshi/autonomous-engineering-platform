@@ -25,7 +25,7 @@ output_contract: >
   re-running on the same review+plan produces the same result if no user overrides
   are applied.
 fork_of: "pratik-saptarshi/opencode-rountable-review skills/plan-review-integrator"
-fork_version: 1
+fork_version: 2
 ---
 
 # Plan-Review Integrator v2.1
@@ -512,7 +512,7 @@ Include a `Final Recommendation:` state:
 
 | Final Recommendation | Meaning |
 | --- | --- |
-| `Auto-applied` | All actionable findings were applied or classified without caveats, disputes, or partial-context limits |
+| `Auto-applied` | All actionable findings were applied or classified in full, with every dispute resolved and no finding limited by partial context |
 | `Applied with caveats` | Edits were applied, but at least one caveat, context limitation, or non-blocking dissent remains |
 | `Human review required` | At least one P0/P1, disputed, scope-expanding, or partial-context finding requires user decision |
 | `Blocked` | A verified high-risk finding cannot be safely integrated without changing the plan first |
