@@ -257,6 +257,76 @@ check "120b block after the conditional body" test "$BLOCK_LINE" -gt "$FI_LINE"
 JAVA_VAL="$(env -i HOME="$FH" /bin/bash -c '. "$HOME/.bashrc"; printf %s "${JAVA_HOME:-}"' 2>/dev/null)"
 check "120b block reachable" test "$JAVA_VAL" = "$FH/opt/jdk-$TEMURIN_VERSION"
 
+# ================= PR #191 F1: closers followed by comments =================
+
+note "PR191-F1: unit-level closer grammar (comment pops, glued # does not)"
+closer_pops() { # closer_pops <line> <closer>
+  (
+    # shellcheck disable=SC1090 # the fixture library is generated above
+    source "$LIB"
+    set +eu
+    ctrl_closer_line "$1" "$2"
+  ) >/dev/null 2>&1
+}
+closer_stuck() { ! closer_pops "$1" "$2"; }
+check "F1 bare fi pops" closer_pops 'fi' 'fi'
+check "F1 fi; pops" closer_pops 'fi;' 'fi'
+check "F1 fi; # comment pops (pre-existing ; rescue)" closer_pops 'fi; # comment' 'fi'
+check "F1 fi # comment pops" closer_pops 'fi # comment' 'fi'
+check "F1 fi #comment pops (comment starts at #)" closer_pops 'fi #comment' 'fi'
+check "F1 fi <tab># comment pops" closer_pops "$(printf 'fi\t# comment')" 'fi'
+check "F1 esac # end case pops" closer_pops 'esac # end case' 'esac'
+check "F1 } # end func pops" closer_pops '} # end func' '}'
+check "F1 fi# comment does not pop (# glued to the word)" closer_stuck 'fi# comment' 'fi'
+check "F1 fi extra does not pop" closer_stuck 'fi extra' 'fi'
+check "F1 fi # comment does not pop for esac" closer_stuck 'fi # comment' 'esac'
+
+note "PR191-F1a: a conditional closing with 'fi # comment' does not strand the block"
+new_home f1a
+cat >"$FH/.bashrc" <<'EOF'
+if [ -f "$HOME/.optional" ]; then
+  . "$HOME/.optional"
+fi # optional setup
+case $- in
+  *i*) ;;
+  *) return;;
+esac
+export AFTER=1
+EOF
+run_env install_env_block
+check "F1a rc 0" test "$RC" -eq 0
+check_out "F1a env ok" 'INSTALL-RE: env ok' "$OUT"
+BLOCK_LINE="$(line_of '# >>> re-runtime >>>')"
+GUARD_LINE="$(line_of 'case $- in')"
+check "F1a block before the guard" test "$BLOCK_LINE" -lt "$GUARD_LINE"
+JAVA_VAL="$(env -i HOME="$FH" /bin/bash -c '. "$HOME/.bashrc"; printf %s "${JAVA_HOME:-}"' 2>/dev/null)"
+check "F1a block reachable in a noninteractive source" test "$JAVA_VAL" = "$FH/opt/jdk-$TEMURIN_VERSION"
+SHA="$(file_sha "$FH/.bashrc")"
+run_env install_env_block
+check "F1a second run rc 0" test "$RC" -eq 0
+check "F1a fixed point" test "$(file_sha "$FH/.bashrc")" = "$SHA"
+
+note "PR191-F1b: a function closing with '} # comment' does not strand the block"
+new_home f1b
+cat >"$FH/.bashrc" <<'EOF'
+myhelper() {
+  export INSIDE=1
+} # end helper
+case $- in
+  *i*) ;;
+  *) return;;
+esac
+export AFTER=1
+EOF
+run_env install_env_block
+check "F1b rc 0" test "$RC" -eq 0
+check_out "F1b env ok" 'INSTALL-RE: env ok' "$OUT"
+BLOCK_LINE="$(line_of '# >>> re-runtime >>>')"
+GUARD_LINE="$(line_of 'case $- in')"
+check "F1b block before the guard" test "$BLOCK_LINE" -lt "$GUARD_LINE"
+JAVA_VAL="$(env -i HOME="$FH" /bin/bash -c '. "$HOME/.bashrc"; printf %s "${JAVA_HOME:-}"' 2>/dev/null)"
+check "F1b block reachable in a noninteractive source" test "$JAVA_VAL" = "$FH/opt/jdk-$TEMURIN_VERSION"
+
 # ================= #121: formatted marker recognition =================
 
 note "#121a: indented markers are recognized and normalized"

@@ -707,8 +707,18 @@ ctrl_opener_closer() {
 }
 
 # True when $1 is the closer named by $2 (optionally followed by `;`).
+# A trailing comment is stripped first: a `#` at a word start (after
+# whitespace) comments out the rest of the line in bash, while a `#`
+# glued to the word is part of the word, not a comment.
 ctrl_closer_line() {
-  case "$1" in
+  local s="$1"
+  case "$s" in
+  *[[:space:]]'#'*)
+    s="${s%%[[:space:]]'#'*}"
+    s="${s%"${s##*[![:space:]]}"}"
+    ;;
+  esac
+  case "$s" in
   "$2" | "$2;"* | "$2;;"*) return 0 ;;
   esac
   return 1
