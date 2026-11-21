@@ -4,6 +4,7 @@
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -126,11 +127,44 @@ class VendorGraphTest(unittest.TestCase):
             report = vendor_graph.build(self.root, findings=True)
         self.assertFalse(any(f.get("tree") == "local-only" for f in report["findings"]))
 
+    def test_failed_compare_is_a_finding(self):
+        # A failed gh compare must surface as a finding: _compare records the
+        # error on the entry, and strict mode is the freshness gate -- if the
+        # error never reaches findings, --strict exits 0 on a fully failed run.
+        def boom(*args, **kwargs):
+            raise subprocess.CalledProcessError(1, "gh")
+        with mock.patch.object(vendor_graph, "run_gh", side_effect=boom):
+            report = vendor_graph.build(self.root, findings=True)
+        self.assertTrue(
+            any("compare failed" in f.get("why", "") for f in report["findings"]),
+            report["findings"],
+        )
+
+    def test_strict_mode_exits_nonzero_when_compares_fail(self):
+        # Align every prose pin with its block pin first, so the fixture has
+        # no parse-level findings: the only possible strict failure source is
+        # the failed compares themselves.
+        for name, block in TREES:
+            if not block.get("pin"):
+                continue
+            p = self.root / "reference" / name / "PROVENANCE.md"
+            p.write_text(p.read_text(encoding="utf-8").replace("deadbeef", block["pin"]),
+                         encoding="utf-8")
+
+        def boom(*args, **kwargs):
+            raise subprocess.CalledProcessError(1, "gh")
+        argv = ["vendor_graph.py", "--root", str(self.root), "--strict"]
+        with mock.patch.object(vendor_graph, "run_gh", side_effect=boom), \
+                mock.patch.object(sys, "argv", argv):
+            with self.assertRaises(SystemExit) as cm:
+                vendor_graph.main()
+        self.assertEqual(cm.exception.code, 1)
+
     def test_test_count_asserted(self):
         # Count assertion mirrors the repo's CI gate: deleting a test fails this.
         src = Path(__file__).read_text(encoding="utf-8")
         needle = "    def " + "test_"
-        self.assertEqual(src.count(needle), 9)
+        self.assertEqual(src.count(needle), 11)
 
 
 if __name__ == "__main__":
