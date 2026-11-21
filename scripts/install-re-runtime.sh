@@ -468,7 +468,7 @@ normalize_source_word() {
 # NAME a shadowing state: a pre-existing profile is never modified.
 profile_sources_bashrc() {
   local -a queue=("$1") seen=()
-  local file item dup=0 line src dir seg rest
+  local file item dup=0 line src dir seg rest wtxt wch wi wsq wdq
   while [ "${#queue[@]}" -gt 0 ]; do
     file="${queue[0]}"
     queue=("${queue[@]:1}")
@@ -514,7 +514,47 @@ profile_sources_bashrc() {
         esac
         case "$seg" in
         '.'[[:space:]]* | source[[:space:]]*)
-          read -r _ src _ <<<"$seg"
+          # Extract the complete path word before normalizing: a
+          # plain whitespace split truncates a quoted filename at its
+          # spaces (`. "$HOME/login setup"`), so scan the word with
+          # quote awareness — it ends at the first whitespace that is
+          # neither quoted nor backslash-escaped.
+          wtxt="${seg#*[[:space:]]}"
+          wtxt="${wtxt#"${wtxt%%[![:space:]]*}"}"
+          src="" wi=0 wsq=0 wdq=0
+          while [ "$wi" -lt "${#wtxt}" ]; do
+            wch="${wtxt:wi:1}"
+            if [ "$wsq" -eq 1 ]; then
+              src+="$wch"
+              if [ "$wch" = "'" ]; then
+                wsq=0
+              fi
+            elif [ "$wdq" -eq 1 ]; then
+              src+="$wch"
+              if [ "$wch" = "\\" ]; then
+                wi=$((wi + 1))
+                src+="${wtxt:wi:1}"
+              elif [ "$wch" = '"' ]; then
+                wdq=0
+              fi
+            elif [ "$wch" = "'" ]; then
+              wsq=1
+              src+="$wch"
+            elif [ "$wch" = '"' ]; then
+              wdq=1
+              src+="$wch"
+            elif [ "$wch" = "\\" ]; then
+              src+="$wch"
+              wi=$((wi + 1))
+              src+="${wtxt:wi:1}"
+            else
+              case "$wch" in
+              [[:space:]]) break ;;
+              esac
+              src+="$wch"
+            fi
+            wi=$((wi + 1))
+          done
           src="$(normalize_source_word "$src")"
           case "$src" in
           /*) ;;

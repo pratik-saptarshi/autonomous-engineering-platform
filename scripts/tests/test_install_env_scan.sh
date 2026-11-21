@@ -783,6 +783,28 @@ check_out "123p env ok" 'INSTALL-RE: env ok' "$OUT"
 check_no_out "123p no shadowing SKIP" 'login startup is shadowed by' "$OUT"
 check "123p block written" test "$(marker_count '>>>')" -eq 1
 
+note "PR191-R4F2a: a quoted source path containing a space is followed through the chain"
+new_home r4f2a
+printf '. "$HOME/login setup"\n' >"$FH/.bash_profile"
+printf '. "$HOME/.bashrc"\n' >"$FH/login setup"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+run_env install_env_block
+check "R4F2a rc 0" test "$RC" -eq 0
+check_out "R4F2a env ok" 'INSTALL-RE: env ok' "$OUT"
+check_no_out "R4F2a no shadowing SKIP" 'login startup is shadowed by' "$OUT"
+check "R4F2a block written" test "$(marker_count '>>>')" -eq 1
+
+note "PR191-R4F2b: a backslash-escaped space in a source path is followed through the chain"
+new_home r4f2b
+printf '. $HOME/login\\ setup\n' >"$FH/.bash_profile"
+printf '. "$HOME/.bashrc"\n' >"$FH/login setup"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+run_env install_env_block
+check "R4F2b rc 0" test "$RC" -eq 0
+check_out "R4F2b env ok" 'INSTALL-RE: env ok' "$OUT"
+check_no_out "R4F2b no shadowing SKIP" 'login startup is shadowed by' "$OUT"
+check "R4F2b block written" test "$(marker_count '>>>')" -eq 1
+
 note "PR191-R2F2: unit-level profile_sources_bashrc probes for braced forms"
 profile_detected() { # profile_detected <profile-line>
   local pdir="$SB/psb-probe"
