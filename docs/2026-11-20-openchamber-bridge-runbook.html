@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenCode–OpenChamber Bridge Runbook — dispatching lane work as OpenCode sessions</title>
+<style>
+  :root{
+    --bg:#f7f8fa; --card:#ffffff; --ink:#1c2330; --dim:#5b6577; --line:#dfe3ea;
+    --accent:#2563eb; --warn:#b45309; --bad:#b91c1c; --good:#15803d;
+    --code-bg:#eef1f6;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --bg:#10141b; --card:#171c26; --ink:#e6eaf2; --dim:#9aa5b8; --line:#2a3242;
+      --accent:#6ea8fe; --warn:#f0b35e; --bad:#f28b82; --good:#7bd88f; --code-bg:#1e2531; }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:16px/1.55 -apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;}
+  main{max-width:920px;margin:0 auto;padding:32px 20px 64px}
+  h1{font-size:26px;line-height:1.25;margin:0 0 6px}
+  h2{font-size:20px;margin:34px 0 10px;padding-top:18px;border-top:1px solid var(--line)}
+  h3{font-size:16px;margin:20px 0 6px}
+  p{margin:8px 0}
+  .meta{color:var(--dim);font-size:14px}
+  .takeaway{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--accent);
+    border-radius:8px;padding:16px 18px;margin:20px 0}
+  .takeaway p{margin:4px 0}
+  table{border-collapse:collapse;width:100%;margin:12px 0;background:var(--card);
+    border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  th,td{text-align:left;vertical-align:top;padding:9px 12px;border-bottom:1px solid var(--line);font-size:14.5px}
+  th{background:var(--code-bg);font-weight:600}
+  tr:last-child td{border-bottom:none}
+  code{background:var(--code-bg);padding:1px 5px;border-radius:4px;font-size:13.5px;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  pre{background:var(--code-bg);padding:12px 14px;border-radius:8px;overflow-x:auto;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;line-height:1.45}
+  pre code{background:none;padding:0}
+  ul{margin:8px 0;padding-left:22px}
+  li{margin:5px 0}
+  .tag{display:inline-block;font-size:12px;font-weight:600;padding:1px 8px;border-radius:99px;border:1px solid var(--line)}
+  .v{color:var(--good)} .i{color:var(--warn)} .r{color:var(--bad)}
+  .note{color:var(--dim);font-size:14px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:14px 18px;margin:12px 0}
+  .warnbox{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--warn);
+    border-radius:8px;padding:14px 18px;margin:12px 0}
+</style>
+</head>
+<body>
+<main>
+<h1>OpenCode–OpenChamber bridge — runbook</h1>
+<p class="meta">Runbook · 2026-11-20 · OpenCode–OpenChamber lane · Companion to the <em>OpenChamber Hybrid Scoping</em> document (2026-11-20), which is the plan of record. Bridge built and smoke-tested 2026-11-20; pilot staged, awaiting the next replay-core wave.</p>
+
+<div class="takeaway">
+<h3 style="margin-top:0">Executive takeaway</h3>
+<p>A lane dispatches a bounded worker task by writing a brief file and running one command: <code>dispatch.py</code> wakes/checks the OpenCode background service, creates a titled session in the task's worktree, sends the brief (plus a standard footer) as the prompt over the service API, polls until the session goes idle, and harvests the report file into the SDD workspace with a ledger entry carrying session id, tokens, cost, wall-clock, and before/after git state. <strong>Never <code>opencode run</code></strong> — it hangs in this VM; the API route is the only route. If anything stalls or fails, the fallback is the existing one: re-dispatch the task to a Muse subagent under the direct-drive rules. The bridge changes where execution is visible, not who holds authority: Muse stays the control plane (briefs, memory, ghg-gated publishing, censuses, gate re-runs), and merge decisions stay Pratik's, per PR.</p>
+</div>
+
+<h2>1. Where the bridge lives</h2>
+<table>
+<tr><th style="width:38%">Piece</th><th>Path</th></tr>
+<tr><td>Dispatcher</td><td><code>tools/openchamber-bridge/dispatch.py</code> (this repo; the executing copy runs from the AEP goal workspace)</td></tr>
+<tr><td>Standard brief footer (appended automatically)</td><td><code>…/openchamber-bridge/brief-footer.txt</code></td></tr>
+<tr><td>Bridge ledger (one JSON line per dispatch)</td><td><code>…/openchamber-bridge/ledger.jsonl</code> (or a lane SDD ledger passed with <code>--ledger</code>)</td></tr>
+<tr><td>Smoke test (brief, scratch tree, report, ledger evidence)</td><td><code>…/openchamber-bridge/smoke/</code></td></tr>
+<tr><td>Pilot staging (brief template, dispatch script, success criteria)</td><td><code>…/openchamber-bridge/pilot/</code></td></tr>
+<tr><td>OpenChamber trial (daemon, relaunch script)</td><td><code>~/workspace/repo-evals/openchamber-trial/</code> (<code>README.txt</code>, <code>run.sh</code>)</td></tr>
+</table>
+<p>All API calls go through the <code>opencode api</code> CLI, which attaches the service credentials itself. The dispatcher never reads the service password file, and no credential appears in the ledger, the archived brief, or any report.</p>
+
+<h2>2. How a lane dispatches a task</h2>
+<h3>Step 1 — write the brief</h3>
+<p>Write the brief exactly as for a Muse subagent today: the finding/charge quoted verbatim (grep-verified against its source), red-first instructions where charged, stop conditions, and the gate commands the worker must run in the worktree. Do <em>not</em> repeat the footer content — the dispatcher appends <code>brief-footer.txt</code>, which carries: the mandatory report path, the report format, the no-push / no-post / worktree-only / no-deletion rules, the public-hygiene rule, and the environment block (PATH, <code>GOTMPDIR=$HOME/.gotmp</code>, sequential builds, ~1.5&nbsp;GiB effective memory). The adapted brief is archived next to the report as <code>&lt;report&gt;.brief.md</code>.</p>
+<h3>Step 2 — pick the title</h3>
+<p>Title convention, so the OpenChamber board reads as a work board with no UI changes:</p>
+<ul>
+<li>Reviews: <code>&lt;repo&gt; PR&lt;n&gt; · W&lt;wave&gt; re-review · &lt;base7&gt;..&lt;head7&gt;</code> — e.g. <code>replay-core PR7 · W7 re-review · 4008a19..a1b2c3d</code></li>
+<li>Implementers: <code>&lt;repo&gt; PR&lt;n&gt; · W&lt;wave&gt; implement · &lt;finding shortname&gt;</code></li>
+<li>Panelists: <code>&lt;repo&gt; PR&lt;n&gt; · W&lt;wave&gt; panel · &lt;lens&gt;</code></li>
+</ul>
+<p>The session's <code>location.directory</code> is the worktree, so the board groups by project correctly.</p>
+<h3>Step 3 — dispatch</h3>
+<pre><code>python3 tools/openchamber-bridge/dispatch.py \
+  --brief    &lt;brief-file&gt; \
+  --workdir  &lt;scratch-or-feature-worktree&gt; \
+  --title    "replay-core PR7 · W7 re-review · 4008a19..a1b2c3d" \
+  --report   &lt;SDD-workspace&gt;/wave7-rereview-report.md \
+  --model    opencode-go/deepseek-v4.1-flash \
+  --timeout 3600 --stall-seconds 600 --poll-seconds 15</code></pre>
+<table>
+<tr><th style="width:26%">Argument</th><th>Meaning</th></tr>
+<tr><td><code>--brief</code></td><td>Brief file; its text (plus footer) becomes the prompt.</td></tr>
+<tr><td><code>--workdir</code></td><td>Session <code>location.directory</code>. Reviews use a scratch worktree at the head commit; the main tree is never a session workdir for review work.</td></tr>
+<tr><td><code>--report</code></td><td>The contract path, inside the lane's SDD workspace. Substituted into the footer.</td></tr>
+<tr><td><code>--model</code></td><td><code>provider/model-id</code> (default <code>opencode-go/deepseek-v4.1-flash</code>). <strong>Allowlist — Pratik's standing rule, 2026-11-20, expanded 2026-11-21: ONLY these models may be dispatched on the bridge</strong> — <code>opencode-go/deepseek-v4.1-flash</code>, <code>opencode-go/glm-5.3-flash</code>, <code>opencode-go/minimax-m3.1-flash</code>, <code>opencode-go/muse-spark-1.3-contributor</code>, <code>opencode-go/hy4-flash-free</code>, <code>opencode-go/iceman-contributor-free</code>, <code>opencode-go/longcat-2.5-free</code>, <code>opencode-go/beam-free</code>, and <code>opencode/tidepool-alpha-free</code> (Tidepool is listed only under the <code>opencode</code> provider — no opencode-go variant exists). The dispatcher enforces this and refuses any other model (exit 64) before any session is created. Within the allowlist, keep the pilot rule: a different model family from the implementer under review.</td></tr>
+<tr><td><code>--ledger</code></td><td>Optional: append the dispatch record to a specific SDD ledger instead of the bridge ledger.</td></tr>
+<tr><td><code>--timeout / --stall-seconds</code></td><td>Overall poll budget, and the no-progress window that declares a stall (see §5).</td></tr>
+</table>
+<p>At dispatch, record in the SDD ledger — the same entry a Muse subagent dispatch gets today — the session id, title, model, base commit, and expected report path. The dispatcher's own ledger line carries all of these plus tokens/cost and the worktree git HEAD + dirty-file count before and after (local only, no network).</p>
+<h3>Step 4 — what the dispatcher does</h3>
+<ol>
+<li><strong>Health/wake:</strong> <code>GET /api/session</code> — this call is itself the documented wake route; the dispatcher retries it three times with backoff before giving up (exit 2).</li>
+<li><strong>Create:</strong> <code>POST /api/session</code> with title, <code>location.directory</code>, model <code>{id, providerID}</code>, agent <code>build</code>.</li>
+<li><strong>Prompt:</strong> <code>POST /api/session/&lt;id&gt;/prompt</code> with <code>{text}</code> — the adapted brief.</li>
+<li><strong>Poll:</strong> session record + message list every <code>--poll-seconds</code> until an idle marker lands, the stall window trips, or the timeout expires.</li>
+<li><strong>Harvest:</strong> §3. Then append the ledger line and print the full dispatch record as JSON on stdout.</li>
+</ol>
+
+<h2>3. Report harvesting into the SDD workspace</h2>
+<ul>
+<li>The report file remains the contract. When the session goes idle, the dispatcher verifies the file at <code>--report</code> exists and is at least <code>--min-report-bytes</code> (default 100). A passing harvest sets <code>report_authored: true</code> in the ledger.</li>
+<li>If the session ended without a report file (or a trivial one), the harvester extracts the final assistant message into the report path, prefixed with a <code>HARVESTED-NOT-AUTHORED</code> marker, sets <code>report_authored: false</code>, and exits 5. <strong>The controller treats that task as UNREPORTED</strong> — chase or re-dispatch it exactly as a Muse child that finished without reporting.</li>
+<li>Token counts, cost, and outcome come from the session record into the ledger line — per-task cost data the lane does not have for Muse subagents today.</li>
+<li>The transcript is the backup, never the deliverable: open the session in OpenChamber (or <code>GET /api/session/&lt;id&gt;/message</code>) to audit what the worker actually did — reds, gate runs, file edits — against its report's claims.</li>
+<li>Gate discipline is unchanged: a worker's green is a claim; the controller re-runs the gate first-hand in the main tree before anything is published.</li>
+</ul>
+
+<h2>4. Lifecycle and wake procedure</h2>
+<table>
+<tr><th style="width:24%">Situation</th><th>Procedure</th></tr>
+<tr><td>Normal dispatch</td><td>Nothing to start by hand. The dispatcher's health/wake call wakes the OpenCode service if it is stopped; session history persists on disk across service restarts.</td></tr>
+<tr><td>OpenChamber board down</td><td>Bring it up from the OpenChamber Space's <em>Bring up</em> control, or <code>~/workspace/repo-evals/openchamber-trial/run.sh</code>. Check <code>GET http://127.0.0.1:3411/health</code> → <code>openCodeRunning: true</code>. The board is visibility only — a dispatch works without it, it just isn't visible until the board is back.</td></tr>
+<tr><td>After a VM replacement</td><td>Processes do not survive; everything on disk does (trial stack, <code>~/.local/state/opencode/</code>, session history). Recovery is the two steps above: any <code>opencode api</code> call (the dispatcher does it) + Bring up. A session interrupted mid-task leaves its transcript up to the interruption and its worktree exactly as the worker left it; the SDD ledger + <code>git log</code> in the worktree are the recovery source of truth.</td></tr>
+<tr><td>Stopping</td><td>The Space's <em>Stop</em> control stops OpenChamber only and deliberately leaves the OpenCode service running. The dispatcher never stops the service either. There is no step in this runbook that stops the service.</td></tr>
+<tr><td>MCP tax</td><td>Per-service-start, not per-session: rea connects (~7.5&nbsp;s); the neurostrata MCP times out (~34&nbsp;s) while its daemon is down — the standing state. Starting that daemon is Pratik's call and is not part of this bridge. The pilot measures the tax inside its wall-clock budget.</td></tr>
+</table>
+
+<h2>5. Failure modes, exit codes, and the fallback</h2>
+<table>
+<tr><th style="width:14%">Exit</th><th style="width:30%">Meaning</th><th>Controller action</th></tr>
+<tr><td><code>0</code></td><td>Session completed, outcome succeeded, report authored.</td><td>Normal path: verify claims, re-run the gate first-hand, proceed.</td></tr>
+<tr><td><code>2</code></td><td>Health/wake or session creation failed.</td><td>Check the service (<code>opencode api GET /api/session</code> by hand); if it will not wake, fall back (below).</td></tr>
+<tr><td><code>3</code></td><td><strong>Stall declared</strong> — no new message and no session update for <code>--stall-seconds</code>. Partial transcript harvested.</td><td>Direct-drive stall rule, verbatim: the partial work is assessed from the worktree + transcript, and the task is re-dispatched — to a Muse subagent by default.</td></tr>
+<tr><td><code>4</code></td><td>Overall timeout. Partial transcript harvested.</td><td>As for a stall.</td></tr>
+<tr><td><code>5</code></td><td>Session completed but report missing/trivial; harvested fallback written, marked not-authored.</td><td>Treat as UNREPORTED: chase once via a follow-up prompt only if the transcript shows the work was done; otherwise re-dispatch.</td></tr>
+<tr><td><code>6</code></td><td>Session outcome failed/interrupted, or the prompt was rejected.</td><td>Read the transcript tail for the failure, then re-dispatch.</td></tr>
+</table>
+<div class="card">
+<p><strong>Fallback to a Muse subagent.</strong> Any exit other than 0 — or a pilot success-criterion failure on a live wave — re-dispatches the same brief (minus the footer; Muse subagents get the standing brief discipline directly) to a Muse subagent under the existing direct-drive execution rules. The bridge is an execution plane, not a dependency: a wave never blocks on it. Record the fallback and its reason in the SDD ledger and, during the pilot, in the pilot report.</p>
+</div>
+<ul>
+<li><strong>Session dies mid-task</strong> (VM replacement, service crash): exposure is identical to a Muse subagent dying — work product is files and commits in the worktree. The ledger holds the session id, so the partial transcript stays findable.</li>
+<li><strong>VM memory pressure</strong> (~1.5&nbsp;GiB effective): one OpenCode worker at a time, sequential builds — the same discipline as the lane's current one-implementer rule.</li>
+<li><strong>Plausible-but-wrong report:</strong> the standing defenses, unchanged — fresh independent re-review, controller-side gate re-run, and (pilot only) dual verification against ground truth.</li>
+</ul>
+
+<div class="warnbox">
+<h3 style="margin-top:0">The no-push rule is detective, not preventive — stated plainly</h3>
+<p>Sessions run with the user's filesystem and shell access. The no-push / no-post rules are brief instructions in the footer, <strong>not a sandbox</strong> — exactly as they already are for Muse subagents. The controls are detective: ghg accounting surfaces any GitHub API call, the dispatcher records the worktree's git state before and after, and the controller diffs the remote ref before and after every dispatch (the pilot script does the before leg). A violation ends the experiment for that task class. Keeping all publishing on the Muse side — pushes, thread replies, PR posts, through ghg, with ref verification — is what makes this acceptable. No session ever receives a deletion task; the deletion rule (explicit confirmation + 1-hour delay + reconfirmation, exact targets) is unchanged.</p>
+</div>
+
+<h2>6. Smoke test — evidence (2026-11-20)</h2>
+<p>End-to-end self-test with a trivial READ-ONLY task: inspect a 4-file scratch tree and write a one-paragraph report. No lane work, no GitHub calls.</p>
+<table>
+<tr><th style="width:30%">Check</th><th>Result</th></tr>
+<tr><td>Dispatch</td><td><code>dispatch.py</code> exit 0; session <code>ses_e0456f064ffeje5lHHTipt004E</code>, title <em>bridge-smoke · self-test · read-only scratch inspection</em>, model <code>opencode-go/beam-free</code></td></tr>
+<tr><td>Timing</td><td>9.8&nbsp;s session turn (OpenChamber metadata); 14.9&nbsp;s dispatcher wall including poll granularity. Warm service.</td></tr>
+<tr><td>Report</td><td>Authored by the session at the contract path (1,136 bytes): correct file count (4), every file named and summarized, haiku subject and beta.txt's 4 items both stated correctly.</td></tr>
+<tr><td>Read-only respected</td><td>Scratch tree checksums unchanged; the only file created was the report.</td></tr>
+<tr><td>Board visibility</td><td>Session listed by the service with title + worktree location; OpenChamber health at check time: <code>openCodeRunning: true</code>, port 49374, version 2.7.3; transcript contains the full tool-using message chain plus the idle marker.</td></tr>
+<tr><td>Ledger</td><td>One line in <code>ledger.jsonl</code>: tokens input 17,974 / output 506 / reasoning 172, cost 0, outcome <code>succeeded</code>, <code>report_authored: true</code>.</td></tr>
+</table>
+<p class="note">What the smoke test does <em>not</em> prove: long, multi-turn agentic sessions (real implementer/reviewer workloads) over the API route. That is precisely the pilot's main question, ahead of model quality.</p>
+
+<h2>7. The pilot — staged and ready</h2>
+<p><strong>Subject:</strong> the next replay-core re-review (PR&nbsp;#7, next wave), dispatched the moment its brief arrives from the replay-core lane under Pratik's wave authorization. Everything below is staged in <code>…/openchamber-bridge/pilot/</code> so the pilot is a dispatch, not a build:</p>
+<ul>
+<li><code>brief-template.md</code> — the re-review brief with slots for wave, base..head, scratch worktree, model, report path, and the verbatim charge; the controller grep-verifies the charge against its source before dispatch.</li>
+<li><code>run-pilot.sh</code> — the parameterized dispatch (title built from the convention; pre-dispatch remote-ref record for the no-push check). It refuses to run until <code>PILOT_AUTHORIZED</code> and every slot are set from the real brief.</li>
+<li><code>success-criteria.md</code> — the scoping document §5 criteria, all must hold: verdict matches ground truth under pilot-only dual verification; every removed/changed test line accounted for; report lands complete at the SDD path without controller edits; zero rule violations (ref diff + ghg ledger); wall-clock within 2× the ~15–20&nbsp;min Muse-side baseline, wake and MCP taxes included; tokens recorded either way. Judged on quality of reds first, wall-clock second, tokens third.</li>
+</ul>
+<p>After the pilot run, the controller writes the pilot report (HTML, in this files/ directory): session id, model family vs the implementer's, wall-clock vs baseline, tokens/cost, dual-verification result per finding, each criterion PASS/FAIL with evidence, any stall/fallback events, and a verdict recommendation for Pratik's adoption decisions — adopt per task class or not; re-reviews only or implementers too; model-pairing policy; whether the dispatcher graduates to a maintained lane tool or stays pilot-grade.</p>
+
+<h2>8. What does not change</h2>
+<ul>
+<li><strong>Publishing authority</strong> — Muse side, through ghg, per-action as today. Sessions never push or post.</li>
+<li><strong>Merge authorization</strong> — Pratik's per-PR call, never bundled into a wave authorization.</li>
+<li><strong>Memory</strong> — NeuroStrata primacy; inscription is the controller's job as work closes. Sessions neither read nor write lane memory.</li>
+<li><strong>Hygiene</strong> — the public-tree scrub and the replay-core public-hygiene rule apply to session-produced diffs exactly as to any other diff, checked Muse-side before publish.</li>
+<li><strong>No new UI, no config changes, no scheduling</strong> — the title convention makes the existing OpenChamber board readable as-is; dispatches are controller-initiated only.</li>
+</ul>
+
+<p class="meta" style="margin-top:28px">Prepared 2026-11-20 by the OpenCode–OpenChamber lane. The dispatcher, brief footer, and brief template live in this repo under <code>tools/openchamber-bridge/</code>; smoke-test artifacts and pilot staging remain in the AEP goal workspace.</p>
+</main>
+</body>
+</html>
