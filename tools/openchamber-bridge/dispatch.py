@@ -51,6 +51,18 @@ from pathlib import Path
 BRIDGE_DIR = Path(__file__).resolve().parent
 FOOTER_PATH = BRIDGE_DIR / "brief-footer.txt"
 
+
+def bridge_home() -> Path:
+    """The bridge's runtime data home — where the dispatch ledger lives.
+
+    Resolution order: $OPENCHAMBER_BRIDGE_HOME (exported by the VM's
+    setup initialization; see env.sh in this kit) when set, else this
+    script's own directory. Kit-internal files (brief footer, template)
+    always resolve relative to this script, never via the variable.
+    """
+    env = os.environ.get("OPENCHAMBER_BRIDGE_HOME")
+    return Path(env).expanduser().resolve() if env else BRIDGE_DIR
+
 # Model allowlist — Pratik's standing rule for the bridge (2026-11-20,
 # expanded 2026-11-21): ONLY these models may be dispatched. Enforced
 # here, not by convention. IDs verified live in `opencode models`.
@@ -166,8 +178,10 @@ def main() -> int:
                          "expanded 2026-11-21) — see ALLOWED_MODELS in this file. "
                          "Default: deepseek-v4.1-flash.")
     ap.add_argument("--agent", default="build")
-    ap.add_argument("--ledger", default=str(BRIDGE_DIR / "ledger.jsonl"),
-                    help="JSONL ledger to append the dispatch record to.")
+    ap.add_argument("--ledger", default=str(bridge_home() / "ledger.jsonl"),
+                    help="JSONL ledger to append the dispatch record to "
+                         "(default: ledger.jsonl in $OPENCHAMBER_BRIDGE_HOME, "
+                         "else beside this script).")
     ap.add_argument("--archive-brief", default=None,
                     help="Where to archive the adapted brief (default: <report>.brief.md).")
     ap.add_argument("--timeout", type=int, default=1800, help="Overall poll budget, seconds.")

@@ -68,6 +68,15 @@
 </table>
 <p>All API calls go through the <code>opencode api</code> CLI, which attaches the service credentials itself. The dispatcher never reads the service password file, and no credential appears in the ledger, the archived brief, or any report.</p>
 
+<h3>Paths and environment — <code>OPENCHAMBER_BRIDGE_HOME</code></h3>
+<p>The kit separates <em>kit-internal files</em> from the <em>runtime data home</em>. <code>dispatch.py</code>, <code>brief-footer.txt</code>, and <code>brief-template.md</code> always resolve relative to the dispatcher script itself. The runtime data home — where the dispatch ledger (<code>ledger.jsonl</code>) is written — is the path variable <code><strong>OPENCHAMBER_BRIDGE_HOME</strong></code>, resolved in this order:</p>
+<ol>
+<li>An explicit <code>--ledger</code> argument wins over everything.</li>
+<li><code>$OPENCHAMBER_BRIDGE_HOME</code> when set — the VM's setup initialization exports it (see <code>tools/openchamber-bridge/env.sh</code>, sourced from <code>~/.bashrc</code>); in the current VM it points at the live executing home in the AEP goal workspace.</li>
+<li>Fallback: the directory containing <code>dispatch.py</code> — correct whenever the executing copy itself lives in the data home.</li>
+</ol>
+<p>Consequence: the repo copy of the kit is self-contained (its seeded ledger sits beside the script), while the live dispatcher keeps appending to the executing ledger regardless of which copy a session invokes.</p>
+
 <h2>2. How a lane dispatches a task</h2>
 <h3>Step 1 — write the brief</h3>
 <p>Write the brief exactly as for a Muse subagent today: the finding/charge quoted verbatim (grep-verified against its source), red-first instructions where charged, stop conditions, and the gate commands the worker must run in the worktree. Do <em>not</em> repeat the footer content — the dispatcher appends <code>brief-footer.txt</code>, which carries: the mandatory report path, the report format, the no-push / no-post / worktree-only / no-deletion rules, the public-hygiene rule, and the environment block (PATH, <code>GOTMPDIR=$HOME/.gotmp</code>, sequential builds, ~1.5&nbsp;GiB effective memory). The adapted brief is archived next to the report as <code>&lt;report&gt;.brief.md</code>.</p>
