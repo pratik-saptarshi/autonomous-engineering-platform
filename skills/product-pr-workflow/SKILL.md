@@ -24,7 +24,7 @@ This is the umbrella. It decides *which stage a PR is in, which component skill 
 ## Component Map
 
 | Stage | Component skill | Owns |
-|---|---|---|
+| --- | --- | --- |
 | Intake / batch review | `pr-fleet-review` | Reviewing a batch of open PRs oldest-first, one verdict each |
 | Panel review | `overseer`, `roundtable_review` | Adversarial multi-lens panels and judge verdicts on a single PR or plan |
 | Remediation | `remediation-cycle` | Verifying reviewer findings, remediating confirmed ones, panel + judge gating the push |

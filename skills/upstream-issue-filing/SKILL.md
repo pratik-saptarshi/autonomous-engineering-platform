@@ -33,7 +33,7 @@ confirmed-only rule below.
 
 ## The Stages
 
-```
+```text
 Stage 0: Gate pre-flight → receipt grammar read; ruled receipts can validate
 Stage 1: Reproduce      → defect shown with positive + negative controls
 Stage 2: Target         → the repo where the defect lives is identified
@@ -110,9 +110,9 @@ file BOTH:
 
 Cite the FORK number in the receipt; the upstream number lives in the
 tracking issue's body. Precedents: PR #114 round 1 — upstream
-#296/#297/#298/#299 plus fork tracking #115–#119, gate-receipt green
+`#296/#297/#298/#299` plus fork tracking #115–#119, gate-receipt green
 ("5 marker(s), 5 receipt(s)"); round 2 — upstream #335–#338 plus fork
-#125–#127; PR #120's Codex P1 dual-filed as upstream #331 plus fork #121.
+`#125–#127`; PR #120's Codex P1 dual-filed as upstream #331 plus fork #121.
 
 ### Stage 3 — Deduplicate (a named mandatory stage)
 

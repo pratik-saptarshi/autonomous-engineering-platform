@@ -41,7 +41,7 @@ Independence is structural, not attitudinal. Four separate bodies,
 each empaneled only after the previous phase completes:
 
 | Role | Who | May not be |
-|---|---|---|
+| --- | --- | --- |
 | Investigator | One fresh agent | Anyone who wrote the code under review |
 | Coordinator + implementers (the force) | Fresh agents | The investigator |
 | Panel (review / testing-validation / evaluation) | Three fresh agents | Anyone from the force |
@@ -53,7 +53,7 @@ The controller does not vote in any body.
 
 ## The Cycle
 
-```
+```text
 Phase 0  Trigger        → reviewer findings land on a pushed head
 Phase 1  Verification   → independent investigator; verdict per finding
 Phase 2  Owner ruling   → cycle runs only on explicit authorization

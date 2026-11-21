@@ -33,7 +33,7 @@ Do NOT use for: a single PR (ordinary review suffices), findings on our own PR u
 
 ## The Programme
 
-```
+```text
 Stage 0: Pin        → inventory: every in-scope PR, head SHA, base, size
 Stage 1: Review     → one independent reviewer per PR, premise-checked
 Stage 2: Adjudicate → adversarial panel + judge per PR, fixed taxonomy
@@ -61,7 +61,7 @@ Stage 6: Re-review  → finding-by-finding on every author fix push
 - Per PR, run the `roundtable_review` machinery: an adversarial panel argues the findings and the draft verdict; a judge rules per finding (stands / falls / re-scoped) and assigns the PR's verdict from the fixed taxonomy:
 
 | Verdict | Meaning |
-|---|---|
+| --- | --- |
 | MERGE-READY | No surviving findings; nothing blocks a merge decision. |
 | MERGE WITH FIXES | Named fixes are required first; each maps to a surviving finding. |
 | DO NOT MERGE | A surviving defect or false premise disqualifies the PR as filed. |

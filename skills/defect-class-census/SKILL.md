@@ -35,7 +35,7 @@ Do NOT use for: the seed defect itself (fix or file it through its own lane), a 
 
 ## The Census
 
-```
+```text
 Stage 0: Seed       → mechanism extraction from the confirmed defect
 Stage 1: Enumerate  → the full sibling space, listed before any testing
 Stage 2: Classify   → per candidate: reproduce, trace, or refute
@@ -59,7 +59,7 @@ Stage 5: Report     → counts and evidence per class, bounded next step
 ### Stage 2 — Classify every candidate
 
 | Class | Evidence bar |
-|---|---|
+| --- | --- |
 | CONFIRMED | Reproduced against the current code with controls: the failure occurs, a control case behaves correctly, and test output or a minimal repro is recorded. |
 | PARTIALLY CONFIRMED | The mechanism is proven for part of the claimed behaviour but not all of it: e.g. the operation segfaults, but not via every claimed path. The record states exactly which part is proven and which is not. |
 | PLAUSIBLE | The pattern is real and the path is traced by reading, but no reproduction has been run (or the repro is inconclusive). |

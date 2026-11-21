@@ -37,7 +37,7 @@ verification. It does not restate their internals — invoke each as written:
 
 ## The Pipeline
 
-```
+```text
 Draft → Humanize → Factcheck → Conciseness → Mechanical rules → Post → Verify live
 ```
 
