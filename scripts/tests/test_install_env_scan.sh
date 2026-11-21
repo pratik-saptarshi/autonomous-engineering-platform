@@ -503,6 +503,54 @@ check_out "123f first call names the shadowing" 'login startup is shadowed by' "
 check_out "123f repeat call still names the shadowing" 'login startup is shadowed by' "$SB/case-123f/out2"
 check "123f no block composed" test "$(marker_count '>>>')" -eq 0
 
+note "#123g: an &&-conditional sourcing .bash_profile is recognized (PR #191 F2)"
+new_home 123g
+printf '[ -f ~/.bashrc ] && . ~/.bashrc\n' >"$FH/.bash_profile"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+run_env install_env_block
+check "123g rc 0" test "$RC" -eq 0
+check_out "123g env ok" 'INSTALL-RE: env ok' "$OUT"
+check_no_out "123g no shadowing SKIP" 'login startup is shadowed by' "$OUT"
+check "123g block written" test "$(marker_count '>>>')" -eq 1
+
+note "#123h: a single-line if sourcing .bash_profile is recognized (PR #191 F2)"
+new_home 123h
+printf 'if [ -f ~/.bashrc ]; then . ~/.bashrc; fi\n' >"$FH/.bash_profile"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+run_env install_env_block
+check "123h rc 0" test "$RC" -eq 0
+check_out "123h env ok" 'INSTALL-RE: env ok' "$OUT"
+check_no_out "123h no shadowing SKIP" 'login startup is shadowed by' "$OUT"
+check "123h block written" test "$(marker_count '>>>')" -eq 1
+
+note "#123i: the source-keyword && form is recognized (PR #191 F2)"
+new_home 123i
+printf '[ -f "$HOME/.bashrc" ] && source "$HOME/.bashrc"\n' >"$FH/.bash_profile"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+run_env install_env_block
+check "123i rc 0" test "$RC" -eq 0
+check_out "123i env ok" 'INSTALL-RE: env ok' "$OUT"
+check_no_out "123i no shadowing SKIP" 'login startup is shadowed by' "$OUT"
+check "123i block written" test "$(marker_count '>>>')" -eq 1
+
+note "#123j: a commented-out sourcing line still does not count (PR #191 F2)"
+new_home 123j
+printf '# . ~/.bashrc\n' >"$FH/.bash_profile"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+run_env install_env_block
+check "123j rc 0" test "$RC" -eq 0
+check_out "123j shadowing SKIP line" 'login startup is shadowed by' "$OUT"
+check "123j no block composed" test "$(marker_count '>>>')" -eq 0
+
+note "#123k: mentioning .bashrc without sourcing it still does not count (PR #191 F2)"
+new_home 123k
+printf '[ -f ~/.bashrc ] && echo ok\necho ". ~/.bashrc"\n' >"$FH/.bash_profile"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+run_env install_env_block
+check "123k rc 0" test "$RC" -eq 0
+check_out "123k shadowing SKIP line" 'login startup is shadowed by' "$OUT"
+check "123k no block composed" test "$(marker_count '>>>')" -eq 0
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "test_install_env_scan: ALL PASS (sandbox $SB)"

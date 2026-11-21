@@ -380,7 +380,7 @@ PROFILE_ORIGIN=""
 # NAME a shadowing state: a pre-existing profile is never modified.
 profile_sources_bashrc() {
   local -a queue=("$1") seen=()
-  local file item dup=0 line src dir
+  local file item dup=0 line src dir seg rest
   while [ "${#queue[@]}" -gt 0 ]; do
     file="${queue[0]}"
     queue=("${queue[@]:1}")
@@ -397,25 +397,53 @@ profile_sources_bashrc() {
     dir="${file%/*}"
     while IFS= read -r line || [ -n "$line" ]; do
       line="${line#"${line%%[![:space:]]*}"}"
+      # A commented-out line never counts as sourcing.
       case "$line" in
-      '.'[[:space:]]* | source[[:space:]]*)
-        read -r _ src _ <<<"$line"
-        src="${src%\"}"
-        src="${src#\"}"
-        src="${src%\'}"
-        src="${src#\'}"
-        src="${src/\$HOME/$HOME}"
-        src="${src/#\~/$HOME}"
-        case "$src" in
-        /*) ;;
-        *) src="$dir/$src" ;;
-        esac
-        case "$src" in
-        "$HOME/.bashrc") return 0 ;;
-        *) queue+=("$src") ;;
-        esac
-        ;;
+      '#'*) continue ;;
       esac
+      # A source command counts at the start of the line or in a later
+      # command segment of it: `[ -f ~/.bashrc ] && . ~/.bashrc`, the
+      # single-line `if ...; then . ~/.bashrc; fi`, and the plain forms
+      # all reduce to the segment carrying the source command, which the
+      # parse below then sees in one grammar. Segments that merely
+      # mention .bashrc (a `[ -f ... ]` test, an echo) never match,
+      # because only a segment whose first token is `.` or `source` is
+      # parsed.
+      rest="${line//&&/;}"
+      while [ -n "$rest" ]; do
+        seg="${rest%%;*}"
+        if [ "$seg" = "$rest" ]; then
+          rest=""
+        else
+          rest="${rest#*;}"
+        fi
+        seg="${seg#"${seg%%[![:space:]]*}"}"
+        case "$seg" in
+        'then'[[:space:]]*)
+          seg="${seg#then}"
+          seg="${seg#"${seg%%[![:space:]]*}"}"
+          ;;
+        esac
+        case "$seg" in
+        '.'[[:space:]]* | source[[:space:]]*)
+          read -r _ src _ <<<"$seg"
+          src="${src%\"}"
+          src="${src#\"}"
+          src="${src%\'}"
+          src="${src#\'}"
+          src="${src/\$HOME/$HOME}"
+          src="${src/#\~/$HOME}"
+          case "$src" in
+          /*) ;;
+          *) src="$dir/$src" ;;
+          esac
+          case "$src" in
+          "$HOME/.bashrc") return 0 ;;
+          *) queue+=("$src") ;;
+          esac
+          ;;
+        esac
+      done
     done <"$file"
   done
   return 1
