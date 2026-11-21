@@ -495,8 +495,8 @@ normalize_path_components() {
 # following chains of sourced files with a cycle guard. Used only to
 # NAME a shadowing state: a pre-existing profile is never modified.
 profile_sources_bashrc() {
-  local -a queue=("$1") seen=()
-  local file item dup=0 line src seg rest wtxt wch wi wsq wdq
+  local -a queue=("$1") seen=() segs=()
+  local file item dup=0 line src seg si ssq sdq sch wtxt wch wi wsq wdq
   while [ "${#queue[@]}" -gt 0 ]; do
     file="${queue[0]}"
     queue=("${queue[@]:1}")
@@ -520,18 +520,53 @@ profile_sources_bashrc() {
       # command segment of it: `[ -f ~/.bashrc ] && . ~/.bashrc`, the
       # single-line `if ...; then . ~/.bashrc; fi`, and the plain forms
       # all reduce to the segment carrying the source command, which the
-      # parse below then sees in one grammar. Segments that merely
-      # mention .bashrc (a `[ -f ... ]` test, an echo) never match,
-      # because only a segment whose first token is `.` or `source` is
-      # parsed.
-      rest="${line//&&/;}"
-      while [ -n "$rest" ]; do
-        seg="${rest%%;*}"
-        if [ "$seg" = "$rest" ]; then
-          rest=""
+      # parse below then sees in one grammar. The split is quote-aware:
+      # a `;` or `&&` inside quotes or after a backslash is filename
+      # data (`. "$HOME/log;in setup"`), not a segment boundary.
+      # Segments that merely mention .bashrc (a `[ -f ... ]` test, an
+      # echo) never match, because only a segment whose first token is
+      # `.` or `source` is parsed.
+      segs=()
+      seg="" si=0 ssq=0 sdq=0
+      while [ "$si" -lt "${#line}" ]; do
+        sch="${line:si:1}"
+        if [ "$ssq" -eq 1 ]; then
+          seg+="$sch"
+          if [ "$sch" = "'" ]; then
+            ssq=0
+          fi
+        elif [ "$sdq" -eq 1 ]; then
+          seg+="$sch"
+          if [ "$sch" = "\\" ]; then
+            si=$((si + 1))
+            seg+="${line:si:1}"
+          elif [ "$sch" = '"' ]; then
+            sdq=0
+          fi
+        elif [ "$sch" = "'" ]; then
+          ssq=1
+          seg+="$sch"
+        elif [ "$sch" = '"' ]; then
+          sdq=1
+          seg+="$sch"
+        elif [ "$sch" = "\\" ]; then
+          seg+="$sch"
+          si=$((si + 1))
+          seg+="${line:si:1}"
+        elif [ "$sch" = ";" ]; then
+          segs+=("$seg")
+          seg=""
+        elif [ "$sch" = "&" ] && [ "${line:si+1:1}" = "&" ]; then
+          segs+=("$seg")
+          seg=""
+          si=$((si + 1))
         else
-          rest="${rest#*;}"
+          seg+="$sch"
         fi
+        si=$((si + 1))
+      done
+      segs+=("$seg")
+      for seg in "${segs[@]}"; do
         seg="${seg#"${seg%%[![:space:]]*}"}"
         case "$seg" in
         'then'[[:space:]]*)

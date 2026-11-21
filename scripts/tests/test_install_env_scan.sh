@@ -841,6 +841,39 @@ check "R5T1c rc 0" test "$RC" -eq 0
 check_out "R5T1c shadowing SKIP line" 'login startup is shadowed by' "$OUT"
 check "R5T1c no block composed" test "$(marker_count '>>>')" -eq 0
 
+note "PR191-R5N4a: a quoted semicolon inside a source filename is data, not a segment separator (PR #191 R3, census N4)"
+new_home r5n4a
+printf '. "$HOME/log;in setup"\n' >"$FH/.bash_profile"
+printf '. "$HOME/.bashrc"\n' >"$FH/log;in setup"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+run_env install_env_block
+check "R5N4a rc 0" test "$RC" -eq 0
+check_out "R5N4a env ok" 'INSTALL-RE: env ok' "$OUT"
+check_no_out "R5N4a no shadowing SKIP" 'login startup is shadowed by' "$OUT"
+check "R5N4a block written" test "$(marker_count '>>>')" -eq 1
+
+note "PR191-R5N4b: a quoted && inside a source filename is data, not a segment separator"
+new_home r5n4b
+printf '. "$HOME/a&&b"\n' >"$FH/.bash_profile"
+printf '. "$HOME/.bashrc"\n' >"$FH/a&&b"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+run_env install_env_block
+check "R5N4b rc 0" test "$RC" -eq 0
+check_out "R5N4b env ok" 'INSTALL-RE: env ok' "$OUT"
+check_no_out "R5N4b no shadowing SKIP" 'login startup is shadowed by' "$OUT"
+check "R5N4b block written" test "$(marker_count '>>>')" -eq 1
+
+note "PR191-R5N4c: a backslash-escaped semicolon in a source filename is data, not a segment separator"
+new_home r5n4c
+printf '. $HOME/a\\;b\n' >"$FH/.bash_profile"
+printf '. "$HOME/.bashrc"\n' >"$FH/a;b"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+run_env install_env_block
+check "R5N4c rc 0" test "$RC" -eq 0
+check_out "R5N4c env ok" 'INSTALL-RE: env ok' "$OUT"
+check_no_out "R5N4c no shadowing SKIP" 'login startup is shadowed by' "$OUT"
+check "R5N4c block written" test "$(marker_count '>>>')" -eq 1
+
 note "PR191-R5T1d: a slash-less source name in a chained file resolves against the working directory"
 new_home r5t1d
 mkdir -p "$FH/.config/bash"
