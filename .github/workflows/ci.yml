@@ -67,6 +67,7 @@ jobs:
       - run: bash ops/tests/test_watchdog_ops.sh
       - run: bash scripts/install-re-runtime.sh --self-test --offline
       - run: bash scripts/tests/test_install_re_runtime.sh
+      - run: bash scripts/tests/test_install_env_scan.sh
 
   go-checks:
     runs-on: ubuntu-latest
