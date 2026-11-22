@@ -1283,6 +1283,60 @@ run_env install_env_block
 check "S2a second run rc 0" test "$RC" -eq 0
 check "S2a fixed point" test "$(file_sha "$FH/.bashrc")" = "$SHA"
 
+# ================= PR #201 round 3: parenthesized case patterns =================
+# Round-3 independent review of the head-opens walk found its pattern
+# state counted every `(` as nesting depth, so a parenthesized
+# pattern's own terminating `)` was consumed as a depth decrement and
+# the state never flipped to the arm body. Compounds in the arm body
+# became invisible: a self-contained arm-body `if`'s trailing `fi`
+# then popped an OUTER frame (the K2 desync direction). In valid bash
+# a pattern's parens are only the optional leading `(`, an extglob
+# group whose `)` is the pattern terminator, or substitution parens —
+# so only a `$(` opens tracked nesting in pattern state; any other
+# `)` ends the pattern.
+
+note "PANEL-K2R3: unit-level closer grammar (a parenthesized pattern ends at its own close paren)"
+check "K2R3 leading-paren pattern arm-body if does not pop an outer fi" closer_stuck 'case x in (x) if b; then :; fi' 'fi'
+check "K2R3 leading-paren alternation arm-body if does not pop an outer fi" closer_stuck 'case x in (a|b) if b; then :; fi' 'fi'
+check "K2R3 star-extglob pattern arm-body if does not pop an outer fi" closer_stuck 'case x in *(a|b) if b; then :; fi' 'fi'
+check "K2R3 at-extglob pattern arm-body if does not pop an outer fi" closer_stuck 'case x in @(a|b) if b; then :; fi' 'fi'
+check "K2R3 plus-extglob pattern arm-body if does not pop an outer fi" closer_stuck 'case x in +(a|b) if b; then :; fi' 'fi'
+check "K2R3 bang-extglob pattern arm-body if does not pop an outer fi" closer_stuck 'case x in !(a|b) if b; then :; fi' 'fi'
+check "K2R3 plain alternation arm-body if does not pop an outer fi (control)" closer_stuck 'case x in a|b) if b; then :; fi' 'fi'
+check "K2R3 substitution pattern arm-body if does not pop an outer fi (control)" closer_stuck 'case x in $(echo a|b)) if b; then :; fi' 'fi'
+check "K2R3 arithmetic pattern arm-body if does not pop an outer fi (control)" closer_stuck 'case x in $((1+2))) if b; then :; fi' 'fi'
+check "K2R3 subshell-in-substitution pattern arm-body if does not pop an outer fi (control)" closer_stuck 'case x in $( (echo hi) )) if b; then :; fi' 'fi'
+check "K2R3 pattern-only extglob line still lets the tail fi pop (control)" closer_pops 'case x in *(a|b) :;; esac; fi' 'fi'
+
+note "PANEL-K2R3a: a parenthesized-pattern arm-body compound inside a false conditional does not strand the block"
+new_home k2r3a
+cat >"$FH/.bashrc" <<'EOF'
+if [ -f /etc/some-nonexistent-file ]; then
+  case x in (y) if true; then :; fi
+  esac
+  case $- in
+    *i*) ;;
+    *) return;;
+  esac
+fi
+echo AFTER
+EOF
+run_env install_env_block
+check "K2R3a rc 0" test "$RC" -eq 0
+check_out "K2R3a env ok" 'INSTALL-RE: env ok' "$OUT"
+BLOCK_LINE="$(line_of '# >>> re-runtime >>>')"
+OUTER_FI_LINE="$(grep -nxF 'fi' "$FH/.bashrc" | head -1 | cut -d: -f1)"
+check "K2R3a block after the outer conditional" test "$BLOCK_LINE" -gt "$OUTER_FI_LINE"
+NI_OUT="$(env -i HOME="$FH" /bin/bash -c '. "$HOME/.bashrc"; printf "JAVA=%s" "${JAVA_HOME:-<unset>}"' 2>/dev/null)"
+check "K2R3a block reachable in a noninteractive source" test "${NI_OUT##*JAVA=}" = "$FH/opt/jdk-$TEMURIN_VERSION"
+check "K2R3a trailing content still executes" test "${NI_OUT#*AFTER}" != "$NI_OUT"
+LOGIN_OUT="$(env -i HOME="$FH" /bin/bash -lc 'printf "JAVA=%s" "${JAVA_HOME:-<unset>}"' 2>/dev/null)"
+check "K2R3a block reachable in a login shell" test "${LOGIN_OUT##*JAVA=}" = "$FH/opt/jdk-$TEMURIN_VERSION"
+SHA="$(file_sha "$FH/.bashrc")"
+run_env install_env_block
+check "K2R3a second run rc 0" test "$RC" -eq 0
+check "K2R3a fixed point" test "$(file_sha "$FH/.bashrc")" = "$SHA"
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "test_install_env_scan: ALL PASS (sandbox $SB)"

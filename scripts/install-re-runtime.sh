@@ -1046,7 +1046,10 @@ ctrl_opener_closer() {
 #     pattern state is tracked for all three closers: a keyword
 #     spelled like a pattern is data in any walk, and the arm body
 #     after the pattern's `)` is a command position again, so an
-#     `if` opening a case arm counts in the fi walk too.
+#     `if` opening a case arm counts in the fi walk too. Inside a
+#     pattern only substitution parens open tracked nesting — the
+#     optional leading `(` and an extglob group's `(` are closed by
+#     the pattern's own terminating `)`.
 #   }: every `{` where a command or function body can start counts
 #     (function bodies and brace groups alike), and a `}` token in
 #     the same positions closes the innermost one.
@@ -1162,7 +1165,7 @@ ctrl_head_opens_unclosed() {
   # head opens and leaves open; pending counts `if` / `case` openers
   # still awaiting their `then` / `in`. cstate/cpdepth track, per
   # open case, whether the walk is in its pattern list (p) or an arm
-  # body (b), and the paren depth inside a pattern.
+  # body (b), and the command-substitution depth inside a pattern.
   local -a cstate=() cpdepth=()
   local depth=0 pending=0 cpending=0 elif_pending=0 func_ctx=0 cmdpos=1 bracepos=0 popstate=0
   local tok nxt prev="" k top
@@ -1178,9 +1181,23 @@ ctrl_head_opens_unclosed() {
         # state is tracked for every closer, not just esac: a
         # keyword spelled like a pattern is data, and the arm body
         # after the pattern's `)` is a command position again.
+        # A pattern's own parens open no tracked nesting: the
+        # optional leading `(` and an extglob group's `(` are closed
+        # by the pattern's terminating `)`. Only substitution parens
+        # open a depth the walk counts, because a substitution's `)`
+        # is internal to the pattern — any other `)` ends it.
         case "$tok" in
-        "\$(" | '(')
+        "\$(")
           cpdepth[top]=$((cpdepth[top] + 1))
+          ;;
+        '(')
+          # A `(` inside a substitution nests — a subshell, or the
+          # second paren of an arithmetic `$((` — and its `)` closes
+          # the substitution, not the pattern. At the pattern's own
+          # level the token falls through uncounted (see above).
+          if [ "${cpdepth[top]}" -gt 0 ]; then
+            cpdepth[top]=$((cpdepth[top] + 1))
+          fi
           ;;
         ')')
           if [ "${cpdepth[top]}" -gt 0 ]; then
