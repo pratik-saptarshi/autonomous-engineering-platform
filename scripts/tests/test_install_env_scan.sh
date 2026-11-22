@@ -998,6 +998,49 @@ run_env install_env_block
 check "R6B1 second run rc 0" test "$RC" -eq 0
 check "R6B1 fixed point" test "$(file_sha "$FH/.bashrc")" = "$SHA"
 
+# ================= Panel K2: one-line compound inside an outer frame =================
+# Adversarial-panel finding K2 (PR #191 follow-up): ctrl_closer_line's
+# tail-split popped an OUTER frame for a self-contained one-line
+# compound (`if true; then :; fi`) that ctrl_opener_closer never
+# opened, desyncing the struct stack so a guard nested inside a false
+# conditional read as top-level and the block stranded inside it.
+
+note "PANEL-K2: unit-level closer grammar (a self-contained one-line compound does not pop an outer frame)"
+check "K2 one-line if does not pop an outer fi" closer_stuck 'if true; then :; fi' 'fi'
+check "K2 one-line case does not pop an outer esac" closer_stuck 'case x in x) :;; esac' 'esac'
+check "K2 one-line function does not pop an outer }" closer_stuck 'myhelper() { :; }' '}'
+check "K2 one-line function (keyword form) does not pop an outer }" closer_stuck 'function myhelper { :; }' '}'
+check "K2 closer after a plain command still pops" closer_pops ':; fi' 'fi'
+check "K2 balanced compound plus a further closer still pops" closer_pops 'if true; then :; fi; fi' 'fi'
+
+note "PANEL-K2a: a one-line compound inside a false conditional does not strand the block"
+new_home k2a
+cat >"$FH/.bashrc" <<'EOF'
+if [ -f /etc/some-nonexistent-file ]; then
+  if true; then :; fi
+  case $- in
+    *i*) ;;
+    *) return;;
+  esac
+fi
+echo AFTER
+EOF
+run_env install_env_block
+check "K2a rc 0" test "$RC" -eq 0
+check_out "K2a env ok" 'INSTALL-RE: env ok' "$OUT"
+BLOCK_LINE="$(line_of '# >>> re-runtime >>>')"
+OUTER_FI_LINE="$(grep -nxF 'fi' "$FH/.bashrc" | head -1 | cut -d: -f1)"
+check "K2a block after the outer conditional" test "$BLOCK_LINE" -gt "$OUTER_FI_LINE"
+NI_OUT="$(env -i HOME="$FH" /bin/bash -c '. "$HOME/.bashrc"; printf "JAVA=%s" "${JAVA_HOME:-<unset>}"' 2>/dev/null)"
+check "K2a block reachable in a noninteractive source" test "${NI_OUT##*JAVA=}" = "$FH/opt/jdk-$TEMURIN_VERSION"
+check "K2a trailing content still executes" test "${NI_OUT#*AFTER}" != "$NI_OUT"
+LOGIN_OUT="$(env -i HOME="$FH" /bin/bash -lc 'printf "JAVA=%s" "${JAVA_HOME:-<unset>}"' 2>/dev/null)"
+check "K2a block reachable in a login shell" test "${LOGIN_OUT##*JAVA=}" = "$FH/opt/jdk-$TEMURIN_VERSION"
+SHA="$(file_sha "$FH/.bashrc")"
+run_env install_env_block
+check "K2a second run rc 0" test "$RC" -eq 0
+check "K2a fixed point" test "$(file_sha "$FH/.bashrc")" = "$SHA"
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "test_install_env_scan: ALL PASS (sandbox $SB)"

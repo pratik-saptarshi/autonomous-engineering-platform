@@ -1003,6 +1003,62 @@ ctrl_opener_closer() {
   return 1
 }
 
+# True when $1 — the part of a line before its final `;` segment —
+# opens the construct closed by $2 and does not close it again on the
+# same line. The trailing closer of such a line belongs to the opener
+# on the same line (a self-contained one-line compound such as
+# `if true; then :; fi`), not to a frame opened earlier: letting the
+# tail-split in ctrl_closer_line pop an earlier frame for it desyncs
+# the struct stack, so a guard nested after the compound reads as
+# top-level and the block strands inside the compound's enclosing
+# frame (panel finding K2). The opener shapes mirror
+# ctrl_opener_closer, except the match may start after a `;` and the
+# line need not end at the opener.
+ctrl_head_opens_unclosed() {
+  local head="$1" rest="" seg
+  case "$2" in
+  fi)
+    [[ "$head" =~ (^|.*\;)[[:space:]]*if[[:space:]]+.*[[:space:]]then(.*)$ ]] || return 1
+    rest="${BASH_REMATCH[2]}"
+    ;;
+  'esac')
+    [[ "$head" =~ (^|.*\;)[[:space:]]*case[[:space:]]+.*[[:space:]]in(.*)$ ]] || return 1
+    rest="${BASH_REMATCH[2]}"
+    ;;
+  '}')
+    if [[ "$head" =~ (^|.*\;)[[:space:]]*function[[:space:]]+[A-Za-z_][A-Za-z0-9_]*([[:space:]]*\([[:space:]]*\))?[[:space:]]*\{(.*)$ ]]; then
+      rest="${BASH_REMATCH[3]}"
+    elif [[ "$head" =~ (^|.*\;)[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\([[:space:]]*\)[[:space:]]*\{(.*)$ ]]; then
+      rest="${BASH_REMATCH[2]}"
+    else
+      return 1
+    fi
+    ;;
+  *)
+    return 1
+    ;;
+  esac
+  # A closer segment after the opener closes the same-line construct
+  # again; a trailing closer is then a further closer, not this
+  # opener's, and may pop an earlier frame as before.
+  while [ -n "$rest" ]; do
+    case "$rest" in
+    *';'*)
+      seg="${rest%%';'*}"
+      rest="${rest#*';'}"
+      ;;
+    *)
+      seg="$rest"
+      rest=""
+      ;;
+    esac
+    seg="${seg#"${seg%%[![:space:]]*}"}"
+    seg="${seg%"${seg##*[![:space:]]}"}"
+    [ "$seg" = "$2" ] && return 1
+  done
+  return 0
+}
+
 # True when $1 is the closer named by $2 (optionally followed by `;`),
 # either at the start of the line or as the command after the line's
 # last `;` separator (`:; }` ends a one-line function body just as a
@@ -1013,6 +1069,11 @@ ctrl_opener_closer() {
 # quote-blind cut this replaces lost a closer that followed a quoted
 # `#` on the same line (the bridge Finding A mechanism at this site;
 # pre-existing here — the opener strip was copied from this one).
+# The tail-split form is refused when the same line opens the
+# construct it closes without closing it again first
+# (ctrl_head_opens_unclosed): that closer is the same-line opener's
+# own, and popping an earlier frame for it desyncs the struct stack
+# (panel finding K2).
 ctrl_closer_line() {
   local s tail
   s="$(strip_trailing_comment "$1")"
@@ -1024,7 +1085,10 @@ ctrl_closer_line() {
     tail="${s##*';'}"
     tail="${tail#"${tail%%[![:space:]]*}"}"
     case "$tail" in
-    "$2" | "$2;"* | "$2;;"*) return 0 ;;
+    "$2" | "$2;"* | "$2;;"*)
+      ctrl_head_opens_unclosed "${s%';'*}" "$2" && return 1
+      return 0
+      ;;
     esac
     ;;
   esac
