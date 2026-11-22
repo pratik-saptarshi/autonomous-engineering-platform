@@ -1,0 +1,5 @@
+name: "stacked-pr-restack"
+title: "Stacked PR Restack"
+description: "Rebuild a reviewed PR branch onto a moved base carrying exactly the reviewed residual: capture the three-dot diff first, rebuild as a single commit on the new base, prove the new diff byte-identical to the reviewed residual, push force-with-lease behind a head tripwire, and disclose the restack on the PR. Use when a branch's base has advanced (its parent PR merged, the stack shifted) and the branch must be re-based without re-reviewing content nobody changed."
+category: "Work and knowledge"
+include_in_prompt: true
