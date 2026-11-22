@@ -943,10 +943,12 @@ strip_trailing_comment() {
     case "$ch" in
     "'")
       sq=1
+      out+="$ch"
       wstart=0
       ;;
     '"')
       dq=1
+      out+="$ch"
       wstart=0
       ;;
     '#')
@@ -996,7 +998,7 @@ ctrl_opener_closer() {
     printf 'esac'
     return 0
   fi
-  if [[ "$s" =~ ^if[[:space:]]+.*[[:space:]]then([[:space:]]*;.*)?$ ]]; then
+  if [[ "$s" =~ ^if[[:space:]]+.*([[:space:]]|\;)then([[:space:]]*;.*)?$ ]]; then
     printf 'fi'
     return 0
   fi
@@ -1014,12 +1016,63 @@ ctrl_opener_closer() {
 # frame (panel finding K2). The opener shapes mirror
 # ctrl_opener_closer, except the match may start after a `;` and the
 # line need not end at the opener.
+#
+# The head is masked before matching, with the same quote scan as
+# strip_trailing_comment: every character inside single or double
+# quotes, the quote delimiters, and every backslash-escaped character
+# becomes `x`. Quoted text is data, not grammar — an `if ... then`
+# inside a quoted string mints no opener, and a quoted `;fi;` is not
+# a segment boundary, so the re-close scan below (which splits the
+# remainder on `;`) only ever sees unquoted separators.
+#
+# The `then` of the fi shape may be glued to the preceding `;`
+# (`if true;then :;fi`): bash needs no whitespace there, and
+# ctrl_opener_closer's if shape accepts the same glued form, so the
+# two models agree on which lines open an if.
 ctrl_head_opens_unclosed() {
-  local head="$1" rest="" seg
+  local head="" rest="" seg
+  local raw="$1" ch i sq=0 dq=0
+  for ((i = 0; i < ${#raw}; i++)); do
+    ch="${raw:i:1}"
+    if [ "$sq" -eq 1 ]; then
+      head+=x
+      [ "$ch" = "'" ] && sq=0
+      continue
+    fi
+    if [ "$ch" = "\\" ]; then
+      # An escape consumes the next character, inside double quotes
+      # and out (inside single quotes it never reaches here): the
+      # escaped character is literal, never a quote or a separator.
+      head+="$ch"
+      if [ $((i + 1)) -lt ${#raw} ]; then
+        head+=x
+        i=$((i + 1))
+      fi
+      continue
+    fi
+    if [ "$dq" -eq 1 ]; then
+      head+=x
+      [ "$ch" = '"' ] && dq=0
+      continue
+    fi
+    case "$ch" in
+    "'")
+      sq=1
+      head+=x
+      ;;
+    '"')
+      dq=1
+      head+=x
+      ;;
+    *)
+      head+="$ch"
+      ;;
+    esac
+  done
   case "$2" in
   fi)
-    [[ "$head" =~ (^|.*\;)[[:space:]]*if[[:space:]]+.*[[:space:]]then(.*)$ ]] || return 1
-    rest="${BASH_REMATCH[2]}"
+    [[ "$head" =~ (^|.*\;)[[:space:]]*if[[:space:]]+.*([[:space:]]|\;)then(.*)$ ]] || return 1
+    rest="${BASH_REMATCH[3]}"
     ;;
   'esac')
     [[ "$head" =~ (^|.*\;)[[:space:]]*case[[:space:]]+.*[[:space:]]in(.*)$ ]] || return 1

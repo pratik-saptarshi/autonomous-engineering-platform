@@ -1041,6 +1041,135 @@ run_env install_env_block
 check "K2a second run rc 0" test "$RC" -eq 0
 check "K2a fixed point" test "$(file_sha "$FH/.bashrc")" = "$SHA"
 
+# ================= Panel K2 round 2: glued then, quoted separators, quoted openers =================
+# Independent review of the K2 fix found three residuals in the new
+# head-opens check: bash accepts `;then`/`;fi` with no whitespace (the
+# opener shapes required a space before `then`); the re-close segment
+# scan split on `;` quote-blindly, so a quoted `;fi;` re-closed the
+# same-line if; and the head scan was quote-blind, so an `if ... then`
+# inside a quoted string minted an opener and refused a genuine pop.
+
+note "PANEL-K2R2: unit-level closer grammar (glued then, quoted separators, quoted openers)"
+check "K2R2-F1 glued one-line if does not pop an outer fi" closer_stuck 'if true;then :;fi' 'fi'
+check "K2R2-F1 glued then opens fi" opener_eq 'if [ -f \"$HOME/.optional\" ];then' 'fi'
+check "K2R2-F1 bare glued then opens fi" opener_eq 'if true;then' 'fi'
+check "K2R2-F2 quoted ;fi; does not re-close the same-line if" closer_stuck 'if true; then echo "a;fi;b"; fi' 'fi'
+check "K2R2-F2 single-quoted ;fi; does not re-close the same-line if" closer_stuck "if true; then echo 'a;fi;b'; fi" 'fi'
+check "K2R2-F2 balanced compound plus a further closer still pops" closer_pops 'if true; then echo "done"; fi; fi' 'fi'
+check "K2R2-F3 quoted if...then mints no opener; the closer pops" closer_pops 'echo "; if x; then y"; fi' 'fi'
+check "K2R2-F3 single-quoted if...then mints no opener; the closer pops" closer_pops "echo '; if x; then y'; fi" 'fi'
+check "K2R2-F3 escaped quotes are literal; the same-line if still owns its fi" closer_stuck 'echo \"; if x; then y\"; fi' 'fi'
+
+note "PANEL-K2b: a glued one-line compound inside a false conditional does not strand the block"
+new_home k2b
+cat >"$FH/.bashrc" <<'EOF'
+if [ -f /etc/some-nonexistent-file ]; then
+  if true;then :;fi
+  case $- in
+    *i*) ;;
+    *) return;;
+  esac
+fi
+echo AFTER
+EOF
+run_env install_env_block
+check "K2b rc 0" test "$RC" -eq 0
+check_out "K2b env ok" 'INSTALL-RE: env ok' "$OUT"
+BLOCK_LINE="$(line_of '# >>> re-runtime >>>')"
+OUTER_FI_LINE="$(grep -nxF 'fi' "$FH/.bashrc" | head -1 | cut -d: -f1)"
+check "K2b block after the outer conditional" test "$BLOCK_LINE" -gt "$OUTER_FI_LINE"
+NI_OUT="$(env -i HOME="$FH" /bin/bash -c '. "$HOME/.bashrc"; printf "JAVA=%s" "${JAVA_HOME:-<unset>}"' 2>/dev/null)"
+check "K2b block reachable in a noninteractive source" test "${NI_OUT##*JAVA=}" = "$FH/opt/jdk-$TEMURIN_VERSION"
+check "K2b trailing content still executes" test "${NI_OUT#*AFTER}" != "$NI_OUT"
+LOGIN_OUT="$(env -i HOME="$FH" /bin/bash -lc 'printf "JAVA=%s" "${JAVA_HOME:-<unset>}"' 2>/dev/null)"
+check "K2b block reachable in a login shell" test "${LOGIN_OUT##*JAVA=}" = "$FH/opt/jdk-$TEMURIN_VERSION"
+SHA="$(file_sha "$FH/.bashrc")"
+run_env install_env_block
+check "K2b second run rc 0" test "$RC" -eq 0
+check "K2b fixed point" test "$(file_sha "$FH/.bashrc")" = "$SHA"
+
+note "PANEL-K2c: a quoted ;fi; inside a one-line compound does not strand the block"
+new_home k2c
+cat >"$FH/.bashrc" <<'EOF'
+if [ -f /etc/some-nonexistent-file ]; then
+  if true; then echo "a;fi;b"; fi
+  case $- in
+    *i*) ;;
+    *) return;;
+  esac
+fi
+echo AFTER
+EOF
+run_env install_env_block
+check "K2c rc 0" test "$RC" -eq 0
+check_out "K2c env ok" 'INSTALL-RE: env ok' "$OUT"
+BLOCK_LINE="$(line_of '# >>> re-runtime >>>')"
+OUTER_FI_LINE="$(grep -nxF 'fi' "$FH/.bashrc" | head -1 | cut -d: -f1)"
+check "K2c block after the outer conditional" test "$BLOCK_LINE" -gt "$OUTER_FI_LINE"
+NI_OUT="$(env -i HOME="$FH" /bin/bash -c '. "$HOME/.bashrc"; printf "JAVA=%s" "${JAVA_HOME:-<unset>}"' 2>/dev/null)"
+check "K2c block reachable in a noninteractive source" test "${NI_OUT##*JAVA=}" = "$FH/opt/jdk-$TEMURIN_VERSION"
+check "K2c trailing content still executes" test "${NI_OUT#*AFTER}" != "$NI_OUT"
+LOGIN_OUT="$(env -i HOME="$FH" /bin/bash -lc 'printf "JAVA=%s" "${JAVA_HOME:-<unset>}"' 2>/dev/null)"
+check "K2c block reachable in a login shell" test "${LOGIN_OUT##*JAVA=}" = "$FH/opt/jdk-$TEMURIN_VERSION"
+SHA="$(file_sha "$FH/.bashrc")"
+run_env install_env_block
+check "K2c second run rc 0" test "$RC" -eq 0
+check "K2c fixed point" test "$(file_sha "$FH/.bashrc")" = "$SHA"
+
+note "PANEL-K2d: a quoted if...then on the closing line does not strand the block after the guard"
+new_home k2d
+cat >"$FH/.bashrc" <<'EOF'
+if [ -f /etc/some-nonexistent-file ]; then
+  echo starting
+  echo "; if x; then y"; fi
+case $- in
+  *i*) ;;
+  *) return;;
+esac
+export AFTER=1
+EOF
+run_env install_env_block
+check "K2d rc 0" test "$RC" -eq 0
+check_out "K2d env ok" 'INSTALL-RE: env ok' "$OUT"
+BLOCK_LINE="$(line_of '# >>> re-runtime >>>')"
+GUARD_LINE="$(line_of 'case $- in')"
+check "K2d block before the guard" test "$BLOCK_LINE" -lt "$GUARD_LINE"
+NI_OUT="$(env -i HOME="$FH" /bin/bash -c '. "$HOME/.bashrc"; printf "JAVA=%s" "${JAVA_HOME:-<unset>}"' 2>/dev/null)"
+check "K2d block reachable in a noninteractive source" test "${NI_OUT##*JAVA=}" = "$FH/opt/jdk-$TEMURIN_VERSION"
+LOGIN_OUT="$(env -i HOME="$FH" /bin/bash -lc 'printf "JAVA=%s" "${JAVA_HOME:-<unset>}"' 2>/dev/null)"
+check "K2d block reachable in a login shell" test "${LOGIN_OUT##*JAVA=}" = "$FH/opt/jdk-$TEMURIN_VERSION"
+SHA="$(file_sha "$FH/.bashrc")"
+run_env install_env_block
+check "K2d second run rc 0" test "$RC" -eq 0
+check "K2d fixed point" test "$(file_sha "$FH/.bashrc")" = "$SHA"
+
+note "PANEL-K2e: a glued outer opener still nests the guard"
+new_home k2e
+cat >"$FH/.bashrc" <<'EOF'
+if [ -f /etc/some-nonexistent-file ];then
+  case $- in
+    *i*) ;;
+    *) return;;
+  esac
+fi
+echo AFTER
+EOF
+run_env install_env_block
+check "K2e rc 0" test "$RC" -eq 0
+check_out "K2e env ok" 'INSTALL-RE: env ok' "$OUT"
+BLOCK_LINE="$(line_of '# >>> re-runtime >>>')"
+OUTER_FI_LINE="$(grep -nxF 'fi' "$FH/.bashrc" | head -1 | cut -d: -f1)"
+check "K2e block after the outer conditional" test "$BLOCK_LINE" -gt "$OUTER_FI_LINE"
+NI_OUT="$(env -i HOME="$FH" /bin/bash -c '. "$HOME/.bashrc"; printf "JAVA=%s" "${JAVA_HOME:-<unset>}"' 2>/dev/null)"
+check "K2e block reachable in a noninteractive source" test "${NI_OUT##*JAVA=}" = "$FH/opt/jdk-$TEMURIN_VERSION"
+check "K2e trailing content still executes" test "${NI_OUT#*AFTER}" != "$NI_OUT"
+LOGIN_OUT="$(env -i HOME="$FH" /bin/bash -lc 'printf "JAVA=%s" "${JAVA_HOME:-<unset>}"' 2>/dev/null)"
+check "K2e block reachable in a login shell" test "${LOGIN_OUT##*JAVA=}" = "$FH/opt/jdk-$TEMURIN_VERSION"
+SHA="$(file_sha "$FH/.bashrc")"
+run_env install_env_block
+check "K2e second run rc 0" test "$RC" -eq 0
+check "K2e fixed point" test "$(file_sha "$FH/.bashrc")" = "$SHA"
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "test_install_env_scan: ALL PASS (sandbox $SB)"
