@@ -1022,15 +1022,43 @@ ctrl_opener_closer() {
 # quotes, the quote delimiters, and every backslash-escaped character
 # becomes `x`. Quoted text is data, not grammar — an `if ... then`
 # inside a quoted string mints no opener, and a quoted `;fi;` is not
-# a segment boundary, so the re-close scan below (which splits the
-# remainder on `;`) only ever sees unquoted separators.
+# a segment boundary, so the walk below only ever sees unquoted
+# separators. (Glued forms need no special case here: `;then` and
+# `;fi` tokenize as a `;` token and a keyword word.)
 #
-# The `then` of the fi shape may be glued to the preceding `;`
-# (`if true;then :;fi`): bash needs no whitespace there, and
-# ctrl_opener_closer's if shape accepts the same glued form, so the
-# two models agree on which lines open an if.
+# The masked head is then walked as a token stream — words, and the
+# separators `;`, `;;`, `&&`, `||`, `&`, `|`, `$(`, `(`, `)` as
+# tokens of their own — counting the constructs $2 closes that open
+# at a command position (the head start, or right after a separator,
+# `$(`, `(`, or a `then` / `else` / `do` keyword) and are not closed
+# again before the head ends:
+#   fi: an `if` counts once its `then` arrives; a nested `if` counts
+#     separately, so its `fi` is not the outer one's re-close. `elif`
+#     shares the frame — its `then` completes nothing. A `fi` token
+#     closes the innermost open `if`, including one glued to a `)`:
+#     the `fi)` ending a compound inside a command substitution is
+#     that compound's closer, so a head whose `if`s all close inside
+#     it leaves the tail `fi` free to pop an earlier frame.
+#   esac: a `case` counts once its `in` arrives. Between `in` (or
+#     `;;`) and the pattern's `)` the words are pattern text, not
+#     commands — except a bare `esac`, which is the closer even
+#     there (bash never accepts `esac` as a pattern word). The
+#     pattern state is tracked for all three closers: a keyword
+#     spelled like a pattern is data in any walk, and the arm body
+#     after the pattern's `)` is a command position again, so an
+#     `if` opening a case arm counts in the fi walk too.
+#   }: every `{` where a command or function body can start counts
+#     (function bodies and brace groups alike), and a `}` token in
+#     the same positions closes the innermost one.
+# A single regex over the head cannot express this: the regex model
+# this replaces matched one opener — at the head start or after a
+# `;` only — and counted any later bare closer segment as that
+# opener's re-close, so a nested same-type compound (S1), a compound
+# inside a command substitution closed by `fi)` / `esac)` (S2), and
+# a compound after `&&` / `||` (S3) each desynced the caller's stack
+# in one direction or the other (Sourcery review, PR #201).
 ctrl_head_opens_unclosed() {
-  local head="" rest="" seg
+  local head=""
   local raw="$1" ch i sq=0 dq=0
   for ((i = 0; i < ${#raw}; i++)); do
     ch="${raw:i:1}"
@@ -1070,46 +1098,244 @@ ctrl_head_opens_unclosed() {
     esac
   done
   case "$2" in
-  fi)
-    [[ "$head" =~ (^|.*\;)[[:space:]]*if[[:space:]]+.*([[:space:]]|\;)then(.*)$ ]] || return 1
-    rest="${BASH_REMATCH[3]}"
-    ;;
-  'esac')
-    [[ "$head" =~ (^|.*\;)[[:space:]]*case[[:space:]]+.*[[:space:]]in(.*)$ ]] || return 1
-    rest="${BASH_REMATCH[2]}"
-    ;;
-  '}')
-    if [[ "$head" =~ (^|.*\;)[[:space:]]*function[[:space:]]+[A-Za-z_][A-Za-z0-9_]*([[:space:]]*\([[:space:]]*\))?[[:space:]]*\{(.*)$ ]]; then
-      rest="${BASH_REMATCH[3]}"
-    elif [[ "$head" =~ (^|.*\;)[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\([[:space:]]*\)[[:space:]]*\{(.*)$ ]]; then
-      rest="${BASH_REMATCH[2]}"
-    else
-      return 1
-    fi
-    ;;
-  *)
-    return 1
-    ;;
+  fi | 'esac' | '}') ;;
+  *) return 1 ;;
   esac
-  # A closer segment after the opener closes the same-line construct
-  # again; a trailing closer is then a further closer, not this
-  # opener's, and may pop an earlier frame as before.
-  while [ -n "$rest" ]; do
-    case "$rest" in
-    *';'*)
-      seg="${rest%%';'*}"
-      rest="${rest#*';'}"
+  # Tokenize the masked head.
+  local -a toks=()
+  local word=""
+  local n=${#head} j
+  for ((j = 0; j < n; j++)); do
+    ch="${head:j:1}"
+    case "$ch" in
+    [[:space:]])
+      if [ -n "$word" ]; then
+        toks+=("$word")
+        word=""
+      fi
+      ;;
+    ';' | '&' | '|')
+      if [ -n "$word" ]; then
+        toks+=("$word")
+        word=""
+      fi
+      if [ $((j + 1)) -lt "$n" ] && [ "${head:j+1:1}" = "$ch" ]; then
+        toks+=("$ch$ch")
+        j=$((j + 1))
+      else
+        toks+=("$ch")
+      fi
+      ;;
+    '(')
+      case "$word" in
+      *'$')
+        word="${word%?}"
+        if [ -n "$word" ]; then
+          toks+=("$word")
+          word=""
+        fi
+        toks+=("\$(")
+        ;;
+      *)
+        if [ -n "$word" ]; then
+          toks+=("$word")
+          word=""
+        fi
+        toks+=('(')
+        ;;
+      esac
+      ;;
+    ')')
+      if [ -n "$word" ]; then
+        toks+=("$word")
+        word=""
+      fi
+      toks+=(')')
       ;;
     *)
-      seg="$rest"
-      rest=""
+      word+="$ch"
       ;;
     esac
-    seg="${seg#"${seg%%[![:space:]]*}"}"
-    seg="${seg%"${seg##*[![:space:]]}"}"
-    [ "$seg" = "$2" ] && return 1
   done
-  return 0
+  if [ -n "$word" ]; then toks+=("$word"); fi
+  # Walk the tokens. depth counts the constructs $2 closes that the
+  # head opens and leaves open; pending counts `if` / `case` openers
+  # still awaiting their `then` / `in`. cstate/cpdepth track, per
+  # open case, whether the walk is in its pattern list (p) or an arm
+  # body (b), and the paren depth inside a pattern.
+  local -a cstate=() cpdepth=()
+  local depth=0 pending=0 cpending=0 elif_pending=0 func_ctx=0 cmdpos=1 bracepos=0 popstate=0
+  local tok nxt prev="" k top
+  for ((k = 0; k < ${#toks[@]}; k++)); do
+    tok="${toks[k]}"
+    nxt=""
+    if [ $((k + 1)) -lt ${#toks[@]} ]; then nxt="${toks[k + 1]}"; fi
+    if [ "${#cstate[@]}" -gt 0 ]; then
+      top=$((${#cstate[@]} - 1))
+      if [ "${cstate[top]}" = p ]; then
+        # Pattern text: only parentheses and a bare `esac` (the
+        # closer — never a pattern word) have meaning here. The
+        # state is tracked for every closer, not just esac: a
+        # keyword spelled like a pattern is data, and the arm body
+        # after the pattern's `)` is a command position again.
+        case "$tok" in
+        "\$(" | '(')
+          cpdepth[top]=$((cpdepth[top] + 1))
+          ;;
+        ')')
+          if [ "${cpdepth[top]}" -gt 0 ]; then
+            cpdepth[top]=$((cpdepth[top] - 1))
+          else
+            cstate[top]=b
+            cmdpos=1
+          fi
+          ;;
+        'esac')
+          if [ "$2" = 'esac' ]; then depth=$((depth - 1)); fi
+          unset 'cstate[top]' 'cpdepth[top]'
+          cstate=("${cstate[@]}")
+          cpdepth=("${cpdepth[@]}")
+          cmdpos=0
+          ;;
+        esac
+        prev="$tok"
+        continue
+      fi
+    fi
+    # A `{` or `}` is grammar only where a command or a function
+    # body can start: at the head start, after a separator or an
+    # opening paren, after `then` / `else` / `do`, or as the body of
+    # the function whose `function` keyword or name precedes it.
+    bracepos=0
+    case "$prev" in
+    '' | ';' | ';;' | '&&' | '||' | '&' | '|' | "\$(" | '(' | ')' | 'then' | 'else' | 'do' | '{' | '!')
+      bracepos=1
+      ;;
+    esac
+    if [ "$func_ctx" -eq 1 ]; then bracepos=1; fi
+    case "$tok" in
+    ';' | ';;' | '&' | '|' | '&&' | '||')
+      cmdpos=1
+      func_ctx=0
+      if [ "$tok" = ';;' ] && [ "${#cstate[@]}" -gt 0 ]; then
+        top=$((${#cstate[@]} - 1))
+        cstate[top]=p
+        cpdepth[top]=0
+      fi
+      ;;
+    "\$(" | '(')
+      cmdpos=1
+      ;;
+    ')')
+      cmdpos=0
+      ;;
+    '{')
+      if [ "$2" = '}' ] && [ "$bracepos" -eq 1 ]; then
+        depth=$((depth + 1))
+      fi
+      func_ctx=0
+      cmdpos=1
+      ;;
+    '}')
+      if [ "$2" = '}' ] && [ "$bracepos" -eq 1 ] && [ "$depth" -gt 0 ]; then
+        depth=$((depth - 1))
+      fi
+      func_ctx=0
+      cmdpos=0
+      ;;
+    'if')
+      if [ "$cmdpos" -eq 1 ]; then
+        if [ "$2" = 'fi' ]; then pending=$((pending + 1)); fi
+        cmdpos=0
+      fi
+      ;;
+    'elif')
+      if [ "$cmdpos" -eq 1 ]; then
+        if [ "$2" = 'fi' ]; then elif_pending=1; fi
+        cmdpos=0
+      fi
+      ;;
+    'then')
+      if [ "$cmdpos" -eq 1 ]; then
+        if [ "$2" = 'fi' ]; then
+          if [ "$elif_pending" -eq 1 ]; then
+            elif_pending=0
+          elif [ "$pending" -gt 0 ]; then
+            pending=$((pending - 1))
+            depth=$((depth + 1))
+          fi
+        fi
+        cmdpos=1
+      fi
+      ;;
+    'else' | 'do' | '!')
+      # Command-position keywords that change nothing counted here;
+      # the arm only keeps them out of the plain-word case below, so
+      # a command following them stays at a command position.
+      ;;
+    'fi')
+      if [ "$cmdpos" -eq 1 ]; then
+        if [ "$2" = 'fi' ]; then
+          if [ "$depth" -gt 0 ]; then
+            depth=$((depth - 1))
+          elif [ "$pending" -gt 0 ]; then
+            pending=$((pending - 1))
+          fi
+        fi
+        cmdpos=0
+      fi
+      ;;
+    'case')
+      if [ "$cmdpos" -eq 1 ]; then
+        cpending=$((cpending + 1))
+        cmdpos=0
+      fi
+      ;;
+    'in')
+      if [ "$cpending" -gt 0 ]; then
+        cpending=$((cpending - 1))
+        if [ "$2" = 'esac' ]; then depth=$((depth + 1)); fi
+        cstate+=(p)
+        cpdepth+=(0)
+      fi
+      cmdpos=0
+      ;;
+    'esac')
+      if [ "$cmdpos" -eq 1 ]; then
+        popstate=0
+        if [ "$2" = 'esac' ] && [ "$depth" -gt 0 ]; then
+          depth=$((depth - 1))
+          popstate=1
+        elif [ "$cpending" -gt 0 ]; then
+          cpending=$((cpending - 1))
+        elif [ "$2" != 'esac' ]; then
+          popstate=1
+        fi
+        if [ "$popstate" -eq 1 ] && [ "${#cstate[@]}" -gt 0 ]; then
+          unset 'cstate[${#cstate[@]}-1]' 'cpdepth[${#cpdepth[@]}-1]'
+          cstate=("${cstate[@]}")
+          cpdepth=("${cpdepth[@]}")
+        fi
+        cmdpos=0
+      fi
+      ;;
+    'function')
+      if [ "$cmdpos" -eq 1 ]; then
+        func_ctx=1
+        cmdpos=0
+      fi
+      ;;
+    *)
+      # A plain word. A word directly before a `(` at a command
+      # position is a function name; its body brace is grammar.
+      if [ "$cmdpos" -eq 1 ] && [ "$nxt" = '(' ]; then func_ctx=1; fi
+      cmdpos=0
+      ;;
+    esac
+    prev="$tok"
+  done
+  if [ "$depth" -gt 0 ]; then return 0; fi
+  return 1
 }
 
 # True when $1 is the closer named by $2 (optionally followed by `;`),
