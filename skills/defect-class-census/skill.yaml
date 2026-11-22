@@ -1,0 +1,5 @@
+name: "defect-class-census"
+title: "Defect-Class Census"
+description: "Sibling-defect census seeded from one confirmed bug — extract the seed's mechanism, enumerate every sibling site sharing it, classify each candidate CONFIRMED, PLAUSIBLE, or REFUTED with evidence, file only the confirmed set grouped by theme, and park the rest on record. Use when the user asks whether more defects like a confirmed one exist, or directs a similar-types / sibling-bug hunt from a known defect."
+category: "Work and knowledge"
+include_in_prompt: true

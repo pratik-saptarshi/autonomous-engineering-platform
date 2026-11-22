@@ -31,6 +31,28 @@ catchup restores the map, so that decision starts from truth instead of a stale 
 5. Keep the default short (a screen or less). End with drill-down offers per section, not with
    everything expanded.
 
+## Ruling-batch items
+
+When several decisions queue at once, present them as a ruling batch: one item per decision
+cluster, each in the same shape, so the human can settle the whole batch in a few short replies.
+
+Per cluster:
+
+- **What sits in front of you** — the decision itself and its concrete object (the PR, the
+  condition, the claim), self-contained: no file needs opening to rule on it.
+- **The real benefit** — what ruling this way actually gains, in outcomes, not effort saved.
+- **The honest cost** — what it risks, spends, or forecloses, stated even when it argues
+  against the recommendation.
+- **Recommendation** — one clear call. A cluster with no recommendation is a briefing failure:
+  the agent did the analysis, so the agent owes the answer it points to.
+- **Reply shapes** — the exact short replies that settle the cluster, keyed to it, e.g.
+  `#48: C7 = waive` / `#48: C7 = satisfy`, or `#48: remediation = go` / `#48: remediation = hold`.
+  A reply in that shape is a complete ruling; act on exactly its scope and record it as settled.
+
+Clusters the human has already ruled on leave the batch — silence the settled applies to
+batches too. This shape is used wherever a batch of rulings is put to the human, whether it
+rides inside a catchup briefing's "Needs you" section or stands alone.
+
 ## Rules
 
 - State-grounded: every claim traces to a file, commit, or artifact the human can open. No "as

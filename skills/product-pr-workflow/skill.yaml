@@ -1,0 +1,5 @@
+name: "product-pr-workflow"
+title: "Product PR Workflow"
+description: "The PR-lifecycle umbrella: sequence an open PR — or a fleet of them — from intake and independent review through a fixed verdict taxonomy, the owner's ruling, verified remediation, merge gating, post-merge spot checks, and closure of any PR the work supersedes. Use whenever a PR needs review, findings need disposition, a reviewed branch needs landing, or open PRs need one operating picture. This skill names the component skill for each stage and the rule governing each hand-off; it does not re-specify their internals."
+category: "Work and knowledge"
+include_in_prompt: true

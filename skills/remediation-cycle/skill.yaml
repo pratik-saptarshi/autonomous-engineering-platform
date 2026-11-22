@@ -1,0 +1,5 @@
+name: "remediation-cycle"
+title: "Verified Remediation Cycle"
+description: "The standard response when an external reviewer (e.g. Codex) files findings on a pushed pull request: independent verification round, owner ruling, a remediation force (design notes first, serial TDD clusters, no push), an independent three-role panel, an independent supreme judge, and a gated push. Use when reviewer findings land on a PR, when the user says \"remediation cycle\" or asks to fix Codex/review findings under verification discipline. Nothing is a finding until verified; push only on the judge's all-CLOSED verdict; merge is always a separate decision."
+category: "Work and knowledge"
+include_in_prompt: false

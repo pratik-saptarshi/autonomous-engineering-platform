@@ -1,0 +1,5 @@
+name: "post-merge-spot-check"
+title: "Post-Merge Spot-Check"
+description: "Run a gate battery against a merged PR's base at its pinned head: behavioural tests on the merged tree, version-over-version byte comparison where a dependency changed, an independent oracle for expected outputs, a snapshot-open test for state stores, and a pre-change build as attribution proof — so any defect surfaced is proven pre-existing or introduced, never guessed. Use right after a merge lands, especially a dependency bump or a change with a wide blast radius."
+category: "Work and knowledge"
+include_in_prompt: true

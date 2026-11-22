@@ -1,0 +1,5 @@
+name: "stalled-lane-resume"
+title: "Stalled Lane Resume"
+description: "Recover a multi-phase coordinator-driven programme (panel, cycle, evaluation) whose coordinator has stalled, without re-running completed work and without trusting status claims: inventory the programme's on-disk artefacts first-hand, correct the tracking record to the verified state, close the stalled coordinator, and dispatch a fresh coordinator with a resume packet covering only the missing phases. Use when a programme's reported progress and its on-disk state may have diverged, or when its coordinator has gone silent."
+category: "Work and knowledge"
+include_in_prompt: true

@@ -1,6 +1,6 @@
 ---
 name: plan-review-integrator
-version: 2.1.0
+version: 2.1.1
 author: nemesis - inspired and updated from wan-huiyan's work
 description: >
   Integrate structured review panel findings into an implementation plan document.
@@ -25,7 +25,7 @@ output_contract: >
   re-running on the same review+plan produces the same result if no user overrides
   are applied.
 fork_of: "pratik-saptarshi/opencode-rountable-review skills/plan-review-integrator"
-fork_version: 1
+fork_version: 2
 ---
 
 # Plan-Review Integrator v2.1
@@ -512,7 +512,7 @@ Include a `Final Recommendation:` state:
 
 | Final Recommendation | Meaning |
 | --- | --- |
-| `Auto-applied` | All actionable findings were applied or classified without caveats, disputes, or partial-context limits |
+| `Auto-applied` | All actionable findings were applied or classified in full, with every dispute resolved and no finding limited by partial context |
 | `Applied with caveats` | Edits were applied, but at least one caveat, context limitation, or non-blocking dissent remains |
 | `Human review required` | At least one P0/P1, disputed, scope-expanding, or partial-context finding requires user decision |
 | `Blocked` | A verified high-risk finding cannot be safely integrated without changing the plan first |
@@ -569,6 +569,35 @@ calibrate actionability scoring.
 If `integration_log.jsonl` already exists, read it before Phase 5 to inform actionability
 scoring: findings matching historically-deferred patterns get a -0.1 penalty; findings
 matching historically-applied patterns get a +0.1 bonus.
+
+---
+
+## Phase 12: Premise Pre-Flight + Branch Envelope (before autonomous execution)
+
+Before a reviewed plan is executed autonomously, run this gate. Integrating
+review findings into a plan does not verify the plan's own factual premises,
+and heavy execution on a wrong premise wastes the whole lane.
+
+1. **Non-author reviewer.** A reviewer who did not author the plan verifies
+   the plan's load-bearing factual premises first-hand, on disk and against
+   live state — not from the plan's own assertions. Check the premise classes
+   the plan depends on: populations, required sets, version pins, and
+   mechanisms.
+2. **Verdict.** Issue exactly one: `SOUND` or
+   `SOUND WITH REQUIRED CHANGES`. All required changes land in the plan
+   before heavy execution begins.
+3. **Wrong premise stops the lane.** A premise found wrong STOPS the lane
+   with nothing built or swapped, and the plan returns for a corrected
+   ruling. Do not patch around a failed premise mid-execution.
+4. **Branch envelope.** Enumerate the authorization as an explicit branch
+   envelope: the exact branches and fix shapes allowed. Anything outside
+   the envelope needs a fresh checkpoint before it is touched.
+
+Precedents: the CI execution plan review — `SOUND WITH REQUIRED CHANGES`,
+9 changes including the Phase 0 population correction (61 vs the true 71),
+with the §0 branch envelope restored in full; the daemon redeploy STOPPED
+AT GATE 1 on a premise correction — the pin carried lbug 0.22.1, not
+0.22.3 — nothing was built, and the owner ruled the corrected pin.
 
 ---
 

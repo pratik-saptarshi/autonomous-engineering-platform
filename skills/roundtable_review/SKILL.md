@@ -18,6 +18,14 @@ Persona registry: Correctness Hawk (bugs, logic errors, edge cases), Architectur
 
 - Give each persona a reasoning strategy in its brief: systematic enumeration for correctness reviewers, backward reasoning from the desired outcome for architecture and feasibility, adversarial simulation ("imagine you are an attacker") for security and risk, analogical reasoning against known failure patterns for the Devil's Advocate, and first-principles questioning for stakeholder and clarity roles.
 
+### Variant: dossier-first idea intake
+
+- For a non-code proposal, do not hand the panel the proposal alone. Build a first-hand evidence dossier first: verify every source claim against primary sources, and state the environment's baseline the proposal would land in.
+
+- Seats argue against the dossier, not the pitch. The judge rules item by item — ADAPT / REJECT / ALREADY-HAVE-BETTER — in a final verdict table, and only surviving items proceed.
+
+- Precedent: the AI-software-factory evaluation — dossier, three panel seats, judge verdict table over 6 items; only ephemeral isolation survived as ADAPT.
+
 ## Run independent review, then debate
 
 - Launch all reviewers in parallel with `subagent.spawn` in a single turn, giving each the same work content, review mode, persona, and reasoning strategy. Reviewers must not see each other's output: isolation is what makes the panel an ensemble rather than one shared-context review.
@@ -34,6 +42,10 @@ Persona registry: Correctness Hawk (bugs, logic errors, edge cases), Architectur
 
 - Finish with a blind final: each reviewer independently gives a score, its top three points, and a one-line verdict without seeing the others'.
 
+- Relay owner corrections mid-flight: when the owner corrects a load-bearing fact while a panel is running, relay the correction to the coordinator the same turn — do not let the panel finish on the old basis. Have the affected items re-judged on the corrected basis, and record the supersession in the process log.
+
+- Precedents: the subscriptions/API-access correction relayed mid-flight to the AI-software-factory panel, with item 5 re-judged three-way; the AEP+NeuroStrata targeting refinement relayed the same turn.
+
 ## Verify claims before the judge
 
 - Run a completeness audit with one dedicated subagent that hunts only for what the whole panel missed: overlooked details, edge cases, constants, and especially temporal scope errors. When a claim excludes a time period, count every instance in the full date range and verify each one is handled.
@@ -46,6 +58,10 @@ Persona registry: Correctness Hawk (bugs, logic errors, edge cases), Architectur
 
 - For disputes that survive debate, dispatch one verification subagent per dispute point with a budget matched to the claim: a quick grep-level check for simple facts, multi-file tracing for logic disputes, and web research only for claims depending on external domain knowledge.
 
+- Rate the diagnosis's premises separately from the fix: list each load-bearing premise behind the diagnosis and grade it SOUND or THIN (facts confirmed but framing overstated). Correct a THIN premise on the record even when the fix itself verifies and nothing blocks — a verified fix does not validate an overstated story.
+
+- Precedent: dap PR #212 — all four premises graded THIN, including the "ingests untrusted PDFs" urgency framing, which the evidence did not support: pdfcpu is a test-only, CI-policy-enforced dependency. The fix verified correct; the story was corrected.
+
 ## Deliver the verdict and report
 
 - Let a final judge subagent arbitrate everything, including the verification results. The judge must reference the verification tables when ruling on disagreements.
@@ -55,6 +71,10 @@ Persona registry: Correctness Hawk (bugs, logic errors, edge cases), Architectur
 - Write two files in the task workspace: a markdown report with the verdict, findings by severity with epistemic labels, action items, and dissent notes, plus a process log with the per-phase summaries for auditability.
 
 - Present the verdict and the top findings to the user with the evidence attached. Never present a unanimous panel as infallible: shared-model bias means all reviewers can be wrong the same way.
+
+- Issue a post-judge addendum when later verification refutes the judge's inputs: if post-judge verification refutes inputs the judge consumed (e.g. verdicts built on coordinator reconstructions — cited CI runs that don't exist, a function claimed present with zero grep hits), issue a dated ADDENDUM superseding exactly those verdicts, banner the report, and mark pre-addendum artefacts (HTML) as not-sole-source. The verdict form otherwise stands; superseded items become blockers/findings through the normal intake.
+
+- Precedent: the PR #120 panel — a Phase 14 addendum superseded four Phase 13 verdicts: T2/T4 to VR_PARTIAL, the T5 no-bypass claim to VR_REFUTED (`restore_backup` does not exist in the tree), and T8 to VR_REFUTED; T5 became blocker B9.
 
 ## Available connectors
 
