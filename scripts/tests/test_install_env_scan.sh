@@ -998,6 +998,345 @@ run_env install_env_block
 check "R6B1 second run rc 0" test "$RC" -eq 0
 check "R6B1 fixed point" test "$(file_sha "$FH/.bashrc")" = "$SHA"
 
+# ================= Panel K2: one-line compound inside an outer frame =================
+# Adversarial-panel finding K2 (PR #191 follow-up): ctrl_closer_line's
+# tail-split popped an OUTER frame for a self-contained one-line
+# compound (`if true; then :; fi`) that ctrl_opener_closer never
+# opened, desyncing the struct stack so a guard nested inside a false
+# conditional read as top-level and the block stranded inside it.
+
+note "PANEL-K2: unit-level closer grammar (a self-contained one-line compound does not pop an outer frame)"
+check "K2 one-line if does not pop an outer fi" closer_stuck 'if true; then :; fi' 'fi'
+check "K2 one-line case does not pop an outer esac" closer_stuck 'case x in x) :;; esac' 'esac'
+check "K2 one-line function does not pop an outer }" closer_stuck 'myhelper() { :; }' '}'
+check "K2 one-line function (keyword form) does not pop an outer }" closer_stuck 'function myhelper { :; }' '}'
+check "K2 closer after a plain command still pops" closer_pops ':; fi' 'fi'
+check "K2 balanced compound plus a further closer still pops" closer_pops 'if true; then :; fi; fi' 'fi'
+
+note "PANEL-K2a: a one-line compound inside a false conditional does not strand the block"
+new_home k2a
+cat >"$FH/.bashrc" <<'EOF'
+if [ -f /etc/some-nonexistent-file ]; then
+  if true; then :; fi
+  case $- in
+    *i*) ;;
+    *) return;;
+  esac
+fi
+echo AFTER
+EOF
+run_env install_env_block
+check "K2a rc 0" test "$RC" -eq 0
+check_out "K2a env ok" 'INSTALL-RE: env ok' "$OUT"
+BLOCK_LINE="$(line_of '# >>> re-runtime >>>')"
+OUTER_FI_LINE="$(grep -nxF 'fi' "$FH/.bashrc" | head -1 | cut -d: -f1)"
+check "K2a block after the outer conditional" test "$BLOCK_LINE" -gt "$OUTER_FI_LINE"
+NI_OUT="$(env -i HOME="$FH" /bin/bash -c '. "$HOME/.bashrc"; printf "JAVA=%s" "${JAVA_HOME:-<unset>}"' 2>/dev/null)"
+check "K2a block reachable in a noninteractive source" test "${NI_OUT##*JAVA=}" = "$FH/opt/jdk-$TEMURIN_VERSION"
+check "K2a trailing content still executes" test "${NI_OUT#*AFTER}" != "$NI_OUT"
+LOGIN_OUT="$(env -i HOME="$FH" /bin/bash -lc 'printf "JAVA=%s" "${JAVA_HOME:-<unset>}"' 2>/dev/null)"
+check "K2a block reachable in a login shell" test "${LOGIN_OUT##*JAVA=}" = "$FH/opt/jdk-$TEMURIN_VERSION"
+SHA="$(file_sha "$FH/.bashrc")"
+run_env install_env_block
+check "K2a second run rc 0" test "$RC" -eq 0
+check "K2a fixed point" test "$(file_sha "$FH/.bashrc")" = "$SHA"
+
+# ================= Panel K2 round 2: glued then, quoted separators, quoted openers =================
+# Independent review of the K2 fix found three residuals in the new
+# head-opens check: bash accepts `;then`/`;fi` with no whitespace (the
+# opener shapes required a space before `then`); the re-close segment
+# scan split on `;` quote-blindly, so a quoted `;fi;` re-closed the
+# same-line if; and the head scan was quote-blind, so an `if ... then`
+# inside a quoted string minted an opener and refused a genuine pop.
+
+note "PANEL-K2R2: unit-level closer grammar (glued then, quoted separators, quoted openers)"
+check "K2R2-F1 glued one-line if does not pop an outer fi" closer_stuck 'if true;then :;fi' 'fi'
+check "K2R2-F1 glued then opens fi" opener_eq 'if [ -f \"$HOME/.optional\" ];then' 'fi'
+check "K2R2-F1 bare glued then opens fi" opener_eq 'if true;then' 'fi'
+check "K2R2-F2 quoted ;fi; does not re-close the same-line if" closer_stuck 'if true; then echo "a;fi;b"; fi' 'fi'
+check "K2R2-F2 single-quoted ;fi; does not re-close the same-line if" closer_stuck "if true; then echo 'a;fi;b'; fi" 'fi'
+check "K2R2-F2 balanced compound plus a further closer still pops" closer_pops 'if true; then echo "done"; fi; fi' 'fi'
+check "K2R2-F3 quoted if...then mints no opener; the closer pops" closer_pops 'echo "; if x; then y"; fi' 'fi'
+check "K2R2-F3 single-quoted if...then mints no opener; the closer pops" closer_pops "echo '; if x; then y'; fi" 'fi'
+check "K2R2-F3 escaped quotes are literal; the same-line if still owns its fi" closer_stuck 'echo \"; if x; then y\"; fi' 'fi'
+
+note "PANEL-K2b: a glued one-line compound inside a false conditional does not strand the block"
+new_home k2b
+cat >"$FH/.bashrc" <<'EOF'
+if [ -f /etc/some-nonexistent-file ]; then
+  if true;then :;fi
+  case $- in
+    *i*) ;;
+    *) return;;
+  esac
+fi
+echo AFTER
+EOF
+run_env install_env_block
+check "K2b rc 0" test "$RC" -eq 0
+check_out "K2b env ok" 'INSTALL-RE: env ok' "$OUT"
+BLOCK_LINE="$(line_of '# >>> re-runtime >>>')"
+OUTER_FI_LINE="$(grep -nxF 'fi' "$FH/.bashrc" | head -1 | cut -d: -f1)"
+check "K2b block after the outer conditional" test "$BLOCK_LINE" -gt "$OUTER_FI_LINE"
+NI_OUT="$(env -i HOME="$FH" /bin/bash -c '. "$HOME/.bashrc"; printf "JAVA=%s" "${JAVA_HOME:-<unset>}"' 2>/dev/null)"
+check "K2b block reachable in a noninteractive source" test "${NI_OUT##*JAVA=}" = "$FH/opt/jdk-$TEMURIN_VERSION"
+check "K2b trailing content still executes" test "${NI_OUT#*AFTER}" != "$NI_OUT"
+LOGIN_OUT="$(env -i HOME="$FH" /bin/bash -lc 'printf "JAVA=%s" "${JAVA_HOME:-<unset>}"' 2>/dev/null)"
+check "K2b block reachable in a login shell" test "${LOGIN_OUT##*JAVA=}" = "$FH/opt/jdk-$TEMURIN_VERSION"
+SHA="$(file_sha "$FH/.bashrc")"
+run_env install_env_block
+check "K2b second run rc 0" test "$RC" -eq 0
+check "K2b fixed point" test "$(file_sha "$FH/.bashrc")" = "$SHA"
+
+note "PANEL-K2c: a quoted ;fi; inside a one-line compound does not strand the block"
+new_home k2c
+cat >"$FH/.bashrc" <<'EOF'
+if [ -f /etc/some-nonexistent-file ]; then
+  if true; then echo "a;fi;b"; fi
+  case $- in
+    *i*) ;;
+    *) return;;
+  esac
+fi
+echo AFTER
+EOF
+run_env install_env_block
+check "K2c rc 0" test "$RC" -eq 0
+check_out "K2c env ok" 'INSTALL-RE: env ok' "$OUT"
+BLOCK_LINE="$(line_of '# >>> re-runtime >>>')"
+OUTER_FI_LINE="$(grep -nxF 'fi' "$FH/.bashrc" | head -1 | cut -d: -f1)"
+check "K2c block after the outer conditional" test "$BLOCK_LINE" -gt "$OUTER_FI_LINE"
+NI_OUT="$(env -i HOME="$FH" /bin/bash -c '. "$HOME/.bashrc"; printf "JAVA=%s" "${JAVA_HOME:-<unset>}"' 2>/dev/null)"
+check "K2c block reachable in a noninteractive source" test "${NI_OUT##*JAVA=}" = "$FH/opt/jdk-$TEMURIN_VERSION"
+check "K2c trailing content still executes" test "${NI_OUT#*AFTER}" != "$NI_OUT"
+LOGIN_OUT="$(env -i HOME="$FH" /bin/bash -lc 'printf "JAVA=%s" "${JAVA_HOME:-<unset>}"' 2>/dev/null)"
+check "K2c block reachable in a login shell" test "${LOGIN_OUT##*JAVA=}" = "$FH/opt/jdk-$TEMURIN_VERSION"
+SHA="$(file_sha "$FH/.bashrc")"
+run_env install_env_block
+check "K2c second run rc 0" test "$RC" -eq 0
+check "K2c fixed point" test "$(file_sha "$FH/.bashrc")" = "$SHA"
+
+note "PANEL-K2d: a quoted if...then on the closing line does not strand the block after the guard"
+new_home k2d
+cat >"$FH/.bashrc" <<'EOF'
+if [ -f /etc/some-nonexistent-file ]; then
+  echo starting
+  echo "; if x; then y"; fi
+case $- in
+  *i*) ;;
+  *) return;;
+esac
+export AFTER=1
+EOF
+run_env install_env_block
+check "K2d rc 0" test "$RC" -eq 0
+check_out "K2d env ok" 'INSTALL-RE: env ok' "$OUT"
+BLOCK_LINE="$(line_of '# >>> re-runtime >>>')"
+GUARD_LINE="$(line_of 'case $- in')"
+check "K2d block before the guard" test "$BLOCK_LINE" -lt "$GUARD_LINE"
+NI_OUT="$(env -i HOME="$FH" /bin/bash -c '. "$HOME/.bashrc"; printf "JAVA=%s" "${JAVA_HOME:-<unset>}"' 2>/dev/null)"
+check "K2d block reachable in a noninteractive source" test "${NI_OUT##*JAVA=}" = "$FH/opt/jdk-$TEMURIN_VERSION"
+LOGIN_OUT="$(env -i HOME="$FH" /bin/bash -lc 'printf "JAVA=%s" "${JAVA_HOME:-<unset>}"' 2>/dev/null)"
+check "K2d block reachable in a login shell" test "${LOGIN_OUT##*JAVA=}" = "$FH/opt/jdk-$TEMURIN_VERSION"
+SHA="$(file_sha "$FH/.bashrc")"
+run_env install_env_block
+check "K2d second run rc 0" test "$RC" -eq 0
+check "K2d fixed point" test "$(file_sha "$FH/.bashrc")" = "$SHA"
+
+note "PANEL-K2e: a glued outer opener still nests the guard"
+new_home k2e
+cat >"$FH/.bashrc" <<'EOF'
+if [ -f /etc/some-nonexistent-file ];then
+  case $- in
+    *i*) ;;
+    *) return;;
+  esac
+fi
+echo AFTER
+EOF
+run_env install_env_block
+check "K2e rc 0" test "$RC" -eq 0
+check_out "K2e env ok" 'INSTALL-RE: env ok' "$OUT"
+BLOCK_LINE="$(line_of '# >>> re-runtime >>>')"
+OUTER_FI_LINE="$(grep -nxF 'fi' "$FH/.bashrc" | head -1 | cut -d: -f1)"
+check "K2e block after the outer conditional" test "$BLOCK_LINE" -gt "$OUTER_FI_LINE"
+NI_OUT="$(env -i HOME="$FH" /bin/bash -c '. "$HOME/.bashrc"; printf "JAVA=%s" "${JAVA_HOME:-<unset>}"' 2>/dev/null)"
+check "K2e block reachable in a noninteractive source" test "${NI_OUT##*JAVA=}" = "$FH/opt/jdk-$TEMURIN_VERSION"
+check "K2e trailing content still executes" test "${NI_OUT#*AFTER}" != "$NI_OUT"
+LOGIN_OUT="$(env -i HOME="$FH" /bin/bash -lc 'printf "JAVA=%s" "${JAVA_HOME:-<unset>}"' 2>/dev/null)"
+check "K2e block reachable in a login shell" test "${LOGIN_OUT##*JAVA=}" = "$FH/opt/jdk-$TEMURIN_VERSION"
+SHA="$(file_sha "$FH/.bashrc")"
+run_env install_env_block
+check "K2e second run rc 0" test "$RC" -eq 0
+check "K2e fixed point" test "$(file_sha "$FH/.bashrc")" = "$SHA"
+
+# ================= PR #201 Sourcery S1-S3: the head-opens walk =================
+# Sourcery review of the K2 fix found three more shapes where the
+# head-opens check diverged from bash compound structure: (S1) it
+# matched one opener and counted a NESTED same-type compound's closer
+# as that opener's re-close, so the tail closer popped an outer frame;
+# (S2) a compound inside an unquoted command substitution closed with
+# `fi)` / `esac)`, which the re-close scan did not recognize, so a
+# genuine pop was refused and the phantom frame hid the guard; (S3) a
+# compound after `&&` / `||` is at a command position the opener
+# shapes did not recognize, so its tail closer popped an outer frame.
+
+note "PR201-S1: unit-level closer grammar (a nested same-type compound owns the tail closer)"
+check "S1 if nested after then does not pop an outer fi" closer_stuck 'if true; then if true; then :; fi; fi' 'fi'
+check "S1 if nested after ; does not pop an outer fi" closer_stuck 'if true; then :; if true; then :; fi; fi' 'fi'
+check "S1 nested function does not pop an outer }" closer_stuck 'f() { g() { :; }; }' '}'
+check "S1 nested case does not pop an outer esac" closer_stuck 'case x in x) case y in y) :;; esac; esac' 'esac'
+check "S1 nested compound plus a further closer still pops" closer_pops 'if true; then if true; then :; fi; fi; fi' 'fi'
+
+note "PR201-S2: unit-level closer grammar (a compound inside a command substitution closes there)"
+check "S2 substitution if closed by fi) lets the tail fi pop" closer_pops 'x=$(echo hi; if true; then :; fi); fi' 'fi'
+check "S2 substitution case closed by esac) lets the tail esac pop" closer_pops 'x=$(echo hi; case x in x) :;; esac); esac' 'esac'
+check "S2 same-line if around a substitution does not pop an outer fi" closer_stuck 'if true; then x=$(if true; then :; fi); fi' 'fi'
+
+note "PR201-S3: unit-level closer grammar (a compound after && or || owns its closer)"
+check "S3 if after && does not pop an outer fi" closer_stuck 'true && if true; then :; fi' 'fi'
+check "S3 if after || does not pop an outer fi" closer_stuck 'false || if true; then :; fi' 'fi'
+check "S3 case after && does not pop an outer esac" closer_stuck 'true && case x in x) :;; esac' 'esac'
+check "S3 function after && does not pop an outer }" closer_stuck 'true && f() { :; }' '}'
+check "S3 plain command after && still pops" closer_pops 'true && :; fi' 'fi'
+
+note "PR201-S1a: a nested one-line compound inside a false conditional does not strand the block"
+new_home s1a
+cat >"$FH/.bashrc" <<'EOF'
+if [ -f /etc/some-nonexistent-file ]; then
+  if true; then if true; then :; fi; fi
+  case $- in
+    *i*) ;;
+    *) return;;
+  esac
+fi
+echo AFTER
+EOF
+run_env install_env_block
+check "S1a rc 0" test "$RC" -eq 0
+check_out "S1a env ok" 'INSTALL-RE: env ok' "$OUT"
+BLOCK_LINE="$(line_of '# >>> re-runtime >>>')"
+OUTER_FI_LINE="$(grep -nxF 'fi' "$FH/.bashrc" | head -1 | cut -d: -f1)"
+check "S1a block after the outer conditional" test "$BLOCK_LINE" -gt "$OUTER_FI_LINE"
+NI_OUT="$(env -i HOME="$FH" /bin/bash -c '. "$HOME/.bashrc"; printf "JAVA=%s" "${JAVA_HOME:-<unset>}"' 2>/dev/null)"
+check "S1a block reachable in a noninteractive source" test "${NI_OUT##*JAVA=}" = "$FH/opt/jdk-$TEMURIN_VERSION"
+check "S1a trailing content still executes" test "${NI_OUT#*AFTER}" != "$NI_OUT"
+LOGIN_OUT="$(env -i HOME="$FH" /bin/bash -lc 'printf "JAVA=%s" "${JAVA_HOME:-<unset>}"' 2>/dev/null)"
+check "S1a block reachable in a login shell" test "${LOGIN_OUT##*JAVA=}" = "$FH/opt/jdk-$TEMURIN_VERSION"
+SHA="$(file_sha "$FH/.bashrc")"
+run_env install_env_block
+check "S1a second run rc 0" test "$RC" -eq 0
+check "S1a fixed point" test "$(file_sha "$FH/.bashrc")" = "$SHA"
+
+note "PR201-S3a: a compound after && inside a false conditional does not strand the block"
+new_home s3a
+cat >"$FH/.bashrc" <<'EOF'
+if [ -f /etc/some-nonexistent-file ]; then
+  true && if true; then :; fi
+  case $- in
+    *i*) ;;
+    *) return;;
+  esac
+fi
+echo AFTER
+EOF
+run_env install_env_block
+check "S3a rc 0" test "$RC" -eq 0
+check_out "S3a env ok" 'INSTALL-RE: env ok' "$OUT"
+BLOCK_LINE="$(line_of '# >>> re-runtime >>>')"
+OUTER_FI_LINE="$(grep -nxF 'fi' "$FH/.bashrc" | head -1 | cut -d: -f1)"
+check "S3a block after the outer conditional" test "$BLOCK_LINE" -gt "$OUTER_FI_LINE"
+NI_OUT="$(env -i HOME="$FH" /bin/bash -c '. "$HOME/.bashrc"; printf "JAVA=%s" "${JAVA_HOME:-<unset>}"' 2>/dev/null)"
+check "S3a block reachable in a noninteractive source" test "${NI_OUT##*JAVA=}" = "$FH/opt/jdk-$TEMURIN_VERSION"
+check "S3a trailing content still executes" test "${NI_OUT#*AFTER}" != "$NI_OUT"
+LOGIN_OUT="$(env -i HOME="$FH" /bin/bash -lc 'printf "JAVA=%s" "${JAVA_HOME:-<unset>}"' 2>/dev/null)"
+check "S3a block reachable in a login shell" test "${LOGIN_OUT##*JAVA=}" = "$FH/opt/jdk-$TEMURIN_VERSION"
+SHA="$(file_sha "$FH/.bashrc")"
+run_env install_env_block
+check "S3a second run rc 0" test "$RC" -eq 0
+check "S3a fixed point" test "$(file_sha "$FH/.bashrc")" = "$SHA"
+
+note "PR201-S2a: a substitution compound on the closing line does not hide the guard"
+new_home s2a
+cat >"$FH/.bashrc" <<'EOF'
+if [ -f "$HOME/.optional" ]; then
+  . "$HOME/.optional"
+x=$(echo hi; if true; then :; fi); fi
+case $- in
+  *i*) ;;
+  *) return;;
+esac
+export AFTER=1
+EOF
+run_env install_env_block
+check "S2a rc 0" test "$RC" -eq 0
+check_out "S2a env ok" 'INSTALL-RE: env ok' "$OUT"
+BLOCK_LINE="$(line_of '# >>> re-runtime >>>')"
+GUARD_LINE="$(line_of 'case $- in')"
+check "S2a block before the guard" test "$BLOCK_LINE" -lt "$GUARD_LINE"
+NI_OUT="$(env -i HOME="$FH" /bin/bash -c '. "$HOME/.bashrc"; printf "JAVA=%s" "${JAVA_HOME:-<unset>}"' 2>/dev/null)"
+check "S2a block reachable in a noninteractive source" test "${NI_OUT##*JAVA=}" = "$FH/opt/jdk-$TEMURIN_VERSION"
+LOGIN_OUT="$(env -i HOME="$FH" /bin/bash -lc 'printf "JAVA=%s" "${JAVA_HOME:-<unset>}"' 2>/dev/null)"
+check "S2a block reachable in a login shell" test "${LOGIN_OUT##*JAVA=}" = "$FH/opt/jdk-$TEMURIN_VERSION"
+SHA="$(file_sha "$FH/.bashrc")"
+run_env install_env_block
+check "S2a second run rc 0" test "$RC" -eq 0
+check "S2a fixed point" test "$(file_sha "$FH/.bashrc")" = "$SHA"
+
+# ================= PR #201 round 3: parenthesized case patterns =================
+# Round-3 independent review of the head-opens walk found its pattern
+# state counted every `(` as nesting depth, so a parenthesized
+# pattern's own terminating `)` was consumed as a depth decrement and
+# the state never flipped to the arm body. Compounds in the arm body
+# became invisible: a self-contained arm-body `if`'s trailing `fi`
+# then popped an OUTER frame (the K2 desync direction). In valid bash
+# a pattern's parens are only the optional leading `(`, an extglob
+# group whose `)` is the pattern terminator, or substitution parens —
+# so only a `$(` opens tracked nesting in pattern state; any other
+# `)` ends the pattern.
+
+note "PANEL-K2R3: unit-level closer grammar (a parenthesized pattern ends at its own close paren)"
+check "K2R3 leading-paren pattern arm-body if does not pop an outer fi" closer_stuck 'case x in (x) if b; then :; fi' 'fi'
+check "K2R3 leading-paren alternation arm-body if does not pop an outer fi" closer_stuck 'case x in (a|b) if b; then :; fi' 'fi'
+check "K2R3 star-extglob pattern arm-body if does not pop an outer fi" closer_stuck 'case x in *(a|b) if b; then :; fi' 'fi'
+check "K2R3 at-extglob pattern arm-body if does not pop an outer fi" closer_stuck 'case x in @(a|b) if b; then :; fi' 'fi'
+check "K2R3 plus-extglob pattern arm-body if does not pop an outer fi" closer_stuck 'case x in +(a|b) if b; then :; fi' 'fi'
+check "K2R3 bang-extglob pattern arm-body if does not pop an outer fi" closer_stuck 'case x in !(a|b) if b; then :; fi' 'fi'
+check "K2R3 plain alternation arm-body if does not pop an outer fi (control)" closer_stuck 'case x in a|b) if b; then :; fi' 'fi'
+check "K2R3 substitution pattern arm-body if does not pop an outer fi (control)" closer_stuck 'case x in $(echo a|b)) if b; then :; fi' 'fi'
+check "K2R3 arithmetic pattern arm-body if does not pop an outer fi (control)" closer_stuck 'case x in $((1+2))) if b; then :; fi' 'fi'
+check "K2R3 subshell-in-substitution pattern arm-body if does not pop an outer fi (control)" closer_stuck 'case x in $( (echo hi) )) if b; then :; fi' 'fi'
+check "K2R3 pattern-only extglob line still lets the tail fi pop (control)" closer_pops 'case x in *(a|b) :;; esac; fi' 'fi'
+
+note "PANEL-K2R3a: a parenthesized-pattern arm-body compound inside a false conditional does not strand the block"
+new_home k2r3a
+cat >"$FH/.bashrc" <<'EOF'
+if [ -f /etc/some-nonexistent-file ]; then
+  case x in (y) if true; then :; fi
+  esac
+  case $- in
+    *i*) ;;
+    *) return;;
+  esac
+fi
+echo AFTER
+EOF
+run_env install_env_block
+check "K2R3a rc 0" test "$RC" -eq 0
+check_out "K2R3a env ok" 'INSTALL-RE: env ok' "$OUT"
+BLOCK_LINE="$(line_of '# >>> re-runtime >>>')"
+OUTER_FI_LINE="$(grep -nxF 'fi' "$FH/.bashrc" | head -1 | cut -d: -f1)"
+check "K2R3a block after the outer conditional" test "$BLOCK_LINE" -gt "$OUTER_FI_LINE"
+NI_OUT="$(env -i HOME="$FH" /bin/bash -c '. "$HOME/.bashrc"; printf "JAVA=%s" "${JAVA_HOME:-<unset>}"' 2>/dev/null)"
+check "K2R3a block reachable in a noninteractive source" test "${NI_OUT##*JAVA=}" = "$FH/opt/jdk-$TEMURIN_VERSION"
+check "K2R3a trailing content still executes" test "${NI_OUT#*AFTER}" != "$NI_OUT"
+LOGIN_OUT="$(env -i HOME="$FH" /bin/bash -lc 'printf "JAVA=%s" "${JAVA_HOME:-<unset>}"' 2>/dev/null)"
+check "K2R3a block reachable in a login shell" test "${LOGIN_OUT##*JAVA=}" = "$FH/opt/jdk-$TEMURIN_VERSION"
+SHA="$(file_sha "$FH/.bashrc")"
+run_env install_env_block
+check "K2R3a second run rc 0" test "$RC" -eq 0
+check "K2R3a fixed point" test "$(file_sha "$FH/.bashrc")" = "$SHA"
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "test_install_env_scan: ALL PASS (sandbox $SB)"

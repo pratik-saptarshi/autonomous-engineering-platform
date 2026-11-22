@@ -1,0 +1,5 @@
+name: "vendored-codeql-disposition"
+title: "Vendored CodeQL Disposition"
+description: "Disposition CodeQL alerts that originate in vendored snapshots of other repos: pin the attributed set from check annotations, classify each alert by origin repo, verify it first-hand, file confirmed defects and refuted false positives at the origin, label owned origins, then dismiss at the vendor repo with cited tracking. Use when a CodeQL check fails or files threads on a PR whose changed tree includes vendored code under reference/ or an equivalent snapshot directory."
+category: "Work and knowledge"
+include_in_prompt: true

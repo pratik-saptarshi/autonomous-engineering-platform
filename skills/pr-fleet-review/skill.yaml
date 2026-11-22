@@ -1,0 +1,5 @@
+name: "pr-fleet-review"
+title: "PR Fleet Review"
+description: "Batch review of a fleet of open PRs on one repository — pinned inventory, one independent reviewer per PR with premise-checking, adversarial panel and judge verdicts in a fixed taxonomy, stack-aware landing sequence, gated publication, owner-directed merges, and finding-by-finding re-review. Use when the user asks to review all open PRs on a repo, a contributor's whole PR fleet, or a batch of PRs as one programme."
+category: "Work and knowledge"
+include_in_prompt: true
