@@ -1,6 +1,6 @@
 ---
 name: post-merge-spot-check
-version: 1.0.1
+version: 1.0.2
 author: pratik-saptarshi
 description: >-
   Run a gate battery against a merged PR's base at its pinned head:
@@ -24,7 +24,13 @@ The battery's defining feature is attribution: it is designed so that when it su
 
 ## The Battery
 
-Pin the post-merge base head SHA first; every result names it. Run all five legs; a leg that cannot run is reported as NOT RUN with the reason, never silently skipped.
+Pin the post-merge base head SHA first; every result names it. Run all five legs; a leg that cannot run is reported as NOT RUN with the reason, never silently skipped. When the merge was a squash merge, run the tree-fidelity step below first and report its result before any behavioural leg.
+
+### Tree-fidelity step — Squash merges (runs before Leg 1)
+
+A squash merge rewrites the PR into a single new commit, so the PR head is not an ancestor of the merge and "CI was green on the head" says nothing about whether the merged tree is the tree that was reviewed. The merge commit's tree is the evidence. Compare the merge commit's tree against the PR head's tree per entry — mode, type, and content, not content alone. List both trees with `git ls-tree -r <tree>` and diff the two listings: every entry's mode (e.g. `100644` vs `100755`), type (blob / tree / commit), and blob hash must match. Content hashes alone cannot support a fidelity claim — a mode change (a script gaining its executable bit) or a type change (file ↔ symlink) leaves the blob hash untouched and a hash-only comparison reports it identical. Report fidelity first, before Leg 1 runs: every entry identical in mode, type, and content, or each differing entry named with its two modes/types/hashes. A difference is not automatically a defect (a base that moved under the PR can explain one), but it must be enumerable and explained before the behavioural legs' results are read as applying to the reviewed change.
+
+Worked shape: AEP PR #191 merged as squash merge commit `6ad68c2a` from PR head `014fd108`; the post-merge spot-check compared the two trees per-file and found them byte-identical, so the battery's results applied to exactly the reviewed tree. (That comparison predates the mode/type requirement above; a fidelity claim made today must rest on the `ls-tree` comparison.)
 
 ### Leg 1 — Behavioural tests on the merged tree
 
@@ -46,11 +52,21 @@ If the project persists state (databases, snapshot files, caches with a format),
 
 Build the same battery (Legs 1–4, as applicable) against the base head *before* the merge — the parent commit — in a separate checkout. Any defect that reproduces identically on the pre-change build is **pre-existing**; any defect present only on the merged tree is **introduced**. This leg runs even when Legs 1–4 are green-so-far, because its value is realized the moment anything else fails.
 
+### Residual re-probing — Parked residuals from the pre-merge record
+
+The pre-merge record (panel, judge, or remediation-cycle record) may park residuals — known defects or capped behaviours deliberately left open at merge time. Legs 1–5 classify defects the battery itself surfaces; they do not settle those parked items. Re-probe every parked residual at the merged tree: re-run its recorded reproduction against a clean checkout of the pinned post-merge head, and land each residual in exactly one of:
+
+- **discharged** — the reproduction now fails on the merged tree **at its defect-specific assertion**: the assertion that distinguishes the defect's behaviour is exercised and no longer shows the defect. Cite the re-probe evidence (the reproduction, the pinned head, and its failing result at that assertion). The residual is closed, not merely unobserved. A reproduction that fails in setup, in its environment or fixtures, or at an unrelated assertion has not exercised the defect and is not a landing: it is **re-probe inconclusive** — the residual stays parked, restated with the inconclusive re-probe result and the reason the defect-specific assertion was not reached.
+- **still-reproducing** — the reproduction still succeeds on the merged tree; the residual stays parked, restated as observed at the merged tree (its original statement plus the re-probe result), so the next record inherits a current claim, not a stale one.
+- **capped-behaving-as-ruled** — the residual was capped by an owner ruling (a bounded ignore, an accepted limit, a governed exception) and the re-probe shows the behaviour staying within that cap. It stays parked under the ruling, neither discharged nor escalated; if the re-probe shows the cap exceeded, it does not land here — it is still-reproducing, restated with the breach named.
+
+A residual that cannot be re-probed (no recorded reproduction, or the reproduction no longer runs) is reported as NOT RE-PROBED with the reason, never silently dropped and never landed in a class without evidence. A residual whose re-probe was inconclusive (setup, environment, fixture, or unrelated failure — the defect-specific assertion was not reached) is reported as RE-PROBE INCONCLUSIVE with the reason, and likewise stays parked. The verdict below reports the re-probe outcome for every parked residual by name, alongside the per-leg results.
+
 ## Verdict
 
-Report per leg: PASS / FAIL / NOT RUN (reason). Then the attribution statement, which is the point of the exercise:
+Report per leg: PASS / FAIL / NOT RUN (reason). For a squash merge, report the tree-fidelity result first, before the per-leg results. Report each parked residual's re-probe landing (discharged / still-reproducing / capped-behaving-as-ruled, or NOT RE-PROBED with the reason). Then the attribution statement, which is the point of the exercise:
 
-- **Clean** — all legs pass; nothing to attribute.
+- **Clean** — all legs pass, and no parked residual landed still-reproducing (a residual landed discharged or capped-behaving-as-ruled does not block Clean; a still-reproducing, re-probe inconclusive, or NOT RE-PROBED residual does, and is named in the verdict line). Nothing to attribute. If the legs pass but a residual is still-reproducing, the verdict is not Clean: report the legs' results with the residual named in its landing vocabulary — "legs pass, with a still-reproducing parked residual: <name>" — and attribute the residual as a pre-existing tracked follow-up, not as nothing.
 - **Defects, pre-existing** — named defects, each with the Leg 5 proof (identical failure on the pre-change build). These become tracked follow-ups; they are not the merged PR's fault and never a reason to revert on their own.
 - **Defects, introduced** — named defects present only on the merged tree. This is a merge incident: report immediately with the introducing PR identified; remediation runs under the remediation cycle, and revert is the owner's decision.
 
