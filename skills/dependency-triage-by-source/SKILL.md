@@ -76,7 +76,7 @@ The procedure above, applied to the 2026-11-07 Rocinante dependency-tree check, 
 - **PR inventory: 12 rows** — 11 Dependabot bumps + Release Please PR #120 (subject 24, not-a-finding). Reporting "12 Dependabot PRs" without noticing the Release Please PR is a provenance failure.
 - **Alert inventory: 8 rows** — 4 on zip (#19, #20, #21, #22) + 4 on rustls (#15, #16, #17, #18). No alerts exist for tokio, ctutils, webpki-roots / rustls-webpki, or the zbus trio — those are audit-only.
 - **Audit inventory: 17 rows** — `src-tauri`: 11 vulnerabilities (zip ×4: RUSTSEC-2026-0367/-0368/-0369/-0429; rustls ×4: -0346/-0347/-0348/-0349; rustls-webpki -0382; webpki-roots -0381; ctutils -0385) + 5 warnings (tokio -0386 unsound; arrow-data -0442 unsound; zvariant -0370, zbus_names -0371, zvariant_derive -0372 unmaintained); `tools/sled-migration`: 1 vulnerability (ctutils -0385, second lockfile — same advisory, separate row).
-- **Class totals over the 23 classified subjects:** patch-only **8**, transitive-major **8**, structural-replacement **5**, drop **2**.
+- **Class totals over the 22 classified subjects:** patch-only **8**, transitive-major **8**, structural-replacement **4**, drop **2**. (Subjects 11 and 24 are not-a-finding rows and are not counted.)
 
 ### The 24 subjects
 
@@ -94,8 +94,8 @@ Inventories: PR = Dependabot/open-PR inventory, AL = Dependabot alerts, AU = car
 | 8 | zvariant 5.15.0 — audit RUSTSEC-2026-0370 (unmaintained), zbus stack, transitive only; patch bump → 5.15.1 does not clear the warning. | AU | structural-replacement |
 | 9 | zvariant_derive 5.15.0 — audit RUSTSEC-2026-0372 (unmaintained). Same stack, same reasoning as subject 8. | AU | structural-replacement |
 | 10 | zbus_names 4.3.4 — audit RUSTSEC-2026-0371 (unmaintained); patch bump → 4.3.5 does not clear it. | AU | structural-replacement |
-| 11 | zbus 5.19.0 — stack parent of subjects 8–10 (via rfd → ashpd, tray-icon → ksni, notify-rust, behind the `native-ui` feature). No advisory ID of its own and no manifest names it; the census names the zbus / zvariant / zbus_names trio as needing structural replacement, not a bump. | AU (as stack member) | structural-replacement |
-| 12 | notify-rust — PR #133 proposes 4.18.1 → 4.18.2. No advisory of its own. Its zbus-stack membership does not change this subject's class: the bump is patch-only; the warning belongs to subjects 8–11. | PR | patch-only |
+| 11 | zbus 5.19.0 — stack parent of subjects 8–10 (via rfd → ashpd, tray-icon → ksni, notify-rust, behind the `native-ui` feature). No advisory ID of its own, no alert, no PR, and no manifest names it: no inventory produced it, so under Step 2's rule it is not a finding and is not classified or counted. It is recorded here as stack context for subjects 8–10 only. | none — stack context only | **NOT-A-FINDING** — stack context, never classified into a bump class |
+| 12 | notify-rust — PR #133 proposes 4.18.1 → 4.18.2. No advisory of its own. Its zbus-stack membership does not change this subject's class: the bump is patch-only; the warning belongs to subjects 8–10 (subject 11, zbus, is stack context, not a finding). | PR | patch-only |
 | 13 | objc2 — PR #131 proposes 0.6.4 → 0.6.5; the lockfile holds a second copy, 0.5.2, whose patch move is 0.5.2 → 0.5.3 (the `@version` form of `cargo update -p` is required). | PR | patch-only |
 | 14 | rfd — PR #128 proposes 0.15.4 → 0.16.0: a 0.x minor (breaking) bump needing a `Cargo.toml` change. | PR | transitive-major |
 | 15 | tray-icon — PR #134 proposes 0.25.1 → 0.26.1: same 0.x-minor shape as subject 14. | PR | transitive-major |
