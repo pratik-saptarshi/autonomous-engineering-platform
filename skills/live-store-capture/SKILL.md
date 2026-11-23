@@ -105,12 +105,21 @@ config into it, and run every surface with that HOME in effect:
 ```bash
 SCRATCH=/path/to/scratch
 mkdir -p "$SCRATCH/home/.config/<store>"
-printf '{"db_path": "%s/backup/store.db"}\n' "$SCRATCH" \
-  > "$SCRATCH/home/.config/<store>/config.json"
+python3 -c 'import json,sys; json.dump({"db_path": sys.argv[1] + "/backup/store.db"}, open(sys.argv[2], "w"))' \
+  "$SCRATCH" "$SCRATCH/home/.config/<store>/config.json"
 cp "$HOME/.config/<store>/embedders.json" "$SCRATCH/home/.config/<store>/"
 export HOME="$SCRATCH/home"
 export XDG_CONFIG_HOME="$SCRATCH/home/.config"
 ```
+
+Build the scratch config with a real JSON serializer, never by
+interpolating the path into a JSON string: a `SCRATCH` value
+containing JSON delimiters would otherwise inject a second
+`db_path` key, which a later-key-wins parser resolves instead of
+the copy's. After writing it, parse the config back and verify its
+`db_path` is exactly `"$SCRATCH/backup/store.db"` before relying
+on it — the construction-time form of the resolved-path check
+below.
 
 Redirecting `HOME` alone does not close the live config off. An
 inherited `XDG_CONFIG_HOME` — or any store-specific config-path or
