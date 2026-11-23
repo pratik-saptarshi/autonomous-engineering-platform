@@ -34,6 +34,14 @@ This rule is already homed in the `rust-pre-pr-gate` skill ("Run discipline" and
 
 A run that skips this check fails, regardless of its lock outcome.
 
+## Concurrency rule — one repair per checkout
+
+The quiet-window rule governs build load; it does not serialize repairs, and a repair is not safe merely because no `cargo` process was running when it started. Copying a lockfile is not a cargo process, and a second repair that starts from main's lock wholesale will silently discard a first repair's uncommitted edge.
+
+- **Per-checkout serialization:** only one repair runs in a checkout at a time. A concurrent repair uses its own worktree or checkout, or waits until the first repair is committed or abandoned. Two repairs in one checkout at once is a failure, even if each passes the quiet-window check.
+- **Re-verification immediately before accepting a repair:** immediately before the repaired lock is accepted (committed or handed off), re-verify that the base the repair started from is still a byte copy of the pinned main lock, and that the allowlist is still the complete set of intended edges for the branch. If either has moved, the repair restarts from the new base — it is not patched forward.
+- **Combined-intent check:** if another repair has already landed an edge on the same branch, or has uncommitted work in the same checkout, Step 4's proof must account for the combined allowlist — every intended edge from every repair, not only this run's edge. A proof that passes for this run's edge alone while another repair's edge has been lost fails the combined-intent check, and the loss is reported, not silently re-repaired.
+
 ## Procedure
 
 ### Step 1 — Name the intended edges and build the allowlist first
