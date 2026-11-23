@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Step 8 Wringer Record — Ralph × Warp Roadmap Final Pass (2026-11-23)</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; max-width: 880px; margin: 2rem auto; padding: 0 1.25rem; line-height: 1.55; }
+  h1 { font-size: 1.45rem; } h2 { font-size: 1.15rem; margin-top: 2rem; border-bottom: 2px solid #4a90d9; padding-bottom: .3rem; }
+  code { font-size: .88em; } li { margin: .35rem 0; } .small { font-size: .85rem; opacity: .85; }
+  .takeaway { border: 1px solid #4a90d9; border-radius: 6px; padding: .75rem 1rem; margin: 1rem 0; }
+</style>
+</head>
+<body>
+<h1>Step 8 Wringer Record — Roadmap Final Pass</h1>
+<p class="small">Planning-wringer over the Ralph × Warp roadmap's final pass — capability matrix <code>v0.5.2 → v0.5.4</code> — run 2026-11-23 at the owner's direction. This is plan §5 Step 8's third element (planning-wringer), following the scripted lints and the non-author semantic sample from the prior verification pass. Phases 2–4 are recorded here; Phase 1 is the roadmap itself. Panel: three persona agents (Feasibility, Risk, Devil's Advocate) verifying claims against the artifacts; Judge adjudication; Phase 3 repairs; Phase 4 independent review by a fresh non-author agent.</p>
+
+<div class="takeaway">
+<p><strong>Executive takeaway.</strong> The wringer <strong>wounded but did not kill</strong> the roadmap. The Judge adopted the Devil's Advocate's framing: the roadmap survives as an <strong>owner-gated Stage A spike charter</strong>; it does <strong>not</strong> survive as evidence of improvement — G-O measures acceptance and stability, not improvement, and is now labelled exactly that. Every P1 was kept and repaired in Phase 3 (matrix v0.5.3 + beads): a maturity field that stops DEFINED from flattening shipped-vs-specified state, AC-17's L2 floor given a real discharging eval, G-A gaining rollback-drill and cost-attribution criteria, new gating edges that make the skill amendment mechanically precede the first iteration, and rollback-drill evals that lift AC coverage to 36/42. Phase 4 returned <strong>APPROVED-WITH-CHANGES</strong>; its two required changes were applied as v0.5.4 (C-04's maturity downgraded; the beads authority marker made visible on the 111 records themselves). <strong>Step 8 is COMPLETE.</strong> What remains is not verification but owner decision: the G-O pre-registration amendments, the F-09 kill-criterion adoption, F-02/F-03 kill criteria (define or waive), rulings R-02…R-08, one genuinely external check before assurance is treated as external-grade, and the Stage A build go.</p>
+</div>
+
+<h2>Phase 2 — Feasibility Analyst: FEASIBLE-WITH-CHANGES</h2>
+<ul>
+<li><strong>P1</strong> G-A's cost leg rests on a data source no artifact names. There is no mechanism for per-iteration cost/token attribution anywhere in the roadmap, and the schema task's acceptance criterion simply restates the assumption that the data will exist. → Phase 3: cost-attribution criterion added to G-A with a fallback; proof obligation registered as D-28.</li>
+<li><strong>P2</strong> C-11's "writes are serialised" is not achievable on the specified direct-edit write path — the path as specified provides no serialisation point. → registered as a spec-pin debt (D-30).</li>
+<li><strong>P2</strong> The priority domain and the tie-break rule for <code>backlog.py next</code> are unpinned — two conforming implementations could select different tasks. → registered as a spec-pin debt (D-29).</li>
+<li><strong>P3s</strong> Verdict-file location/format unspecified; arbitration-counter storage location unspecified; the F-09 feature row is stale relative to the debt register. → verdict/counter spec-pin registered (D-31); F-09 row reconciled in the repair pass.</li>
+<li><strong>Confirmed ground</strong> (checked, not assumed): the phantom <code>client.py</code> is real — the prescribed NeuroStrata client does not exist — and the roadmap does not depend on it; UC-02 executes under <em>either</em> R-07 option, so the open ruling does not block its design; the sampled eval records are runnable specifications, not titles.</li>
+</ul>
+
+<h2>Phase 2 — Risk Assessor: two P1s</h2>
+<ul>
+<li><strong>FM-1 (P1)</strong> Amendment-before-iteration was prose, not mechanism. No <code>blocks</code> edges ordered the skill-amendment task before the dry iteration, while the shipped <code>SKILL.md:66</code> instructs the forbidden ungated inscription <em>today</em>. The only reason nothing has gone wrong is accidental: the prescribed client (<code>client.py</code>) is missing, so the instruction cannot execute. Safety by accident is not safety. → Phase 3: <code>blocks</code> edges added (see Phase 3).</li>
+<li><strong>FM-2 (P1)</strong> Stage A iterations were set to run before any rollback drill existed. AC-19/AC-20 were eval gaps, G-A carried no rollback term, and neither <code>~/</code> nor <code>~/workspace</code> is a git repo — so MEMORY.md has no history to roll back to inside the Stage A window. → Phase 3: rollback-drill evals authored and linked; rollback-drill criterion added to G-A.</li>
+<li><strong>FM-3</strong> Learnings compound without a semantic quality gate — volume and hygiene are checked, meaning is not. <em>Partially mitigated</em> by existing review structure; residual risk stands.</li>
+<li><strong>FM-4</strong> The kill criterion and G-O are armed with no observing cadence and no cross-lane citation mechanism — nothing schedules anyone to look at them, and no other lane can cite them as authority.</li>
+<li><strong>FM-5</strong> Debt forcing functions have already lapsed once: F-02 and F-03 were elaborated (Round 3) with their kill criteria still undefined, and nothing forced the issue at the time.</li>
+<li><strong>FM-6</strong> R-07 option (b) rework is unbudgeted — if the owner rules (b) after Stage A task design proceeds on the proposed (a), the rework cost lands unplanned.</li>
+<li><strong>FM-7</strong> Single-human judgment concentration: every gate, ruling, and promotion decision routes through one person, creating rubber-stamp pressure precisely where the design claims human gating as its safety story.</li>
+<li><strong>FM-8</strong> The canary for skill promotion is the whole environment — a promoted skill takes effect fleet-wide immediately (D4), so "canary" exposure is total, not partial.</li>
+<li><strong>Covered-and-verified</strong> (checked and sound): Law 3 blocked-stage discipline; AC-17's honesty and its remedy; ceilings/arbitration are mechanical where claimed (AC-39/AC-40); the G-O leg (iii) baseline repair from the original wringer; the R-03 discount rule for loop-internal attestations.</li>
+</ul>
+
+<h2>Phase 2 — Devil's Advocate: WOUNDED</h2>
+<p>The roadmap survives as an owner-gated Stage A spike charter. It does not survive as evidence of improvement.</p>
+<ul>
+<li><strong>Attack 1 — the premise has no outcome evidence.</strong> Warp publishes no quantified improvement numbers, and the fuel of Warp's loop — detailed human corrections — is here replaced by same-system signals. The loop proposes to learn from itself and call the result improvement.</li>
+<li><strong>Attack 2 — G-O measures acceptance/stability, not improvement.</strong> A merge rate is gameable, there is no quality endpoint, and the comparison windows are not comparable. Passing G-O would show the owner accepts the improver's output and nothing had to be reverted — not that anything got better.</li>
+<li><strong>Attack 3 — Step 4 contradiction.</strong> Three Stage A features were elaborated before their kill criteria existed. The nonconformance was catalogued as debt while Steps 6–7 recorded PASS — the process absorbed its own violation as paperwork.</li>
+<li><strong>Attack 4 — DEFINED flattens maturity.</strong> One status covers capabilities that are shipped-and-running and capabilities that are specified-only; the map reads as more built than it is.</li>
+<li><strong>Attack 5 — "34/42 eval-linked" is bibliographic, not discharge.</strong> AC-17's eval link did not discharge its L2 floor — the link existed while the evidence class did not. There are 0 L3 acceptance criteria, and hostile-implementer samples (AC-37, AC-42, AC-32) are narrower than their headlines suggest.</li>
+<li><strong>Attack 6 — traceability is concentrated on Stage A.</strong> The self-modifying stages B–E carry no acceptance criteria, and beads holds B–E detail beyond the matrix's depth-grading — an authority conflict over which artifact governs.</li>
+<li><strong>Attack 7 — the same-family verification discount applies to the process too.</strong> Authors, verifiers, and panel share a model family; their agreement is weaker evidence than the ceremony implies.</li>
+<li><strong>Attack 8 — the kill criterion fires only for narrow failure kinds.</strong> There is no kill for stall, for slow degradation, or for budget exhaustion.</li>
+<li><strong>Attack 9 — apparatus disproportionate to the first uncertainties.</strong> The cheapest tests (does one dry iteration even run clean?) sit behind the heaviest machinery (a four-round roadmap, 258 backlog records, a project board).</li>
+<li><strong>Failed attacks</strong> (recorded fairly — these did not land): undecided values are <em>not</em> hidden — rulings are open on their face and recommendations are marked PROPOSED; recurrence 3 / probation 5 were not silently decided; the kill criterion <em>can</em> fire; verification was not a rubber stamp — the original wringer changed the design, and Round 1 verification failed once and was corrected before proceeding; some ACs genuinely bite (planted-edit, lockfile, and planted-evidence fixtures); and "just run Ralph manually" fails as an alternative — the shipped skill is unsafe unamended (SKILL.md:66), so the amendment-first design is load-bearing, not ceremony.</li>
+</ul>
+
+<h2>Judge Adjudication</h2>
+<ul>
+<li>The Devil's Advocate's framing is <strong>adopted</strong>: the roadmap stands as a spike charter, not improvement evidence.</li>
+<li><strong>Every P1 is kept</strong> — Feasibility's cost-attribution P1 and Risk's FM-1 and FM-2 all stand as found.</li>
+<li>Repairs were folded in Phase 3 (below). The following were <strong>not</strong> folded — they are owner decisions, not panel repairs: the G-O pre-registration amendments; adoption of the F-09 kill criterion; F-02/F-03 kill criteria (define or waive); and the external check.</li>
+</ul>
+
+<h2>Phase 3 — Repairs (matrix v0.5.3 + beads)</h2>
+<ul>
+<li><strong>Maturity field</strong> added to all capability and feature rows, with the definition note — answering DA Attack 4 by making shipped-vs-specified state explicit instead of flattening it under DEFINED.</li>
+<li><strong>AC-17</strong>: <code>eval_link</code> → <code>[rw-c03.1.5, rw-c03.1.6]</code>, with <code>rw-c03.1.6</code> (the planted-inscription adversarial eval) named as the L2 discharge — the link now carries the evidence class the floor requires (DA Attack 5, in the one place it had already bitten).</li>
+<li><strong>G-A</strong> gains a rollback-drill criterion (FM-2) and a cost-attribution criterion (Feasibility P1).</li>
+<li><strong>G-O</strong> relabelled <strong>"acceptance/stability gate — NOT an improvement proof"</strong>, with an OWNER DECISION panel note carrying the six pre-registration amendments for the owner's ruling (DA Attack 2; Judge: not folded by the panel).</li>
+<li><strong>KILL</strong> gains the gate-bound review — the kill criterion is now attached to a gate at which someone must actually look at it (FM-4, in part).</li>
+<li><strong>Debt register D-28…D-33 added</strong>: D-28 cost-attribution proof obligation; D-29 priority-domain / tie-break spec-pin for <code>backlog.py next</code>; D-30 write-path serialisation spec-pin (C-11); D-31 verdict-file / counter-location spec-pin; D-32 R-07(b) rework risk; D-33 B–E beads authority note — <strong>111 beads records</strong> carry B–E detail beyond the matrix's feature-level grading and are non-authoritative while the rulings are open.</li>
+<li><strong>D-20/D-21</strong> now carry forcing-function-lapsed admissions (FM-5): the register states plainly that F-02/F-03 were elaborated with kill criteria undefined and that the forcing function did not fire.</li>
+<li><strong>Stage A entry condition in plain terms</strong>: building to the <em>proposed</em> rulings constitutes the owner's explicit written acceptance, including the R-07(b) rework risk — no silent assumption of an unruled outcome.</li>
+<li><strong>Beads gating edges (FM-1)</strong>: <code>blocks</code> edges from <code>rw-c01.1.5.2.1</code> and <code>rw-c01.1.3.3</code> onto both iteration records (<code>rw-c01.1.2.2.1</code>, <code>rw-c01.1.2.2.2</code>) — the amendment now mechanically precedes the first iteration instead of preceding it in prose.</li>
+<li><strong>Rollback-drill evals</strong> <code>rw-c01.1.3.3.3</code> / <code>rw-c01.1.3.3.4</code> authored → AC-19/AC-20 eval-linked. Coverage rises to <strong>36/42</strong>; open eval gaps fall to <strong>6</strong>.</li>
+<li><strong>Task-scope amendments</strong> on <code>rw-c01.1.1.2.1</code> and <code>rw-c10.1.1.1.1</code>. Beads backlog now <strong>260 records</strong>.</li>
+</ul>
+
+<h2>Phase 4 — Independent Review: APPROVED-WITH-CHANGES</h2>
+<ul>
+<li><strong>Verified TRUE</strong> (independently recomputed or re-read, not taken from the repair report): artifact integrity; 16-edge bidirectional traceability; the 33-item register count; 36/42 eval coverage with 0 bad links; beads integrity including the new gating edges; the rollback-drill evals are genuine runnable specifications; gate-register honesty (G-O's relabel and the OWNER DECISION note present as claimed); the D-20/D-21 admissions present; sampled ACs mechanically decidable; Law 3 still holds.</li>
+<li><strong>Required change 1 (MODERATE)</strong> — C-04's maturity was misassigned PRESENT. The shipped SKILL.md line 65 carries counters only; the safety-bearing exemption is unshipped and is contradicted by the drop-at-zero behaviour. → downgrade required. (F-03's PRESENT stands — its narrower statement is genuinely carried by the shipped text.)</li>
+<li><strong>Required change 2 (MINOR)</strong> — D-33's authority label was invisible inside beads: the note lived in the matrix register while the 111 records themselves said nothing. → add the marker to the records themselves.</li>
+<li><strong>Informational</strong> — KILL leg 2 is owner-judgment, not mechanical; acceptable given the gate-bound review now attached. G-A's cost leg is decidable only via its fallback until D-28's attribution mechanism lands.</li>
+</ul>
+
+<h2>Phase 4 Changes Applied (matrix v0.5.4)</h2>
+<ul>
+<li>C-04 maturity → <strong>SPECIFIED-UNPROVEN</strong>, with the correction note (line 65 carries counters only; the exemption is unshipped and contradicted by drop-at-zero).</li>
+<li>The <strong>"non-authoritative"</strong> label added to exactly <strong>111 beads records</strong> — the count independently recomputed by the reviewer and in agreement with D-33.</li>
+</ul>
+
+<h2>Step 8 Status: COMPLETE</h2>
+<p>Plan §5 Step 8 is discharged in full: scripted lints and the non-author semantic sample (prior verification pass, over v0.5.1/v0.5.2) plus this planning-wringer (Phases 2–4, repairs at v0.5.3, review changes at v0.5.4).</p>
+<p><strong>Remaining owner decisions</strong> — none of these are verification gaps; each is a ruling only the owner can make:</p>
+<ul>
+<li>G-O pre-registration amendments (the six carried in the OWNER DECISION panel note).</li>
+<li>F-09 kill-criterion adoption (register D-23 proposal).</li>
+<li>F-02/F-03 kill criteria: define, or waive, before G-A.</li>
+<li>Rulings R-02…R-08 — R-07 and R-08 gate Stage A task design.</li>
+<li>One genuinely external check (the Devil's Advocate's condition — a different model family, an external reviewer, or the owner's own source-level audit) before the assurance behind this roadmap is treated as external-grade.</li>
+<li>The Stage A build go.</li>
+</ul>
+
+<h2>Devil's Advocate — Kill Conditions</h2>
+<p>Any one of these, if it occurs, kills the roadmap's claim to be what this record says it is:</p>
+<ul>
+<li>Step 8 declared complete with the wringer's findings ignored.</li>
+<li>The build proceeds on proposed R-07/R-08 without an owner ruling or the owner's explicit written acceptance.</li>
+<li>No live NeuroStrata round-trip is demonstrable, or the first 3 iterations cannot complete clean.</li>
+<li>The current G-O is presented as proof of improvement.</li>
+<li>Stage B–E implementation begins from beads detail while the rulings are open.</li>
+</ul>
+</body>
+</html>
