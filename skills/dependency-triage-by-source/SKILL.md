@@ -17,7 +17,7 @@ description: >-
 
 ## The rule in one line
 
-Cross three inventories, classify every finding, and only then propose bumps. A crate with no advisory and no Dependabot PR is `drop` — do not bump it.
+Cross three inventories, classify every finding, and only then propose bumps. A crate with no advisory and no Dependabot PR is `drop` only with a subject-specific stated reason beyond that absence — do not bump it; every other dry-run-only offer is deferred, not dropped.
 
 ## Step 1 — Cross three inventories (all three, always)
 
@@ -40,23 +40,23 @@ Classify **every** finding into **exactly one** of the four classes below. The c
 | `patch-only` | A patch-version bump (same major, same minor for 0.x: same 0.minor) resolvable in the lockfile with no `Cargo.toml` change clears the finding. The subject must be a Cargo crate: a non-Cargo subject (a GitHub Action `uses:` reference, an external tool) is never `patch-only`, whatever its version delta, because no lockfile edit can move it. |
 | `transitive-major` | The available fix or proposed bump is **not** patch-resolvable in the lockfile: a major bump, or a 0.x minor bump (breaking under 0.x semver), or a non-Cargo update of any delta — major, minor, or patch (e.g. a GitHub Action major, a non-Cargo tool minor such as trufflehog 3.97.9 → 3.99.0, or a patch-delta Action update) — because no non-Cargo update is lockfile-resolvable. It needs a manifest change, a direct reference edit, or a deliberate compatibility decision, and must not be folded into a patch-only batch. |
 | `structural-replacement` | No version bump of the named crate clears the finding: the crate must leave the tree, be replaced, or arrive at a fixed major only as a side effect of replacing/upgrading the structural parent that pulls it in. Patch bumps of the crate or its entry points demonstrably do not clear it. Never fold this class into `transitive-major`, and never propose a bump of the named crate as its fix. |
-| `drop` | The crate has **no advisory and no Dependabot PR**. It is not bumped, however attractive the dry-run offer looks. See Step 3. |
+| `drop` | The crate has **no advisory and no Dependabot PR**, and a subject-specific stated reason beyond that absence supports dropping it. It is not bumped, however attractive the dry-run offer looks. See Step 3. |
 
 Non-dependency PRs found in the PR inventory (e.g. a release-automation PR) are named as **not-a-finding** and excluded from the classification set — never classified into a bump class, and never silently counted as dependency PRs.
 
 ## Step 3 — The drop rule (no advisory + no PR = drop)
 
-A crate that appears in **none** of the three inventories — no advisory in the cargo audit inventory, no Dependabot PR, no Dependabot alert — and is present only as a `cargo update --dry-run` offer is classified **`drop`: do not bump**. Full stop.
+A crate that appears in **none** of the three inventories — no advisory in the cargo audit inventory, no Dependabot PR, no Dependabot alert — and is present only as a `cargo update --dry-run` offer is classified **`drop`: do not bump** only when a subject-specific stated reason beyond inventory absence supports dropping it (the worked example's dropped subjects each carry one: duckdb-internal plumbing plus a minor-bump drag for ureq; a stated no-advisory/no-PR disposition for serde_json). Inventory absence alone is not a sufficient reason: a dry-run-only offer with no subject-specific stated reason is **deferred, not dropped** (Step 4) — the same criterion in both steps.
 
 - The rule fires in the full-set classification pass (Step 2), not as an afterthought.
 - Do not classify it `patch-only` because the offered bump looks patch-shaped.
 - Do not propose the bump "opportunistically" alongside real findings.
-- Do not defer it as undecided: the rule decides.
+- For a subject that meets the drop criterion, do not defer it as undecided: the rule decides. For one that does not, deferral is the decided outcome, not indecision.
 - Do not require an owner ruling to drop it.
 
 ## Step 4 — Dry-run restraint (deferred is not drop)
 
-The dry-run offer list is always much larger than the finding set (in the worked example below, roughly 80 offers; the count itself is unstable — 80/81/85 were all measured, and there is no canonical count). Beyond the subjects the record drops *with reasons*, the remaining offers are **intentionally deferred, not overlooked** — and **deferred is not `drop` and is not a class**. Never classify every unlisted dry-run offer as `drop`: the `drop` class contains exactly the subjects dropped with stated reasons under Step 3, no others.
+The dry-run offer list is always much larger than the finding set (in the worked example below, roughly 80 offers; the count itself is unstable — 80/81/85 were all measured, and there is no canonical count). Beyond the subjects the record drops *with reasons*, the remaining offers are **intentionally deferred, not overlooked** — and **deferred is not `drop` and is not a class**. Never classify every unlisted dry-run offer as `drop`: the `drop` class contains exactly the subjects dropped with a subject-specific stated reason beyond inventory absence under Step 3, no others — the same criterion Step 3 states.
 
 ## Step 5 — Propose bumps, grouped by class
 
