@@ -62,21 +62,21 @@ A wrong `--root` can produce a manifest with zero entries. The step order above 
 
 ## System B — vendor-integrity manifests
 
-Each vendored tree carries one manifest, `.github/vendor-<name>.sha256`, in the line format `<sha256hex>  ./<path>` (two spaces), paths relative to the vendored tree's root, in path order.
+Each vendored tree is covered by one manifest, `vendor-<name>.sha256`, kept in the **repository root's** `.github/` directory — not inside the vendored tree. The line format is `<sha256hex>  ./<path>` (two spaces), paths relative to the vendored tree's root, in path order. Verification therefore runs from the vendored tree's root (so the `./<path>` entries resolve) while referencing the manifest by the relative path from that root up to the repository root — for a tree two levels below the root, `../../.github/vendor-<name>.sha256`, the shape this repo's CI uses. Compute that relative path for the tree in hand; do not assume a depth, and do not run the check from the repository root, where the `./<path>` entries would resolve against the wrong tree.
 
 Step order:
 
 1. **Record the baseline.** Note the manifest's entry count and run the verification leg against the pre-refresh tree to name exactly which entries are stale:
 
    ```bash
-   sha256sum -c .github/vendor-<name>.sha256
+   sha256sum -c ../../.github/vendor-<name>.sha256
    ```
 
-   run from the vendored tree's root, so the `./<path>` entries resolve.
+   run from the vendored tree's root, so the `./<path>` entries resolve, with the manifest referenced by its path from that root to the repository root's `.github/` (the example shows a tree two levels below the root; adjust the `../` count to the tree in hand).
 2. **Enumerate the expected entries** (Rule 2): the files the vendored update actually changed. Unchanged files' hash lines must not move.
 3. **Regenerate by the documented procedure:** re-hash the refreshed vendored tree and rewrite the manifest in the same line format and path order. Do not hand-edit individual hash lines, and do not reuse hashes from the previous snapshot for changed files.
 4. **Prove the changed-entries-only diff.** The manifest diff equals the step-2 enumeration exactly — one changed hash line per changed file, no added or removed lines unless the update itself added or removed files (and then only those). Any other moved line triggers Rule 4's halt.
-5. **Verify both legs locally.** Leg 1: `sha256sum -c .github/vendor-<name>.sha256` from the vendored tree's root reports OK for every entry (exit 0). Leg 2: the diff proof from step 4, re-read against the enumeration. A verify run from any other directory is not a leg — the paths will not resolve as the manifest intends.
+5. **Verify both legs locally.** Leg 1: `sha256sum -c ../../.github/vendor-<name>.sha256` from the vendored tree's root (manifest path adjusted to the tree's depth below the repository root, as in step 1) reports OK for every entry (exit 0). Leg 2: the diff proof from step 4, re-read against the enumeration. A verify run from any other directory is not a leg — the paths will not resolve as the manifest intends.
 
 Precedent: PR #157 — the owner ruled REFRESH the vendored manifest and keep the PR open; the refresh was the correct disposition even though an unrelated guard then closed the PR, and the refreshed manifest was preserved on the branch. Refresh by procedure is the standing answer to a stale-dated vendor manifest; an exemption or a hand-patch is not.
 
