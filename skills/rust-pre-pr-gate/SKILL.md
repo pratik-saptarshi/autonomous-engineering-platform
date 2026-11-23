@@ -17,7 +17,7 @@ Standing rule (owner-directed, 2026-11-10): before opening or pushing to a PR in
 ## The five legs
 
 | Leg | Command (via the script) | Calibration |
-|-----|--------------------------|-------------|
+| --- | --- | --- |
 | fmt | `cargo fmt --all -- --check` | **Blocking** |
 | clippy | `cargo clippy --all-targets --locked` | Report-only until its baseline is remediated |
 | deny | `cargo deny check` | Report-only until its baseline is remediated |

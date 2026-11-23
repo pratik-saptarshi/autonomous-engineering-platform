@@ -36,7 +36,7 @@ Also capture the `cargo update --dry-run` offer list, but treat it as **none of 
 Classify **every** finding into **exactly one** of the four classes below. The classification of the full set is presented **before, and independently of, any proposed bump list**. An output that proposes bumps for a subset and never classifies the rest fails this procedure, as does an output whose only "classification" is the bump list itself. No finding is left unclassified, and no subject that no inventory produced is invented as a finding.
 
 | Class | Definition |
-|---|---|
+| --- | --- |
 | `patch-only` | A patch-version bump (same major, same minor for 0.x: same 0.minor) resolvable in the lockfile with no `Cargo.toml` change clears the finding. The subject must be a Cargo crate: a non-Cargo subject (a GitHub Action `uses:` reference, an external tool) is never `patch-only`, whatever its version delta, because no lockfile edit can move it. |
 | `transitive-major` | The available fix or proposed bump is **not** patch-resolvable in the lockfile: a major bump, or a 0.x minor bump (breaking under 0.x semver), or a non-Cargo update of any delta — major, minor, or patch (e.g. a GitHub Action major, a non-Cargo tool minor such as trufflehog 3.97.9 → 3.99.0, or a patch-delta Action update) — because no non-Cargo update is lockfile-resolvable. It needs a manifest change, a direct reference edit, or a deliberate compatibility decision, and must not be folded into a patch-only batch. |
 | `structural-replacement` | No version bump of the named crate clears the finding: the crate must leave the tree, be replaced, or arrive at a fixed major only as a side effect of replacing/upgrading the structural parent that pulls it in. Patch bumps of the crate or its entry points demonstrably do not clear it. Never fold this class into `transitive-major`, and never propose a bump of the named crate as its fix. |
@@ -87,7 +87,7 @@ The procedure above, applied to the 2026-11-07 Rocinante dependency-tree check, 
 Inventories: PR = Dependabot/open-PR inventory, AL = Dependabot alerts, AU = cargo audit.
 
 | # | Subject | Inventories | Class |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | 1 | rustls 0.23.45 — audit RUSTSEC-2026-0346 (medium), -0347/-0348/-0349 (low), fix ≥0.23.46; alerts #15–#18; PR #135 proposes 0.23.45 → 0.23.46. Arrives via ureq. | PR, AL, AU | patch-only |
 | 2 | rustls-webpki 0.103.15 — audit RUSTSEC-2026-0382, fix ≥0.103.16. No alert, no PR of its own. | AU | patch-only |
 | 3 | webpki-roots 1.0.9 — audit RUSTSEC-2026-0381, fix ≥1.0.10. Via ureq. No alert, no PR of its own. | AU | patch-only |

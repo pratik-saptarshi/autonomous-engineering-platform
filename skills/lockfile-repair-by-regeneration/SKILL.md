@@ -60,7 +60,7 @@ The repair procedure, in order:
 2. Discard the branch lock as a base. Take main's lock wholesale: the repaired lock starts as a byte copy of main's `Cargo.lock`.
 3. Apply targeted updates for the intended edges only, one per intended edge, in exactly this form:
 
-   ```
+   ```text
    cargo update -p <pkg> --precise <ver>
    ```
 
