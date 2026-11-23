@@ -66,7 +66,7 @@ A residual that cannot be re-probed (no recorded reproduction, or the reproducti
 
 Report per leg: PASS / FAIL / NOT RUN (reason). For a squash merge, report the tree-fidelity result first, before the per-leg results. Report each parked residual's re-probe landing (discharged / still-reproducing / capped-behaving-as-ruled, or NOT RE-PROBED with the reason). Then the attribution statement, which is the point of the exercise:
 
-- **Clean** — all legs pass; nothing to attribute.
+- **Clean** — all legs pass, and no parked residual landed still-reproducing (a residual landed discharged or capped-behaving-as-ruled does not block Clean; a still-reproducing, re-probe inconclusive, or NOT RE-PROBED residual does, and is named in the verdict line). Nothing to attribute. If the legs pass but a residual is still-reproducing, the verdict is not Clean: report the legs' results with the residual named in its landing vocabulary — "legs pass, with a still-reproducing parked residual: <name>" — and attribute the residual as a pre-existing tracked follow-up, not as nothing.
 - **Defects, pre-existing** — named defects, each with the Leg 5 proof (identical failure on the pre-change build). These become tracked follow-ups; they are not the merged PR's fault and never a reason to revert on their own.
 - **Defects, introduced** — named defects present only on the merged tree. This is a merge incident: report immediately with the introducing PR identified; remediation runs under the remediation cycle, and revert is the owner's decision.
 
