@@ -75,6 +75,15 @@ daemon, open the store and checkpoint before copying, copy the raw
 files without opening, or be performed by a script that copies raw
 files and companions. Establish which one happened and record it.
 
+A raw-file copy — taken directly or by a script — carries a further
+requirement: the database file and its companions must come from a
+single instant. Copying them at different moments while the live
+service writes produces a torn copy that matches no state the store
+ever had. A raw copy is therefore usable only as a coordinated
+snapshot, or taken while the store's writers are quiesced; if
+neither guarantee can be established, that path does not run.
+Record which consistency guarantee held, alongside the path.
+
 ### 3. Point a scratch HOME at the copy
 
 If the store's config resolves its database path via `$HOME`, build a
@@ -118,7 +127,11 @@ On matching hashes, reconcile the capture: the fullest export's total
 must equal the sum of the independent per-namespace totals taken on
 the copy, and must match the count the capture set out to explain. A
 matching hash with an unreconciled count is not a pass — report the
-gap. State the count as a **surfaces-reachable count** whenever no
+gap. Reconciliation is copy-internal: both totals derive from the
+same copy, so it cannot detect a torn copy (step 2). A reconciled
+count is a pass only together with step 2's recorded consistency
+guarantee for the copy; without one, report the capture as
+unreconciled in kind, however well its totals agree. State the count as a **surfaces-reachable count** whenever no
 surface exposes a raw row count: surfaces that look independent may
 derive their counts from the same filtered rows, so their agreement is
 not independent evidence about hidden rows.
@@ -154,7 +167,9 @@ capture plan is a gap.
   dispatch, open-store checkpoint-and-copy, a no-open file copy, and
   script-level raw copies can all answer to "backup", with different
   side effects. Handling: establish which path a given backup took
-  before relying on its properties, and record it (step 2).
+  before relying on its properties, and record it (step 2) — for a
+  raw-file copy, including the single-instant consistency guarantee
+  (coordinated snapshot or quiesced writers) the copy rests on.
 - **C3 — The installed binary may lack a flag the source defines.** In
   the evidence run the installed binary had no `backup --no-open`,
   although the source at a newer head defined one; the flag was
