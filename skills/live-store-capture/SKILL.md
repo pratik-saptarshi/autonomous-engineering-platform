@@ -84,6 +84,18 @@ snapshot, or taken while the store's writers are quiesced; if
 neither guarantee can be established, that path does not run.
 Record which consistency guarantee held, alongside the path.
 
+Establish the backup method's service impact before it runs, not
+after. Some backup surfaces stop the production service: this repo's
+NeuroStrata `backup.sh` stops the running daemon for a graceful
+shutdown and checkpoint and restarts it afterwards — an
+interruption, automatically recovered, but an interruption all the
+same. A backup method that stops or restarts the service runs only
+inside a maintenance window, or with the interruption explicitly
+accepted beforehand; either way the service impact is recorded in
+the capture record next to the backup path. A capture whose premise
+is that the store must not change underneath it never interrupts
+the production service silently.
+
 ### 3. Point a scratch HOME at the copy
 
 If the store's config resolves its database path via `$HOME`, build a
