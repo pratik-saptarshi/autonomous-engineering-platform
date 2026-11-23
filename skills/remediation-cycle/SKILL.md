@@ -71,6 +71,18 @@ findings list). Record them verbatim in the ledger with the head SHA.
 Nothing has been established yet: a filed claim is an allegation, not a
 finding, regardless of the reviewer's track record.
 
+**One active cycle per PR — claim it at Phase 0.** Before any
+intake is consumed, check for an already-active cycle on the same
+PR: a cycle whose ledger exists in the work's records root with no
+recorded closure. If one is active, STOP and report — two cycles
+on one PR consume the same intake (the disclosed residuals below
+above all) and race each other's fixes and pushes. A second cycle
+starts only when the earlier cycle has closed, or when the owner
+rules the new cycle supersedes it; a supersession is recorded in
+both ledgers. The starting cycle records its claim in its own
+ledger at Phase 0: the PR, the coordinator, the date, and the
+pinned head. The claim is released when the cycle closes.
+
 **Disclosed residuals are consumed verbatim as intake.** When a
 prior cycle on the same PR closed with disclosed residuals — items
 it enumerated by ID, each with a recorded disposition, but did not
@@ -352,6 +364,8 @@ Stop and report to the controller/owner:
 
 - A design fork that cannot be resolved from the verification report
   and the code (Phase 3).
+- An already-active cycle on the same PR, found at the Phase 0
+  claim check, with no owner ruling superseding it.
 - Any fix that requires changing a prior closure's semantics, or a
   disclosed decision whose filed consequence arguably exceeds its
   disclosure and the boundary is unclear.
