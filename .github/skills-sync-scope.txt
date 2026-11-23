@@ -30,8 +30,11 @@ auto-merge-tripwire
 autobahn
 brainstorming
 catchup
+census-to-standing-check
 ci_gate_polling
 code_explorer
+consecutive-clean-run-gate
+coverage-overlap-audit
 craft-anything-protocol
 debloat
 dedash
@@ -39,10 +42,13 @@ defect-class-census
 dependency-triage-by-source
 detool
 diagnosing-superpowers
+different-family-reviewer
 direct_drive_execution
 disk-triage
 dispatching-parallel-agents
+disposition-in-place
 domain-modeling
+dual-verification
 egm-bootstrap
 egm-brainstorm
 egm-draft
@@ -51,6 +57,7 @@ egm-resolve
 egm-review
 egm-review-loop
 excalibur-quest
+exclusion-ledger-first-sweep
 executing-plans
 factchk
 feature-pr-pipeline
@@ -59,6 +66,7 @@ filing-upstream-prs
 filing-validated-issues
 finishing-a-development-branch
 fork-fleet-maintenance
+fork-sync-tree-delta
 grill-me
 grill-with-docs
 grilling
@@ -84,6 +92,7 @@ paperthin-attribution
 plan-review-integrator
 planning-wringer
 post-merge-spot-check
+prepare-to-checkpoint
 preregistered-pilot
 prism
 product-pr-workflow
