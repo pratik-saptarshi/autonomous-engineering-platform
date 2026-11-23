@@ -67,6 +67,10 @@ Only after the full classification exists:
 - `structural-replacement` subjects become structural follow-ups naming the parent whose replacement or upgrade clears them; no bump of the named crate is proposed.
 - `drop` subjects get no bump proposal of any kind.
 
+## Step 6 — Final inventory refresh before the classification is presented as complete
+
+The Step 1 inventories are a snapshot. Before the classification is presented as complete, run a final inventory refresh: re-enumerate all three inventories (Dependabot PRs, Dependabot alerts, cargo audit) and classify any subject that arrived after the snapshot, in the same pass. If a refresh cannot be run, the output must state the classification's as-of point and scope explicitly — the snapshot time, and that arrivals after that point are the next round's census, not findings this round missed. A classification presented as complete ("every finding classified") with neither a refresh nor an as-of/scope statement fails this procedure.
+
 ## Worked example — the 2026-11-07 Rocinante census (gold set)
 
 The procedure above, applied to the 2026-11-07 Rocinante dependency-tree check, reproduces this classification exactly. Census state: main at `6210b25`, cargo-audit 0.22.2, advisory DB 1422; pristine `src-tauri` audit = 11 vulnerabilities + 5 warnings; pristine `tools/sled-migration` audit = 1 vulnerability (ctutils).
@@ -124,4 +128,4 @@ Provenance note: subjects 1–16 and 22–23 are fully sourced (identity, versio
 
 ## Output shape
 
-Per triage round, report in this order: (1) the three inventory counts and how they were crossed; (2) the full classification table — every subject, its inventories, its class, and any not-a-finding exclusions named; (3) only then, bump proposals grouped by class (patch batch, individual transitive-majors, structural follow-ups), with `drop` subjects listed as dropped with their reason (no advisory, no PR) and the unlisted dry-run remainder recorded as deferred.
+Per triage round, report in this order: (1) the three inventory counts and how they were crossed, the final inventory refresh result (Step 6), and the classification's as-of point and scope; (2) the full classification table — every subject, its inventories, its class, and any not-a-finding exclusions named; (3) only then, bump proposals grouped by class (patch batch, individual transitive-majors, structural follow-ups), with `drop` subjects listed as dropped with their reason (no advisory, no PR) and the unlisted dry-run remainder recorded as deferred.
