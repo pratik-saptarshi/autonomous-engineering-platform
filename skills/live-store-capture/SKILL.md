@@ -109,7 +109,23 @@ printf '{"db_path": "%s/backup/store.db"}\n' "$SCRATCH" \
   > "$SCRATCH/home/.config/<store>/config.json"
 cp "$HOME/.config/<store>/embedders.json" "$SCRATCH/home/.config/<store>/"
 export HOME="$SCRATCH/home"
+export XDG_CONFIG_HOME="$SCRATCH/home/.config"
 ```
+
+Redirecting `HOME` alone does not close the live config off. An
+inherited `XDG_CONFIG_HOME` — or any store-specific config-path or
+database-path override variable — that still points at the live
+store is honoured by tools that use it, scratch `HOME`
+notwithstanding. Redirect `XDG_CONFIG_HOME` into the scratch HOME
+(as above) and unset, or redirect into the scratch tree, every
+store-specific override inherited from the caller's environment.
+
+Then verify, before any export or clear runs: resolve the database
+path the store's tooling will actually use under this environment
+and confirm the resolved database path is the copy's path inside
+the scratch tree. A resolution to any other path — above all the
+live store's — stops the capture here; do not proceed on the
+strength of the `HOME` redirect alone.
 
 ### 4. Exports and clears run against the copy only
 
