@@ -269,14 +269,14 @@ d0d4f2397c85a4426443ea955e699ef12568b41b408ec6122d4ec2433ee3a5f6  ./executing-pl
 f833693c8fce3700fc9f841562d80f8015cd40f652c168a3405ac3e46947a1fe  ./executing-plans/scripts/task-start
 17ff29bec3afb93b22854756637119c4d24dbde223a6ef023656486cd2501d8d  ./factchk/SKILL.md
 a789890e6629456a09de62c1227a68cc3a161ee5f9b3a94593e964eab66e892d  ./feature-pr-pipeline/LICENSE
-c8d8607c0bb62cdb59c05db2016f538b8e81318cfe47bc0ee47f1f04bc5e5ed0  ./feature-pr-pipeline/SKILL.md
+68fef86c1c6458b9715464b0ba86cef8be673b81a8dc73240db9acfcc20fdc95  ./feature-pr-pipeline/SKILL.md
 618a6ccc4bfa55270726568f5fcb51317869f9d93230e7cc45e82ffad2c9b5c3  ./feynman/SKILL.md
 0f2ba82145e45dea31766ffaf7154748fe942f7c1ca4598dd661be5d46fa9dbf  ./filing-upstream-prs/SKILL.md
 7ff187a50e22f8ab45e5547c2cbbe0463f57e16ab8f623d0fd25bf32c9f65c25  ./filing-validated-issues/SKILL.md
 092cd0364dcc6c8477a0fde8ce7b6e713b8c227084b4b03ab0de9414514376cc  ./finishing-a-development-branch/SKILL.md
 1ce4d3cde72954268951f68f9ccf74170a0754c1c9e3b27358b6c71fc321201c  ./fix-validation-protocol/SKILL.md
 80b02ec473847b04b7012870537595160df281f18749f8882c9f057eef41cd90  ./fork-fleet-maintenance/SKILL.md
-4705cd4bbff02ac9bc019e6ff9563afb4cf7bdff960146dae7d23deb5c1e2560  ./governed-exception/SKILL.md
+84dd786cb5a21dd654d5b32ca4ec91be57e0c221403dcfd5701a48443ee14de9  ./governed-exception/SKILL.md
 caaf8b8de1684f96e26b28f3c29189db5c89cce4b73e1c93d86164f66ef88637  ./grill-me/SKILL.md
 c061e39c3e0f9d865fb1b97556d485704af2a8a58f4b8221a8917a5c2074a32b  ./grill-me/agents/openai.yaml
 7de372c13488f1ee96cc11cd8907b56b6809cc93eef776eeddd37de6b6cbe3fe  ./grill-with-docs/SKILL.md
@@ -289,7 +289,7 @@ c061e39c3e0f9d865fb1b97556d485704af2a8a58f4b8221a8917a5c2074a32b  ./grill-me/age
 aace5819224458f199e632aa3674640a7389aefe5e3d8e613c2ef82d999348ce  ./humanizer/FORK.md
 4ac4810254ab36d45419141aeb8e69bf50652cfafe5b2dab947d06d44e5cbf96  ./humanizer/LICENSE
 eab4c7823c8cf40d86b2bc063a1af6b6f747ff046776cd661f068abbf3c4c2ef  ./humanizer/SKILL.md
-62560ca1689d5c60ee16b47e0b69b289f0c8061a161d794f6988de84c4a708f8  ./live-store-capture/SKILL.md
+236da2d85d4db44da53c23570f8c057892447cd5108eb6dbbc78c03f38ed805e  ./live-store-capture/SKILL.md
 0f23126b603dab77b78d06ee2098fd890d4cfddc8cb7f39c9cfa8d3c0b333513  ./lockfile-repair-by-regeneration/SKILL.md
 4f7808b62054416ad983043c4cd5dc107ece312a07a872c3b64e4113a20c80d2  ./macrothink/SKILL.md
 5efc42ffa98a67ea98c901f8106d346f36c397cd9b11dc0774ba4fa32fbdef40  ./mandela/SKILL.md
@@ -308,7 +308,7 @@ f4527b71ac6a2614c36fe1548ec1f61ccadb860585f7b55bde31dd045e7367d5  ./opencode-run
 7f9cd809b00c91d6eef4e8560fbb8eadd87baa7b9edf5319b5cc6ac4ae2e787e  ./outgoing-text-gate/SKILL.md
 6112e6e3fe4c6ea64ed9280ee89047ed7f62c080a840827fd61a24017545133a  ./overnight-parallel-lanes/FORK.md
 a789890e6629456a09de62c1227a68cc3a161ee5f9b3a94593e964eab66e892d  ./overnight-parallel-lanes/LICENSE
-9036bc3e329b1401e9d05148dbcc9f763f44fbeedfbb3dcfe8589516cf413a92  ./overnight-parallel-lanes/SKILL.md
+2dcd91ef0b28385a62fb0f07b0d9d3097d0ac60c66852537db7d808842cdfef5  ./overnight-parallel-lanes/SKILL.md
 1f1fb7e0b262ea8eecfe11781c3daf6ca5828e66430b9b4b9b41aea0428ccede  ./overseer/FORK.md
 68e77c21646de0f6f06a2b87b8d9ca7fd51349d2c4642acd7f66839fd542fd18  ./overseer/SKILL.md
 cb04f7bc630e350db432f8b2d9e992300ebe5e3f7bda2b9a3af1b8fe48969418  ./overseer/references/changelog.md
@@ -346,7 +346,7 @@ f07ed97a8212b79a6220bf0dbf8f5fe0b7ace2ddaa88b2cec36a4482ca92590d  ./re0-merge/SK
 ad031663c912f08c7ac90ea011a4bd208ab4940577751c8433e7f25538c3aa63  ./readchk/SKILL.md
 e279ed8cdbc9be8874d66158dab14089c48d62bf96881f5ffeb8f8e6ef5aed4a  ./receiving-code-review/SKILL.md
 e5b615dd033a2a1778a6118e6e99dc4462d4478ef4b198a1176c9ce7af1caa2e  ./recurring-workflows/SKILL.md
-cc09a35bddb563930ac9e3ef7be892e829c207c3d11195f76367d271f45e17b0  ./remediation-cycle/SKILL.md
+1188b5d4535ccc6fc3ae790809b56f2a69a5019300a89a140813ce0bc472f872  ./remediation-cycle/SKILL.md
 5cf49e3c87584e3fd2e8e33d05bd8ef2eb67e938fb06ce97e6770bab96d19810  ./reorder/SKILL.md
 4ed6dfa2cb436a0df8758758b6964f7ee03bc8fe2b5e3b53b451bf5b9263cdf3  ./requesting-code-review/SKILL.md
 cc88d8fe911d817fb128f128998e9e3bd5da5104b6de07885bbf73b780f740c6  ./requesting-code-review/code-reviewer.md
@@ -375,7 +375,7 @@ a7c307f0bed56e7ad9b6d9222b0ba17d625c2cafc1950d6d69811b33d3efc69e  ./ste80-humani
 2c325cd6bc20c8b9be5346dd0152b025494c14ff75d7496331eefeeedf513dad  ./ste80-humanizer/references/word-swaps.md
 474334f17a4ec2b45b51e9a64519085169f8cc7d907f77673ec81387b343780f  ./ste80-humanizer/references/worked-example.md
 8a70fbcdc25906355933fca3e411aaadf8746d232b13dd54497c800bf4572430  ./ste80-humanizer/scripts/ste_check.py
-2b001161d90f78d00f8a2701d86da4e60ac3ea09f953603ddc0c0b83322a41ac  ./stored-manifest-refresh/SKILL.md
+d20a6d52f1bcfc142d1c3c7e0b36b2ec9d1e4c87380b9bff4467433dd1aecaae  ./stored-manifest-refresh/SKILL.md
 0eca1eacef2f579cf4160abd1179d95305af410ef115a698dc642988104a5b24  ./subagent-driven-development/FORK.md
 c3d59e90ffd95281de5a3d9e70f2a65f9f106da8fa97af8178d297741a21bf8c  ./subagent-driven-development/SKILL.md
 8a77cb1334c70b56eba03f96ff1a513c092371d904ff0dd5482e9c25b12e648d  ./subagent-driven-development/implementer-prompt.md
