@@ -45,8 +45,16 @@ config — the config file whose change would mean the store's identity
 or settings moved:
 
 ```bash
-sha256sum "$HOME/.config/<store>/embedders.json"   # example guard file; use the store's own
+LIVE_GUARD="$HOME/.config/<store>/embedders.json"   # example guard file; use the store's own
+sha256sum "$LIVE_GUARD"
 ```
+
+Pin `LIVE_GUARD` now, under the live `HOME`, before anything overrides
+it. Step 3 replaces `HOME` with the scratch HOME; every later guard
+hash is taken against this pinned absolute path, never against a path
+re-resolved through the then-current `$HOME` — a re-resolved path
+points at the scratch copy, and hashing the copy cannot detect a live
+change.
 
 Record the value in the capture record. This is the before-hash; every
 later claim of "the live store did not change" rests on it.
@@ -91,7 +99,8 @@ the copy and is one more reason the live store is never exported.
 
 ### 5. Guard-hash after; halt on any difference
 
-Repeat the step 1 hash after all live-surface work. **If the
+Repeat the step 1 hash after all live-surface work, against the
+pinned live path: `sha256sum "$LIVE_GUARD"`. **If the
 after-hash differs from the before-hash in any character, halt and
 report the mismatch.** The capture is not presented as clean, and no
 further work proceeds on the strength of it.
