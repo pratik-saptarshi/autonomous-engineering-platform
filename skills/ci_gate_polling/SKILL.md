@@ -38,6 +38,16 @@
 
 - Label anything you could not read directly as unverified instead of folding it into a passing verdict.
 
+## Absent evidence is its own state
+
+- A direct read that confirms the pinned head has no check runs at all is not a poller failure and not a verdict on the code: record it as NO-RUN, its own evidence state, distinct from green, from red, and from the UNKNOWN of an empty, malformed or SHA-mismatched query. NO-RUN says CI never ran on this head; it says nothing about whether the head would pass.
+
+- A reviewer who has not reviewed the pinned head is likewise a state, not a gap to average over. When a reviewer filed on a superseded head and cannot or does not review the current head — a usage limit is the worked case — record REVIEWER-UNAVAILABLE for that reviewer and state plainly: no review of this head. Name who did verify the head instead, when anyone did; an unnamed verifier does not count, and the absent review is never folded into a clean-review claim.
+
+- Either state present changes the report, not just the record: any merge-readiness reporting for the head discloses NO-RUN and REVIEWER-UNAVAILABLE explicitly. A head in either state is never presented silently as cleanly reviewed or as a green run.
+
+- Precedent: PR #201 — Codex flagged findings at superseded head ddb9d949, filed no threads, hit its usage limit, and never re-reviewed the fixed head 5f46bf4b; the record states no re-review of that head by Codex, and names the verifiers of the fixed head: the PR-comment watch's independent verification and Sourcery's re-check of its three findings.
+
 ## New-head baseline taxonomy
 
 - After any re-pin or new head, rebuild the baseline before judging the change: run the full suite threaded, then re-run every failure solo.
