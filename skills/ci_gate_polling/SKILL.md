@@ -90,7 +90,9 @@
 
 - A "green" verdict on a head that predates the current vulnerability-DB or toolchain state is STALE, not clean. Re-check currency before citing it.
 
-- When several sibling PRs fail the same check, treat the shared pattern as a possible shared cause, not as several independent change defects: test the base branch itself on that check before attributing anything to any PR's diff.
+- When several sibling PRs fail the same check, treat the shared pattern as a possible shared cause, not as several independent change defects: test the base tree as of the failing runs on that check before attributing anything to any PR's diff. The base under test is the tree at the base SHA recorded for the failing runs — the base head those runs were taken against — checked out as it stood then, never the base branch's current head: the branch may have advanced since the runs, and a test against a later base answers a different question than the one the failures pose.
+
+- If the base state as of the failing runs cannot be established — no base SHA was recorded for the runs and that tree cannot be recovered — report the shared-cause attribution as UNVERIFIED and do not discharge it: neither classify the failure as a base defect nor return to per-PR attribution on the strength of a test against a different base tree. Name what is missing (the recorded base SHA, or a recoverable tree at it), so the attribution can be re-earned once the as-of base can be tested.
 
 - If the base reproduces the failure, classify it as a base defect for every sibling it reproduces on; if it does not, return to per-PR attribution. Either way, report per PR by applying the two rules above to that PR: name what the base diagnosis does and does not explain for it, and treat any green it earned before the base went red as stale under the stale-green rule, to be re-earned rather than inherited.
 
