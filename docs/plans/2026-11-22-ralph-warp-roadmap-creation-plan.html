@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plan v2 — Product Roadmap for the Ralph × Warp Self-Improvement Loop</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; max-width: 880px; margin: 2rem auto; padding: 0 1.25rem; line-height: 1.55; }
+  h1 { font-size: 1.55rem; line-height: 1.25; }
+  h2 { font-size: 1.2rem; margin-top: 2.2rem; border-bottom: 2px solid #4a90d9; padding-bottom: .3rem; }
+  h3 { font-size: 1.02rem; margin-top: 1.4rem; }
+  table { border-collapse: collapse; width: 100%; margin: .8rem 0; font-size: .92rem; }
+  th, td { border: 1px solid #8886; padding: .45rem .6rem; text-align: left; vertical-align: top; }
+  th { background: #4a90d922; }
+  .tag { display: inline-block; font-size: .72rem; font-weight: 700; letter-spacing: .04em; padding: .08rem .45rem; border-radius: 999px; border: 1px solid #8888; }
+  .verified { background: #2e9e5b33; } .defined { background: #e0a80033; } .blocked { background: #d94a4a33; } .proposed { background: #4a90d933; }
+  .callout { border-left: 4px solid #d94a4a; background: #d94a4a14; padding: .7rem 1rem; margin: 1rem 0; }
+  .note { border-left: 4px solid #4a90d9; background: #4a90d914; padding: .7rem 1rem; margin: 1rem 0; }
+  code { font-size: .88em; }
+  ul { padding-left: 1.3rem; }
+  li { margin: .3rem 0; }
+  .small { font-size: .85rem; opacity: .85; }
+</style>
+</head>
+<body>
+
+<h1>Plan v2 — Product Roadmap for the Ralph × Warp Self-Improvement Loop</h1>
+<p class="small">Lane: Self-improvement loop — Ralph × Warp · v2, 2026-11-22 (clean rewrite after planning-wringer panel; v1 superseded) · Method: AEP <code>product-roadmapping</code> skill · Status: for Pratik's checkpoint — R-01 is ruled; R-02…R-08 are open, with recommendations marked <span class="tag proposed">PROPOSED — not ruled</span>.</p>
+
+<h2>0. Executive takeaway</h2>
+<p>The roadmap's main reference is the wiring-design Space (<code>warp-self-improving-agents-x-ralph-loop-wiring-design</code>): Ralph is the inner loop; a slower improver iteration over the learnings file is the outer loop; an eval/regression harness and a promotion gate are the two components to build. R-01 is <strong>ruled (2026-11-22): instantiate the <code>ralph_loop</code> skill's markdown runtime at <code>~/workspace/ralph/</code></strong>. The wringer panel (Feasibility: FEASIBLE-WITH-CHANGES; Devil's Advocate: WOUNDED; Risk: three P1s) verified the skeleton and broke three of v1's load-bearing claims, all repaired in this version: <strong>(1)</strong> the NeuroStrata retrieval every iteration depends on is not performable as the skill prescribes — the client script does not exist and the daemon is down — so C-03 is DEFINED, not VERIFIED, and proving a live search round-trip is Stage A work; <strong>(2)</strong> the promotion gate's "revert by git" premise was false — neither <code>~/</code> nor <code>~/workspace</code> is a git repository — so rollback machinery must be built, not assumed; <strong>(3)</strong> the shipped skill already promotes learnings to NeuroStrata ungated, so the gate cannot be sequenced after the behaviour it gates: Stage A's first task is a skill amendment imposing an interim no-inscription rule. This version also adds what v1 lacked entirely: an outcome gate that can fail, and a product kill criterion (§6). The roadmap run is priced as a Trio with numeric budgets (§4); elaboration is depth-graded and round-gated, so the expensive detail is only ever written for the next stage — Stage A's own first iterations double as the spike that retires the design's biggest unknowns.</p>
+
+<h2>1. Sources and aliases</h2>
+<table>
+<tr><th>Alias</th><th>Source</th><th>Role</th></tr>
+<tr><td><code>SPACE</code></td><td>Wiring-design Space, slug <code>warp-self-improving-agents-x-ralph-loop-wiring-design</code></td><td><strong>Main reference.</strong> Normative for the design: two-loop architecture, 9-stage mapping, guardrails, stop conditions.</td></tr>
+<tr><td><code>RPT</code></td><td>Deep-research report, <code>~/workspace/research_notes/warp-self-improving-ralph-loop-20261122-2026/report.md</code></td><td>Evidence under the Space; Warp anatomy, Ralph mechanics, and the open-risks register (§12) this plan must carry, not drop.</td></tr>
+<tr><td><code>SKILL</code></td><td><code>~/workspace/custom-skills/ralph_loop/SKILL.md</code> + <code>references/roles.md</code></td><td>Inner loop as specified: backlog shape, roles, iron law, learnings discipline, promotion instruction (see conflict, §3 R-08 note and §6 Stage A task 1).</td></tr>
+<tr><td><code>CONN</code></td><td><code>~/workspace/custom-connectors/custom.neurostrata/CONNECTOR.md</code></td><td>The actual NeuroStrata connector surface — outranks <code>SKILL</code> where they disagree about how search/inscription work.</td></tr>
+<tr><td><code>REPO</code></td><td><code>~/workspace/repos/ralph</code> (zomars/ralph bash loop system)</td><td>Present on disk; not the substrate (R-01 ruled against it). Not shown to be running; no role in this plan.</td></tr>
+<tr><td><code>LEARN</code></td><td>Saved memory: 2026-11-11 Ralph runtime correction; narrowed daemon-contact rule (2026-11-05); NeuroStrata primacy + lesson-entry gate (2026-10-26); D4 skill rule (AEP canonical; live edits take effect immediately, before review)</td><td>Past learning applied in §2, §3 (R-07), §6, §7.</td></tr>
+</table>
+
+<h2>2. Environment probes (Law 6 — recorded, not asserted; re-probed by the panel, 2026-11-22)</h2>
+<table>
+<tr><th>Probe</th><th>Result</th><th>Consequence</th></tr>
+<tr><td><code>~/workspace/ralph/</code> runtime (backlog, learnings, runs, <code>bin/backlog.py</code>)</td><td><strong>Absent</strong> — directory does not exist. No Ralph cron exists in any cron definition tree.</td><td>The inner-loop runtime is instantiated as product work (Stage A). C-01/C-02/C-04 DEFINED.</td></tr>
+<tr><td>NeuroStrata client prescribed by <code>SKILL</code> (<code>custom-connectors/custom.neurostrata/bin/client.py</code>)</td><td><strong>Absent</strong> — the connector directory holds only <code>CONNECTOR.md</code>, <code>connector.yaml</code>, <code>.write-lock</code>. <code>CONN</code>: search runs only through the MCP server while the daemon is up; the auto-spawn path "has never been live-tested on this machine." Daemon state itself is <strong>volatile</strong> (watchdog/idle-reaper cycle): observed not-running at 2026-11-22 ~20:00 CST and healthy/listening minutes later — no point-in-time state is recorded as a fact here; the durable claims are the missing client and the untested auto-spawn.</td><td>C-03 DEFINED. Stage A carries a task to establish and live-test a working search/inscription path before any feature is seeded on retrieval.</td></tr>
+<tr><td>Version control over memory files</td><td><strong>Absent</strong> — <code>git -C ~ rev-parse</code> and <code>git -C ~/workspace rev-parse</code> both fail: not git repositories. <code>~/MEMORY.md</code> has no history. NeuroStrata demotion per <code>CONN</code> is supersede-by-new-memory; archiving in the <code>global</code> namespace is refused.</td><td>"Revert by git" is struck as a premise. Building rollback (git-init the Ralph tree, a MEMORY.md snapshot discipline, a supersede procedure) is Stage A/D scope (§3 R-04).</td></tr>
+<tr><td>VM headroom</td><td>Volatile: MemAvailable observed 0.9–1.25 GiB across probes on 2026-11-22 (virtio balloon ~4.9–5.6 of 7.9 GiB); ~55 crons already rostered.</td><td>Every product stage gate carries a numeric iteration ceiling and a memory floor (§6); Stage E scheduling is sized against this, not assumed.</td></tr>
+<tr><td>Role-skill names invoked by <code>SKILL</code></td><td>All present except one name drift: <code>SKILL</code> says "receiving-review"; the installed skill is <code>receiving-code-review</code>.</td><td>One-line skill fix, folded into Stage A task 1's amendment.</td></tr>
+</table>
+
+<h2>3. Decision briefs — rulings</h2>
+<p>Recommendations are <span class="tag proposed">PROPOSED — not ruled</span> until Pratik rules. A stage depending on an open ruling is <span class="tag blocked">BLOCKED-ON-RULING</span>: feature-level only, no ACs, no gate criteria.</p>
+
+<h3>R-01 — Inner-loop substrate — <span class="tag verified">RULED 2026-11-22: (a)</span></h3>
+<p>Instantiate the <code>SKILL</code> markdown runtime at <code>~/workspace/ralph/</code>. Proof obligation carried into Stage A: one dry iteration end-to-end.</p>
+
+<h3>R-02 — Improver cadence</h3>
+<ul>
+<li><strong>Options:</strong> (a) Weekly cron (Warp's documented pattern). (b) Every N completed inner iterations. (c) Manual until the digest proves itself.</li>
+<li><strong>Recommendation:</strong> <span class="tag proposed">PROPOSED</span> (c) for the first two improver cycles, then re-rule with digest-quality evidence. A solo loop's correction feed is thin and self-referential (<code>RPT</code> §12.6); automating the schedule before the signal is proven buys motion, not learning.</li>
+<li><strong>Cheapest test:</strong> two manual improver runs; each must produce ≥1 proposal Pratik would merge, else the feed — not the cadence — is the problem.</li>
+<li><strong>Blocks:</strong> Stage C gate criteria; Stage E entirely (no scheduling assumption is made anywhere in this plan until R-02 lands).</li>
+</ul>
+
+<h3>R-03 — Promotion threshold (learnings → long-term memory)</h3>
+<ul>
+<li><strong>Options:</strong> recurrence counter reaching 2, 3, or 5 — always plus a green eval run and Pratik's approval.</li>
+<li><strong>Recommendation:</strong> <span class="tag proposed">PROPOSED</span> 3, with a discount rule: recurrences attested only by loop-internal roles (which share a base model with the worker — <code>RPT</code> §12.4) count once until a human-originated correction or an independent verifier attestation corroborates. The bare analogy to the 3-failure arbitration constant in v1 is withdrawn as a justification; 3 stands only as a starting value to be re-ruled on real counter distribution.</li>
+<li><strong>Cheapest test:</strong> run Stage A/B with counters instrumented from day one; at the first promotion review, rule the threshold against the observed distribution instead of in the abstract.</li>
+<li><strong>Blocks:</strong> Stage D ACs.</li>
+</ul>
+
+<h3>R-04 — Probation and rollback mechanics</h3>
+<ul>
+<li><strong>Ground truth (replaces v1's false premise):</strong> memory files are <em>not</em> versioned today (§2). Rollback must be built: git-init <code>~/workspace/ralph/</code>; a snapshot discipline for <code>~/MEMORY.md</code> edits; NeuroStrata demotion = a superseding memory per <code>CONN</code> (no delete; <code>global</code> archiving refused).</li>
+<li><strong>Options:</strong> (a) Probation by iterations (flagged for the next 5 inner iterations; recurrence of the addressed failure auto-reverts). (b) Probation by time (2 weeks). (c) No probation; manual revert only.</li>
+<li><strong>Recommendation:</strong> <span class="tag proposed">PROPOSED</span> (a), on the built rollback machinery above.</li>
+<li><strong>Blocks:</strong> Stage D ACs. Stage D's gate must include a forced-revert drill against a <em>NeuroStrata</em> inscription, not only against files.</li>
+</ul>
+
+<h3>R-05 — Eval harness form</h3>
+<ul>
+<li><strong>Options:</strong> (a) Frozen eval-case file, deterministic checks over mined failures. (b) Rubric/LLM-judge scoring. (c) Both, deterministic first.</li>
+<li><strong>Recommendation:</strong> <span class="tag proposed">PROPOSED</span> (c) sequenced: (a) ships in Stage B and gates promotion; (b) admitted only where no deterministic check exists, never as sole promotion gate.</li>
+<li><strong>Cheapest test:</strong> seed the harness with the first 3–5 real mined failures from Stage A; if they resist deterministic form, that finding shapes (b).</li>
+<li><strong>Blocks:</strong> Stage B task mapping; Stage D promotion criteria.</li>
+</ul>
+
+<h3>R-06 — Home and venue — <span class="tag proposed">PROPOSED</span></h3>
+<p>Live working copy in <code>~/workspace/custom-skills/</code> + <code>~/workspace/ralph/</code>; durable skill landings in AEP via sync-PR to <code>develop</code> (D4). Roadmap matrix and working papers stay in this lane. <strong>Constraint added by the panel:</strong> because a live skill edit takes effect immediately, before review (D4), the improver's write surface is a <em>loop-local</em> briefs directory (Warp's companion-skill pattern) — promotion from loop-local briefs into shared <code>custom-skills/</code> is a separate, explicitly ruled step (see C-06 split, §6).</p>
+
+<h3>R-07 — Daemon-contact venue (new, from the panel)</h3>
+<ul>
+<li><strong>Conflict:</strong> the narrowed daemon-contact rule (2026-11-05) bars campaign/implementation subagents from touching the live production store during repo work; <code>SKILL</code> mandates a live-store search before every worker spawn and inscription after iterations.</li>
+<li><strong>Options:</strong> (a) Ralph iterations are owner-directed operation, inside the rule's sanctioned route (status check first, sanctioned start, dedupe-search, verify) — the lane's standing practice. (b) Ralph workers are campaign subagents for this purpose; retrieval must be re-routed (e.g., a parent-mediated search the worker never performs directly).</li>
+<li><strong>Recommendation:</strong> <span class="tag proposed">PROPOSED</span> (a), with the sanctioned-route steps named in Stage A's retrieval task.</li>
+<li><strong>Blocks:</strong> Stage A retrieval task design.</li>
+</ul>
+
+<h3>R-08 — Who may set <code>done</code> (new, from the panel)</h3>
+<ul>
+<li><strong>Conflict:</strong> <code>SKILL</code>'s roles.md has the Reviewer set <code>done</code> on a pass, then an independent verifier checks afterward; the research's guardrail is verifier-only (<code>RPT</code> §10–§11). Two contradictory status laws.</li>
+<li><strong>Recommendation:</strong> <span class="tag proposed">PROPOSED</span> verifier-only: Reviewer moves to <code>in-review</code>; only the independent verifier moves to <code>done</code>. Stage A task 1's skill amendment pins this text.</li>
+<li><strong>Blocks:</strong> Stage A task mapping (small; resolved by the same amendment either way Pratik rules).</li>
+</ul>
+<div class="note"><strong>Discovered conflict (logged, per Law 1):</strong> <code>SKILL</code>'s reflect section already instructs ungated promotion — inscribe durable lessons to NeuroStrata "for every iteration that produced a durable lesson," no threshold, no eval, no approval. The promotion gate (C-08) is therefore a <em>skill amendment</em>, not an addition. Until the amendment lands, the interim rule is: <strong>learnings.md only; nothing inscribes to NeuroStrata or MEMORY.md from the loop</strong>. The amendment is Stage A task 1 and ships via the D4 sync-PR path.</div>
+
+<h2>4. Run pricing (Stage 0 of the roadmapping method — with numbers)</h2>
+<table>
+<tr><th>Parameter</th><th>Value</th></tr>
+<tr><td>Panel</td><td><strong>Trio</strong> — Capability Mapper, Use-Case + Acceptance Analyst, Synthesizer (who also decomposes). The method's Trio "fits multi-stage roadmaps with open rulings"; this run has 5 product stages and 7 open rulings. (v1's Solo pricing contradicted both the method and its own Stage-2 exit check, which requires a staffed non-author reviewer — the Trio's Analyst/Mapper cross-verification covers it.) Plus the adversarial seats (planning-wringer) at final assembly and each product-stage boundary.</td></tr>
+<tr><td>Mode</td><td><strong>Round-gated</strong> — Pratik checkpoints after the capability map, after the feature set, and at final assembly. One-shot forbidden while any load-bearing ruling is open.</td></tr>
+<tr><td>Rounds and budget</td><td>Round 1 (capability map): 1 author pass + 1 full cross-verification pass; budget ≈ 120k tokens, ≤1 day wall-clock. Round 2 (feature set + briefs): ≈ 100k tokens. Round 3 (Stage A full elaboration + assembly): ≈ 150k tokens. Wringer at assembly: 3 panel seats + 1 independent reviewer ≈ 120k tokens. <strong>Run ceiling: ≈ 500k tokens total</strong>; a round that would exceed its budget stops and reports instead of finishing silently.</td></tr>
+<tr><td>Retry cap</td><td>2 per round; a round whose exit check fails twice escalates to Pratik.</td></tr>
+<tr><td>Deliverables</td><td>(1) Machine-readable traceability matrix (JSON, versioned — amendments are new versions with a row-level changelog, never silent edits) — the product; (2) HTML rendering; (3) gate register; (4) disagreement log; (5) a lint script that actually runs over the matrix.</td></tr>
+</table>
+
+<h2>5. How the roadmap will be built (method stages → outputs → exit checks)</h2>
+<table>
+<tr><th>Step</th><th>Work</th><th>Exit check</th></tr>
+<tr><td>1. Baseline</td><td>§1 aliases adopted. Hygiene rule fixed now, not deferred: any artifact destined for AEP or a public repo passes a banned-token grep (standing public-hygiene list, incl. "Shepherd") before it leaves the lane; lane-internal papers are exempt and say so.</td><td>Every alias resolves; hygiene rule written (it is, here).</td></tr>
+<tr><td>2. Capability map</td><td>C-rows from §6's seed, re-verified semantically by a non-author (100% of capability rows).</td><td>Verification record attached; every UNVERIFIED row (if any survive) listed by name.</td></tr>
+<tr><td>3. Decision briefs</td><td>§3 carried into the matrix as <code>depends_on_ruling</code> fields; recommendations stored as PROPOSED, never as values.</td><td>Every <code>depends_on_ruling</code> value has a brief; blocked stages labelled.</td></tr>
+<tr><td>4. Feature set</td><td>Features seeded only from VERIFIED/DEFINED capabilities; discovery loop (named consumer + evidence + kill criterion); considered-and-killed list kept.</td><td>Traceability lint passes on existing rows; negative space recorded.</td></tr>
+<tr><td>5. Use cases + ACs</td><td>Per feature: flows + failure flows; each AC mechanically checkable, with failure witness and eval level (L0–L3); safety-bearing ACs floor at L2. Blocked-stage features get none.</td><td>Every non-blocked feature ≥1 UC; every UC ≥1 AC; every AC has check + witness + one eval level.</td></tr>
+<tr><td>6. Function/task mapping</td><td>Depth-graded: Stage A full task mapping (one implementer + one reviewer per task); Stage B module-level; Stages C–E feature-level only. <em>Blocked-stage override (Law 3):</em> any stage still BLOCKED-ON-RULING at its mapping round stays feature-level regardless of horizon — Stage B's module-level mapping happens only if R-05 has landed by then.</td><td>Depth table honoured.</td></tr>
+<tr><td>7. Assembly + gates</td><td>Stages in dependency order; gates name evidence artifacts in advance and their owner (Pratik). Blocked stages appear as label + brief only.</td><td>Gate register complete; outcome gate and kill criterion present (§6).</td></tr>
+<tr><td>8. Verification</td><td>Structural lints run over the matrix + semantic sample (100% of capability and safety-bearing rows, ≥1-in-4 of the rest, verifier-selected) + planning-wringer.</td><td>Lint output + sample record attached; every wringer P1 folded in or overruled in writing with a ground-truth citation.</td></tr>
+</table>
+
+<h2>6. Seed capability map, product stages, outcome gate</h2>
+<table>
+<tr><th>ID</th><th>Capability</th><th>Status</th><th>Evidence</th><th>Seeds</th></tr>
+<tr><td>C-01</td><td>Inner-loop iteration: pick one unblocked backlog task, run role-separated subagents, advance status only on verification evidence</td><td><span class="tag defined">DEFINED</span></td><td><code>SKILL</code> spec; §2 probe (runtime absent)</td><td>F-01, F-02</td></tr>
+<tr><td>C-02</td><td>Independent verification of each iteration by a fresh agent</td><td><span class="tag defined">DEFINED</span></td><td><code>SKILL</code>, "Verify before advancing" (standing rule 2026-10-17); status-law conflict → R-08</td><td>F-02</td></tr>
+<tr><td>C-03</td><td>Pre-iteration memory retrieval (NeuroStrata search, ≤5 hits into the worker brief) and post-iteration inscription path</td><td><span class="tag defined">DEFINED</span></td><td><code>CONN</code> surface; §2 probe (client absent, daemon down, auto-spawn untested). <em>v1's VERIFIED was false.</em></td><td>F-01</td></tr>
+<tr><td>C-04</td><td>Learnings file discipline: ≤15 rules, recurrence counters, why + source task IDs; safety-bearing rules exempt from counter-decay (retirement of a safety-bearing rule requires the human gate)</td><td><span class="tag defined">DEFINED</span></td><td>Counters: <code>SKILL</code>; why + source IDs and the retirement hazard: <code>RPT</code> §11, §12.5</td><td>F-03</td></tr>
+<tr><td>C-05</td><td>Correction mining: harvest human corrections and verifier failures into a feedback digest, with provenance (source + date) quoted per item</td><td><span class="tag defined">DEFINED</span></td><td><code>SPACE</code>/<code>RPT</code> Warp improver mechanics</td><td>F-04</td></tr>
+<tr><td>C-06a</td><td>Improver iteration over a <strong>loop-local</strong> briefs directory: propose the smallest generalising edit as a reviewable change</td><td><span class="tag defined">DEFINED</span></td><td><code>SPACE</code> synthesis; Warp companion-skill write-surface restriction (<code>RPT</code> §9)</td><td>F-05</td></tr>
+<tr><td>C-06b</td><td>Promotion of a loop-local brief edit into shared <code>custom-skills/</code> — a separate, explicitly human-ruled step (D4: live edits take effect immediately)</td><td><span class="tag defined">DEFINED</span></td><td><code>LEARN</code> D4 record</td><td>F-05</td></tr>
+<tr><td>C-07</td><td>Eval/regression harness over frozen cases mined from real failures</td><td><span class="tag defined">DEFINED</span></td><td><code>SPACE</code> must-build gap #1; R-05</td><td>F-06</td></tr>
+<tr><td>C-08</td><td>Promotion gate for learnings → MEMORY.md / NeuroStrata: threshold + green evals + human approval, probation, and a <em>built</em> rollback (git-init + snapshot discipline + supersede procedure)</td><td><span class="tag defined">DEFINED</span></td><td><code>SPACE</code> must-build gap #2; §2 probe (no version control exists); R-03, R-04</td><td>F-07</td></tr>
+<tr><td>C-09</td><td>Scheduling of inner iterations and the improver cycle via cron (with a goal/tracked-item owner, as cron tooling requires)</td><td><span class="tag defined">DEFINED</span></td><td>Design authority: <code>SPACE</code> (improver on a schedule; inner-loop triggers) + <code>RPT</code> §9 (Warp's weekly Oz cron). Cron system exists; no Ralph job does. <em>v1's VERIFIED attached to the wrong object.</em></td><td>F-08</td></tr>
+<tr><td>C-10</td><td>Loop observability and circuit breakers: runs log, numeric iteration/cost ceilings per stage, memory floor, stall arbitration with the failure counter enforced by <code>backlog.py</code> (durable across triggers)</td><td><span class="tag defined">DEFINED</span></td><td><code>SKILL</code>; <code>RPT</code> §11 circuit breakers</td><td>F-09</td></tr>
+<tr><td>C-11</td><td>State integrity for the markdown runtime: atomic writes or lockfile in <code>backlog.py</code>, per-iteration backlog diff by the verifier, corruption detection (JSON fallback if markdown proves fragile — <code>RPT</code> §12.3)</td><td><span class="tag defined">DEFINED</span></td><td><code>RPT</code> §12.3</td><td>F-01</td></tr>
+<tr><td>C-12</td><td>Intake guard: backlog text is untrusted data, never instructions; every worker brief carries the treat-as-data frame; promotions quote provenance</td><td><span class="tag defined">DEFINED</span></td><td><code>SKILL</code>, first safeguard (carried verbatim, Law 1)</td><td>F-01, F-04, F-05</td></tr>
+</table>
+
+<table>
+<tr><th>Product stage</th><th>Scope</th><th>Status</th></tr>
+<tr><td><strong>A — Inner loop live, safely</strong></td><td>Task 1: skill amendment (interim no-inscription rule; the status law as ruled under R-08; receiving-code-review name fix) via D4 sync-PR. Task 2: instantiate runtime (backlog/learnings/runs + <code>backlog.py</code> with lockfile, durable arbitration counter, state-integrity checks — C-11/C-12). Task 3: establish + live-test the NeuroStrata search path (C-03 proof: one real round-trip, sanctioned route per R-07). Task 4: git-init the Ralph tree + MEMORY.md snapshot discipline (rollback substrate for C-08). Task 5: minimal metrics baseline from iteration 1 (cost per done task, verifier rejection rate, proposal counts) — moved forward from Stage E per the panel. Then: dry iteration + first real iterations. <strong>Gate G-A:</strong> 3 consecutive iterations complete, each with runs.md lines and verifier verdict files on record, zero ungated inscriptions, and the metrics baseline recording cost-per-done-task and verifier rejection rate for every one of the 3 iterations. Evidence named: <code>runs.md</code>, verdict files, amendment PR link.</td><td>Elaborated first (next stage). R-07, R-08 gate its task design.</td></tr>
+<tr><td><strong>B — Feedback + eval harness</strong></td><td>F-04 correction mining/digest; F-06 frozen eval cases + harness.</td><td><span class="tag blocked">BLOCKED-ON-RULING</span> R-05 — feature level only, brief in §3.</td></tr>
+<tr><td><strong>C — Improver iteration</strong></td><td>F-05 improver cycle over loop-local briefs (C-06a); shared-skill promotion (C-06b) separate.</td><td><span class="tag blocked">BLOCKED-ON-RULING</span> R-02 — feature level only, brief in §3.</td></tr>
+<tr><td><strong>D — Promotion gate + canary</strong></td><td>F-07 threshold, approval, probation, rollback incl. NeuroStrata supersede; promoted entries land as <em>proposals</em> to the memory curator, not direct writes to MEMORY.md.</td><td><span class="tag blocked">BLOCKED-ON-RULING</span> R-03, R-04 — feature level only, briefs in §3.</td></tr>
+<tr><td><strong>E — Scheduling + hardening</strong></td><td>F-08 cron triggers (owner-assigned); metrics feedback to the improver.</td><td><span class="tag blocked">BLOCKED-ON-RULING</span> R-02 — feature level only, brief in §3. No scheduling end-state is assumed before R-02 lands.</td></tr>
+</table>
+<div class="callout"><strong>Outcome gate (G-O) and product kill criterion — new in v2.</strong> The loop is judged on outcomes, not motion, at the end of Stage C and again at Stage D: <strong>G-O passes only if</strong> (i) the improver's proposal merge rate over the first two cycles is ≥ 50% (a cycle whose proposals are all rejected is evidence against the loop, not a pass — v1's G-C, which total rejection satisfied, is struck), and (ii) no promoted rule has required revert, and (iii) verifier rejection rate and cost-per-done-task over the Stage C window are no worse than over Stage A's first-3-iteration window (the named reference window the baseline task actually creates — there is no pre-loop verifier, so no pre-loop baseline exists to compare against). <strong>Kill criterion:</strong> if two consecutive improver cycles produce zero <em>merged</em> proposals, or a promoted rule is cited as the cause of a failure or a stop in any other lane's work, the experiment stops — loop scheduling (if any) is disabled, learnings and briefs are archived, and the lane reports the failure with evidence. That observation, stated in advance, is what "the loop is not working" means.</div>
+
+<h2>7. What past learning changed in this plan</h2>
+<ul>
+<li><strong>Substrate and retrieval corrections</strong> — the 2026-11-11 correction and the panel's live probes: the runtime doesn't exist (Stage A builds it) and neither does the skill's prescribed NeuroStrata client (Stage A proves a real path).</li>
+<li><strong>Daemon-contact rule (2026-11-05)</strong> — surfaced as R-07 instead of being silently violated by the skill's mandated store access.</li>
+<li><strong>D4's immediate-effect clause</strong> — live skill edits act before review; hence the C-06a/C-06b split and the loop-local write surface, mirroring Warp's companion-skill restriction.</li>
+<li><strong>NeuroStrata primacy + lesson-entry gate</strong> — promotion targets are the primary memory system and its pointer layer; Stage D lands promotions as curator proposals so two writers don't drift MEMORY.md.</li>
+<li><strong>Review-escape lessons</strong> — a defect class with a machine-checked census stops recurring: the eval harness is mined-failure-driven and built (Stage B) before promotion exists (Stage D); G-B's shown-to-bite requirement stands.</li>
+<li><strong>Planning documents ship with the work</strong> — stage outputs that land as AEP PRs carry their plan extract under <code>docs/plans/</code>.</li>
+</ul>
+
+<h2>8. Wringer record (panel, 2026-11-22)</h2>
+<p class="small">Full auditable record: <code>2026-11-22-wringer-record.html</code> in this lane's files (panel seats' findings with evidence, plus the Phase 4 independent review: <strong>APPROVED-WITH-CHANGES</strong> — its P1 (G-O baseline), P2s, and P3s are folded into this version as amendments: G-O leg (iii) redefined against Stage A's first-3-iteration window, §2 probes reworded to durable claims with volatile values marked, Stage A task 1 made conditional on R-08, kill-criterion terms defined, C-02/C-09 evidence pointers completed).</p>
+<table>
+<tr><th>Seat</th><th>Verdict</th><th>P1s and their disposition in v2</th></tr>
+<tr><td>Feasibility Analyst</td><td>FEASIBLE-WITH-CHANGES</td><td>C-03 false VERIFIED → DEFINED + Stage A proof task (§2, §6). R-04 git premise false → brief rewritten, rollback scoped as build work (§3). Pricing/budget → Trio + numbers (§4). Status-law inconsistency → R-08. G-A fixed: N=3, evidence named (§6).</td></tr>
+<tr><td>Devil's Advocate</td><td>WOUNDED</td><td>Unfalsifiable premise → outcome gate G-O + kill criterion (§6). §4 label-not-price → §4 numbers. C-09 → DEFINED. Skill-vs-gate conflict → logged (§3 note) + Stage A task 1. §0/§6 drift → this clean rewrite; matrix becomes the single source for stage status. Recommendations marked PROPOSED throughout. Proportionality (P3) → answered by depth-grading: Stage A's first iterations are the spike; later stages stay feature-level until evidence returns.</td></tr>
+<tr><td>Risk Assessor</td><td>3 P1s</td><td>Revert fiction → rollback built (§3 R-04, Stage A task 4, Stage D NeuroStrata-revert drill). Gate-after-behaviour → interim no-inscription amendment is Stage A task 1. Improver blast radius → C-06a/C-06b split, loop-local surface. Plus: metrics moved to Stage A; state integrity C-11; safety-rule retirement protection in C-04; intake guard C-12; arbitration counter durable in C-10; daemon venue R-07; MEMORY.md contention → curator-proposal rule in Stage D.</td></tr>
+</table>
+
+<h2>9. Next step</h2>
+<p>Wringer complete (Phase 4: APPROVED-WITH-CHANGES, changes folded). Handoff: Pratik's checkpoint on the plan, his execution-mode call, and — when he's ready — rulings on R-02…R-08 in whatever order he takes them. The roadmap run's Round 1 (capability map) starts on his go after the handoff.</p>
+
+</body>
+</html>

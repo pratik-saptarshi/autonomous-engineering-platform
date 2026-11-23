@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wringer Record — Roadmap Creation Plan (2026-11-22)</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; max-width: 880px; margin: 2rem auto; padding: 0 1.25rem; line-height: 1.55; }
+  h1 { font-size: 1.45rem; } h2 { font-size: 1.15rem; margin-top: 2rem; border-bottom: 2px solid #4a90d9; padding-bottom: .3rem; }
+  code { font-size: .88em; } li { margin: .35rem 0; } .small { font-size: .85rem; opacity: .85; }
+</style>
+</head>
+<body>
+<h1>Wringer Record — Roadmap Creation Plan</h1>
+<p class="small">Planning-wringer run on <code>2026-11-22-roadmap-creation-plan.html</code> v1 → v2, 2026-11-22. Panel: three parallel persona agents, each instructed to verify claims with tools against ground truth. Independent review: one fresh agent, no prior context. This file is the auditable record cited by plan v2 §8.</p>
+
+<h2>Phase 2 — Feasibility Analyst: FEASIBLE-WITH-CHANGES</h2>
+<ul>
+<li><strong>P1-1</strong> Inner loop's mandatory NeuroStrata step cannot be executed as specified: <code>bin/client.py</code> does not exist (connector dir holds only CONNECTOR.md, connector.yaml, .write-lock); CONNECTOR.md contradicts the skill's lazy-start claim (search only via MCP while daemon up; auto-spawn "never been live-tested"); live probe: daemon not running, lock free. C-03's VERIFIED false. → v2: C-03 DEFINED; Stage A proof task; §2 probe corrected.</li>
+<li><strong>P1-2</strong> R-04's "revert by git" premise false: <code>git -C ~ rev-parse</code> and <code>git -C ~/workspace rev-parse</code> both fail. → v2: R-04 brief rewritten; rollback scoped as build work; NeuroStrata demotion = superseding memory.</li>
+<li><strong>P2-1</strong> Solo+reviewer contradicts the method (Trio fits multi-stage + open rulings) and the plan's own Stage-2 exit check. → v2: Trio.</li>
+<li><strong>P2-2</strong> No budget numbers. → v2: §4 numeric budgets, ~500k token ceiling.</li>
+<li><strong>P2-3</strong> Gate sketches drafted for blocked stages; stale "(R-01)" footnote. → v2: B–E label + brief only; footnote removed.</li>
+<li><strong>P2-4</strong> G-A not a gate (N undefined, no evidence named). → v2: N=3, evidence named.</li>
+<li><strong>P2-5</strong> Status-transition contract three-way inconsistent (roles.md vs SKILL.md vs RPT). → v2: R-08.</li>
+<li><strong>P3s</strong> receiving-review name drift; C-04 evidence re-pointed to RPT §11; §0 attribution slip; banned-token grep fixed at baseline; cron owner requirement noted in C-09. All folded.</li>
+</ul>
+
+<h2>Phase 2 — Devil's Advocate: WOUNDED</h2>
+<ul>
+<li><strong>P1-1</strong> C-03 VERIFIED is false (same ground truth as Feasibility P1-1, independently found). → folded as above.</li>
+<li><strong>P1-2</strong> Premise unfalsifiable: no gate measures improvement; v1's G-C passed on 100% rejection; no product kill criterion. → v2: outcome gate G-O + kill criterion (§6).</li>
+<li><strong>P1-3</strong> §4 "price" was a label (no rounds, no token/wall-clock budget) while verification commitments were large. → v2: §4 numbers.</li>
+<li><strong>P2-1</strong> C-09 VERIFIED attached to a neighbouring mechanism. → v2: DEFINED.</li>
+<li><strong>P2-2</strong> Plan silently overrides SKILL's ungated promotion instruction. → v2: conflict logged (§3 note); gate reframed as skill amendment.</li>
+<li><strong>P2-3</strong> Post-ruling edits internally inconsistent (§0/§6 vs §3/§8). → v2: clean rewrite; matrix becomes single source for stage status.</li>
+<li><strong>P2-4</strong> Recommendations as pre-decisions (threshold-by-analogy; G-E assuming R-02). → v2: PROPOSED tags; analogy withdrawn; G-E struck.</li>
+<li><strong>P3-1</strong> §2 probe thinner than its rhetoric ("only live Ralph" = present, not shown running). → v2: §1 REPO row corrected.</li>
+<li><strong>P3-2</strong> Proportionality: plan owed a paragraph pricing the spike-and-learn alternative. → v2: answered via depth-grading — Stage A's first iterations are the spike; later stages stay feature-level.</li>
+</ul>
+
+<h2>Phase 2 — Risk Assessor: three P1s</h2>
+<ul>
+<li><strong>P1-1</strong> Promotion reversibility premise false (git probe; NeuroStrata append-style inscription into the shared <code>global</code> namespace). → v2: rollback built; Stage D forced-revert drill against a NeuroStrata inscription.</li>
+<li><strong>P1-2</strong> Gate sequenced after the behaviour it gates (SKILL.md line 66: ungated inscription "for every iteration that produced a durable lesson"). → v2: Stage A task 1 = interim no-inscription skill amendment via D4 sync-PR.</li>
+<li><strong>P1-3</strong> Improver blast radius: live skill edits take effect immediately, fleet-wide (D4), unlike Warp's repo-local companion skill. → v2: C-06 split (C-06a loop-local proposals; C-06b shared-skill promotion as a separate ruled step).</li>
+<li><strong>P2-1</strong> Self-graded promotion signal; metrics deferred to Stage E. → v2: metrics baseline in Stage A task 5; R-03 discount rule for loop-internal attestations.</li>
+<li><strong>P2-2</strong> Daemon-contact rule conflict unmentioned. → v2: R-07.</li>
+<li><strong>P2-3</strong> Markdown state fragility/concurrency; RPT §12.3 mitigation dropped. → v2: C-11.</li>
+<li><strong>P2-4</strong> No cost/iteration ceilings in product stages; VM headroom. → v2: ceilings + memory floor in §6 gates; §2 probe.</li>
+<li><strong>P2-5</strong> Learnings-cap retirement can delete rare-catastrophe rules (RPT §12.5). → v2: safety-bearing exemption in C-04.</li>
+<li><strong>P2-6</strong> Plan's own Law-3 violation/drift. → v2: clean rewrite (see Feasibility P2-3).</li>
+<li><strong>P3s</strong> Intake guard missing a C-row → C-12. Arbitration counter must be backlog.py-enforced → C-10. MEMORY.md two-writer contention → Stage D curator-proposal rule. All folded.</li>
+</ul>
+
+<h2>Phase 4 — Independent Reviewer: APPROVED-WITH-CHANGES</h2>
+<ul>
+<li>All load-bearing §2/§3/§6 factual claims independently re-verified true (filesystem, CONNECTOR.md full reread, git probes, SKILL.md:43/66, roles.md, roadmapping taxonomy/Trio quote, RPT pointers).</li>
+<li><strong>P1</strong> G-O leg (iii) compares against a pre-loop baseline that cannot exist (verifier and metrics are Stage A creations). → v2 amendment: leg (iii) redefined against Stage A's first-3-iteration window vs the Stage C window.</li>
+<li><strong>P2</strong> §2 daemon probe not reproducible (daemon state volatile; reviewer's probe found it healthy/listening). → v2 amendment: probe row reworded to durable claims, daemon state marked volatile/time-stamped.</li>
+<li><strong>P2</strong> §8 wringer record unverifiable (no artifacts). → this file, cited from §8.</li>
+<li><strong>P3s</strong> VM figures off (re-probe: MemAvailable ≈1.23 GiB, balloon ≈4.9 GiB — volatile); Stage A task 1 wording assumes R-08 (made conditional); soft terms in kill criterion/G-A (defined); C-09/C-02 evidence pointers completed; §4 deliverables gain matrix version/changelog; §5 step 6 gains the blocked-stage override note. All folded as v2 amendments.</li>
+</ul>
+</body>
+</html>
