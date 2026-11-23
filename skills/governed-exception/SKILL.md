@@ -16,16 +16,25 @@ description: >-
 
 **Announce at start:** "I'm using the governed-exception skill to govern this exception."
 
-## The rule's home
+## The rule's home — and its actual status
 
-The rule itself is a standing rule in AGENTS.md (see the drafted
-wording in this item's programme record; adoption is provisional
-until its independent wording check passes). That postulate is the
-single source of the rule. This skill is the thin companion: it
-points at the postulate and carries the two procedures the
-postulate names — the blast-radius hunt and the renewal review.
-If this skill and the postulate ever disagree, the postulate wins
-and the disagreement is reported.
+This rule was drafted as a postulate for AGENTS.md, and that
+adoption did not happen. The record is specific: at this item's
+build, the drafted wording **failed its independent H8 wording
+check**, the wording was **not inserted** into AGENTS.md, and the
+item was stopped pending the owner's re-ruling. The postulate is
+therefore not a standing rule in AGENTS.md, and this skill does not
+rest on it as an authority.
+
+Until the owner re-rules and an adopted text exists, this skill's
+procedures stand as the programme record's proposed pattern:
+provisional guidance, applied as this skill states them — not as
+an adopted standing rule, and never cited as one. This skill is
+the thin companion to that record: it carries the two procedures
+the drafted postulate names — the blast-radius hunt and the
+renewal review. If an adopted postulate later appears and this
+skill disagrees with it, the adopted text wins and the
+disagreement is reported.
 
 ## When to use
 
@@ -109,9 +118,10 @@ review rule) is **contested**: it rests on two instances from a
 single programme, both ruled on the same day. The other elements
 are the shape those same rulings gave their exceptions, stated
 here as the pattern to test, not as a long-settled convention.
-Treat the bar as the standing rule the postulate states, and
-record any case that strains it rather than silently widening or
-dropping it.
+Treat the bar as this skill states it — provisional guidance
+under the status recorded in "The rule's home" above, not an
+adopted standing rule — and record any case that strains it
+rather than silently widening or dropping it.
 
 ## Worked examples (values, not the rule)
 
