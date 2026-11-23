@@ -1,0 +1,5 @@
+name: "governed-exception"
+title: "Governed Exception"
+description: "Govern an exception to a finding that has no fix route: never a bare ignore — every governed exception carries a cohort-aligned review_by date, a multi-limb exit condition, a renewal evidentiary bar, a blast-radius hunt result, and, for deferrals, a bounded version range plus a hard re-rule deadline on a tracked issue; a renewal supported only by a date bump is a failed review."
+category: "Work and knowledge"
+include_in_prompt: true

@@ -1,0 +1,5 @@
+name: "stored-manifest-refresh"
+title: "Stored Manifest Refresh"
+description: "Refresh a stored integrity manifest only by that system's documented procedure, prove the regeneration moved exactly the expected entries, and verify both integrity legs locally before anything is committed. Covers the AEP skills manifest (check_skills_manifest.py --write/--check inside a scratch clone, plus the skills-sync-scope.txt membership edit for new skills) and vendor-integrity sha256sum -c style manifests. Use when a change has stale-dated a stored manifest or a regeneration's diff needs proving before commit."
+category: "Work and knowledge"
+include_in_prompt: true
