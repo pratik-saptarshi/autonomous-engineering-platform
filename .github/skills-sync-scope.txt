@@ -36,6 +36,7 @@ craft-anything-protocol
 debloat
 dedash
 defect-class-census
+dependency-triage-by-source
 detool
 diagnosing-superpowers
 direct_drive_execution
@@ -64,6 +65,7 @@ grilling
 handoff
 hate
 humanizer
+lockfile-repair-by-regeneration
 macrothink
 mandela
 merge_integration_verification

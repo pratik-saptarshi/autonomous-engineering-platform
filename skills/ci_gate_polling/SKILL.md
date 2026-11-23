@@ -80,7 +80,11 @@
 
 - A "green" verdict on a head that predates the current vulnerability-DB or toolchain state is STALE, not clean. Re-check currency before citing it.
 
-- Precedents: PR #105 — all four failing legs log-verified pre-existing on same-day develop runs; dap go-security — main itself red on GO-2026-6859 at go1.27.3, so PR #213's clean status was stale.
+- When several sibling PRs fail the same check, treat the shared pattern as a possible shared cause, not as several independent change defects: test the base branch itself on that check before attributing anything to any PR's diff.
+
+- If the base reproduces the failure, classify it as a base defect for every sibling it reproduces on; if it does not, return to per-PR attribution. Either way, report per PR by applying the two rules above to that PR: name what the base diagnosis does and does not explain for it, and treat any green it earned before the base went red as stale under the stale-green rule, to be re-earned rather than inherited.
+
+- Precedents: PR #105 — all four failing legs log-verified pre-existing on same-day develop runs; dap go-security — PRs #211, #214 and #215 all failing the same check, main itself red on GO-2026-6859 at go1.27.3 (fixed in 1.27.4), so none of those failures was attributable to their diffs, and PR #213's clean status was stale.
 
 ## Available connectors
 

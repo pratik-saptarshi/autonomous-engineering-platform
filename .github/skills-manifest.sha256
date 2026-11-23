@@ -213,13 +213,14 @@ b3dd527a9d0f8990fcc6be530513db02093fc5c659148d16b1da682223ea7a4a  ./autobahn/SKI
 0b5ccbbd57f62d3ed88993f7940b5ee0e5c0fc9b21c550c623da4f6292e47daf  ./brainstorming/scripts/stop-server.sh
 579e87ba4851fd3ddbece7c12ea31c04e52ad39e3ba5bd3426598c9bf29f1a96  ./brainstorming/visual-companion.md
 0805a569bd711f16fc163881bbc1017d77d25c756fb4ed33ed7c2a1d19ba9924  ./catchup/SKILL.md
-5738ed0fd8598b9ff19b91cdaa67a7b26394749eadcdf0d31fd4128eb0243bc6  ./ci_gate_polling/SKILL.md
+2d761d835fa432298cc1c21c1a9376ee06217261bffce3398e4032692ff8e0ba  ./ci_gate_polling/SKILL.md
 d9667c93762aec5805f864c30f75cba57c3a6825e39ac908a278d5ac8889cbed  ./code_explorer/SKILL.md
 aee4f5b559106d766a11c63d15153d1ca93b07b775e57dcceb63d074dffb1931  ./craft-anything-protocol/FORK.md
 073254014ddcd2bacdc5556fcb366c9eba95aa2768b1aefa3f7bc7382008ebcd  ./craft-anything-protocol/SKILL.md
 dfc15de621d0ddec7c638bb0760e5d41f42de1d208c0b36123881643e0125af0  ./debloat/SKILL.md
 32b534fc55be9747b8376981a2bc370cd2d6da24373fd8ee4f8e146e30d757dd  ./dedash/SKILL.md
 e654e8706faf8f041c846c7666233add880d413224112193fdf709b08ec422f2  ./defect-class-census/SKILL.md
+4083d70d38d7f7d64cab91bd2bb404e5ca5d505e0a94452312022683d7b27c76  ./dependency-triage-by-source/SKILL.md
 5b0e09dfce526f672cd22b11eaa3644b66cbc1b5f263fc1593580a1c704fc192  ./detool/SKILL.md
 404f44862501018001d9e2a6fdfcbc07d467a4a4b653675bb7dfa6402612f78e  ./diagnosing-superpowers/FORK.md
 ee50ef9a009ec51ec0b83c24e9804439f1ee5da95dcb8dade3f673bbd943193f  ./diagnosing-superpowers/SKILL.md
@@ -286,6 +287,7 @@ c061e39c3e0f9d865fb1b97556d485704af2a8a58f4b8221a8917a5c2074a32b  ./grill-me/age
 aace5819224458f199e632aa3674640a7389aefe5e3d8e613c2ef82d999348ce  ./humanizer/FORK.md
 4ac4810254ab36d45419141aeb8e69bf50652cfafe5b2dab947d06d44e5cbf96  ./humanizer/LICENSE
 eab4c7823c8cf40d86b2bc063a1af6b6f747ff046776cd661f068abbf3c4c2ef  ./humanizer/SKILL.md
+10de0f085a0b52789d54ba9aa937275ad5587a2f8327855ff63d6c48f596e20d  ./lockfile-repair-by-regeneration/SKILL.md
 4f7808b62054416ad983043c4cd5dc107ece312a07a872c3b64e4113a20c80d2  ./macrothink/SKILL.md
 5efc42ffa98a67ea98c901f8106d346f36c397cd9b11dc0774ba4fa32fbdef40  ./mandela/SKILL.md
 a3acc26ead55a7fb9ece2df96bfce19b6d03abd4a6b27322460f1fe4a25234a1  ./merge_integration_verification/SKILL.md
@@ -315,7 +317,7 @@ a3f8d514b2bdd3e16ed555c53add0b3381d3890fe2af312859c0b043867c1fb3  ./paperthin-at
 05d3cb2410d26c15ff070520509dceecf4e9fcb5325ab718ca37791514b21b0a  ./plan-review-integrator/FORK.md
 1555b6200f2431e417a2a0e45fae287ed58f8a4a32d6075971df311cde78dda2  ./plan-review-integrator/SKILL.md
 5cd499d4354b67e0d8c085ef6a35c66dcfdd68d4c1d46493b7bd0c174aa7aac4  ./planning-wringer/SKILL.md
-a292f70cc7b35a44bea203ffd7bb08384a4135337a51a93c8be81ad0aa18bca1  ./post-merge-spot-check/SKILL.md
+79303da01985af7f437e439ec19bfe570669231f77ace746905d29037b983eee  ./post-merge-spot-check/SKILL.md
 54c7fa17b79fbbda2167398133c9eed45b9369b1aedd60c61e8cbd3b5a06272f  ./preregistered-pilot/SKILL.md
 c7ed6a24e508c8fd3e04c1c4dc45fc92af03aac230502d8df7ada5cc3533ae97  ./prism/SKILL.md
 2781d2996efcd153601ad1fd6c4ea7c23b43acb4b2f1a209d1b489c05c5d4cad  ./product-pr-workflow/SKILL.md
@@ -350,7 +352,7 @@ e852b653078b8e29046962589c38b65f63055ba2322588b2080b66ae01be4d12  ./retro/SKILL.
 cb6fb9d7e6b4be5975f41f6def1dd00a1255bad5d9b02696b124c924a8b8745c  ./retro/agents/openai.yaml
 a11371a69941aa1fad931ea998fb9f72e3c967ea055c4010d38f5a5309d2767d  ./reverse_engineering/SKILL.md
 b50eb4193c80eeca8c6f562beeac80ac914ff3ed7b7b73859277629633abfc25  ./roundtable_review/SKILL.md
-580313549bfd11edb21dad6d3ddd9a9c8047f1f32ea33d301e7949b335137c99  ./rust-pre-pr-gate/SKILL.md
+1ca670b1e2516bffd46237018ae2209ff1075e8a8d5f4060c7644e4abef19cb9  ./rust-pre-pr-gate/SKILL.md
 a789890e6629456a09de62c1227a68cc3a161ee5f9b3a94593e964eab66e892d  ./scrubbing-public-tree/LICENSE
 225cb92522a4bc0337a22a48c7440e7fe8117d5f2920c222aed9c7554d50befd  ./scrubbing-public-tree/SKILL.md
 aef15a498650f5de03ad108d5f5ff13d3e7b7e4fa32047a51d2731b0aef838c0  ./self_test_gym/SKILL.md

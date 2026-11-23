@@ -1,0 +1,5 @@
+name: "lockfile-repair-by-regeneration"
+title: "Lockfile Repair by Regeneration"
+description: "Repair a diverged Cargo.lock by discarding the branch lock, taking main's lock wholesale as the base, and applying only targeted cargo update -p <pkg> --precise <ver> updates for the intended edges, then proving the diff against main is exactly the allowlisted edge flips with every unrelated pin byte-identical. Use when a branch lockfile has diverged from main, drift pins have accumulated, or a lockfile-only bump must be repaired without losing its one intended edge."
+category: "Work and knowledge"
+include_in_prompt: true

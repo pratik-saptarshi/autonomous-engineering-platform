@@ -1,6 +1,6 @@
 ---
 name: rust-pre-pr-gate
-version: 1.0.1
+version: 1.0.2
 author: pratik-saptarshi
 description: >-
   The standing pre-PR gate for Rust repos: before opening or pushing to a PR,
@@ -17,7 +17,7 @@ Standing rule (owner-directed, 2026-11-10): before opening or pushing to a PR in
 ## The five legs
 
 | Leg | Command (via the script) | Calibration |
-| ----- | -------------------------- | ------------- |
+|-----|--------------------------|-------------|
 | fmt | `cargo fmt --all -- --check` | **Blocking** |
 | clippy | `cargo clippy --all-targets --locked` | Report-only until its baseline is remediated |
 | deny | `cargo deny check` | Report-only until its baseline is remediated |
@@ -51,6 +51,14 @@ A clone without the hook is a gate that exists only on paper; check for the syml
 - A baseline record is not a pass and not a merge-readiness finding. Never silently waive a failing leg, and never report a baseline record as PASS.
 
 - Precedents: upstream PR #184's cycle gate record vs pristine c1fba663; PR #206 remediation "pre-PR gate baseline record"; the checkpoint fix's windows leg reproduced identically on pristine develop.
+
+- Baselines are recorded per tree, not globally: each tree carries its own denied/advisory baseline set, and a failure attributable only to that tree's baselined set produces a baseline record for that tree — never a plain PASS. Worked values: the sled tree's denied set is empty (`{}`); the src-tauri tree's denied set is `{RUSTSEC-2026-0543}`. A set recorded for one tree does not baseline a failure in another tree, and the global quick-xml plateau ignores above are separate from any tree's own set.
+
+- When a leg is baselined because its configured target has no prebuilt for the tree's toolchain, the baseline record names that target/toolchain cause — generalising the windows ort-sys prebuilt absence above from an example into a requirement. A baseline record for such a leg that does not name the cause is incomplete.
+
+- Gate-fidelity cross-check: before any PR push, compare each local gate leg against CI's equivalent on the same tree. When a local leg passes while CI's equivalent fails on the same tree — the PR #120 re-pin shape, where the gate reported PASS while a direct `cargo fmt --check` showed diffs — report the discrepancy before pushing; the local pass does not stand until the discrepancy is explained.
+
+- Held advisories: an advisory held at the owner's ruling — the RUSTSEC-2026-0592 shape — is reported as HELD. A held advisory is not silently baselined: it does not enter any tree's baseline set, and the gate report names it as held until the owner rules otherwise.
 
 ## Quiet-window discipline
 
