@@ -22,14 +22,20 @@ The Source column names pratik-saptarshi forks (default branch `develop`) wherev
 | autobahn | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | brainstorming | pratik-saptarshi/superpowers | MIT | |
 | catchup | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62); extended locally (2026-11): ruling-batch decision memos |
+| census-to-standing-check | Authored locally | MIT | Convert a defect class into a machine-checked standing check scoped by the invariant |
 | ci_gate_polling | Authored locally | MIT | Poll PR CI to a trustworthy verdict: pin the head SHA and the expected check set first; includes the HELD-for-maintainer verdict |
 | code_explorer | pratik-saptarshi/fastcontext-agent-tools | MIT | Methodology only; upstream package uninstallable |
+| consecutive-clean-run-gate | Authored locally | MIT | Re-point automation or expand a pilot only after N consecutive clean runs |
+| coverage-overlap-audit | Authored locally | MIT | Audit bundle/ownership coverage overlap before paying or renewing |
 | debloat | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | dedash | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | defect-class-census | Authored locally | MIT | Sibling-defect census from one confirmed bug: classify CONFIRMED / PLAUSIBLE / REFUTED, file only the confirmed set |
 | delegate_code_review | pratik-saptarshi/open-code-review | Apache-2.0 | Delegation mode; needs LLM key for full review |
 | detool | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
+| different-family-reviewer | Authored locally | MIT | Review independence requires a different model family, enforced by allowlist |
 | dispatching-parallel-agents | pratik-saptarshi/superpowers | MIT | |
+| disposition-in-place | Authored locally | MIT | Tracker discipline: status in place, append-only history before overwrite |
+| dual-verification | Authored locally | MIT | Re-verify a delegated review verdict first-hand before publishing |
 | egm-bootstrap | pratik-saptarshi/elephant-goldfish-model | Apache-2.0 | Vendored as bundle (e9e1f06a); wrapper with repo-relative paths |
 | egm-brainstorm | pratik-saptarshi/elephant-goldfish-model | Apache-2.0 | Vendored as bundle (e9e1f06a); wrapper with repo-relative paths |
 | egm-draft | pratik-saptarshi/elephant-goldfish-model | Apache-2.0 | Vendored as bundle (e9e1f06a); wrapper with repo-relative paths |
@@ -37,12 +43,14 @@ The Source column names pratik-saptarshi forks (default branch `develop`) wherev
 | egm-resolve | pratik-saptarshi/elephant-goldfish-model | Apache-2.0 | Vendored as bundle (e9e1f06a); wrapper with repo-relative paths |
 | egm-review | pratik-saptarshi/elephant-goldfish-model | Apache-2.0 | Vendored as bundle (e9e1f06a); wrapper with repo-relative paths |
 | egm-review-loop | pratik-saptarshi/elephant-goldfish-model | Apache-2.0 | Vendored as bundle (e9e1f06a); wrapper with repo-relative paths |
+| exclusion-ledger-first-sweep | Authored locally | MIT | Recurring sweeps read a seen/owned exclusion ledger before generating picks |
 | executing-plans | pratik-saptarshi/superpowers | MIT | Extended locally with git-conventions bullet |
 | factchk | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | feature-pr-pipeline | Authored locally | MIT | Standard feature-to-PR workflow: plan, subagent-driven TDD, independent review, hygiene, PR with CI and review-comment gating |
 | feynman | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | fix-validation-protocol | Authored locally | MIT | Validate a fix someone else landed: map every finding to its diff hunk, mutation-prove the tests, verify thread state as well as code state |
 | fork-fleet-maintenance | Authored locally | MIT | Adjudicate the fork fleet: license gate before any upstream sync, same-name mirror discipline, named exceptions |
+| fork-sync-tree-delta | Authored locally | MIT | Verify a fork sync by exact tree delta against the upstream tip |
 | grilling | pratik-saptarshi/skills | MIT | |
 | hate | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | macrothink | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
@@ -58,8 +66,9 @@ The Source column names pratik-saptarshi forks (default branch `develop`) wherev
 | plannotator-gate | Authored locally | MIT | Mechanical plan-approval gate over the pinned Plannotator tool: owner reviews and annotates plans, decision archive preserved; pattern in ops/tool-adoption/ |
 | plannotator-inbox | Authored locally | MIT | Asynchronous owner decision queue over the Plannotator Inbox: batched rulings routed back to the asking session; pattern in ops/tool-adoption/ |
 | post-merge-spot-check | Authored locally | MIT | Gate battery on a merged PR at its pinned head: merged-tree behaviour, byte comparison, independent oracle, attribution proof |
-| prism | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | pr-fleet-review | Authored locally | MIT | Batch review of a repo's open PRs: pinned inventory, one reviewer per PR, fixed verdict taxonomy, gated publication |
+| prepare-to-checkpoint | Authored locally | MIT | Agent prepares to the irreversible step; the owner executes it |
+| prism | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | product-pr-workflow | Authored locally | MIT | PR-lifecycle umbrella: intake, independent review, verdict taxonomy, owner ruling, verified remediation, merge gating, closure |
 | product-refinement-loop | Created locally | MIT | Distilled from 2026-10-18 profile-decisions refinement |
 | prototype | pratik-saptarshi/skills | MIT | |
