@@ -37,7 +37,7 @@ Classify **every** finding into **exactly one** of the four classes below. The c
 
 | Class | Definition |
 |---|---|
-| `patch-only` | A patch-version bump (same major, same minor for 0.x: same 0.minor) resolvable in the lockfile with no `Cargo.toml` change clears the finding. |
+| `patch-only` | A patch-version bump (same major, same minor for 0.x: same 0.minor) resolvable in the lockfile with no `Cargo.toml` change clears the finding. The subject must be a Cargo crate: a non-Cargo subject (a GitHub Action `uses:` reference, an external tool) is never `patch-only`, whatever its version delta, because no lockfile edit can move it. |
 | `transitive-major` | The available fix or proposed bump is **not** patch-resolvable: a major bump, or a 0.x minor bump (breaking under 0.x semver), or a non-cargo major (e.g. a GitHub Action major). It needs a manifest change or a deliberate compatibility decision, and must not be folded into a patch-only batch. |
 | `structural-replacement` | No version bump of the named crate clears the finding: the crate must leave the tree, be replaced, or arrive at a fixed major only as a side effect of replacing/upgrading the structural parent that pulls it in. Patch bumps of the crate or its entry points demonstrably do not clear it. Never fold this class into `transitive-major`, and never propose a bump of the named crate as its fix. |
 | `drop` | The crate has **no advisory and no Dependabot PR**. It is not bumped, however attractive the dry-run offer looks. See Step 3. |
@@ -62,7 +62,7 @@ The dry-run offer list is always much larger than the finding set (in the worked
 
 Only after the full classification exists:
 
-- `patch-only` subjects form the lockfile-only bump batch.
+- `patch-only` subjects form the lockfile-only bump batch. Cargo subjects only: a non-Cargo subject never enters this batch, whatever its version delta — there is no lockfile edit that moves a `uses:` reference or an external tool.
 - `transitive-major` subjects are split out individually, each with its manifest change or compatibility decision stated; they never ride in the patch-only batch.
 - `structural-replacement` subjects become structural follow-ups naming the parent whose replacement or upgrade clears them; no bump of the named crate is proposed.
 - `drop` subjects get no bump proposal of any kind.
@@ -76,7 +76,7 @@ The procedure above, applied to the 2026-11-07 Rocinante dependency-tree check, 
 - **PR inventory: 12 rows** — 11 Dependabot bumps + Release Please PR #120 (subject 24, not-a-finding). Reporting "12 Dependabot PRs" without noticing the Release Please PR is a provenance failure.
 - **Alert inventory: 8 rows** — 4 on zip (#19, #20, #21, #22) + 4 on rustls (#15, #16, #17, #18). No alerts exist for tokio, ctutils, webpki-roots / rustls-webpki, or the zbus trio — those are audit-only.
 - **Audit inventory: 17 rows** — `src-tauri`: 11 vulnerabilities (zip ×4: RUSTSEC-2026-0367/-0368/-0369/-0429; rustls ×4: -0346/-0347/-0348/-0349; rustls-webpki -0382; webpki-roots -0381; ctutils -0385) + 5 warnings (tokio -0386 unsound; arrow-data -0442 unsound; zvariant -0370, zbus_names -0371, zvariant_derive -0372 unmaintained); `tools/sled-migration`: 1 vulnerability (ctutils -0385, second lockfile — same advisory, separate row).
-- **Class totals over the 23 classified subjects:** patch-only **9**, transitive-major **7**, structural-replacement **5**, drop **2**.
+- **Class totals over the 23 classified subjects:** patch-only **8**, transitive-major **8**, structural-replacement **5**, drop **2**.
 
 ### The 24 subjects
 
@@ -104,7 +104,7 @@ Inventories: PR = Dependabot/open-PR inventory, AL = Dependabot alerts, AU = car
 | 18 | actions/setup-node — PR #125 proposes 4 → 7: a GitHub Action major. *(Class inferred, as subject 17.)* | PR | transitive-major |
 | 19 | pnpm/action-setup — PR #130 proposes 4 → 6: a GitHub Action major. *(Class inferred, as subject 17.)* | PR | transitive-major |
 | 20 | trufflesecurity/trufflehog — PR #129 proposes 3.97.9 → 3.99.0: a non-cargo tool minor, not lockfile-patch-resolvable. *(Class inferred, as subject 17.)* | PR | transitive-major |
-| 21 | taiki-e/install-action — PR #127 proposes 2.87.23 → 2.87.26: a patch-delta Action update. *(Class inferred from the patch-only version delta.)* | PR | patch-only |
+| 21 | taiki-e/install-action — PR #127 proposes 2.87.23 → 2.87.26: a patch-delta Action update. *(Class inferred from the version delta under the class definitions: as a non-Cargo subject it is not lockfile-resolvable, so it is not `patch-only`; it is split out individually like every transitive-major subject, with its `uses:` reference edit stated.)* | PR | transitive-major |
 | 22 | ureq — appears **only** as a dry-run offer (→ 3.5.1). No advisory, no Dependabot PR; duckdb-internal plumbing via libduckdb-sys → duckdb, not app code; the offered move is additionally a minor bump dragging ureq-proto 0.6 → 0.7. Dropped with stated reasons. | dry-run only — none of the three | drop |
 | 23 | serde_json — appears **only** as a dry-run offer (→ 1.0.154). No advisory, no Dependabot PR. Dropped with stated reasons. | dry-run only — none of the three | drop |
 | 24 | Release Please PR #120 (0.2.2) — an open PR that is not a dependency finding at all. | PR | **NOT-A-FINDING** — named as excluded, never classified into a bump class |
