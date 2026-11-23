@@ -56,8 +56,13 @@ re-resolved through the then-current `$HOME` — a re-resolved path
 points at the scratch copy, and hashing the copy cannot detect a live
 change.
 
-Record the value in the capture record. This is the before-hash; every
-later claim of "the live store did not change" rests on it.
+Record the value in the capture record. This is the before-hash; it
+backs claims about the guard config only — that the store's identity
+and settings, as carried by that file, did not change. The guard
+hashes the config file and nothing else: it does not detect changes
+to the live store's *data*, and no claim that the live store's data
+did not change may rest on it. Data-state claims need their own
+evidence, named in the capture record.
 
 ### 2. Take a backup copy; never capture from the live store
 
@@ -102,7 +107,9 @@ the copy and is one more reason the live store is never exported.
 Repeat the step 1 hash after all live-surface work, against the
 pinned live path: `sha256sum "$LIVE_GUARD"`. **If the
 after-hash differs from the before-hash in any character, halt and
-report the mismatch.** The capture is not presented as clean, and no
+report the mismatch.** A matching after-hash speaks only for the
+guard config (step 1's narrowed claim) — never, on its own, for the
+live store's data. The capture is not presented as clean, and no
 further work proceeds on the strength of it.
 
 ### 6. Reconcile to the expected reachable count
