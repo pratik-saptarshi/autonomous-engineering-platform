@@ -44,7 +44,7 @@ Classify **every** finding into **exactly one** of the four classes below. The c
 
 Non-dependency PRs found in the PR inventory (e.g. a release-automation PR) are named as **not-a-finding** and excluded from the classification set — never classified into a bump class, and never silently counted as dependency PRs.
 
-## Step 3 — The drop rule (no advisory + no PR = drop)
+## Step 3 — The drop rule (no advisory + no PR + a subject-specific reason = drop)
 
 A crate that appears in **none** of the three inventories — no advisory in the cargo audit inventory, no Dependabot PR, no Dependabot alert — and is present only as a `cargo update --dry-run` offer is classified **`drop`: do not bump** only when a subject-specific stated reason beyond inventory absence supports dropping it (the worked example's dropped subjects each carry one: duckdb-internal plumbing plus a minor-bump drag for ureq; a stated no-advisory/no-PR disposition for serde_json). Inventory absence alone is not a sufficient reason: a dry-run-only offer with no subject-specific stated reason is **deferred, not dropped** (Step 4) — the same criterion in both steps.
 
@@ -128,4 +128,4 @@ Provenance note: subjects 1–16 and 22–23 are fully sourced (identity, versio
 
 ## Output shape
 
-Per triage round, report in this order: (1) the three inventory counts and how they were crossed, the final inventory refresh result (Step 6), and the classification's as-of point and scope; (2) the full classification table — every subject, its inventories, its class, and any not-a-finding exclusions named; (3) only then, bump proposals grouped by class (patch batch, individual transitive-majors, structural follow-ups), with `drop` subjects listed as dropped with their reason (no advisory, no PR) and the unlisted dry-run remainder recorded as deferred.
+Per triage round, report in this order: (1) the three inventory counts and how they were crossed, the final inventory refresh result (Step 6), and the classification's as-of point and scope; (2) the full classification table — every subject, its inventories, its class, and any not-a-finding exclusions named; (3) only then, bump proposals grouped by class (patch batch, individual transitive-majors, structural follow-ups), with `drop` subjects listed as dropped with their subject-specific stated reason (beyond no advisory, no PR) and the unlisted dry-run remainder recorded as deferred.
