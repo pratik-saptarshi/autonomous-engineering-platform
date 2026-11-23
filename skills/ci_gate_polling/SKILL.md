@@ -38,6 +38,16 @@
 
 - Label anything you could not read directly as unverified instead of folding it into a passing verdict.
 
+## Absent evidence is its own state
+
+- A direct read that confirms the pinned head has no check runs at all is not a poller failure and not a verdict on the code: record it as NO-RUN, its own evidence state, distinct from green, from red, and from the UNKNOWN of an empty, malformed or SHA-mismatched query. NO-RUN says CI never ran on this head; it says nothing about whether the head would pass.
+
+- A reviewer who has not reviewed the pinned head is likewise a state, not a gap to average over. When a reviewer filed on a superseded head and cannot or does not review the current head — a usage limit is the worked case — record REVIEWER-UNAVAILABLE for that reviewer and state plainly: no review of this head. Name who did verify the head instead, when anyone did; an unnamed verifier does not count, and the absent review is never folded into a clean-review claim.
+
+- Either state present changes the report, not just the record: any merge-readiness reporting for the head discloses NO-RUN and REVIEWER-UNAVAILABLE explicitly. A head in either state is never presented silently as cleanly reviewed or as a green run.
+
+- Precedent: PR #201 — Codex flagged findings at superseded head ddb9d949, filed no threads, hit its usage limit, and never re-reviewed the fixed head 5f46bf4b; the record states no re-review of that head by Codex, and names the verifiers of the fixed head: the PR-comment watch's independent verification and Sourcery's re-check of its three findings.
+
 ## New-head baseline taxonomy
 
 - After any re-pin or new head, rebuild the baseline before judging the change: run the full suite threaded, then re-run every failure solo.
@@ -80,7 +90,13 @@
 
 - A "green" verdict on a head that predates the current vulnerability-DB or toolchain state is STALE, not clean. Re-check currency before citing it.
 
-- Precedents: PR #105 — all four failing legs log-verified pre-existing on same-day develop runs; dap go-security — main itself red on GO-2026-6859 at go1.27.3, so PR #213's clean status was stale.
+- When several sibling PRs fail the same check, treat the shared pattern as a possible shared cause, not as several independent change defects: test the base tree as of the failing runs on that check before attributing anything to any PR's diff. The base under test is the tree at the base SHA recorded for the failing runs — the base head those runs were taken against — checked out as it stood then, never the base branch's current head: the branch may have advanced since the runs, and a test against a later base answers a different question than the one the failures pose.
+
+- If the base state as of the failing runs cannot be established — no base SHA was recorded for the runs and that tree cannot be recovered — report the shared-cause attribution as UNVERIFIED and do not discharge it: neither classify the failure as a base defect nor return to per-PR attribution on the strength of a test against a different base tree. Name what is missing (the recorded base SHA, or a recoverable tree at it), so the attribution can be re-earned once the as-of base can be tested.
+
+- If the base reproduces the failure, classify it as a base defect for every sibling it reproduces on; if it does not, return to per-PR attribution. Either way, report per PR by applying the two rules above to that PR: name what the base diagnosis does and does not explain for it, and treat any green it earned before the base went red as stale under the stale-green rule, to be re-earned rather than inherited.
+
+- Precedents: PR #105 — all four failing legs log-verified pre-existing on same-day develop runs; dap go-security — PRs #211, #214 and #215 all failing the same check, main itself red on GO-2026-6859 at go1.27.3 (fixed in 1.27.4), so none of those failures was attributable to their diffs, and PR #213's clean status was stale.
 
 ## Available connectors
 

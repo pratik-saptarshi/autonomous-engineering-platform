@@ -28,6 +28,7 @@ The Source column names pratik-saptarshi forks (default branch `develop`) wherev
 | dedash | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | defect-class-census | Authored locally | MIT | Sibling-defect census from one confirmed bug: classify CONFIRMED / PLAUSIBLE / REFUTED, file only the confirmed set |
 | delegate_code_review | pratik-saptarshi/open-code-review | Apache-2.0 | Delegation mode; needs LLM key for full review |
+| dependency-triage-by-source | Authored locally | MIT | Scope a dependency programme by crossing Dependabot PRs, alerts, and cargo audit: classify every finding patch-only / transitive-major / structural-replacement / drop before proposing bumps |
 | detool | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | dispatching-parallel-agents | pratik-saptarshi/superpowers | MIT | |
 | egm-bootstrap | pratik-saptarshi/elephant-goldfish-model | Apache-2.0 | Vendored as bundle (e9e1f06a); wrapper with repo-relative paths |
@@ -45,6 +46,7 @@ The Source column names pratik-saptarshi forks (default branch `develop`) wherev
 | fork-fleet-maintenance | Authored locally | MIT | Adjudicate the fork fleet: license gate before any upstream sync, same-name mirror discipline, named exceptions |
 | grilling | pratik-saptarshi/skills | MIT | |
 | hate | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
+| lockfile-repair-by-regeneration | Authored locally | MIT | Repair a diverged Cargo.lock by regeneration from main's lock plus targeted precise updates only, proven against a written allowlist |
 | macrothink | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | mandela | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | merge_integration_verification | Authored locally | MIT | Verify a merge of diverged branches tree-wide by file type and by execution, catching splice damage outside the changed directories |
