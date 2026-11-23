@@ -1,6 +1,6 @@
 ---
 name: fix-validation-protocol
-version: 1.0.0
+version: 1.0.1
 author: pratik-saptarshi
 description: >-
   Validate a fix someone else landed against the findings it claims to
@@ -22,7 +22,7 @@ A fix has landed (new head on the PR, or a merged commit) and someone asserts th
 
 ## The Checklist
 
-Work all five steps, in order, at the fix's pinned head. Record evidence as you go — each step names what counts as evidence.
+Work all five steps, in order, at the fix's pinned head, plus Step 2b when its trigger holds. Record evidence as you go — each step names what counts as evidence.
 
 ### Step 1 — Map every finding to its diff hunk
 
@@ -40,6 +40,23 @@ For each finding whose fix is guarded by a test, deliberately break what the tes
 - Run the named test: it must FAIL under the mutation and PASS without it. A test that stays green under mutation is vacuous for this finding; the finding is NOT CLOSED on test evidence.
 - Restore the mutation completely before moving on.
 - **Evidence:** per finding, the mutation applied, the failing output under mutation, and the passing output after restore.
+
+### Step 2b — Live path vs fresh instance
+
+A clean reproduction proves only what the environment it ran in can show. This step triggers only when all three hold:
+
+- The defect lives only on a stateful live path — a long-lived store or service whose behaviour depends on its accumulated state.
+- That path's state carries a declared non-default choice: a setting chosen away from its default and recorded as such.
+- A fresh-instance reproduction of the defect comes back clean.
+
+When it triggers, a fresh-instance pass alone does not close the finding. Validation must exercise the live path itself, against its actual state.
+
+- **Evidence:** the observable outcomes from the live path — state read-back (the state the path was actually in), choice preserved (the declared non-default choice still in effect during the probe), and the bug probe result (defect observed or not, on the live path).
+
+The limbs discriminate — this is not "always test live":
+
+- A defect in instance construction does not trigger this step: the bug is in how a fresh instance is built, so fresh-instance evidence is the applicable evidence and the ordinary steps govern.
+- Likewise, no trigger when the defect reproduces on a fresh instance, or when the live path's state carries no declared non-default choice.
 
 ### Step 3 — Re-list review threads after fetching latest
 

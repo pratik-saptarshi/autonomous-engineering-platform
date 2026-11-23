@@ -1,6 +1,6 @@
 ---
 name: product-pr-workflow
-version: 1.0.1
+version: 1.0.3
 author: pratik-saptarshi
 description: >-
   The PR-lifecycle umbrella: sequence an open PR — or a fleet of them — from
@@ -25,7 +25,7 @@ This is the umbrella. It decides *which stage a PR is in, which component skill 
 
 | Stage | Component skill | Owns |
 | --- | --- | --- |
-| Intake / batch review | `pr-fleet-review` | Reviewing a batch of open PRs oldest-first, one verdict each |
+| Intake / batch review | `pr-fleet-review` | Reviewing a batch of open PRs, one verdict each (oldest-first when the owner so directs) |
 | Panel review | `overseer`, `roundtable_review` | Adversarial multi-lens panels and judge verdicts on a single PR or plan |
 | Remediation | `remediation-cycle` | Verifying reviewer findings, remediating confirmed ones, panel + judge gating the push |
 | Fix validation | `fix-validation-protocol` | Proving someone else's landed fix actually closes each finding |
@@ -59,6 +59,8 @@ The verdict and its evidence go to the owner. The ruling sets scope: which findi
 ### Stage 4 — Remediation
 
 Findings the ruling sends to fix run under `remediation-cycle`: nothing is a finding until verified, the remediation force works design-notes-first with no push, an independent panel and supreme judge gate the push, and **merge is always a separate decision** — no auto-merge ever rides along with a remediation cycle.
+
+When a PR head advances — for example by a base-branch merge — so the policy-delta token in the PR body no longer matches the head, do not swap the token by hand: the refresh procedure lives in `remediation-cycle`'s Phase 6 push-gate material ("Policy-delta token refresh"), which governs the recompute, verification, and fetch-back sequence for that case. One rule from it binds at this level too: a changed delta composition is a new policy fact, never a bare token swap — if recomputation shows the composition has changed, the refresh stops and the change goes to the owner.
 
 ### Stage 5 — Fix validation
 

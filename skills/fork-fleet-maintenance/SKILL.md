@@ -1,6 +1,6 @@
 ---
 name: fork-fleet-maintenance
-version: 1.0.1
+version: 1.0.2
 author: pratik-saptarshi
 description: >-
   Adjudicate the fork fleet under the fork model: license gate before any
@@ -79,6 +79,18 @@ No fork is pulled forward until its license position is settled:
 - Verify build and test in a quiet window before pushing, and prove `behind_by=0` by API afterwards.
 - Precedent: the fork-main pull lane, PR #114.
 
+### 9. Baseline-edit hygiene — read back before you report
+
+- Any baseline or state file a maintenance run edits — the sync checker's state file, a baseline record, a totals snapshot — is read back **in full** after the edit and verified field-by-field against the intended values, **before the run reports**. An edit taken on trust is not verified, however careful the writer was.
+- Aggregate values (fleet totals, covered counts) are verified against an **independently derived count**, not against the edit's own arithmetic: a faithfully written but wrong total verifies against itself and proves nothing.
+- A mismatch blocks the report: surface the discrepancy, correct the file, and re-verify the corrected file before any report relying on it is issued. This generalizes §5's corrected-entry read-back, which remains the minimum for that case.
+- Precedent: a baseline edit once recorded 146 forks where the fleet held 147; the error survived because the edit was taken on trust.
+
+### 10. Job scope drift — flag it, never execute past it
+
+- Before relying on a `fork-sync-check` run's results, compare the job body's **stated scope** against the scope the job **actually checks**. Job bodies drift as fleets and rules change; the stated scope is a claim, not a fact.
+- A disagreement is **flagged in the report** — stated scope, actual scope, and the difference named — and the drifted run's results are not adjudicated on as if they covered the stated scope until the drift is dispositioned (job body corrected, or the actual scope accepted by ruling). Never silently execute past a scope drift.
+
 ## Output shape
 
-Per adjudication round, report: sync candidates approved (with license evidence), exclusions (with the license found), exceptions held for ruling, unknowns (with reasons), and any mirror resets performed (with the preserved `develop` heads). Fleet totals close the report: on-model / excluded / exception / unknown, against the last baseline.
+Per adjudication round, report: sync candidates approved (with license evidence), exclusions (with the license found), exceptions held for ruling, unknowns (with reasons), and any mirror resets performed (with the preserved `develop` heads). Fleet totals close the report: on-model / excluded / exception / unknown, against the last baseline. The report also names every baseline/state file edited this round with its read-back verification result, and any job body-vs-scope drift flag.

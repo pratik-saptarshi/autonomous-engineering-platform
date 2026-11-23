@@ -1,6 +1,6 @@
 ---
 name: authorization-currency-check
-version: 1.0.0
+version: 1.0.1
 author: pratik-saptarshi
 description: >-
   Before executing any owner-authorized work — a remediation cycle, a push,
@@ -63,9 +63,18 @@ Was the authorization conditional ("if X, do Y"), and is X literally true?
 - Precedent: dap PR #212 — "if panel and judge report all green, merge" was not treated as satisfied when the premises came back THIN; the owner ruled record-then-merge instead.
 - **Stop condition:** any gap between the condition as written and the result as found, however small. Only the owner closes a gap in their own condition.
 
-### Step 5 — Authorization Live
+### Step 5 — Flag Scope
 
-Only if no branch above applies: the work has not been done, the finding has not been fixed, the target exists in the authorized form, and any condition is literally met. Execute the authorization as given, and say in the execution report that the currency check ran and found it live.
+Has a flag tripped in this lane, and does the ruling on record actually cover what it tripped on? A ruling's coverage is exactly what it named — no more, no less. Test the flag against the ruling's own phrasing:
+
+- **Named flag on named content.** A ruling that clears a named flag on named content covers that flag on that content only. A NEW flag, or the same flag on different content, in the same lane is **not** covered: same lane does not extend coverage. Stop the lane at the new flag and put it to the owner for a fresh ruling, reporting the flag, the content it tripped on, and that the prior ruling does not cover it.
+- **Category-phrased ruling.** A ruling phrased as a category — "git operations in this clone are fine" — covers every operation inside that category. When a later flag names an operation inside the category, test membership (this operation, in this clone, of this kind) and, if it falls inside, treat the ruling as covering it and proceed; do not stop the lane or demand a fresh ruling for what the category plainly covers.
+- Precedents (2026-11-22, the pattern proven live twice in one day): a ruling clearing a named flag on named content did not cover a new flag on different content in the same lane — the lane stopped for a fresh ruling; a category-phrased ruling did cover a later flag naming an operation inside its category, and work proceeded.
+- **Stop condition:** the flagged content or operation falls outside both the named scope and any category the ruling named — a different clone, a different kind of operation, a flag the ruling never mentioned. That is not covered; stop and take the flag to the owner.
+
+### Step 6 — Authorization Live
+
+Only if no branch above applies: the work has not been done, the finding has not been fixed, the target exists in the authorized form, any condition is literally met, and any flag that tripped is covered by the ruling that cleared it. Execute the authorization as given, and say in the execution report that the currency check ran and found it live.
 
 ## Evidence Standard
 
