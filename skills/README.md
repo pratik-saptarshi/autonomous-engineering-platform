@@ -44,9 +44,11 @@ The Source column names pratik-saptarshi forks (default branch `develop`) wherev
 | feynman | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | fix-validation-protocol | Authored locally | MIT | Validate a fix someone else landed: map every finding to its diff hunk, mutation-prove the tests, verify thread state as well as code state |
 | fork-fleet-maintenance | Authored locally | MIT | Adjudicate the fork fleet: license gate before any upstream sync, same-name mirror discipline, named exceptions |
+| governed-exception | Authored locally | MIT | Govern an exception to a finding with no fix route: cohort-aligned review_by date, multi-limb exit condition, renewal evidentiary bar, blast-radius hunt |
 | grilling | pratik-saptarshi/skills | MIT | |
 | hate | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | lockfile-repair-by-regeneration | Authored locally | MIT | Repair a diverged Cargo.lock by regeneration from main's lock plus targeted precise updates only, proven against a written allowlist |
+| live-store-capture | Authored locally | MIT | Capture a live production store without mutating it: guard-hash before and after, work from a backup copy under a scratch HOME, reconcile to the expected count |
 | macrothink | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | mandela | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | merge_integration_verification | Authored locally | MIT | Verify a merge of diverged branches tree-wide by file type and by execution, catching splice damage outside the changed directories |
@@ -90,6 +92,7 @@ The Source column names pratik-saptarshi forks (default branch `develop`) wherev
 | sip | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | ssotize | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | stacked-pr-restack | Authored locally | MIT | Rebuild a reviewed PR branch onto a moved base with a byte-identical residual and a head tripwire |
+| stored-manifest-refresh | Authored locally | MIT | Refresh a stored integrity manifest only by its documented procedure, prove exactly the expected entries moved, verify both integrity legs locally |
 | subagent-driven-development | pratik-saptarshi/superpowers | MIT | |
 | superseded-pr-closure | Authored locally | MIT | Close a superseded PR with its verification record preserved and the branch decision stated |
 | systematic-debugging | pratik-saptarshi/superpowers | MIT | Extended locally: inscribes root causes to NeuroStrata; dependency-bisect section and SkillSpector-gate remediation (2026-11) |
