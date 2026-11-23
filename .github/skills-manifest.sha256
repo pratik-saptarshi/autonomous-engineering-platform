@@ -213,7 +213,7 @@ b3dd527a9d0f8990fcc6be530513db02093fc5c659148d16b1da682223ea7a4a  ./autobahn/SKI
 0b5ccbbd57f62d3ed88993f7940b5ee0e5c0fc9b21c550c623da4f6292e47daf  ./brainstorming/scripts/stop-server.sh
 579e87ba4851fd3ddbece7c12ea31c04e52ad39e3ba5bd3426598c9bf29f1a96  ./brainstorming/visual-companion.md
 0805a569bd711f16fc163881bbc1017d77d25c756fb4ed33ed7c2a1d19ba9924  ./catchup/SKILL.md
-2d761d835fa432298cc1c21c1a9376ee06217261bffce3398e4032692ff8e0ba  ./ci_gate_polling/SKILL.md
+b84fb735ee22729d96c47e0c5e28fe84eba5d42ada26509f3ba959b263b9e349  ./ci_gate_polling/SKILL.md
 d9667c93762aec5805f864c30f75cba57c3a6825e39ac908a278d5ac8889cbed  ./code_explorer/SKILL.md
 aee4f5b559106d766a11c63d15153d1ca93b07b775e57dcceb63d074dffb1931  ./craft-anything-protocol/FORK.md
 073254014ddcd2bacdc5556fcb366c9eba95aa2768b1aefa3f7bc7382008ebcd  ./craft-anything-protocol/SKILL.md
