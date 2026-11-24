@@ -110,12 +110,12 @@ def main():
     ap.add_argument("--root", default=".", help="repository root")
     ap.add_argument("--findings", action="store_true", help="wrap output with findings")
     ap.add_argument("--no-live", action="store_true", help="skip GitHub API calls")
-    ap.add_argument("--strict", action="store_true", help="exit nonzero on findings or != 14 entries")
+    ap.add_argument("--strict", action="store_true", help="exit nonzero on findings or != 15 entries")
     args = ap.parse_args()
     strict_findings = args.findings or args.strict
     result = build(args.root, findings=strict_findings, live=not args.no_live)
     print(json.dumps(result, indent=2, sort_keys=True))
-    if args.strict and (result["findings"] or len(result["entries"]) != 14):
+    if args.strict and (result["findings"] or len(result["entries"]) != 15):
         sys.exit(1)
 
 
