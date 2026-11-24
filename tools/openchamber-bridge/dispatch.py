@@ -40,6 +40,7 @@ Exit codes:
 """
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -149,20 +150,45 @@ def final_assistant_text(messages: list) -> str:
     return ""
 
 
+FALLBACK_MARKER = ("<!-- HARVESTED-NOT-AUTHORED: the session ended without writing "
+                   "its report file. The text below is the final assistant message "
+                   "extracted by dispatch.py. The controller must treat this task "
+                   "as UNREPORTED. -->")
+
+
+def report_snapshot(report_path: Path) -> dict:
+    """State of the report path BEFORE this dispatch runs. Harvest
+    authorship is judged against this snapshot: a file counts as
+    authored by the current session only if this dispatch created it
+    or changed its content. A pre-existing file the session never
+    touched — a stale report from an earlier dispatch, or this
+    dispatcher's own fallback from a previous run — is never accepted
+    as authored (Codex P1 on PR #213)."""
+    if not report_path.exists():
+        return {"existed": False, "bytes": 0, "sha256": None}
+    data = report_path.read_bytes()
+    return {"existed": True, "bytes": len(data),
+            "sha256": hashlib.sha256(data).hexdigest()}
+
+
 def harvest(session_id: str, report_path: Path, min_bytes: int,
-            messages: list) -> dict:
+            messages: list, pre: dict) -> dict:
     report_path.parent.mkdir(parents=True, exist_ok=True)
     if report_path.exists() and report_path.stat().st_size >= min_bytes:
-        return {"report": str(report_path), "report_bytes": report_path.stat().st_size,
-                "report_authored": True}
+        data = report_path.read_bytes()
+        changed = (not pre["existed"]
+                   or hashlib.sha256(data).hexdigest() != pre["sha256"])
+        is_fallback = data.lstrip().startswith(FALLBACK_MARKER.encode())
+        if changed and not is_fallback:
+            return {"report": str(report_path),
+                    "report_bytes": report_path.stat().st_size,
+                    "report_authored": True,
+                    "report_preexisting": pre["existed"]}
     text = final_assistant_text(messages)
-    marker = ("<!-- HARVESTED-NOT-AUTHORED: the session ended without writing "
-              "its report file. The text below is the final assistant message "
-              "extracted by dispatch.py. The controller must treat this task "
-              "as UNREPORTED. -->\n\n")
-    report_path.write_text(marker + (text or "(no assistant text found in transcript)") + "\n")
+    report_path.write_text(FALLBACK_MARKER + "\n\n"
+                           + (text or "(no assistant text found in transcript)") + "\n")
     return {"report": str(report_path), "report_bytes": report_path.stat().st_size,
-            "report_authored": False}
+            "report_authored": False, "report_preexisting": pre["existed"]}
 
 
 def main() -> int:
@@ -245,6 +271,11 @@ def main() -> int:
     archive.write_text(brief_text)
     ledger_rec["brief_archived"] = str(archive)
 
+    # 2b. snapshot the report path BEFORE the session exists: harvest
+    # authorship is judged against this state, never mere existence.
+    pre_dispatch_report = report_snapshot(report_path)
+    ledger_rec["report_pre_dispatch"] = pre_dispatch_report
+
     # 3. create session
     try:
         created = api("POST", "/api/session", {
@@ -307,7 +338,7 @@ def main() -> int:
         info = api("GET", f"/api/session/{sid}").get("data", {})
     except Exception:
         info = {}
-    hv = harvest(sid, report_path, args.min_report_bytes, messages)
+    hv = harvest(sid, report_path, args.min_report_bytes, messages, pre_dispatch_report)
     extra = {"status": status, "outcome": outcome or info.get("outcome"),
              "tokens": info.get("tokens"), "cost": info.get("cost"), **hv}
     if status == "completed" and outcome not in (None, "succeeded"):
