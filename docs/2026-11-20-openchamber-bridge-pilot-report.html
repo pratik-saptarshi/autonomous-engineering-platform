@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenCode–OpenChamber Bridge Pilot Report — wave-7 re-review, all criteria PASS</title>
+<style>
+  :root{
+    --bg:#f7f8fa; --card:#ffffff; --ink:#1c2330; --dim:#5b6577; --line:#dfe3ea;
+    --accent:#2563eb; --warn:#b45309; --bad:#b91c1c; --good:#15803d;
+    --code-bg:#eef1f6;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --bg:#10141b; --card:#171c26; --ink:#e6eaf2; --dim:#9aa5b8; --line:#2a3242;
+      --accent:#6ea8fe; --warn:#f0b35e; --bad:#f28b82; --good:#7bd88f; --code-bg:#1e2531; }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:16px/1.55 -apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;}
+  main{max-width:920px;margin:0 auto;padding:32px 20px 64px}
+  h1{font-size:26px;line-height:1.25;margin:0 0 6px}
+  h2{font-size:20px;margin:34px 0 10px;padding-top:18px;border-top:1px solid var(--line)}
+  h3{font-size:16px;margin:20px 0 6px}
+  p{margin:8px 0}
+  .meta{color:var(--dim);font-size:14px}
+  .takeaway{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--accent);
+    border-radius:8px;padding:16px 18px;margin:20px 0}
+  .takeaway p{margin:4px 0}
+  table{border-collapse:collapse;width:100%;margin:12px 0;background:var(--card);
+    border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  th,td{text-align:left;vertical-align:top;padding:9px 12px;border-bottom:1px solid var(--line);font-size:14.5px}
+  th{background:var(--code-bg);font-weight:600}
+  tr:last-child td{border-bottom:none}
+  code{background:var(--code-bg);padding:1px 5px;border-radius:4px;font-size:13.5px;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  ul{margin:8px 0;padding-left:22px}
+  li{margin:5px 0}
+  .v{color:var(--good)} .i{color:var(--warn)} .r{color:var(--bad)}
+  .note{color:var(--dim);font-size:14px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:14px 18px;margin:12px 0}
+</style>
+</head>
+<body>
+<main>
+<h1>Bridge pilot report — the wave-7 re-review through OpenCode</h1>
+<p class="meta">Pilot report · 2026-11-20 · OpenCode–OpenChamber lane · Subject: replay-core PR #7, wave 7 scoped re-review (4008a19..a5a102b), per the pilot proposal in the <em>OpenChamber Hybrid Scoping</em> document §5. Dual verification by the replay-core lane, completed 2026-11-20.</p>
+
+<div class="takeaway">
+<h3 style="margin-top:0">Executive takeaway</h3>
+<p><strong>The pilot PASSES on all five criteria.</strong> An OpenCode session (Kimi K2.7 Code — a different model family from the Claude implementer) re-reviewed the wave-7 nested-<code>.git</code> fix end-to-end and returned <strong>ACCEPTED</strong>; the replay-core lane then dual-verified every load-bearing claim first-hand on the Muse side and confirmed the verdict was ground truth, including a main-tree Phase 2 gate run: <strong>GREEN</strong>. Wave 7 was published on that basis. Wall-clock was 16.3 minutes — at the Muse-side baseline (~1.0×), not merely within the 2× bound — with zero rule violations, no stall, and no fallback. The scoping document's main open risk, long multi-turn sessions over the service API route, did not materialize. <strong>Recommendation: adopt the bridge for scoped re-reviews now; keep implementers on Muse until two more clean review pilots land; keep the different-family reviewer rule; keep the dispatcher as a lane tool at pilot grade, hardened by use rather than by a graduation project.</strong> The adoption decision itself is Pratik's.</p>
+</div>
+
+<h2>1. The run</h2>
+<table>
+<tr><th style="width:30%">Field</th><th>Value</th></tr>
+<tr><td>Session</td><td><code>ses_e044a5ed3ffeuhm3VwWaGZApAl</code> — titled <em>replay-core PR7 · W7 re-review · 4008a19..a5a102b</em> on the OpenChamber board, full transcript retained</td></tr>
+<tr><td>Model</td><td><code>opencode-go/kimi-k2.7-code</code> (Moonshot/Kimi family) reviewing Claude-family implementation work — the diversity hypothesis's first data point</td></tr>
+<tr><td>Dispatch</td><td>2026-11-20 19:25 CST via <code>dispatch.py</code>; dispatcher exit 0; outcome <code>succeeded</code></td></tr>
+<tr><td>Wall-clock</td><td><strong>979 s (~16.3 min)</strong> dispatch-to-harvest, including wake check and 15 s poll granularity</td></tr>
+<tr><td>Baseline</td><td>Muse-side wave re-reviews: ~15–20 min dispatch-to-handoff → pilot ran at ~1.0× baseline</td></tr>
+<tr><td>Tokens</td><td>Input 129,980 · output 10,387 · reasoning 6,013 · cache-read 4,234,496 · cost 0 (OpenCode Go subscription)</td></tr>
+<tr><td>Venues</td><td>Head scratch worktree at a5a102b; base scratch worktree at 4008a19 with only the new test file checked out (red-first leg); main tree never edited</td></tr>
+<tr><td>Report</td><td>Authored by the session at the SDD contract path (12,490 bytes), complete in the standing format, no controller edits</td></tr>
+<tr><td>Verdict</td><td><strong>ACCEPTED</strong> — all 6 charge items evidenced; additional findings: none</td></tr>
+</table>
+
+<h2>2. Success criteria — all must hold (§5)</h2>
+<table>
+<tr><th style="width:34%">Criterion</th><th style="width:10%">Result</th><th>Evidence</th></tr>
+<tr><td>1. Verdict matches ground truth (pilot-only dual verification)</td><td class="v"><strong>PASS</strong></td><td>Replay-core lane re-checked every load-bearing claim first-hand (2026-11-20): base reds spot-checked in the base worktree — both the dir→file and dir→symlink refusal tests FAIL at 4008a19 with the excluded metadata destroyed (their run surfaced the "config" entry unreadable, the session's run "HEAD" — same destruction, different first-checked entry); the full refusal set re-run green at head; the crash/no-trace claims stand (no-trace assertions live inside the committed tests re-run green; the retry leg read in source, nested_git_test.go:225-240); census spot-checks confirmed in source (rollback writes-before-deletes order; prune's empty-only os.Remove leg); and the Phase 2 gate run first-hand in the MAIN tree at a5a102b: <strong>GREEN</strong> — confirming the session's venue attribution (its linked-worktree gate RED was the known TEST-1 .git-file artifact only).</td></tr>
+<tr><td>2. Every removed/changed test line accounted for</td><td class="v"><strong>PASS</strong></td><td>The diff modifies no pre-existing test file: name-status is journal.go M, settle.go M, nested_git_test.go A only. The session verified this in its §5; the controller verified it independently before dispatch. There were no changed test lines to account for, and the one added test file is the subject of the red-first leg.</td></tr>
+<tr><td>3. Report lands complete at the SDD path, no controller edits</td><td class="v"><strong>PASS</strong></td><td>12,490 bytes authored by the session at <code>wave7-rereview-report.md</code>; per-charge sections with commands, failure text, and file:line references; dispatcher recorded <code>report_authored: true</code> (not a harvested fallback).</td></tr>
+<tr><td>4. Zero rule violations (no push, no posts, no main-tree edits)</td><td class="v"><strong>PASS</strong></td><td>Controller-run detective checks after harvest: remote <code>feat/phase2-carriers-settlement</code> ref unchanged at 4008a19 (the session never pushed; the later push to a5a102b was the replay-core lane's own publishing leg); main tree status showed only the pre-existing untracked fixture debris; head worktree clean at a5a102b (probe files removed as the report stated); base worktree held only the charged test-file checkout; banned provenance name count 0 in the diff and 0 in the session's report.</td></tr>
+<tr><td>5. Wall-clock within 2× baseline; tokens recorded</td><td class="v"><strong>PASS</strong></td><td>979 s vs a ~15–20 min baseline ≈ 1.0×. Token counts recorded in the bridge ledger (see §1).</td></tr>
+</table>
+<p>Judged in the scoping document's order — quality of reds first, wall-clock second, tokens third — the pilot is strongest exactly where it matters most: the reds were real, independently reproduced, and survived an adversarial second check by the lane that owns the work.</p>
+
+<h2>3. What the session did (quality notes)</h2>
+<ul>
+<li><strong>Red-first, both directions:</strong> at base, all 5 refusal tests failed with the metadata actually destroyed and the control passed; at head, all 6 passed. The crash variant was independently probed both ways — head refuses before any journal exists; base loses <code>.git/HEAD</code> permanently after Recover.</li>
+<li><strong>Independent census:</strong> the 12 removal sites were enumerated from grep, not copied from the implementer's report, each with file:line and a verdict that dual verification spot-confirmed.</li>
+<li><strong>Venue honesty:</strong> the session ran the phase gate in its linked worktree, got the known TEST-1 artifact, and explicitly declined to claim the gate either way from that venue — the precise behavior the charge demanded, and the claim dual verification then settled in the main tree.</li>
+<li><strong>Hygiene:</strong> the banned provenance name was handled count-only and never written — verified by controller grep of the report.</li>
+</ul>
+
+<h2>4. Friction and honest notes</h2>
+<ul>
+<li><strong>Bridge friction: essentially none.</strong> No stall (15-minute stall window never approached), no timeout, no fallback to a Muse subagent, no dispatcher defects found. The one number worth watching is cache-read volume (4.23M tokens) — free under the Go subscription today, but it is the real token cost of a long-context review and would matter under metered pricing.</li>
+<li><strong>One pilot is one pilot.</strong> This validates the re-review task class on one finding of one shape. It says nothing yet about implementer tasks, panel work, or findings whose reds are subtler than a metadata-destruction shape. The recommendation below is sized accordingly.</li>
+<li><strong>Dual verification did its job as a check, not a formality:</strong> it re-ran tests in both worktrees, read the retry leg in source, and supplied the main-tree gate run the session could not — the pilot design's division of labor worked as intended, and dual verification is dropped for future re-reviews per the protocol (the verdict is now trusted the way a Muse re-reviewer's is: by spot-check discipline, not by full re-verification).</li>
+</ul>
+
+<h2>5. Recommendation — for Pratik's adoption decisions (scoping §6)</h2>
+<div class="card">
+<ul>
+<li><strong>Adopt the hybrid for scoped re-reviews:</strong> yes, effective now. The next replay-core re-review (and comparable lanes' re-reviews) may dispatch through the bridge by default.</li>
+<li><strong>Implementers:</strong> not yet. Per the scoping recommendation, move implementer tasks only after two more clean review pilots. Panelists are the natural second class (the diversity benefit is the point there), at Pratik's call.</li>
+<li><strong>Model pairing:</strong> make the different-family rule standing for re-reviews — reviewer family ≠ implementer family. It cost nothing here and the Kimi-family reviewer reproduced Claude-family work's defect class without sharing the implementer's blind spots. Leave the specific model choice to the controller per task.</li>
+<li><strong>Dispatcher:</strong> keep it as a lane tool at pilot grade — it has now run a smoke task and a full pilot without a defect. Graduate it (skill note, hardening) only if a second lane adopts it; hardening by use beats a graduation project.</li>
+</ul>
+</div>
+
+<p class="meta" style="margin-top:28px">Prepared 2026-11-20 by the OpenCode–OpenChamber lane. Artifacts: dispatcher in this repo under <code>tools/openchamber-bridge/</code>, ledger in the AEP goal workspace; the session's report in the replay-core SDD workspace (<code>wave7-rereview-report.md</code>); runbook at <code>docs/2026-11-20-openchamber-bridge-runbook.html</code> in this repo. Wave 7 was published by the replay-core lane on the dual-verified verdict (a5a102b pushed, P1 thread replied "Fixed in a5a102b" and resolved, PR body updated); the merge of PR #7 remains Pratik's per-PR call.</p>
+</main>
+</body>
+</html>
