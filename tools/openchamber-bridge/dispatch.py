@@ -270,6 +270,12 @@ def main() -> int:
         print(f"model not on the bridge allowlist (Pratik's rule, 2026-11-20): {args.model}\n"
               f"allowed: {', '.join(sorted(ALLOWED_MODELS))}", file=sys.stderr); return 64
     provider, model_id = args.model.split("/", 1)
+    archive = Path(args.archive_brief).expanduser().resolve() if args.archive_brief \
+        else report_path.with_suffix(report_path.suffix + ".brief.md")
+    if archive == report_path:
+        print("--archive-brief must not alias --report: the archive write "
+              "would destroy the report before the session runs", file=sys.stderr)
+        return 64
 
     OPENCODE = find_opencode()
     started = time.time()
@@ -302,8 +308,6 @@ def main() -> int:
         footer = FOOTER_PATH.read_text().replace("{REPORT_PATH}", str(report_path)) \
                                       .replace("{WORKDIR}", str(workdir))
         brief_text = brief_text.rstrip() + "\n\n" + footer
-    archive = Path(args.archive_brief).expanduser().resolve() if args.archive_brief \
-        else report_path.with_suffix(report_path.suffix + ".brief.md")
     archive.parent.mkdir(parents=True, exist_ok=True)
     archive.write_text(brief_text)
     ledger_rec["brief_archived"] = str(archive)
