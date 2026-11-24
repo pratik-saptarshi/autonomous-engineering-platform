@@ -348,23 +348,28 @@ def main() -> int:
             info = api("GET", f"/api/session/{sid}").get("data", {})
             messages = api("GET", f"/api/session/{sid}/message").get("data", [])
         except Exception:
-            continue  # transient; the stall/timeout budgets still apply
-        sig = (info.get("time", {}).get("updated"), len(messages),
-               messages[0].get("id") if messages else None)
-        if sig != last_sig:
-            last_sig = sig
-            last_change = time.time()
-        idle_msg = next((m for m in messages
-                         if m.get("type") == "idle"
-                         and m.get("time", {}).get("created", 0) >= prompt_ms - 5000), None)
-        if idle_msg:
-            outcome = idle_msg.get("outcome") or info.get("outcome")
-            status = "completed"
-            break
-        if info.get("outcome") and info.get("time", {}).get("idle"):
-            outcome = info["outcome"]
-            status = "completed"
-            break
+            info = None  # transient failure: no observable progress this
+            # poll. The stall deadline below still applies — a bare
+            # `continue` here skipped it, degrading stall recovery to
+            # the overall timeout when the service is unreachable
+            # (Codex P2 on PR #213).
+        if info is not None:
+            sig = (info.get("time", {}).get("updated"), len(messages),
+                   messages[0].get("id") if messages else None)
+            if sig != last_sig:
+                last_sig = sig
+                last_change = time.time()
+            idle_msg = next((m for m in messages
+                             if m.get("type") == "idle"
+                             and m.get("time", {}).get("created", 0) >= prompt_ms - 5000), None)
+            if idle_msg:
+                outcome = idle_msg.get("outcome") or info.get("outcome")
+                status = "completed"
+                break
+            if info.get("outcome") and info.get("time", {}).get("idle"):
+                outcome = info["outcome"]
+                status = "completed"
+                break
         if time.time() - last_change > args.stall_seconds:
             status = "stall"
             break
