@@ -50,6 +50,7 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 import sys
 import time
 from pathlib import Path
@@ -333,7 +334,10 @@ def main() -> int:
     # brief archive (Sourcery, PR #213). The flock is released by the OS
     # when this process exits or dies, so a killed dispatcher never
     # wedges the worktree.
-    lock_dir = bridge_home() / "locks"
+    # The lock lives in the machine temp dir, NOT the bridge home: the
+    # worktree is the shared resource, and two controllers with
+    # different bridge homes must still contend on the same lock.
+    lock_dir = Path(tempfile.gettempdir()) / "openchamber-bridge-locks"
     lock_dir.mkdir(parents=True, exist_ok=True)
     lock_path = lock_dir / (hashlib.sha256(str(workdir).encode()).hexdigest()[:16] + ".lock")
     lock_fh = open(lock_path, "a+")
