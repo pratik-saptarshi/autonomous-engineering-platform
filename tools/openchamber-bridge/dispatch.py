@@ -137,7 +137,12 @@ def git_snapshot(workdir: Path) -> dict:
     head = g("rev-parse", "HEAD")
     if head is None:
         return {"git": False}
-    status = g("status", "--porcelain") or ""
+    status = g("status", "--porcelain")
+    if status is None:
+        # A failed status command means the worktree state is UNKNOWN;
+        # recording 0 dirty files would read as "clean" (Sourcery, PR #213).
+        return {"git": True, "head": head, "dirty_files": None,
+                "git_status_error": True}
     return {"git": True, "head": head,
             "dirty_files": 0 if not status else len(status.splitlines())}
 
