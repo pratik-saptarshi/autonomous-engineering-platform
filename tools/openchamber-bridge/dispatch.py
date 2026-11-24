@@ -72,6 +72,14 @@ def bridge_home() -> Path:
 # Model allowlist — Pratik's standing rule for the bridge (2026-11-20,
 # expanded 2026-11-21): ONLY these models may be dispatched. Enforced
 # here, not by convention. IDs verified live in `opencode models`.
+MODEL_FAMILIES = {
+    "deepseek-v4.1-flash": "deepseek", "glm-5.3-flash": "glm",
+    "minimax-m3.1-flash": "minimax", "muse-spark-1.3-contributor": "muse-spark",
+    "hy4-flash-free": "hy", "iceman-contributor-free": "iceman",
+    "longcat-2.5-free": "longcat", "beam-free": "beam",
+    "tidepool-alpha-free": "tidepool",
+}
+
 ALLOWED_MODELS = {
     "opencode-go/deepseek-v4.1-flash",       # DeepSeek V4.1 Flash
     "opencode-go/glm-5.3-flash",             # GLM-5.3-Flash
@@ -268,6 +276,11 @@ def main() -> int:
     ap.add_argument("--poll-seconds", type=int, default=10)
     ap.add_argument("--min-report-bytes", type=int, default=100)
     ap.add_argument("--no-footer", action="store_true", help="Send the brief verbatim, no footer.")
+    ap.add_argument("--implementer-family", default=None,
+                    help="For review dispatches: the model family that produced the "
+                         "work under review. Recorded beside this session's own "
+                         "model family so the different-family rule is auditable "
+                         "from the dispatch record itself.")
     args = ap.parse_args()
 
     brief_path = Path(args.brief).expanduser().resolve()
@@ -298,6 +311,9 @@ def main() -> int:
         "ts_start": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "title": args.title, "model": args.model, "agent": args.agent,
         "workdir": str(workdir), "brief": str(brief_path),
+        "model_family": MODEL_FAMILIES.get(model_id, "unknown"),
+        **({"implementer_family": args.implementer_family}
+           if args.implementer_family else {}),
         "report": str(report_path), "git_before": git_snapshot(workdir),
     }
 
