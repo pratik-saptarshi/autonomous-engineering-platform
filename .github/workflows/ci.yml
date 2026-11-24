@@ -51,7 +51,7 @@ jobs:
         with:
           go-version: '1.27.4'
       - run: python3 -m unittest discover -s scripts/tests -v
-      - name: Vendor freshness blocks (13 provenance files, no live API)
+      - name: Vendor freshness blocks (15 provenance files, no live API)
         run: python3 scripts/vendor_graph.py --root . --no-live --strict
       - name: Vendor freshness detector self-test
         run: python3 scripts/vendor_freshness.py --self-test
@@ -175,6 +175,11 @@ jobs:
           cd reference/openchamber
           sha256sum -c ../../.github/vendor-openchamber.sha256
           comm -23 <(find . -type f | sort) <(cut -d' ' -f3- ../../.github/vendor-openchamber.sha256 | sed 's|^\./|./|' | sort) | grep -q . && { echo "ERROR: unlisted files"; exit 1; } || true
+          find . -type l | while read -r link; do test -e "$link" || { echo "ERROR: broken symlink $link"; exit 1; }; done
+      - run: |
+          cd reference/avoid-ai-writing
+          sha256sum -c ../../.github/vendor-avoid-ai-writing.sha256
+          comm -23 <(find . -type f | sort) <(cut -d' ' -f3- ../../.github/vendor-avoid-ai-writing.sha256 | sed 's|^\./|./|' | sort) | grep -q . && { echo "ERROR: unlisted files"; exit 1; } || true
           find . -type l | while read -r link; do test -e "$link" || { echo "ERROR: broken symlink $link"; exit 1; }; done
       - name: Run vendored security-audit validator suites
         run: |

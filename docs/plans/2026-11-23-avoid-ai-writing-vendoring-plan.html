@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plan — Vendor avoid-ai-writing (detect-only) into AEP</title>
+<style>
+  :root { --ink:#1a2233; --muted:#5b6478; --line:#d9dee9; --accent:#2456c8; --accent-soft:#eaf0fd; --code-bg:#f2f4f9; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:"Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif; color:var(--ink); background:#f7f8fb; line-height:1.55; }
+  .page { max-width:920px; margin:0 auto; padding:40px 28px 64px; background:#fff; min-height:100vh; border-left:1px solid var(--line); border-right:1px solid var(--line); }
+  header.doc-head { border-bottom:3px solid var(--accent); padding-bottom:18px; margin-bottom:28px; }
+  header.doc-head h1 { margin:0 0 6px; font-size:1.7rem; }
+  header.doc-head p.subtitle { margin:0; color:var(--muted); font-size:1rem; }
+  .meta { display:flex; flex-wrap:wrap; gap:8px 28px; margin-top:14px; font-size:0.9rem; color:var(--muted); }
+  .meta strong { color:var(--ink); font-weight:600; }
+  h2 { font-size:1.2rem; margin:30px 0 10px; padding-bottom:4px; border-bottom:1px solid var(--line); }
+  p { margin:8px 0; } ul, ol { margin:8px 0 8px 20px; padding:0; } li { margin:4px 0; }
+  code { font-family:"Cascadia Code", Consolas, Menlo, monospace; background:var(--code-bg); padding:0.08em 0.35em; border-radius:4px; font-size:0.92em; }
+  table { width:100%; border-collapse:collapse; margin:14px 0 20px; font-size:0.92rem; }
+  th, td { border:1px solid var(--line); padding:7px 9px; vertical-align:top; text-align:left; }
+  th { background:var(--accent-soft); font-weight:600; }
+</style>
+</head>
+<body>
+<div class="page">
+
+<header class="doc-head">
+  <h1>Vendor avoid-ai-writing into AEP — detect-only</h1>
+  <p class="subtitle">Implementation plan carried by the vendoring PR, per the standing rule that planning documents ship in the PR they govern.</p>
+  <div class="meta">
+    <span><strong>Date:</strong> 2026-11-23</span>
+    <span><strong>Decision:</strong> Pratik, 2026-11-23 — adopt avoid-ai-writing scoped detect-only</span>
+    <span><strong>Evaluation of record:</strong> 2026-11-23 avoid-ai-writing vs humanizers (verdict: adopt-scoped-alongside)</span>
+  </div>
+</header>
+
+<h2>Scope law</h2>
+<ul>
+  <li><code>humanizer</code> stays the default prose pass; <code>ste80-humanizer</code> stays the STE tool. avoid-ai-writing is adopted only as deterministic detect/audit tooling plus (later, separately proposed) a CI prose gate.</li>
+  <li>The skill's rewrite capability is disabled by a day-one fork amendment, so no two skills ever claim the same request.</li>
+  <li>Evidence-bearing artifacts (receipts, verification reports, decision records, NeuroStrata inscriptions) are out of scope for every prose skill, this one included.</li>
+</ul>
+
+<h2>Stage 1 — the mirror</h2>
+<ul>
+  <li>Repo <code>pratik-saptarshi/avoid-ai-writing</code> (fork of conorbronsdon/avoid-ai-writing, MIT, imported with full upstream history at v3.39.0, commit <code>cd5573a</code>).</li>
+  <li>Create <code>develop</code> from <code>main</code>; set <code>develop</code> as default branch. <code>main</code> stays the pristine upstream mirror — no fork commits on it.</li>
+  <li>Upstream attribution (badges, homepage, npm metadata, LICENSE, NOTICE) stays intact. Defects in the external code are filed on the origin repo only, at the owner's call (venue rule).</li>
+</ul>
+
+<h2>Stage 2 — day-one fork amendment (mirror <code>develop</code>)</h2>
+<ul>
+  <li>Frontmatter description narrowed to the detect/audit intent; rewrite/edit trigger phrases removed.</li>
+  <li>A "Local scope" section in SKILL.md disables the <code>rewrite</code> and <code>edit</code> modes (detect is the only enabled mode and the default), carries over the evidence-bearing-artifact exclusion, and routes rewrite requests to <code>humanizer</code> and STE requests to <code>ste80-humanizer</code>. Modes/Invocation annotated to match.</li>
+  <li>Fork marking per the fleet convention: <code>fork_of: "conorbronsdon/avoid-ai-writing"</code> + <code>fork_version</code> in SKILL.md frontmatter (upstream <code>version: 3.39.0</code> untouched), plus <code>FORK.md</code> with origin pin, fork version, and a dated change log. Amendment 1 set fork_version 1; Amendment 2 (same day, closing a rewrite trigger the independent review found in the generated Cursor rule's generator-hard-coded description) set fork_version 2.</li>
+  <li>Derived artifacts regenerated with the repo's own sync scripts (<code>sync-plugin-skill.sh</code>, <code>sync-cursor-rules.sh</code>) so no generated copy drifts from the amended SKILL.md.</li>
+  <li>Verification: frontmatter parses; <code>npm test</code> (detector, validator, gate, eval suites) passes; detector and gate CLI run against a sample; diff vs <code>main</code> shows only amendment files.</li>
+</ul>
+
+<h2>Stage 3 — this PR (vendor into AEP)</h2>
+<table>
+  <tr><th>Piece</th><th>What lands</th></tr>
+  <tr><td><code>reference/avoid-ai-writing/</code></td><td>Wholesale <code>git archive</code> snapshot of the mirror's <code>develop</code> at <code>fad13da</code> (683 files), plus <code>PROVENANCE.md</code>. Byte-identical to the archive except PROVENANCE.md.</td></tr>
+  <tr><td><code>reference/avoid-ai-writing/PROVENANCE.md</code></td><td>Prose pin + machine-readable <code>vendor-freshness</code> block: repo <code>pratik-saptarshi/avoid-ai-writing</code>, branch <code>develop</code>, parent <code>conorbronsdon/avoid-ai-writing</code> / <code>main</code>, pin <code>fad13daa564f5499bb9bce573040e263614ba012</code>, policy <code>sync-then-repin</code>, decision_date 2026-11-23, review_due 2026-12-23. The block is the registration: <code>scripts/vendor_graph.py</code> discovers trees from these blocks; no parallel registry exists.</td></tr>
+  <tr><td><code>scripts/vendor_graph.py</code></td><td>The strict-mode expected tree count is a hard-coded tripwire (14); adding a 15th tree requires bumping it to 15 (check + help text), and the CI step name's provenance-file count is updated to match. Found by this PR's independent review — without it the <code>script-tests</code> job's strict graph check fails on the new tree.</td></tr>
+  <tr><td><code>.github/vendor-avoid-ai-writing.sha256</code></td><td>Manifest over all 684 files in the tree (including PROVENANCE.md), generated the same way as the other trees' manifests.</td></tr>
+  <tr><td><code>.github/workflows/ci.yml</code></td><td>One <code>vendor-integrity</code> step for the new tree, in the exact per-tree format (manifest verify + unlisted-files check + broken-symlink check).</td></tr>
+</table>
+<p>Gate: local verification (manifest verifies; tree byte-identical to the mirror archive except PROVENANCE.md; <code>vendor_graph.py --strict</code> clean; <code>vendor_freshness.py --self-test</code> OK; secret-pattern scan of the new tree clean), independent whole-branch review, CI fully green on the exact head including CodeQL / ruleset <code>code_scanning</code>, Codex review of the exact head with a complete thread census. Merge is the owner's per-PR call — this plan does not bundle it.</p>
+
+<h2>Stage 4 — live install</h2>
+<p><code>~/workspace/custom-skills/avoid-ai-writing/</code> receives the amended detect-only copy from the mirror's <code>develop</code> (the same content this PR vendors), with fork marking verifiable in its frontmatter.</p>
+
+<h2>Explicitly out of scope</h2>
+<ul>
+  <li>The CI prose gate itself (workflow shape is a separate proposal; nothing is enabled by this PR).</li>
+  <li>Any change to <code>humanizer</code> or <code>ste80-humanizer</code>.</li>
+  <li>Adoption of the candidate's wider patterns (SSOT sync-checking, self-scan practice, gate-calibration evals, sub-skill patterns, corpus study) — separate proposal documents, owner's call.</li>
+</ul>
+
+</div>
+</body>
+</html>
