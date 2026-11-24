@@ -402,7 +402,11 @@ def main() -> int:
     hv = harvest(sid, report_path, args.min_report_bytes, messages, pre_dispatch_report)
     extra = {"status": status, "outcome": outcome or info.get("outcome"),
              "tokens": info.get("tokens"), "cost": info.get("cost"), **stop, **hv}
-    if status == "completed" and outcome not in (None, "succeeded"):
+    # The exit decision uses the FINAL outcome (extra["outcome"], from
+    # the post-poll fetch): the poll loop can observe the idle marker
+    # before the record exposes its outcome, and a session whose final
+    # record says failed/interrupted must not exit 0 (Sourcery, PR #213).
+    if status == "completed" and extra["outcome"] not in (None, "succeeded"):
         return finish(6, **extra)
     if status == "completed":
         return finish(0 if hv["report_authored"] else 5, **extra)
