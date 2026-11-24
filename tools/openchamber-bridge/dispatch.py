@@ -31,8 +31,12 @@ ledger Muse-side before anything is published.
 Exit codes:
     0  session completed (idle) and report harvested
     2  service health/wake failed
-    3  stall declared (bounded waits, no progress) — partial harvested
-    4  overall timeout — partial harvested
+    3  stall declared (bounded waits, no progress) — partial harvested;
+       the session is interrupted and confirmed idle before returning
+    4  overall timeout — partial harvested; same interrupt + confirm
+       (if a stop cannot be confirmed, the record carries
+       session_stop_unconfirmed and the controller must NOT re-dispatch
+       until the session is confirmed idle)
     5  session completed but report missing/trivial (harvested fallback
        written); controller must treat the task as UNREPORTED
     6  session ended with outcome=failed/interrupted
@@ -191,6 +195,34 @@ def harvest(session_id: str, report_path: Path, min_bytes: int,
             "report_authored": False, "report_preexisting": pre["existed"]}
 
 
+def stop_session(session_id: str, confirm_seconds: int = 30) -> dict:
+    """Interrupt a still-running session and confirm it went idle.
+
+    Used on the stall/timeout/prompt-failure exits: returning while the
+    worker keeps running lets a re-dispatch collide with it in the
+    same worktree (Codex P1 on PR #213). POST .../interrupt is the
+    service's stop route (verified live on OpenCode 2.4.1: the record
+    gains time.idle and outcome=interrupted)."""
+    result = {"session_stopped": False}
+    try:
+        api("POST", f"/api/session/{session_id}/interrupt", timeout=30)
+    except Exception as e:
+        result["session_stop_error"] = str(e)
+        return result
+    deadline = time.time() + confirm_seconds
+    while time.time() < deadline:
+        try:
+            info = api("GET", f"/api/session/{session_id}", timeout=30).get("data", {})
+        except Exception:
+            info = {}
+        if info.get("time", {}).get("idle") or info.get("outcome"):
+            result["session_stopped"] = True
+            result["session_outcome"] = info.get("outcome")
+            return result
+        time.sleep(2)
+    return result
+
+
 def main() -> int:
     global OPENCODE
     ap = argparse.ArgumentParser(description="Dispatch one OpenCode session from a brief file.")
@@ -298,7 +330,11 @@ def main() -> int:
     try:
         api("POST", f"/api/session/{sid}/prompt", {"text": brief_text}, timeout=180)
     except Exception as e:
-        return finish(6, status="prompt_failed", error=str(e))
+        stop = stop_session(sid)
+        if not stop["session_stopped"]:
+            print(f"WARNING: session {sid} could not be confirmed stopped; "
+                  "do NOT re-dispatch until it is confirmed idle", file=sys.stderr)
+        return finish(6, status="prompt_failed", error=str(e), **stop)
 
     # 5. poll until idle / stall / timeout
     last_change = time.time()
@@ -333,14 +369,25 @@ def main() -> int:
             status = "stall"
             break
 
-    # 6. harvest + ledger fields from the session record
+    # 6. on stall/timeout the worker may still be running: interrupt it
+    # and confirm idle BEFORE harvesting/returning, so a re-dispatch
+    # cannot collide with it in the same worktree.
+    stop = {}
+    if status in ("stall", "timeout"):
+        stop = stop_session(sid)
+        if not stop["session_stopped"]:
+            stop["session_stop_unconfirmed"] = True
+            print(f"WARNING: session {sid} could not be confirmed stopped; "
+                  "do NOT re-dispatch until it is confirmed idle", file=sys.stderr)
+
+    # 7. harvest + ledger fields from the session record
     try:
         info = api("GET", f"/api/session/{sid}").get("data", {})
     except Exception:
         info = {}
     hv = harvest(sid, report_path, args.min_report_bytes, messages, pre_dispatch_report)
     extra = {"status": status, "outcome": outcome or info.get("outcome"),
-             "tokens": info.get("tokens"), "cost": info.get("cost"), **hv}
+             "tokens": info.get("tokens"), "cost": info.get("cost"), **stop, **hv}
     if status == "completed" and outcome not in (None, "succeeded"):
         return finish(6, **extra)
     if status == "completed":
