@@ -288,6 +288,7 @@ def main() -> int:
     }
 
     def finish(code: int, **extra):
+        ledger_rec["event"] = "dispatch_finished"
         ledger_rec.update(extra)
         ledger_rec["wall_seconds"] = round(time.time() - started, 1)
         ledger_rec["git_after"] = git_snapshot(workdir)
@@ -349,6 +350,17 @@ def main() -> int:
         return finish(2, status="create_failed", error=f"no session id in: {created}")
     ledger_rec["session_id"] = sid
     print(f"session created: {sid} — {args.title}", file=sys.stderr)
+    # Persist the session id NOW, not only in finish(): if this
+    # dispatcher is killed mid-run, the session stays findable in the
+    # ledger instead of running untracked (Sourcery, PR #213; the
+    # 2026-11-21 manual-harvest incident).
+    Path(args.ledger).parent.mkdir(parents=True, exist_ok=True)
+    with open(args.ledger, "a") as f:
+        f.write(json.dumps({"event": "session_created", "session_id": sid,
+                            "ts_start": ledger_rec["ts_start"],
+                            "title": args.title, "model": args.model,
+                            "workdir": str(workdir),
+                            "report": str(report_path)}) + "\n")
 
     # 4. prompt
     prompt_ms = int(time.time() * 1000)
