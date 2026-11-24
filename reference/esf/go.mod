@@ -1,6 +1,6 @@
 module github.com/mitkox/esf
 
-go 1.27.2
+go 1.27.3
 
 require (
 	github.com/google/uuid v1.6.0
@@ -15,9 +15,9 @@ require (
 	go.opentelemetry.io/otel/sdk v1.47.0
 	go.opentelemetry.io/otel/sdk/metric v1.47.0
 	go.opentelemetry.io/otel/trace v1.47.0
-	go.temporal.io/api v1.63.7
-	go.temporal.io/sdk v1.49.0
-	google.golang.org/grpc v1.84.0
+	go.temporal.io/api v1.64.2
+	go.temporal.io/sdk v1.50.0
+	google.golang.org/grpc v1.85.0
 	google.golang.org/protobuf v1.36.12
 	modernc.org/sqlite v1.60.1
 )
