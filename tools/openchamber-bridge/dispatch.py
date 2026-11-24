@@ -44,6 +44,7 @@ Exit codes:
 """
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -295,6 +296,21 @@ def main() -> int:
             f.write(json.dumps(ledger_rec) + "\n")
         print(json.dumps(ledger_rec, indent=1))
         return code
+
+    # 0. one live dispatch per worktree: a second dispatcher on the same
+    # worktree could interleave edits and corrupt the shared report and
+    # brief archive (Sourcery, PR #213). The flock is released by the OS
+    # when this process exits or dies, so a killed dispatcher never
+    # wedges the worktree.
+    lock_dir = bridge_home() / "locks"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_dir / (hashlib.sha256(str(workdir).encode()).hexdigest()[:16] + ".lock")
+    lock_fh = open(lock_path, "a+")
+    try:
+        fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return finish(2, status="lock_contended", workdir_lock=str(lock_path))
+    ledger_rec["workdir_lock"] = str(lock_path)
 
     # 1. health / wake
     try:
