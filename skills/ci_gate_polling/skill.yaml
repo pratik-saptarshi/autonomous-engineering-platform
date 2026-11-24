@@ -1,0 +1,22 @@
+name: ci_gate_polling
+title: CI Gate Polling
+description: Poll pull request CI to a trustworthy completion verdict by pinning the head SHA and the expected check set before trusting any poller output.
+category: Work and knowledge
+include_in_prompt: false
+skill_improvement:
+  managed: true
+  status: active
+  evidence_handles:
+  - assistant-msg-9b6e1a90
+  - assistant-msg-d4c15518
+  - assistant-msg-14e90b71
+  - assistant-msg-9eae2c84
+  measurement:
+    proxy_metric_id: vacuous_ci_completion_claim_rate
+    success_criterion: In the 30 day window, zero CI completion or PASS claims rest on an empty, malformed or SHA mismatched check set, and every poller based CI verdict reports its head SHA with gating checks seen against gating checks expected. A window with no poller based CI verdicts is inconclusive, not success.
+    window_days: 30
+  needs_review: false
+  rationale: 'The same vacuity failure bit twice in the evidence window. On the NeuroStrata PR #38 line a CI poller was killed by a runtime restart and its relaunched replacement falsely declared completion on a malformed SHA and an empty check set, caught only by direct verification and replaced with a poller requiring all 13 runs (assistant-msg-9b6e1a90). On the esf PR #9 line a CI poll malformed query silently failed and part of the wait ran blind before the error was corrected (assistant-msg-d4c15518, assistant-msg-14e90b71, assistant-msg-9eae2c84). Existing coverage does not name this failure. The verification_before_completion skill demands fresh evidence in general, the feature_pr_pipeline Stage 6 gate requires CI green and threads resolved, and the remediation_cycle skill requires checking reviews as well as CI after a gated push, but none pins an expected check set in advance or rules that an empty, malformed or SHA mismatched result is UNKNOWN rather than complete. This skill codifies exactly that anti vacuity contract so the next poller failure fails closed instead of declaring success.'
+  review_after: 2026-12-10T16:23:55.656068+00:00
+  reviewed_at: 2026-11-10T16:23:55.656068+00:00
+  run_id: sirun_f2a31642f6464a439a708084bd9a83e8
