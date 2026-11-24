@@ -341,6 +341,7 @@ def main() -> int:
     except Exception as e:
         stop = stop_session(sid)
         if not stop["session_stopped"]:
+            stop["session_stop_unconfirmed"] = True
             print(f"WARNING: session {sid} could not be confirmed stopped; "
                   "do NOT re-dispatch until it is confirmed idle", file=sys.stderr)
         return finish(6, status="prompt_failed", error=str(e), **stop)
