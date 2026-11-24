@@ -189,6 +189,40 @@
 <li><strong>No new UI, no config changes, no scheduling</strong> — the title convention makes the existing OpenChamber board readable as-is; dispatches are controller-initiated only.</li>
 </ul>
 
+
+<h2>9. Post-pilot operations and refresh (2026-11-23)</h2>
+<p>The pilot closed on 2026-11-20 with all five criteria PASS. The bridge has since run in
+production-shaped use; this section records the operating state as of 2026-11-23.</p>
+<ul>
+<li><strong>Current versions (verified live 2026-11-23):</strong> OpenCode <strong>v2.4.1</strong>
+(upgraded from v2.3.0 via <code>opencode upgrade</code>; OpenCode Go still connected) and
+OpenChamber <strong>2.8.0</strong> (upgraded from 2.7.3 via <code>npm install @openchamber/web@2.8.0</code>
+in the trial app dir; <code>/health</code> reports <code>openCodeRunning: true</code>,
+<code>isOpenCodeReady: true</code> against the background service). The version figures in
+sections 6–7 are the pilot-era record and are kept as written.</li>
+<li><strong>Dispatches since the pilot:</strong> scoped re-reviews of AEP PR #191 (five rounds,
+ending CLEAN) and of the replay-core PR #7 fix waves; two adversarial panels under the
+roundtable protocol (replay-core at its Phase-2 merge; AEP <code>develop</code> as shipped
+state) — both judged SOUND WITH CONDITIONS; a third panel on the replay-core PR #11
+Sourcery round-2 findings (F1/F2/F3 verified as in-model defects, F4 ruled out-of-model
+under the settlement caller contract); and re-reviews of the resulting fix wave and of a
+single-commit Codex repair, both ACCEPTED. The model allowlist and the different-family
+reviewer rule remain in force; one allowlisted model (<code>muse-spark-1.3-contributor</code>)
+has since debuted as a panel seat.</li>
+<li><strong>Scratch-worktree placement rule (standing, learned 2026-11-23):</strong> a dispatched
+session's scratch worktrees go only under <code>~/workspace/worktrees/</code>, never inside
+the repository checkout under review — tree-walking checks in the target repo (gofmt scans,
+file-count floors, phase gates) treat anything inside the checkout as product, and a
+session's probe file inside the tree failed a gate run on an otherwise clean head. Briefs
+must name the worktree location explicitly.</li>
+<li><strong>Ledger:</strong> the <code>ledger.jsonl</code> in this repo is a three-entry pilot-era
+seed by design. The live ledger is runtime data under the bridge home
+(<code>OPENCHAMBER_BRIDGE_HOME</code>) and is not mirrored here.</li>
+<li><strong>Kit currency:</strong> <code>dispatch.py</code>, <code>brief-footer.txt</code>, and
+<code>env.sh</code> in this repo were verified byte-identical to the live executing copies on
+2026-11-23.</li>
+</ul>
+
 <p class="meta" style="margin-top:28px">Prepared 2026-11-20 by the OpenCode–OpenChamber lane. The dispatcher, brief footer, and brief template live in this repo under <code>tools/openchamber-bridge/</code>; smoke-test artifacts and pilot staging remain in the AEP goal workspace.</p>
 </main>
 </body>

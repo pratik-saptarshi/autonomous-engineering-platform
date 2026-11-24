@@ -26,8 +26,20 @@
 <p class="meta">
   Date: 2026-11-21 · Status: Draft for Pratik's review · Owner lane: OpenCode–OpenChamber<br>
   Branch: <code>docs/opencode-setup-documentation</code> (from <code>develop</code> @ <code>0e092af2</code>) · PR target: <code>develop</code><br>
+  Refreshed 2026-11-23: branch merged up to <code>develop</code> @ <code>5a18ada7</code>; see the refresh addendum below. The section-3 inventory remains the verified state as of 2026-11-21.<br>
   Execution method: feature-pr-pipeline (plan → implement → independent review → hygiene → PR; merge is Pratik's per-PR call)
 </p>
+
+
+<div class="note"><strong>Refresh addendum — 2026-11-23.</strong> Since this plan was drafted:
+the live setup moved to OpenCode <strong>v2.4.1</strong> and OpenChamber <strong>2.8.0</strong>
+(both upgraded and verified on 2026-11-23); the bridge kit committed by this branch's first
+execution pass is unchanged and was verified byte-identical to the live copies; and the
+bridge has run nine further dispatches (adversarial panels and scoped re-reviews, all
+delivered). One standing rule was added by operations: dispatched sessions place scratch
+worktrees only under <code>~/workspace/worktrees/</code>, never inside the checkout under
+review. The open decisions in section 8 (documentation home, OpenChamber trial-vs-standing,
+bridge adoption) are unchanged and remain Pratik's.</div>
 
 <h2>1. Executive summary</h2>
 <p>The OpenCode installation in this VM has grown from a trial CLI install (2026-11-12) into a load-bearing part of the
