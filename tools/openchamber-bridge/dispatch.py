@@ -194,11 +194,25 @@ def harvest(session_id: str, report_path: Path, min_bytes: int,
                     "report_bytes": report_path.stat().st_size,
                     "report_authored": True,
                     "report_preexisting": pre["existed"]}
+    # Before the fallback overwrites the path: a genuine pre-existing
+    # report (e.g. the earlier attempt a retry is replacing) is preserved
+    # beside it, never destroyed (Sourcery, PR #213). A previous fallback
+    # is not preserved — it carries no authored content.
+    preserved = None
+    if report_path.exists():
+        current = report_path.read_bytes()
+        if not current.lstrip().startswith(FALLBACK_MARKER.encode()):
+            preserved = report_path.with_name(
+                report_path.name + ".prior-" + time.strftime("%Y%m%dT%H%M%S"))
+            preserved.write_bytes(current)
     text = final_assistant_text(messages)
     report_path.write_text(FALLBACK_MARKER + "\n\n"
                            + (text or "(no assistant text found in transcript)") + "\n")
-    return {"report": str(report_path), "report_bytes": report_path.stat().st_size,
-            "report_authored": False, "report_preexisting": pre["existed"]}
+    result = {"report": str(report_path), "report_bytes": report_path.stat().st_size,
+              "report_authored": False, "report_preexisting": pre["existed"]}
+    if preserved is not None:
+        result["report_prior_preserved"] = str(preserved)
+    return result
 
 
 def stop_session(session_id: str, confirm_seconds: int = 30) -> dict:
