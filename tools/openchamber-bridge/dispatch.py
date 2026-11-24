@@ -30,7 +30,8 @@ ledger Muse-side before anything is published.
 
 Exit codes:
     0  session completed (idle) and report harvested
-    2  service health/wake failed
+    2  service health/wake or session creation failed, or another
+       live dispatch holds the worktree lock (lock_contended)
     3  stall declared (bounded waits, no progress) — partial harvested;
        the session is interrupted and confirmed idle before returning
     4  overall timeout — partial harvested; same interrupt + confirm
