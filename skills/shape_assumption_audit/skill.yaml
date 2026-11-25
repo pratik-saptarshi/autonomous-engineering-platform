@@ -1,0 +1,23 @@
+name: shape_assumption_audit
+title: Shape Assumption Audit
+description: Surface defects hidden by linear, quiescent, single handle and valid input fixture shapes by auditing the implicit shape assumptions of a stateful system before merge, when internal reviews have passed but the system handles graphs, concurrency, storage or untrusted input.
+category: Work and knowledge
+include_in_prompt: false
+skill_improvement:
+  managed: true
+  status: active
+  evidence_handles:
+  - assistant-msg-ac3783de
+  - assistant-msg-9004cb62
+  - assistant-msg-a8606a72
+  - assistant-msg-14a23745
+  - message:e396328d
+  measurement:
+    proxy_metric_id: objective_success_rate
+    success_criterion: 'At least one stateful, graph, storage or concurrency pull request runs the shape audit in the window and no shape class defect (non linear graph, concurrent interleaving, first open, multi handle, tampered stored state or undecodable write input) is first surfaced by an external review round or after merge, versus ten such defects surfaced across the Codex and two panel rounds on replay-core PR #2 in the baseline window. If no such pull request runs, the result is inconclusive and the skill stays for another window.'
+    window_days: 30
+  needs_review: false
+  rationale: 'Replay-core Phase 1 passed its per task reviews, its whole branch review and its phase gate, yet three external rounds then surfaced a single repeated defect class. Codex review of PR #2 at the gate green head found three real findings, all verified first hand (assistant-msg-ac3783de), including garbage collection collecting a published cut prefix because the fixtures were all linear chains where a prefix equals its causal closure, and collection reading the graph outside the write transaction. The first adversarial panel reproduced seven more defects of the same kind (assistant-msg-9004cb62), covering snapshot handles on forked chains, unreserved system schema references, garbage collection trusting a tamperable column and silent scope overwrites. A second panel (message:e396328d) found eight more, including the write path accepting undecodable records with no round trip check, which poisoned the store and wedged collection. The lane own summary names the mechanism (assistant-msg-a8606a72): Phase 1 three review layers missed a defect class, shape assumptions covering linear chains, quiescent collection, single handles and pre initialized stores, and it took two external rounds to surface ten real defects. The final head reached gate green with zero unresolved threads only after those rounds (assistant-msg-14a23745). Existing skills were checked and none mandates this check. The subagent driven development skill covers task reviews and a final whole branch review but no shape enumeration, and it warns against open ended race test directives without a concrete reason. The feature to PR pipeline covers mutation style break the behavior checks and a class recurrence census at its gate, but not fixture shape diversity before external review. The roundtable review skill runs an adversarial panel with a completeness audit, but names no shape classes to hunt. This new skill covers only that gap. Other signals were checked and rejected. The book deals owned filter defect was fixed at the pipeline source and validated on the next real sweep, which dropped eight owned titles including Wool, so it is not an open failure. The verbatim brief lesson is already carried by the product roadmapping skill published in this same window through PR #168, which is inside its own measurement and must not be re-proposed. The six deterministic repeated handoff suppression candidates are kind policy, outside this loop scope. Cron runs in the window show zero failures, and the delegated tool failures in the final chunk carry only bare tool and call IDs with no repeated contract shape.'
+  review_after: 2026-12-19T17:46:46.098762+00:00
+  reviewed_at: 2026-11-19T17:46:46.098762+00:00
+  run_id: sirun_fcf99b01115240aa8c68fe351ce08f6b

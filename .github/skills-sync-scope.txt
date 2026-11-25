@@ -125,6 +125,7 @@ roundtable_review
 rust-pre-pr-gate
 scrubbing-public-tree
 self_test_gym
+shape_assumption_audit
 shower
 sip
 skill_ingestion_gate
