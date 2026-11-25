@@ -93,6 +93,7 @@ export OPENCHAMBER_UI_PASSWORD='<set your own>'        # keep it in a chmod-600 
 # The background service is password-protected, and OpenChamber's probes
 # authenticate only from its own process environment. Read the password
 # from the service state file at launch; never print, log, or commit it.
+set +x  # while the password is loaded: a traced (set -x) export would print its value
 export OPENCODE_SERVER_PASSWORD="$(python3 -c 'import json,os; print(json.load(open(os.path.expanduser("~/.local/state/opencode/service.json")))["password"])')"
 node node_modules/@openchamber/web/build/bin/cli.js serve --hostname 127.0.0.1 --port 3411
 ```
