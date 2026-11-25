@@ -90,10 +90,18 @@ export OPENCODE_HOST=http://127.0.0.1:49374            # the background service
 export OPENCODE_SKIP_START=true                        # attach; never spawn a second server
 export OPENCODE_BINARY="$HOME/.opencode/bin/opencode"  # required even with SKIP_START; launch exits without it
 export OPENCHAMBER_UI_PASSWORD='<set your own>'        # keep it in a chmod-600 file; never commit it
-node node_modules/@openchamber/web/build/bin/cli.js serve --hostname 127.0.0.1 --port 3411
+unset OPENCODE_PASSWORD  # when both are set, OpenChamber prefers OPENCODE_PASSWORD over OPENCODE_SERVER_PASSWORD
+# The background service is password-protected, and OpenChamber's probes
+# authenticate only from its own process environment. Read the password
+# from the service state file at launch; never print, log, or commit it.
+set +x  # while the password is loaded: a traced (set -x) export would print its value
+OPENCODE_SERVER_PASSWORD="$(python3 -c 'import json,os; print(json.load(open(os.path.expanduser("~/.local/state/opencode/service.json")))["password"])')"
+export OPENCODE_SERVER_PASSWORD
+test -n "$OPENCODE_SERVER_PASSWORD" || echo "error: could not load the OpenCode service password from ~/.local/state/opencode/service.json — not launching" >&2
+test -n "$OPENCODE_SERVER_PASSWORD" && node node_modules/@openchamber/web/build/bin/cli.js serve --hostname 127.0.0.1 --port 3411
 ```
 
-OpenChamber does not read the service password from `~/.local/state/opencode/service.json` — in the vendored OpenChamber 2.7.3 code, no code path reads a password from that file (in the local file it sits as a top-level field), and the file's env map (variables set via `opencode service set env`) does not carry it. OpenChamber's auth initializes from `OPENCODE_SERVER_PASSWORD` / `OPENCODE_PASSWORD` in its own process environment when set; its managed local OpenCode instance generates its own password. For the documented launch, there is no need to pass or export the background service's password. Pairing: OpenCode >= 2.2.4 required, upstream tests against 2.3.2; v2.3.0 verified attached with no warnings (2026-11-19).
+OpenChamber does not read the service password from `~/.local/state/opencode/service.json` — in the vendored OpenChamber 2.7.3 code, no code path reads a password from that file (in the local file it sits as a top-level field), and the file's env map (variables set via `opencode service set env`) does not carry it. OpenChamber's auth initializes from its own process environment when set, preferring `OPENCODE_PASSWORD` over `OPENCODE_SERVER_PASSWORD` when both are present — the launch block therefore unsets `OPENCODE_PASSWORD`, so the service password is the credential used; its managed local OpenCode instance generates its own password. Against a password-protected background service, the documented launch MUST export the service's password as `OPENCODE_SERVER_PASSWORD`, read from `~/.local/state/opencode/service.json` at launch time as shown in the launch block: without it, OpenChamber's readiness and event probes receive 401s and health reports `openCodeRunning: false` even though the service is up (verified 2026-11-23). The exported password is a launch-time snapshot — OpenChamber reads it once at startup. A plain service restart does not change it (the service persists its password in `service.json`), but if the service password is ever regenerated, relaunch OpenChamber: until then its probes receive 401s and health again reports `openCodeRunning: false`. The password value is never printed, logged, or committed. Pairing: OpenCode >= 2.2.4 required, upstream tests against 2.3.2; v2.3.0 verified attached with no warnings (2026-11-19); v2.4.0 verified attached with no warnings (2026-11-23); v2.4.1 verified attached with no warnings (2026-11-23).
 
 Security: a signed-in OpenChamber session is effectively full machine access (upstream's own threat model). Bind to 127.0.0.1 only; reach it remotely via tailnet or its built-in E2EE relay — never port-forward it.
 
