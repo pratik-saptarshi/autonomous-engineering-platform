@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Plan: egm-lite wrapper skill for AEP</title>
+<style>
+  body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; max-width: 52rem; margin: 2rem auto; padding: 0 1rem; line-height: 1.55; color: #1a1a1a; }
+  h1 { font-size: 1.5rem; } h2 { font-size: 1.15rem; margin-top: 1.8rem; }
+  code { background: #f0f0f0; padding: 0.1em 0.3em; border-radius: 3px; }
+  table { border-collapse: collapse; } td, th { border: 1px solid #ccc; padding: 0.3rem 0.6rem; text-align: left; }
+  .meta { color: #555; }
+</style>
+</head>
+<body>
+<h1>Plan: egm-lite wrapper skill for AEP</h1>
+<p class="meta">Date: 2026-11-25 &middot; Branch: <code>feat/egm-lite-wrapper</code> &middot; Base: <code>develop</code> &middot; Directed by the repo owner, 2026-11-25.</p>
+
+<h2>Goal</h2>
+<p>Add an eighth EGM wrapper skill, <code>egm-lite</code>, to the AEP skill library, adapted from the
+Elephant-Goldfish Model bundle's egm-lite skill (vendored at
+<code>reference/elephant-goldfish-model/</code>, pin 70406c4d, Apache-2.0), following the same pattern as
+the seven existing <code>egm-*</code> wrappers. The bundle copy of egm-lite is a complete standalone
+5-section protocol (Critique Pause, Checklist &amp; Spec Review, Exec, Adversarial Diff Review,
+Post-Review Resolution Gate) written for the upstream plugin layout; until now it had no wrapper, so it
+was unreachable as a skill in this environment.</p>
+
+<h2>Global constraints</h2>
+<ul>
+  <li>All PRs target <code>develop</code>; Conventional Commit subjects; never bypass branch protection.</li>
+  <li>All GitHub calls go through the <code>ghg</code> gateway; push and PR-create are pre-flighted with <code>ghg check</code>.</li>
+  <li>Protocol sections 1&ndash;5 are carried over substantively verbatim (Apache-2.0 upstream text);
+  only the harness pointers the Muse layout breaks are adapted. This is an adaptation, not a rewrite.</li>
+  <li>The repo copies under <code>skills/egm-lite/</code> and the live working copy under
+  <code>~/workspace/custom-skills/egm-lite/</code> must be byte-identical.</li>
+  <li>Merging is not part of this plan; the PR stops at merge-ready for the owner's per-PR call.</li>
+</ul>
+
+<h2>Tasks</h2>
+<table>
+  <tr><th>#</th><th>Task</th><th>Check</th></tr>
+  <tr><td>1</td><td>Create <code>skills/egm-lite/SKILL.md</code>: source frontmatter kept
+  (<code>disable-model-invocation: true</code>, for family consistency with the other seven wrappers),
+  family vendored-bundle preamble added, harness pointers rewritten to
+  <code>../../reference/elephant-goldfish-model/docs/{codex,claude}.md</code>, sections 1&ndash;5 verbatim.</td>
+  <td>Diff vs bundle source touches only the preamble/pointer block.</td></tr>
+  <tr><td>2</td><td>Create <code>skills/egm-lite/skill.yaml</code> modeled on <code>skills/egm-brainstorm/skill.yaml</code>.</td>
+  <td>Parses as YAML; name/title/description/category/include_in_prompt present.</td></tr>
+  <tr><td>3</td><td>Install both files byte-identical in the live tree at <code>~/workspace/custom-skills/egm-lite/</code>.</td>
+  <td><code>cmp</code> clean on both files.</td></tr>
+  <tr><td>4</td><td>Add <code>egm-lite</code> to <code>.github/skills-sync-scope.txt</code> [skills],
+  alphabetically among the egm-* entries (after <code>egm-drift-report</code>).</td>
+  <td>Scope diff is exactly one added line.</td></tr>
+  <tr><td>5</td><td>Regenerate <code>.github/skills-manifest.sha256</code> with
+  <code>scripts/check_skills_manifest.py --root skills --write</code> (the PR #217 method).</td>
+  <td><code>--check</code> passes; manifest diff is only the new <code>./egm-lite/SKILL.md</code> entry
+  (<code>skill.yaml</code> is path-excluded by scope rule).</td></tr>
+  <tr><td>6</td><td>Ship this plan in the PR under <code>docs/plans/</code>.</td>
+  <td>File present in the branch diff.</td></tr>
+</table>
+
+<h2>Verification</h2>
+<p>A shell check script (kept outside the tree) asserts every task's outcome: it fails on the unmodified
+tree (RED: egm-lite absent from skills/, scope, and manifest) and passes after implementation (GREEN),
+including the manifest checker's own <code>--check</code> and the live-copy byte-identity checks.
+Idempotence: re-running the manifest <code>--write</code> on the finished tree produces no further diff,
+and re-installing the live copy overwrites with identical bytes &mdash; a second run ends in the same
+state as a single clean run.</p>
+
+<h2>Decision flagged</h2>
+<p><code>disable-model-invocation: true</code> is kept from the source, matching all seven existing
+wrappers: egm-lite stays a user-invoked, command-triggered protocol (<code>/egm-lite</code>, then
+<code>checklist</code> / <code>exec</code> / <code>review</code> / <code>goldfish</code>) rather than a
+model-invoked skill. This is flagged explicitly in the PR body for the owner's awareness.</p>
+</body>
+</html>
