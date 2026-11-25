@@ -1,0 +1,5 @@
+name: "live-store-capture"
+title: "Live-Store Capture"
+description: "Capture or inventory a live production store without mutating it: guard-hash the store's config before and after, work from a backup copy under a scratch HOME when a freshness gate refuses live export, run exports and clears against the copy only, reconcile to the expected reachable count, and disclose any direct-open side effect on the live store."
+category: "Work and knowledge"
+include_in_prompt: true

@@ -21,13 +21,22 @@ The Source column names pratik-saptarshi forks (default branch `develop`) wherev
 | archify | pratik-saptarshi/archify | MIT | Vendored verbatim (25cf370); needs ARCHIFY_CHROME env for browser-check gate |
 | autobahn | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | brainstorming | pratik-saptarshi/superpowers | MIT | |
-| catchup | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
+| catchup | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62); extended locally (2026-11): ruling-batch decision memos |
+| census-to-standing-check | Authored locally | MIT | Convert a defect class into a machine-checked standing check scoped by the invariant |
+| ci_gate_polling | Authored locally | MIT | Poll PR CI to a trustworthy verdict: pin the head SHA and the expected check set first; includes the HELD-for-maintainer verdict |
 | code_explorer | pratik-saptarshi/fastcontext-agent-tools | MIT | Methodology only; upstream package uninstallable |
+| consecutive-clean-run-gate | Authored locally | MIT | Re-point automation or expand a pilot only after N consecutive clean runs |
+| coverage-overlap-audit | Authored locally | MIT | Audit bundle/ownership coverage overlap before paying or renewing |
 | debloat | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | dedash | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
+| defect-class-census | Authored locally | MIT | Sibling-defect census from one confirmed bug: classify CONFIRMED / PLAUSIBLE / REFUTED, file only the confirmed set |
 | delegate_code_review | pratik-saptarshi/open-code-review | Apache-2.0 | Delegation mode; needs LLM key for full review |
+| dependency-triage-by-source | Authored locally | MIT | Scope a dependency programme by crossing Dependabot PRs, alerts, and cargo audit: classify every finding patch-only / transitive-major / structural-replacement / drop before proposing bumps |
 | detool | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
+| different-family-reviewer | Authored locally | MIT | Review independence requires a different model family, enforced by allowlist |
 | dispatching-parallel-agents | pratik-saptarshi/superpowers | MIT | |
+| disposition-in-place | Authored locally | MIT | Tracker discipline: status in place, append-only history before overwrite |
+| dual-verification | Authored locally | MIT | Re-verify a delegated review verdict first-hand before publishing |
 | egm-bootstrap | pratik-saptarshi/elephant-goldfish-model | Apache-2.0 | Vendored as bundle (e9e1f06a); wrapper with repo-relative paths |
 | egm-brainstorm | pratik-saptarshi/elephant-goldfish-model | Apache-2.0 | Vendored as bundle (e9e1f06a); wrapper with repo-relative paths |
 | egm-draft | pratik-saptarshi/elephant-goldfish-model | Apache-2.0 | Vendored as bundle (e9e1f06a); wrapper with repo-relative paths |
@@ -35,23 +44,36 @@ The Source column names pratik-saptarshi forks (default branch `develop`) wherev
 | egm-resolve | pratik-saptarshi/elephant-goldfish-model | Apache-2.0 | Vendored as bundle (e9e1f06a); wrapper with repo-relative paths |
 | egm-review | pratik-saptarshi/elephant-goldfish-model | Apache-2.0 | Vendored as bundle (e9e1f06a); wrapper with repo-relative paths |
 | egm-review-loop | pratik-saptarshi/elephant-goldfish-model | Apache-2.0 | Vendored as bundle (e9e1f06a); wrapper with repo-relative paths |
+| exclusion-ledger-first-sweep | Authored locally | MIT | Recurring sweeps read a seen/owned exclusion ledger before generating picks |
 | executing-plans | pratik-saptarshi/superpowers | MIT | Extended locally with git-conventions bullet |
 | factchk | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | feature-pr-pipeline | Authored locally | MIT | Standard feature-to-PR workflow: plan, subagent-driven TDD, independent review, hygiene, PR with CI and review-comment gating |
 | feynman | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
+| fix-validation-protocol | Authored locally | MIT | Validate a fix someone else landed: map every finding to its diff hunk, mutation-prove the tests, verify thread state as well as code state |
+| fork-fleet-maintenance | Authored locally | MIT | Adjudicate the fork fleet: license gate before any upstream sync, same-name mirror discipline, named exceptions |
+| fork-sync-tree-delta | Authored locally | MIT | Verify a fork sync by exact tree delta against the upstream tip |
+| governed-exception | Authored locally | MIT | Govern an exception to a finding with no fix route: cohort-aligned review_by date, multi-limb exit condition, renewal evidentiary bar, blast-radius hunt |
 | grilling | pratik-saptarshi/skills | MIT | |
 | hate | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
+| lockfile-repair-by-regeneration | Authored locally | MIT | Repair a diverged Cargo.lock by regeneration from main's lock plus targeted precise updates only, proven against a written allowlist |
+| live-store-capture | Authored locally | MIT | Capture a live production store without mutating it: guard-hash before and after, work from a backup copy under a scratch HOME, reconcile to the expected count |
 | macrothink | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | mandela | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
+| merge_integration_verification | Authored locally | MIT | Verify a merge of diverged branches tree-wide by file type and by execution, catching splice damage outside the changed directories |
 | modelchk | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | nba | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | neurogenesis_teams | pratik-saptarshi/NeuroGenesis | — | |
 | neurostrata_memory | Distilled locally from NeuroStrata docs | MIT | Custom wiring: retrieval before / inscription after loop iterations |
+| outgoing-text-gate | Authored locally | MIT | Publication gate for issue and PR text: humanizer, factcheck, and conciseness under an independent validator |
 | overnight-parallel-lanes | Authored locally | MIT | Unattended parallel-run setup: isolated worktree per lane, parallel workers, independent reviewers, explicit stop conditions |
 | plan_review_integrator | pratik-saptarshi/opencode-rountable-review | MIT | |
 | plannotator-gate | Authored locally | MIT | Mechanical plan-approval gate over the pinned Plannotator tool: owner reviews and annotates plans, decision archive preserved; pattern in ops/tool-adoption/ |
 | plannotator-inbox | Authored locally | MIT | Asynchronous owner decision queue over the Plannotator Inbox: batched rulings routed back to the asking session; pattern in ops/tool-adoption/ |
+| post-merge-spot-check | Authored locally | MIT | Gate battery on a merged PR at its pinned head: merged-tree behaviour, byte comparison, independent oracle, attribution proof |
+| pr-fleet-review | Authored locally | MIT | Batch review of a repo's open PRs: pinned inventory, one reviewer per PR, fixed verdict taxonomy, gated publication |
+| prepare-to-checkpoint | Authored locally | MIT | Agent prepares to the irreversible step; the owner executes it |
 | prism | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
+| product-pr-workflow | Authored locally | MIT | PR-lifecycle umbrella: intake, independent review, verdict taxonomy, owner ruling, verified remediation, merge gating, closure |
 | product-refinement-loop | Created locally | MIT | Distilled from 2026-10-18 profile-decisions refinement |
 | prototype | pratik-saptarshi/skills | MIT | |
 | ralph_loop | pratik-saptarshi/ralph, heavily refined locally | MIT | Added: Conventional Commits conventions, on-demand daemon lifecycle, independent verifier rule |
@@ -66,22 +88,30 @@ The Source column names pratik-saptarshi forks (default branch `develop`) wherev
 | readchk | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | receiving-review | pratik-saptarshi/superpowers | MIT | |
 | recurring-workflows | pratik-saptarshi/skills | MIT | |
+| remediation-cycle | Authored locally | MIT | Verified Remediation Cycle: the standard response to external-reviewer findings — verification round, owner ruling, remediation force, independent panel and judge, gated push |
 | reorder | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | requesting-review | pratik-saptarshi/superpowers | MIT | |
 | research | pratik-saptarshi/skills | MIT | |
 | reverse_engineering | pratik-saptarshi/rea | MIT | |
 | roundtable_review | pratik-saptarshi/opencode-rountable-review | MIT | |
+| rust-pre-pr-gate | Authored locally | MIT | Standing pre-PR gate for Rust repos: fmt, clippy, deny, audit, Windows-target check |
 | scrubbing-public-tree | Authored locally | MIT | Pre-publish hygiene for agent-built trees: relocate process docs, scrub machine paths and identities |
 | self_test_gym | pratik-saptarshi/NeuroPlasticity | — | Native binary not built (needs cargo + Podman) |
 | shower | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | sip | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
 | ssotize | pratik-saptarshi/paperthin | MIT | Vendored verbatim (7d5dc62) |
+| stacked-pr-restack | Authored locally | MIT | Rebuild a reviewed PR branch onto a moved base with a byte-identical residual and a head tripwire |
+| stored-manifest-refresh | Authored locally | MIT | Refresh a stored integrity manifest only by its documented procedure, prove exactly the expected entries moved, verify both integrity legs locally |
 | subagent-driven-development | pratik-saptarshi/superpowers | MIT | |
-| systematic-debugging | pratik-saptarshi/superpowers | MIT | Extended locally: inscribes root causes to NeuroStrata |
+| superseded-pr-closure | Authored locally | MIT | Close a superseded PR with its verification record preserved and the branch decision stated |
+| systematic-debugging | pratik-saptarshi/superpowers | MIT | Extended locally: inscribes root causes to NeuroStrata; dependency-bisect section and SkillSpector-gate remediation (2026-11) |
 | teach | pratik-saptarshi/skills | MIT | |
 | test-driven-development | pratik-saptarshi/superpowers | MIT | |
 | to-questionnaire | pratik-saptarshi/skills | MIT | |
+| upstream-issue-filing | Authored locally | MIT | File a defect upstream only after reproduction with controls, correct target repo, and duplicate checks |
+| vendored-codeql-disposition | Authored locally | MIT | Disposition CodeQL alerts originating in vendored snapshots: verify at the origin, file or refute there, dismiss at the vendor repo |
 | verification-before-completion | pratik-saptarshi/superpowers | MIT | |
+| watch-loop-template | Authored locally | MIT | Template for periodic check-only watch loops: watermark state, change-only paging, report-only scope |
 | writing-articles | pratik-saptarshi/skills | MIT | |
 | writing-for-agents | pratik-saptarshi/skills | MIT | |
 | writing-plans | pratik-saptarshi/superpowers | MIT | |

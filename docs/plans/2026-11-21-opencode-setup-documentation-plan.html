@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Plan — Professional Documentation of the OpenCode Setup in the Current VM</title>
+<style>
+  body { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; max-width: 880px; margin: 2rem auto; padding: 0 1rem; line-height: 1.55; color: #1a1a1a; }
+  h1 { font-size: 1.55rem; margin-bottom: .2rem; }
+  h2 { font-size: 1.15rem; margin-top: 2rem; border-bottom: 1px solid #ddd; padding-bottom: .25rem; }
+  h3 { font-size: 1rem; margin-top: 1.4rem; }
+  .meta { color: #555; font-size: .92rem; margin-bottom: 1.2rem; }
+  table { border-collapse: collapse; width: 100%; margin: .8rem 0; font-size: .93rem; }
+  th, td { border: 1px solid #ccc; padding: .38rem .55rem; text-align: left; vertical-align: top; }
+  th { background: #f2f2f2; }
+  code { background: #f4f4f4; padding: .08rem .3rem; border-radius: 3px; font-size: .88em; }
+  .ok { color: #157347; font-weight: 600; }
+  .warn { color: #b25e09; font-weight: 600; }
+  ul.tasks { list-style: none; padding-left: .2rem; }
+  ul.tasks li { margin: .45rem 0; }
+  .note { background: #f7f9fc; border-left: 3px solid #4a6fa5; padding: .55rem .8rem; margin: .8rem 0; font-size: .94rem; }
+</style>
+</head>
+<body>
+
+<h1>Plan — Professional Documentation of the OpenCode Setup in the Current VM</h1>
+<p class="meta">
+  Date: 2026-11-21 · Status: Draft for Pratik's review · Owner lane: OpenCode–OpenChamber<br>
+  Branch: <code>docs/opencode-setup-documentation</code> (from <code>develop</code> @ <code>0e092af2</code>) · PR target: <code>develop</code><br>
+  Refreshed 2026-11-23: branch merged up to <code>develop</code> @ <code>5a18ada7</code>; see the refresh addendum below. The section-3 inventory remains the verified state as of 2026-11-21.<br>
+  Execution method: feature-pr-pipeline (plan → implement → independent review → hygiene → PR; merge is Pratik's per-PR call)
+</p>
+
+
+<div class="note"><strong>Refresh addendum — 2026-11-23.</strong> Since this plan was drafted:
+the live setup moved to OpenCode <strong>v2.4.1</strong> and OpenChamber <strong>2.8.0</strong>
+(both upgraded and verified on 2026-11-23); the bridge kit committed by this branch's first
+execution pass is unchanged and was verified byte-identical to the live copies; and the
+bridge has run nine further dispatches (adversarial panels and scoped re-reviews, all
+delivered). One standing rule was added by operations: dispatched sessions place scratch
+worktrees only under <code>~/workspace/worktrees/</code>, never inside the checkout under
+review. The open decisions in section 8 (documentation home, OpenChamber trial-vs-standing,
+bridge adoption) are unchanged and remain Pratik's.</div>
+
+<h2>1. Executive summary</h2>
+<p>The OpenCode installation in this VM has grown from a trial CLI install (2026-11-12) into a load-bearing part of the
+engineering environment: it is the execution plane for the OpenCode–OpenChamber bridge, carries the full live skills
+library, and is fronted by an OpenChamber control room. Its state is currently recorded only in scattered operational
+notes (TOOLS.md, lane memory files, a bridge runbook in a goal workspace). This plan produces a single, professional,
+verified documentation set in this repository that describes the setup as it actually is — installation, configuration,
+provider and model governance, the background-service API route, OpenChamber, and the bridge — together with the
+operations knowledge needed to recover it after a VM replacement. Every factual claim in the deliverables must be
+re-verified live at writing time; nothing is copied from notes on trust.</p>
+
+<h2>2. Objective and scope</h2>
+<p><strong>Objective:</strong> an engineer (or agent) with no prior context can, from the documentation alone,
+understand, verify, operate, and rebuild the OpenCode setup in this VM.</p>
+<p><strong>In scope:</strong> the OpenCode CLI and its configuration; provider authentication state (existence, never
+values); the model catalog and the bridge allowlist; skills/MCP/agents/commands wiring; the background service and its
+API route; OpenChamber in external-attach mode; the bridge dispatcher and its operating rules; environment constraints
+of this VM that affect the setup; recovery procedures.</p>
+<p><strong>Out of scope:</strong> changing the setup itself (no installs, upgrades, config edits, or new provider
+connections); adopting the bridge beyond its current pilot status; documenting any credential value; the OpenChamber
+Space UI internals (covered by its own goal records).</p>
+
+<h2>3. Current-state inventory (verified first-hand, 2026-11-21)</h2>
+<table>
+  <tr><th style="width:26%">Component</th><th>Verified state</th></tr>
+  <tr><td>CLI</td><td>OpenCode <strong>v2.3.0</strong> at <code>~/.opencode/bin/opencode</code> (official installer; PATH wired in <code>~/.bashrc</code> lines 15–16). Upgraded 1.19.5 → v2.3.0 on 2026-11-15 via <code>opencode upgrade --major</code>. A second binary, <code>opencode2</code>, sits alongside it.</td></tr>
+  <tr><td>Provider auth</td><td><strong>OpenCode Go</strong> connected (<code>opencode auth list</code>: "OpenCode Go … stored"). No other provider authenticated. The API key lives in OpenCode's own credential store; it is never read or reproduced by documentation.</td></tr>
+  <tr><td>Models</td><td>44 models listed; 33 under <code>opencode-go</code>. Bridge dispatches are restricted to a 9-model allowlist (see Bridge row).</td></tr>
+  <tr><td>Global config</td><td><code>~/.config/opencode/opencode.json</code>: <code>$schema</code>, <code>mcp.neurostrata</code> (local command, enabled), <code>mcp.rea</code> (local command, enabled), <code>skills.paths = [~/workspace/custom-skills]</code>. Backups on file: <code>opencode.json.bak-2026-11-15-skills</code>, <code>opencode.json.rea.backup</code>. Config directory also holds <code>commands/</code> and <code>skills/</code>.</td></tr>
+  <tr><td>Skills</td><td>Live registry reports <strong>99 skills</strong> (<code>GET /api/skill</code>), sourced from 93 live <code>~/workspace/custom-skills/*/SKILL.md</code> files plus config-dir and built-in skills. Because <code>skills.paths</code> points at the live tree, live skill edits reach OpenCode with no sync step. Known transient: immediately after a service restart the registry can read 0 while indexing — wait 30–60 s before concluding failure.</td></tr>
+  <tr><td>MCP servers</td><td><code>rea</code> — connected, 207 tools (≈7.5 s connect). <code>neurostrata</code> — configured and enabled, but its daemon is down (standing state; connect times out ≈34 s at service start). Daemon start is owner-directed only.</td></tr>
+  <tr><td>Agents / commands / plugins</td><td>7 built-in agents only (Build, General, Explore, Compaction, Title, Summary, Plan); 10 commands including the custom <code>neurogenesis</code> command and rea's set; <strong>no plugins installed</strong> (oh-my-opencode-slim evaluated 2026-11-15, verdict Watch).</td></tr>
+  <tr><td>Background service + API route</td><td>The service API is the working control route: <code>opencode api GET /api/session</code> (health/wake), <code>POST /api/session</code>, <code>POST /api/session/&lt;id&gt;/prompt</code>, poll <code>GET /api/session/&lt;id&gt;/message</code>. The service does <em>not</em> survive VM/process restarts; it is woken by an <code>opencode api</code> call, session history intact.</td></tr>
+  <tr><td class="warn">Known defect — `opencode run`</td><td><code>opencode run</code> <strong>hangs indefinitely in this VM</strong> (300 s test: zero output, ~0 CPU, blocked on I/O; includes <code>--standalone</code>). Inference itself works via the service API (verified end-to-end 2026-11-15). All scripted work must use the API route. This constraint is a headline item in the deliverables, not a footnote.</td></tr>
+  <tr><td>OpenChamber</td><td><code>@openchamber/web</code> <strong>2.7.3</strong> (published npm package, prebuilt), EXTERNAL-ATTACH mode against the background service (no second <code>opencode serve</code> spawned). Trial dir <code>~/workspace/repo-evals/openchamber-trial/</code>; UI at <code>http://127.0.0.1:3411/</code> (VM loopback only); launched by <code>run.sh</code> under node; receives the service password from its launcher: the trial’s <code>run.sh</code> reads it from the service state file at launch and passes it via the environment (the health endpoint reports auth source “user-env”); OpenChamber itself never reads the file, and the password is never stored in the trial dir. Requires <code>OPENCODE_BINARY</code> set even with <code>OPENCODE_SKIP_START=true</code>. <span class="warn">Currently DOWN</span> (no response on :3411 at inventory time — expected after restarts; relaunch procedure is a required deliverable). A Muse Space (<code>openchamber</code>) provides a control-room frontend with live probe and Bring up / Stop controls. Existing repo doc: <code>docs/openchamber-reference.md</code> — build on it, do not duplicate it.</td></tr>
+  <tr><td>Bridge (OpenCode–OpenChamber)</td><td>Dispatcher <code>dispatch.py</code> in the AEP goal's <code>hidden_files/openchamber-bridge/</code>: brief + standard footer, brief archived beside each report, harvest verification with a HARVESTED-NOT-AUTHORED fallback, per-dispatch ledger (<code>ledger.jsonl</code>, 3 dispatches to date). Operating rules: sessions never push, never post to GitHub, never delete; merge decisions are the owner's per-PR calls; the no-push rule is detective (ghg ledger + remote-ref diffs). Track record: smoke test PASS, wave-7 pilot PASS (5/5 criteria), wave-8 re-review ACCEPTED — all 2026-11-20/21.</td></tr>
+  <tr><td>Model allowlist (bridge)</td><td>Owner's standing rule (2026-11-20, expanded 2026-11-21), enforced in code (exit 64 before session creation): <code>opencode-go/deepseek-v4.1-flash</code>, <code>opencode-go/glm-5.3-flash</code>, <code>opencode-go/minimax-m3.1-flash</code>, <code>opencode-go/muse-spark-1.3-contributor</code>, <code>opencode-go/hy4-flash-free</code>, <code>opencode-go/iceman-contributor-free</code>, <code>opencode-go/longcat-2.5-free</code>, <code>opencode-go/beam-free</code>, <code>opencode/tidepool-alpha-free</code> (Tidepool exists only under the <code>opencode</code> provider). Within the list: reviewer family ≠ implementer family.</td></tr>
+  <tr><td>Environment constraints</td><td>VM memory is balloon-trimmed (effective ≈1.6 GiB of 7.7 GiB) — size heavy work accordingly. <code>/tmp</code> is a shared 512 MB tmpfs. Everything under <code>~/</code> survives VM replacement (the install, config, and credential store persist); running processes do not. Go work via sessions needs <code>PATH</code>/<code>GOTMPDIR</code>/<code>CGO_ENABLED=1</code> and sequential builds.</td></tr>
+</table>
+
+<h2>4. Documentation deliverables (target set)</h2>
+<table>
+  <tr><th style="width:34%">Document</th><th>Contents</th></tr>
+  <tr><td><code>docs/opencode-setup.md</code> — main reference</td><td>Architecture and component map; installation record (installer, version, upgrade channel, PATH wiring); configuration reference (every key in <code>opencode.json</code>, what it does, backup discipline); provider and model catalog governance; skills wiring and the live-tree pointer; MCP servers and their states; agents/commands/plugins inventory.</td></tr>
+  <tr><td><code>docs/opencode-operations.md</code> — operations runbook</td><td>Service lifecycle (wake, health check, session API route with exact call sequence); OpenChamber relaunch (<code>run.sh</code>, env vars, port checks); recovery after VM replacement (what persists, what to restart, verification checklist); the bridge dispatcher (usage, exit codes, ledger, detective no-push checks); model-allowlist change procedure.</td></tr>
+  <tr><td>Troubleshooting section (in operations doc)</td><td><code>opencode run</code> hang — symptom, diagnosis, API-route workaround; skill registry reading 0 after restart; neurostrata MCP timeout while its daemon is down; OpenChamber refusing to start without <code>OPENCODE_BINARY</code>; environmental build failures (tmpfs/memory) vs real failures.</td></tr>
+  <tr><td>Security &amp; credentials note (in main reference)</td><td>Where credentials live (OpenCode's store, service state file), who may read them (the <code>opencode api</code> CLI attaches them itself; agents never read the password file), what documentation must never contain, and the UI-password handling rule for OpenChamber.</td></tr>
+  <tr><td>Cross-links</td><td>Update <code>docs/openchamber-reference.md</code> with a pointer to the new set where it overlaps; link the bridge runbook and pilot report in the AEP goal workspace from the operations doc's references.</td></tr>
+</table>
+
+<h2>5. Method and quality gates</h2>
+<ul>
+  <li><strong>Verify, don't transcribe.</strong> Every version, count, path, and state claim in the deliverables is produced by a named command run at writing time, with its output recorded in the task ledger. The §3 inventory is the starting hypothesis, not a source.</li>
+  <li><strong>Secrets discipline.</strong> No credential values, no password-file contents, no API keys in any document, commit, or screenshot. A secrets scan is part of the hygiene gate.</li>
+  <li><strong>Hygiene.</strong> <code>scrubbing-public-tree</code> over the branch's changed files before push (this is a public repo: no machine paths beyond what the setup itself requires, no agent headers, no process debris).</li>
+  <li><strong>Independent review.</strong> A fresh reviewer checks the whole branch diff against this plan: factual accuracy against live re-runs, completeness against §4, no out-of-scope setup changes.</li>
+  <li><strong>Repo gates.</strong> PR targets <code>develop</code>; CI green and zero unresolved review threads before the merge decision, which remains Pratik's per-PR call.</li>
+</ul>
+
+<h2>6. Tasks</h2>
+<ul class="tasks">
+  <li>☐ <strong>Task 1 — Re-verify the inventory.</strong> Re-run every §3 check live; record outputs; correct any drift (expected candidates: skill count, session/service state, OpenChamber up/down). <em>Acceptance:</em> a dated verification table where each row names its command and observed result.</li>
+  <li>☐ <strong>Task 2 — Draft <code>docs/opencode-setup.md</code>.</strong> Per §4. <em>Acceptance:</em> a reader can locate the binary, config, credential store, and catalog, and explain the skills live-tree pointer, without outside help.</li>
+  <li>☐ <strong>Task 3 — Draft <code>docs/opencode-operations.md</code></strong> including troubleshooting and the VM-replacement recovery checklist. <em>Acceptance:</em> the recovery checklist is executable end-to-end by a fresh agent and ends with the §3 health checks green (service answering, registry populated, OpenChamber /health OK or explicitly left down by choice).</li>
+  <li>☐ <strong>Task 4 — Cross-links and index updates</strong> (<code>docs/openchamber-reference.md</code> pointer; goal-workspace references). <em>Acceptance:</em> no duplicated content between old and new docs; every link resolves.</li>
+  <li>☐ <strong>Task 5 — Hygiene + independent review + fixes.</strong> Per §5. <em>Acceptance:</em> hygiene clean; reviewer reports no unresolved findings.</li>
+  <li>☐ <strong>Task 6 — Open the PR to <code>develop</code></strong> (requires Pratik's push/PR authorization at that stage) and run the CI/comment gate. Merge remains Pratik's call.</li>
+</ul>
+
+<h2>7. Risks and mitigations</h2>
+<table>
+  <tr><th style="width:30%">Risk</th><th>Mitigation</th></tr>
+  <tr><td>Version drift — OpenCode moves fast (v1 → v2.3.0 in three days of this VM's history; OpenChamber tests against 2.3.2, floor 2.2.4)</td><td>Date-stamp every version claim; document the upgrade channel and how to re-verify, not just the current number.</td></tr>
+  <tr><td>Documenting a moving target — skills count and service state change daily</td><td>State counts as "at &lt;date&gt;" with the command that reproduces them; prefer procedures over snapshots where both exist.</td></tr>
+  <tr><td>Credential leakage into a public repo</td><td>§5 secrets discipline + hygiene scan; document locations and handling rules only, never values.</td></tr>
+  <tr><td>Duplication with <code>docs/openchamber-reference.md</code> and TOOLS.md</td><td>Task 4 cross-links instead of copying; the repo set is the professional record, TOOLS.md keeps only VM-local quirks.</td></tr>
+</table>
+
+<h2>8. Open decisions for Pratik</h2>
+<ul>
+  <li>Document home: <code>docs/opencode-setup.md</code> + <code>docs/opencode-operations.md</code> (proposed, matches repo convention) vs a <code>docs/opencode/</code> folder.</li>
+  <li>Whether the OpenChamber trial graduates to a documented standing component or stays labelled a trial in the docs (currently written as a trial).</li>
+  <li>Bridge adoption ruling (from the 2026-11-20 pilot report) — the operations doc describes the bridge as pilot-grade until that ruling lands.</li>
+</ul>
+
+<p class="note"><strong>Execution handoff:</strong> on Pratik's approval of this plan, execution runs under the
+feature-pr-pipeline on this branch: Tasks 1–5 in order, then Task 6 on his push/PR authorization. This plan document
+ships in the PR per the standing rule (planning documents live under <code>docs/plans/</code> in the PR they govern).</p>
+
+</body>
+</html>

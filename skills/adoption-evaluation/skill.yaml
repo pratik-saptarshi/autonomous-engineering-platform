@@ -1,0 +1,5 @@
+name: "adoption-evaluation"
+title: "Adoption Evaluation"
+description: "Evaluate an external project or tool for adoption by read-only first-hand inspection at a pinned HEAD, re-measured runtime feasibility on this machine, per-target fit analysis disposing of every adoption form, and a null-hypothesis test, then deliver a verdict from the fixed taxonomy in a standalone HTML report. Use when considering whether to vendor, fork, adopt as a tool, adapt, keep fleet-only, or reject an external project or tool for a target in this environment."
+category: "Work and knowledge"
+include_in_prompt: true

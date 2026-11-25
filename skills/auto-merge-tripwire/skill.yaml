@@ -1,0 +1,5 @@
+name: "auto-merge-tripwire"
+title: "Auto-Merge Tripwire"
+description: "Treat auto-merge state as a checked tripwire on every PR touch: read it from both REST and GraphQL, flag any arming that coincides with unresolved threads, failing checks, or unruled findings, disarm on sight where standing protective authority exists, stop the cycle where it does not, and leave a fully dispositioned PR's arming in place with the reasoning reported. Use on every PR touch — watch runs, cycle phase gates, pre-push, and post-push — because an armed auto-merge over unfinished business converts any later green moment into an unintended merge."
+category: "Work and knowledge"
+include_in_prompt: true

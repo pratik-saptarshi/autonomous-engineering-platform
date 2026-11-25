@@ -1,0 +1,5 @@
+name: "authorization-currency-check"
+title: "Authorization Currency Check"
+description: "Before executing any owner-authorized work — a remediation cycle, a push, a closure batch, a posting — verify the authorization is still live by checking live state first-hand, in order: already done by a parallel lane, fixed in flight by the author lane, moot because the target no longer exists in the authorized form, or conditional with the condition not literally met. Use whenever an authorization arrives or is acted on after any delay, handoff, or parallel activity, and before any spend beyond the live-state reads themselves."
+category: "Work and knowledge"
+include_in_prompt: true

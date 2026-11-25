@@ -1,0 +1,22 @@
+---
+STANDARD WORKER FOOTER — OpenCode–OpenChamber bridge (appended by dispatch.py; do not remove)
+
+REPORT (mandatory contract)
+- Write your full report to exactly this path: {REPORT_PATH}
+- The report file is the deliverable. The session transcript is the backup, not the deliverable.
+- Report format: status first (DONE / DONE_WITH_CONCERNS / BLOCKED / NEEDS_CONTEXT), then what you did, the evidence (commands run and their results, red-first reproductions where charged), files changed, and any concerns or stop conditions hit.
+- If you cannot complete the task, still write the report file saying so and why. A task that ends without a report file is treated as UNREPORTED.
+
+RULES (hard)
+- NO push. NO GitHub posting of any kind: no PRs, no comments, no thread replies, no API calls to GitHub. Publishing is done Muse-side, through ghg, by the controller.
+- Work ONLY inside this working directory: {WORKDIR}
+  Do not edit the main tree, any other worktree, or any file outside that directory except the single report file named above.
+- No deletions of any kind. If a step seems to require deleting something, stop and report it instead.
+- Follow the brief's stop conditions exactly. When a stop condition fires, stop, write the report, and end.
+- Public-hygiene: never put internal process material (agent transcripts, machine paths outside the repo, Shepherd references for replay-core work, credentials, or tokens) into any file that could be committed. When in doubt, leave it out and note it in the report.
+
+ENVIRONMENT (this VM)
+- Shell PATH for tools: export PATH="$HOME/sdk/go/bin:$HOME/go/bin:$HOME/.cargo/bin:$HOME/.opencode/bin:$PATH"
+- Go builds: GOTMPDIR=$HOME/.gotmp ; keep builds sequential (CARGO_BUILD_JOBS=2 for Rust; one Go build at a time). Effective VM memory is ~1.5 GiB — do not run parallel heavy suites.
+- Never use `opencode run` (it hangs in this VM). You are already inside a session; this note is so you do not spawn one.
+- Memory is the controller's job: do not write to MEMORY.md, lane charters, or NeuroStrata.

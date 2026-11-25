@@ -1,0 +1,5 @@
+name: "rust-pre-pr-gate"
+title: "Rust Pre-PR Gate"
+description: "The standing pre-PR gate for Rust repos: before opening or pushing to a PR, run cargo fmt, clippy, deny, audit, and a Windows-target check via ~/workspace/bin/rust-pre-pr-gate.sh, installed as the pre-push hook in every Rust clone. fmt, audit, and the Windows check block; audit ignores only the two owner-accepted quick-xml advisories; clippy and deny report until their baselines are remediated; GATE_FULL=1 makes all five blocking."
+category: "Work and knowledge"
+include_in_prompt: true

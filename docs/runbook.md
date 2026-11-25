@@ -178,7 +178,7 @@ Install each skill as `~/workspace/custom-skills/<name>/` containing `SKILL.md` 
 
 Two local integrations to apply after install:
 
-- `ralph_loop/SKILL.md`: before spawning the worker, search the memory backend for relevant past learnings and include the top hits in the brief; after each iteration, inscribe durable outcomes via `neurostrata_add_memory` (`global` namespace for broadly-applicable lessons, project namespaces otherwise).
+- `ralph_loop/SKILL.md`: before spawning the worker, search the memory backend for relevant past learnings and include the top hits in the brief; after each iteration, record durable outcomes in the loop's `learnings.md` only — promotion to NeuroStrata happens only as a curator proposal the owner approves, carried out outside the loop, never as a direct write by a loop role.
 - `systematic-debugging/SKILL.md`: after a verified fix, inscribe root causes that teach beyond the session as rules.
 
 ## 6. Ralph loop and scheduler

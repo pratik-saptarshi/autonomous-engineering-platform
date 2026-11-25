@@ -1,0 +1,5 @@
+name: "dependency-triage-by-source"
+title: "Dependency Triage by Source"
+description: "Scope a dependency programme by crossing three independent inventories (Dependabot PRs, Dependabot alerts, cargo audit) and classifying every finding patch-only / transitive-major / structural-replacement / drop before any bump is proposed. A crate with no advisory and no Dependabot PR is drop — do not bump it. Use when scoping dependency upgrades, Dependabot backlogs, or audit remediation on a Rust repo."
+category: "Work and knowledge"
+include_in_prompt: true

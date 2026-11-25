@@ -1,0 +1,5 @@
+name: "opencode-runner"
+title: "OpenCode Runner"
+description: "Delegate bounded, verifiable execution work to the OpenCode CLI (v2.3.0) as an independent runner/executor layer, using only OpenCode Go-plan and free models. Transport is the local server's HTTP API — never `opencode run`, which hangs nondeterministically in v2.3.0. Use when a task suits a second engine: parallel implementation lanes, independent verification passes, bulk mechanical edits, test-writing lanes. Enforces a hard model policy (Go + free only, Zen-metered denylist, family ban on all Pro / Claude / Gemini / Grok models, fail closed) and recognizes the three console org gates as account actions for the owner, never as errors to retry or route around."
+category: "Work and knowledge"
+include_in_prompt: false

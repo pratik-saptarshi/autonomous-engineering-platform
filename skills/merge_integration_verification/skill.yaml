@@ -1,0 +1,22 @@
+name: merge_integration_verification
+title: Merge Integration Verification
+description: Verify a merge of two diverged branches tree-wide by file type and by execution, so splice damage outside the changed directories is caught before the merge is called clean.
+category: Work and knowledge
+include_in_prompt: false
+skill_improvement:
+  managed: true
+  status: active
+  evidence_handles:
+  - assistant-msg-40bf9bdb
+  - assistant-msg-6638b7a7
+  - assistant-msg-a6987aea
+  - assistant-msg-239ce999
+  measurement:
+    proxy_metric_id: merge_splice_escape_rate
+    success_criterion: In the 30 day window, zero splice defects are first discovered after a merge that passed verification under this skill, counting invalid structured files, duplicated keys, parent concatenations and dropped test attributes found later by panels or CI. A window with no diverged branch merges verified is inconclusive, not success.
+    window_days: 30
+  needs_review: false
+  rationale: The scoped gate failure bit twice in the same NeuroStrata merge line. FIX15 widened the JSON parse gate from src to src-tauri after a Tauri capability file escaped it, then the PR panel at head dad81f6 (assistant-msg-40bf9bdb) found invalid JSON in plugins/openclaw/package.json and tsconfig.json that existed in neither parent, because plugins was never in the gate, plus 15 docs files that were byte exact parent concatenations and a ci.yml that defined test twice and shadowed one parent matrix. The panel also falsified the PR body claim of zero unfixed merge losses, which held only under the narrower scoped reading. FIX17 (assistant-msg-6638b7a7) repaired all of these tree wide, and the assistant recorded that the scoped gate is retired permanently in favour of tree wide gates (assistant-msg-a6987aea). A later CI reading (assistant-msg-239ce999) showed the same scope lesson in execution, where three of four jobs died mid suite on a SIGABRT visible only in the cargo caused by block and roughly 1000 tests never executed. Existing coverage does not teach this method. The feature_pr_pipeline skill gates a pull request on CI and resolved review threads, verification_before_completion gives a general evidence before claims rule, and roundtable_review verifies panel claims, but none enumerates a merged tree by file type against both parents or counts executed tests against an attribute aware inventory. This skill codifies the tree wide method that FIX17 converged on so the next diverged branch merge in any repo starts there instead of relearning it after two escapes.
+  review_after: 2026-12-08T17:19:05.551267+00:00
+  reviewed_at: 2026-11-08T17:19:05.551267+00:00
+  run_id: sirun_d29a471aaf454facbb029d9995e5523e

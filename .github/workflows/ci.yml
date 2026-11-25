@@ -34,7 +34,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
       - run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
           go install mvdan.cc/sh/v3/cmd/shfmt@v3.10.0
@@ -47,17 +47,18 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version: '1.27.4'
       - run: python3 -m unittest discover -s scripts/tests -v
-      - name: Vendor freshness blocks (13 provenance files, no live API)
+      - name: Vendor freshness blocks (15 provenance files, no live API)
         run: python3 scripts/vendor_graph.py --root . --no-live --strict
       - name: Vendor freshness detector self-test
         run: python3 scripts/vendor_freshness.py --self-test
       - run: bash scripts/lane-coord.sh --self-test
       - run: bash scripts/boot-gate.sh --self-test --offline
       - run: bash scripts/tests/test_watchdog.sh
+      - run: bash scripts/tests/test_watchdog_bin_guard.sh
       - run: bash scripts/tests/test_vendor_sync.sh
       - run: bash scripts/tests/test_package_vm.sh
       - run: bash scripts/tests/test_package_oci.sh
@@ -66,6 +67,7 @@ jobs:
       - run: bash ops/tests/test_watchdog_ops.sh
       - run: bash scripts/install-re-runtime.sh --self-test --offline
       - run: bash scripts/tests/test_install_re_runtime.sh
+      - run: bash scripts/tests/test_install_env_scan.sh
 
   go-checks:
     runs-on: ubuntu-latest
@@ -73,7 +75,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version: '1.27.4'
       - run: test -z "$(gofmt -l cmd internal reference/esf)"
@@ -173,6 +175,11 @@ jobs:
           cd reference/openchamber
           sha256sum -c ../../.github/vendor-openchamber.sha256
           comm -23 <(find . -type f | sort) <(cut -d' ' -f3- ../../.github/vendor-openchamber.sha256 | sed 's|^\./|./|' | sort) | grep -q . && { echo "ERROR: unlisted files"; exit 1; } || true
+          find . -type l | while read -r link; do test -e "$link" || { echo "ERROR: broken symlink $link"; exit 1; }; done
+      - run: |
+          cd reference/avoid-ai-writing
+          sha256sum -c ../../.github/vendor-avoid-ai-writing.sha256
+          comm -23 <(find . -type f | sort) <(cut -d' ' -f3- ../../.github/vendor-avoid-ai-writing.sha256 | sed 's|^\./|./|' | sort) | grep -q . && { echo "ERROR: unlisted files"; exit 1; } || true
           find . -type l | while read -r link; do test -e "$link" || { echo "ERROR: broken symlink $link"; exit 1; }; done
       - name: Run vendored security-audit validator suites
         run: |

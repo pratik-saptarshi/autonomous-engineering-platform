@@ -109,12 +109,13 @@ FH=""
 new_fixture() {
   FX="$SB/case-$1"
   FH="$FX/home"
-  mkdir -p "$FH/workspace/neurostrata/bin" "$FH/.config/NeuroStrata/data/db"
-  cp "$SB/stub/neurostrata-mcp" "$FH/workspace/neurostrata/bin/neurostrata-mcp"
+  mkdir -p "$FH/go/bin" "$FH/workspace/neurostrata" "$FH/.config/NeuroStrata/data/db"
+  cp "$SB/stub/neurostrata-mcp" "$FH/go/bin/neurostrata-mcp"
   printf 'db-content-v1' >"$FH/.config/NeuroStrata/data/db/ladybug.db"
 }
 fixture_db() { echo "$FH/.config/NeuroStrata/data/db/ladybug.db"; }
 fixture_ns() { echo "$FH/workspace/neurostrata"; }
+fixture_bin() { echo "$FH/go/bin/neurostrata-mcp"; }
 set_unchanged() { file_sha "$(fixture_db)" >"$(fixture_ns)/.last-db-sha256"; }
 # The steady state the watermark implies: staged artifacts exist (prune
 # keeps the newest 3 of each kind). Pre-staging both kinds also routes
@@ -133,15 +134,15 @@ set_changed() {
 set_last_use() { echo "$1" >"$(fixture_ns)/.last-daemon-use"; }
 
 fixture_daemon_pids() {
-  pgrep -f "$(fixture_ns)/bin/neurostrata-mcp daemon" 2>/dev/null || true
+  pgrep -f "$(fixture_bin) daemon" 2>/dev/null || true
 }
 start_fixture_daemon() {
   # HOME must be the fixture's: the stub resolves its pidfile under
   # $HOME, and so does every `status` call below.
-  HOME="$FH" nohup "$(fixture_ns)/bin/neurostrata-mcp" daemon >/dev/null 2>&1 &
+  HOME="$FH" nohup "$(fixture_bin)" daemon >/dev/null 2>&1 &
   local i
   for i in $(seq 1 50); do
-    if HOME="$FH" "$(fixture_ns)/bin/neurostrata-mcp" status 2>/dev/null | grep -q "status: healthy"; then
+    if HOME="$FH" "$(fixture_bin)" status 2>/dev/null | grep -q "status: healthy"; then
       return 0
     fi
     /usr/bin/sleep 0.1

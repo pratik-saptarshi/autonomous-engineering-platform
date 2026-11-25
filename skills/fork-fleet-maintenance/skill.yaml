@@ -1,0 +1,5 @@
+name: "fork-fleet-maintenance"
+title: "Fork Fleet Maintenance"
+description: "Adjudicate the fork fleet under the fork model: license gate before any upstream sync, same-name mirror discipline, named exceptions for forks with substantial owner work, and unknown states reported as unknown. Use when a fork-sync check surfaces candidates, divergence, or license questions, or when deciding whether and how a fork may be pulled forward to its upstream. The recurring detection half already runs as the weekly fork-sync-check cron job; this skill is the decision half it feeds."
+category: "Work and knowledge"
+include_in_prompt: true
