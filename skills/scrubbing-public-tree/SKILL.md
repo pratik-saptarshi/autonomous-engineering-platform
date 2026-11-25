@@ -71,6 +71,23 @@ A root manifest's suite covers the workspace members it declares — but an inde
 
 **Relocation:** prefer moving over copying — a copy leaves two sources of truth that drift. Step 6 is mandatory after every move: references break silently, including in ADRs and decision records (updating a moved path doesn't alter the decision; a broken link in a day-old ADR serves nobody).
 
+## Proving a Scrub Is a Pure Gain — the Frozen-Rubric Eval
+
+Step 7 proves the scrub didn't break the build. It does not prove the scrub was a pure gain — that the artifact works as well as before, everywhere it claims to work, and better where the scrub aimed. When a scrub's value claim is portability or "no cost, only gain" — above all when scrubbing a skill or another durable artifact of its machine-specific literals and host-asserted facts — prove it with this eval. This is the standard proof; an impression ("looks equivalent") is not one.
+
+1. **Freeze the rubric before the scrub.** Before touching the artifact, write down: the axes, the per-axis criteria, the ground truth each criterion is scored against, and the thresholds below. A rubric composed after the scrub proves nothing — it can be fitted to the outcome.
+2. **Score before and after under that one rubric.** Axes, at minimum:
+   - **Local behaviour:** fresh-agent runs (or the artifact's equivalent exercise) against the enumerated criteria, before vs after.
+   - **Machine-literal escapes:** count the paths in the artifact that resolve to the original machine instead of the reader's environment.
+   - **Claim accuracy:** the eval packet names the fixture claims to score (asserted facts about environments, tools, or magnitudes), each scored true/false against recorded ground truth, before vs after.
+   - **Foreign-environment behaviour:** how the artifact performs where its original host facts do not hold.
+3. **Use labelled proxies when no real foreign environment exists.** A stub foreign home for path-resolution, or a container for claim accuracy, are legitimate evidence — labelled as proxies in the report, never presented as a real foreign run.
+4. **Apply the thresholds — they are the pass conditions.** Machine-literal escapes must reach **0** after the scrub. Claim accuracy on the packet-named claims must **not decrease**. "Scores recorded" without thresholds does not pass: numbers without a bar are decoration.
+5. **Classify environmental failures honestly.** If a run fails for a reason unrelated to the scrub, classify it as environmental, re-run once, and record both attempts.
+6. **Report the net per artifact: cost, gain, verdict.** State the scrub cost locally (any criterion lost), the portability gained (any criterion gained), and the net. **Pure gain requires no regression on any axis, with the thresholds met. If the after-score regresses on any rubric axis, report the scrub as a trade, not a pure gain** — name the regressed axis and the improving axis; a regression is not averaged away or offset by gains elsewhere.
+
+**Precedent:** a 2026-11-20 eval of two VM-specific skills ran exactly this shape — rubric frozen before any scoring, foreign-home and container proxies labelled as such, machine-literal escapes 3 → 0, local criteria unchanged, container claim accuracy improved — and both scrubs were proved pure gain.
+
 ## Post-Publication History-Rewrite Variant
 
 The playbook above scrubs the working tree before publication. When the leak — machine paths, personal identity — is already in a **published** branch's history, a follow-up commit does not scrub it: the leaked lines stay reachable in every earlier commit. Use this variant instead.

@@ -2,7 +2,7 @@
 name: overnight-parallel-lanes
 description: Use when setting up an unattended coding run — overnight or otherwise — where a milestone should be split into independent workstreams built in parallel with review gating the merge
 fork_of: "pratik-saptarshi/opencode-rountable-review skills/overnight-parallel-lanes"
-fork_version: 1
+fork_version: 2
 ---
 
 # Overnight Parallel Lanes
@@ -29,15 +29,17 @@ One invocation sets up an unattended run: a milestone split into independent lan
 
 **2. One lane, one worktree, one branch.** Cut every lane worktree from the same base commit, through the lane coordinator — never by hand: from the AEP checkout, run `scripts/lane-coord.sh claim --repo <repo> --project <slug> --lane <lane-id> --branch <type/scope-name> --base <base-ref> --worker <agent-id> --exec <worker command>` and keep that launcher process alive for the lane's whole life — it holds the lane's fence, creates the worktree, scrubs credential-shaped variables from the worker's environment, and refuses the claim if any declared path (`--path <extra>`, repeatable) canonicalizes into a sensitive location. A non-zero claim exit (3 = workspace busy, 4 = capacity reached, 5 = lock timeout) means the lane does not start. Inspect lanes with `scripts/lane-coord.sh status`; if a lane's launcher has died, settle the claim with `scripts/lane-coord.sh reap --name <project>-<lane-id>` (or let the next claim auto-settle it) — never remove a worktree the coordinator did not create, and never signal a lane's processes by hand. Verify each worktree's ignore/safety per `using-git-worktrees`. Never let parallel workers share a working copy.
 
-**3. Dispatch one worker per lane, in parallel.** Each dispatch is self-contained: the lane brief (exact values verbatim), the files it may touch, the deterministic gate commands, the report contract. Workers never dispatch subagents — no reviewer, no helpers. Review arrives from you.
+**3. Declare non-interference, and cross-check declarations before any lane starts.** Every lane plan's ledger entry declares its non-interference surface, in three parts: the trees it will not touch (working trees, directories, and file areas outside its own lane files), the lanes it must not compete with (the other lanes of this run, and any other live runs' lanes on the same host), and the resources it will not contend for (host build capacity — simultaneous cargo builds above all — shared ports, shared services, any other named shared resource). A lane plan with no declaration does not start. Before the first dispatch, cross-check every declaration against every other — and read a declaration for what it is: a non-interference statement, naming what a lane will *not* do. A conflict exists only where two declarations positively implicate the same surface: both lanes' own files or worktrees overlapping, both planning to use or contend for the same resource at the same time, or one lane's planned work falling inside a surface another lane's declaration reserves. A positive conflict is flagged in the ledger before either lane starts; both lanes stay stopped until it is resolved by re-splitting, re-scheduling, or a recorded ruling, and neither lane proceeds on the strength of its own declaration alone. Overlap between the declarations' *exclusions* is not a conflict: two lanes that both exclude the same tree, or both decline to contend for the same resource, agree with each other — neither touches or contends for that surface, so there is nothing to interfere over. Record a shared exclusion as agreement in the ledger; it holds neither lane. The claim fence (step 2) is a start-time backstop, not a substitute — the declaration check is what catches a planning conflict, above all a resource conflict no claim can see, while both lanes are still on paper.
 
-**4. Route by cost.** Mechanical lanes (transcription from a complete spec, single-file changes) go to the cheapest capable tier. Judgment lanes (multi-file integration, debugging) go mid-tier. Reviewers go mid-tier minimum — a cheap reviewer is a rubber stamp. Always name the tier in the dispatch; an omitted tier silently inherits the most expensive model and multiplies across every lane. If your runtime cannot select models per dispatch, say so in the ledger and keep the tier labels as documentation of intent — the routing still guides which lanes get the most capable default.
+**4. Dispatch one worker per lane, in parallel.** Each dispatch is self-contained: the lane brief (exact values verbatim), the files it may touch, the deterministic gate commands, the report contract. Workers never dispatch subagents — no reviewer, no helpers. Review arrives from you.
 
-**5. Independent review per lane — fresh context, never the author.** The reviewer is a different agent from the lane's worker, handed the diff as a file plus the lane brief. "Nobody accepts their own work" includes you: the coordinator that dispatched a lane does not review it. Follow the `subagent-driven-development` review loop: spec compliance AND quality, fix rounds capped (see below), scoped re-reviews.
+**5. Route by cost.** Mechanical lanes (transcription from a complete spec, single-file changes) go to the cheapest capable tier. Judgment lanes (multi-file integration, debugging) go mid-tier. Reviewers go mid-tier minimum — a cheap reviewer is a rubber stamp. Always name the tier in the dispatch; an omitted tier silently inherits the most expensive model and multiplies across every lane. If your runtime cannot select models per dispatch, say so in the ledger and keep the tier labels as documentation of intent — the routing still guides which lanes get the most capable default.
 
-**6. Deterministic gates before review.** Tests, lint, vet, build — run as commands, not as requests. A lane that cannot pass its gate does not reach review; it reports instead of committing broken code.
+**6. Independent review per lane — fresh context, never the author.** The reviewer is a different agent from the lane's worker, handed the diff as a file plus the lane brief. "Nobody accepts their own work" includes you: the coordinator that dispatched a lane does not review it. Follow the `subagent-driven-development` review loop: spec compliance AND quality, fix rounds capped (see below), scoped re-reviews.
 
-**7. Batched merge, one CI run, human merge authority.** Lanes merge to the integration branch as a batch; run the full suite once over the batch. You prepare the batch — the human merges and releases. Unattended agents draft and triage; they do not merge, push to shared branches, or publish.
+**7. Deterministic gates before review.** Tests, lint, vet, build — run as commands, not as requests. A lane that cannot pass its gate does not reach review; it reports instead of committing broken code.
+
+**8. Batched merge, one CI run, human merge authority.** Lanes merge to the integration branch as a batch; run the full suite once over the batch. You prepare the batch — the human merges and releases. Unattended agents draft and triage; they do not merge, push to shared branches, or publish.
 
 ## Stop Conditions
 
@@ -46,12 +48,12 @@ Write these into the ledger BEFORE the first dispatch. They are not advisory.
 - **Per-lane time cap.** One hour per lane run by default. A lane that exceeds it is stopped, its partial state committed to its branch, and the lane is re-scoped or parked — never extended silently.
 - **Review/fix round cap.** Three fix rounds per lane. At the cap, adjudicate: park with a ruling, or re-scope the lane. Rounds past the cap do not converge — the failure is structural.
 - **Redesign threshold.** Two lanes parked, or one lane failing the same gate twice with different approaches → stop the run and redesign the lane split. Do not re-dispatch the same shape hoping for a different result.
-- **Budget cap.** Name a total spend ceiling for the run. Cost-tiered routing (step 4) is how you stay under it; the cap is what stops you when routing was wrong.
+- **Budget cap.** Name a total spend ceiling for the run. Cost-tiered routing (step 5) is how you stay under it; the cap is what stops you when routing was wrong.
 - **Zero-artifact loop guard.** If commits accumulate with no gate ever passing — the field-reported failure was 18 hours, 39 commits, no real artifacts, ~$100 burned — halt the run. Commits are not progress; passing gates are.
 
 ## Ledger
 
-Conversation memory does not survive the night. Every run owns a ledger file (one per run, next to the lane briefs): the lane list, the stop conditions, per-lane status lines (`Lane A: complete (commits a1..b2, review clean)` / `Lane B: parked — <ruling>`), and every ruling with what it costs if wrong. After any interruption, trust the ledger and `git log` over recollection. Never re-dispatch a lane the ledger marks complete.
+Conversation memory does not survive the night. Every run owns a ledger file (one per run, next to the lane briefs): the lane list, each lane's non-interference declaration and any conflicts the cross-check flagged, the stop conditions, per-lane status lines (`Lane A: complete (commits a1..b2, review clean)` / `Lane B: parked — <ruling>`), and every ruling with what it costs if wrong. After any interruption, trust the ledger and `git log` over recollection. Never re-dispatch a lane the ledger marks complete.
 
 ## Common Rationalizations
 
@@ -69,6 +71,8 @@ Conversation memory does not survive the night. Every run owns a ledger file (on
 | Situation | Action |
 | ----------- | -------- |
 | Lanes share a file | Re-split; not independent |
+| Declarations share an exclusion | Agreement — record it; neither lane held |
+| Declarations positively contend (same worktree, same resource at the same time, work inside another's reserved surface) | Flag before start; both lanes held until re-split, re-scheduled, or ruled |
 | No deterministic gate | Do not run unattended |
 | Lane exceeds 1h | Stop, commit partial, re-scope or park |
 | 3 fix rounds exhausted | Adjudicate: park with ruling or re-scope |

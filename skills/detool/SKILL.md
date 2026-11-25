@@ -32,6 +32,17 @@ The point is portability, not vagueness. A reader should still know what to insp
 - A pass that finds no incidental coupling changes nothing.
 - Mutate with edit-safety: assert each target exists and report a MISS instead of silently no-oping; edit unicode-safe; replace per occurrence, never by blanket sweep; script large structural moves.
 
+## Pure-Gain Standard
+
+A scrub may be reported as a **pure gain** only when it is proved under the frozen-rubric scrub eval — the procedure lives in the `scrubbing-public-tree` skill. The standard the proof must meet:
+
+- The rubric (axes, criteria, ground truth, thresholds) is frozen in writing **before** the scrub is applied.
+- Machine-literal escapes reach **0** after the scrub.
+- Claim accuracy on the eval packet's named fixture claims does **not decrease**.
+- An after-score regressing on **any** rubric axis means the scrub is reported as a **trade**, not a pure gain — however much another axis improved.
+
+Absent that proof, report what was neutralized and kept (below) and leave the gain unclaimed.
+
 ## Verification
 
 Before finishing, confirm:
@@ -40,3 +51,4 @@ Before finishing, confirm:
 2. Every rewrite preserved the actionable mechanism.
 3. Every kept tool noun is provenance, operational instruction, or the subject of its claim.
 4. The report names neutralized couplings, deliberate keeps, and any judgment calls.
+5. Any "pure gain" claim in the report meets the Pure-Gain Standard above; anything else is reported as a trade or left unclaimed.

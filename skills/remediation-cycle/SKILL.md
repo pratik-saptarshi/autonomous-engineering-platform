@@ -1,6 +1,6 @@
 ---
 name: remediation-cycle
-version: 1.0.1
+version: 1.0.5
 author: pratik-saptarshi
 description: >
   Verified Remediation Cycle — the standard response when an external
@@ -70,6 +70,36 @@ Findings arrive on a pushed head (review comments, a review summary, a
 findings list). Record them verbatim in the ledger with the head SHA.
 Nothing has been established yet: a filed claim is an allegation, not a
 finding, regardless of the reviewer's track record.
+
+**One active cycle per PR — claim it at Phase 0.** Before any
+intake is consumed, check for an already-active cycle on the same
+PR: a cycle whose ledger exists in the work's records root with no
+recorded closure. If one is active, STOP and report — two cycles
+on one PR consume the same intake (the disclosed residuals below
+above all) and race each other's fixes and pushes. A second cycle
+starts only when the earlier cycle has closed, or when the owner
+rules the new cycle supersedes it; a supersession is recorded in
+both ledgers. The starting cycle records its claim in its own
+ledger at Phase 0: the PR, the coordinator, the date, and the
+pinned head. The claim is released when the cycle closes.
+
+**Disclosed residuals are consumed verbatim as intake.** When a
+prior cycle on the same PR closed with disclosed residuals — items
+it enumerated by ID, each with a recorded disposition, but did not
+fix — a new cycle's intake starts from those residuals, before any
+new finding is considered: consume each residual's ID verbatim
+(exactly as recorded — not renumbered, merged, or paraphrased)
+together with its recorded disposition, as the new cycle's starting
+item list. (Worked shape: PR #148's later rounds opened from the
+prior round's disclosed residuals — R7-C1-6; R7-C2-6; R-F1-1 — each
+carried with the disposition its closing record gave it.)
+Resemblance is not identity: a new finding that merely resembles a
+disclosed residual is not forced into the residual's ID — record
+the resemblance, and give the finding its own intake line under its
+own identity. A residual whose recorded disposition was capped by
+owner ruling is consumed with the cap honoured as its starting
+state; intake does not re-litigate the cap — reopening it requires
+the owner's fresh ruling.
 
 **Exit:** findings recorded; reviewed head SHA pinned.
 
@@ -239,6 +269,45 @@ rewritten, tree identical, gated push.)
    a branch change without evidence (pre-existing infrastructure
    failures stay labelled as such).
 
+**Reviewer-unavailable is an evidence state.** The reviewer may never
+see the final head: it hit a usage limit, filed no threads, or otherwise
+cannot re-review. When that is established, do not keep waiting on
+Phase 6 step 5 as if the re-review were merely late, and never report
+the cycle as re-reviewed by that reviewer. Record the state explicitly
+in the ledger — "no re-review of this head" — naming the head and the
+reviewer, and name who *did* verify the fixed head (the panel, the
+judge, or another named independent verifier; an unnamed verifier does
+not count). Any merge-readiness reporting for that head discloses the
+reviewer-unavailable state; it is never silently a clean review.
+(Worked case: PR #201 — Codex flagged findings at superseded head
+ddb9d949, filed no threads, hit its usage limit, and never re-reviewed
+the fixed head 5f46bf4b; the fixed head was verified by the PR-comment
+watch's independent verification and by Sourcery's re-check of its
+three findings, and the record says exactly that.)
+
+**Policy-delta token refresh.** A PR head can advance without any
+policy change — a base-branch merge is the worked cause — leaving the
+policy-delta token in the PR body stale. Refresh it only by this
+sequence: (1) recompute with the checker —
+`python3 scripts/check_policy_delta.py diff --format markdown <base> <head>`
+prints the `policy-delta-sha256` token; the base is `origin/develop`
+under this phase's convention. (2) Confirm the delta total **and**
+composition are unchanged against the previously acknowledged delta.
+A changed composition is a new policy fact, not a stale token: refuse
+a bare token swap and escalate to the owner. (3) The body edit is
+exactly the token line — the acknowledgement text verbatim, the
+expiry unchanged. (4) Verify with
+`check --body-file <file> <base> <head>` (exit 0) **before** posting
+and again **after** posting, then fetch back the posted body and
+confirm the exact token landed — the fetch-back is a required step,
+not optional. (Worked case: PR #189, 2026-11-22 — head advanced by a
+base merge; recomputation gave delta total 46 with composition
+identical to the acknowledged delta — 20 [skills] additions,
+1 [exclude-paths] removal, 24 new skills, 1 file added — the body
+edit was exactly the token line, `check --body-file` exited 0 before
+and after posting, and the fetch-back self-caught a trailing-newline
+artifact.)
+
 **Mechanical discharge.** A finding REFUTED as a false positive, or
 auto-fixed by re-analysis, still blocks mechanically until the formal
 acts are done: dismiss the alert with its reason, post the receipt on
@@ -265,7 +334,10 @@ ledger complete. Merge remains the owner's separate decision.
 ### Phase 7 — Loop
 
 Expect the reviewer to re-review the new head and possibly file new
-findings. New findings restart at Phase 1 — a fresh verification
+findings — unless the reviewer is established as unavailable for
+that head, in which case Phase 6's reviewer-unavailable block
+governs the state and its disclosure instead. New findings restart
+at Phase 1 — a fresh verification
 round, a fresh owner ruling, a fresh cycle number. When reporting a
 new round, distinguish:
 
@@ -281,7 +353,10 @@ fixed opportunistically and they do not expand the cycle's scope.
 (The unverified P2 trio on PR #114 was left untouched for exactly
 this reason.) A residual held against a covering PR is re-judged for
 mootness only after that PR lands, and never auto-fires on the
-landing (the §B residual held against upstream PR #184).
+landing (the §B residual held against upstream PR #184). Parked
+residuals are distinct from a closed cycle's disclosed residuals:
+those are consumed verbatim as the next cycle's intake under
+Phase 0, not parked here.
 
 ## Stop Conditions
 
@@ -289,6 +364,8 @@ Stop and report to the controller/owner:
 
 - A design fork that cannot be resolved from the verification report
   and the code (Phase 3).
+- An already-active cycle on the same PR, found at the Phase 0
+  claim check, with no owner ruling superseding it.
 - Any fix that requires changing a prior closure's semantics, or a
   disclosed decision whose filed consequence arguably exceeds its
   disclosure and the boundary is unclear.

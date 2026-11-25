@@ -1,6 +1,6 @@
 ---
 name: pr-fleet-review
-version: 1.0.0
+version: 1.0.1
 author: pratik-saptarshi
 description: >-
   Batch review of a fleet of open PRs on one repository: pin the inventory
@@ -47,6 +47,7 @@ Stage 6: Re-review  → finding-by-finding on every author fix push
 
 - Enumerate every open PR in scope from the live repo state: number, title, author, head SHA, base branch, additions/deletions, changed-file count, draft state.
 - Record the inventory in the run's records directory before any review starts; it is the baseline every later drift check compares against.
+- **Out-of-scope states stay on record.** A PR in the programme's scope that is no longer open still gets an inventory entry with its state: closed by an automated guard (see Guard-closed PRs below), or already merged under a target a later ruling superseded (see Stale-target merges below). Such entries are not reviewed as open PRs and are not dropped as routine closures or routine merges.
 - **Gate:** inventory complete and recorded; no in-scope PR missing.
 
 ### Stage 1 — Independent review
@@ -97,6 +98,27 @@ Stage 6: Re-review  → finding-by-finding on every author fix push
 - Re-list review threads after fetching the latest state — new findings may have landed post-fix — and verify thread state, not just code state.
 - Update the PR's verdict per finding (closed / open / re-scoped) and overall; return to Stage 4 for any publication the owner directs.
 - **Gate:** every original finding carries a current disposition backed by its closing hunk or a stated reason it remains open.
+
+## Guard-closed PRs, stale-target merges, and mid-programme intake
+
+### Guard-closed PRs and the Dependabot refile
+
+- When an automated guard closes a PR for touching a protected tree — the Dependabot-against-`reference/**` shape — record the closure as a guard closure, with the guard and the protected tree named. The guard's decision is not appealed inside the review: guards of this kind have no opt-out, and the fleet review never weakens, bypasses, or reopens around one.
+- Whether an equivalent change is still needed is a **human judgement**, recorded as a ruling by the owner or the PR's maintainer — never inferred from the guard closure itself (a guard closure says the tree was protected, not that the change was unwanted) and never from the reviewer's own assessment alone.
+- If the ruling is to proceed, the refile is a new, human-authored change, and its **refile packet** must enumerate exactly three values: the **corrected target tree** (where the change may land instead of the protected tree), the **dependency change** (the package and version movement the closed PR carried), and the **authorising ruling** (who ruled, and where it is recorded). A packet missing any of the three does not proceed.
+- The refile executes as a normal change against the corrected target tree — through `feature-pr-pipeline` where that workflow applies — not by reopening the closed Dependabot PR. The fleet record links the guard-closed PR, the packet, and the refiled PR together.
+
+### Stale-target merges
+
+- When a PR has already merged under a target (base, version, or landing target) that was stale at merge time and a later ruling has superseded that target, surface the merge in the fleet record as a **stale-target merge** — a distinct item, never folded into the routine merge count or reported as an ordinary landing.
+- Its entry carries the **ruling trail**: the target it merged under, the ruling that superseded that target, and the merge's current disposition (stands as-is, follow-up required, or superseding change filed — each with its evidence or link).
+- Surfacing is not reversal: undoing or superseding the merge itself remains the owner's separate decision, per the Hard Rules.
+
+### Mid-programme intake queue
+
+- Findings that arrive after a PR's review has closed — while the programme is still running — enter a named **intake queue** in the run's records; they do not reopen the closed review. The PR's judged verdict stands as the record of that review.
+- Each intake item is named (PR, finding, source, date) and carries a **disposition** that routes it: accepted as a follow-up finding, routed to Stage 6 re-review as an author-fix item, refuted with evidence, or held for an owner ruling. An item with no disposition is not absorbed, deferred silently, or merged into the closed review's findings.
+- Intake items are reported alongside the fleet's verdicts, as their own list, so the owner rules on the queue as a queue.
 
 ## Stop Conditions
 

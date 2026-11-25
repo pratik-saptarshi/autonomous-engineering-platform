@@ -65,14 +65,17 @@ feynman
 filing-upstream-prs
 filing-validated-issues
 finishing-a-development-branch
+fix-validation-protocol
 fork-fleet-maintenance
 fork-sync-tree-delta
+governed-exception
 grill-me
 grill-with-docs
 grilling
 handoff
 hate
 humanizer
+live-store-capture
 lockfile-repair-by-regeneration
 macrothink
 mandela
@@ -92,6 +95,7 @@ paperthin-attribution
 plan-review-integrator
 planning-wringer
 post-merge-spot-check
+pr-fleet-review
 prepare-to-checkpoint
 preregistered-pilot
 prism
@@ -128,6 +132,7 @@ ssotize
 stacked-pr-restack
 stalled-lane-resume
 ste80-humanizer
+stored-manifest-refresh
 subagent-driven-development
 systematic-debugging
 teach
