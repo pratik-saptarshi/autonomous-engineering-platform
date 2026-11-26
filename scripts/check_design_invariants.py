@@ -451,8 +451,29 @@ def check_watchdog_deltas(files, errors):
         add(errors, name, f"ops/README.md contents table delta count does not match {len(letters)}")
 
 
+# Claims already disproved: a bare MCP spawn does not reliably start the
+# daemon (docs/limitation-analysis.md section 1, verified 2026-10-16), so no
+# live doc may promise a revive through it.
+STALE_RESTART_PATTERNS = (
+    r"via MCP auto-spawn",
+    r"restarts? it automatically",
+    r"restarted automatically on the next MCP",
+)
+
+
+def check_restart_claims(files, errors):
+    name = "DOCS-RESTART"
+    for rel, text in sorted(files.items()):
+        if not is_live_doc(rel):
+            continue
+        for pattern in STALE_RESTART_PATTERNS:
+            if re.search(pattern, text, re.I):
+                add(errors, name, f"{rel} repeats the disproved claim {pattern!r}")
+
+
 FILE_CHECKS = [
     ("OPS-DELTAS", check_watchdog_deltas),
+    ("DOCS-RESTART", check_restart_claims),
 ]
 
 # Each mutation is (file, old, new) and must trip the named check.
@@ -461,6 +482,11 @@ FILE_MUTATIONS = {
         [(OPS_README, "exactly five documented deltas", "exactly four documented deltas")],
         [(WATCHDOG_DELTAS, "Delta count: five", "Delta count: four")],
         [(WATCHDOG, "set -euo pipefail", "set -euo pipefail\n# drift")],
+    ],
+    "DOCS-RESTART": [
+        [("README.md", "revives a dead daemon via direct", "revives a dead daemon via MCP auto-spawn and direct")],
+        [("docs/operations.md", "If the daemon is down, restart it", "If the daemon is down, the next MCP client spawn restarts it automatically. Restart it")],
+        [("docs/limitation-analysis.md", "an MCP-spawn revive", "a dead daemon is restarted automatically on the next MCP spawn, an MCP-spawn revive")],
     ],
 }
 
