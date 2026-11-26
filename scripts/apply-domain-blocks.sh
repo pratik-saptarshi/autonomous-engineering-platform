@@ -9,10 +9,12 @@
 # `getent ahostsv6`, never read from a hardcoded list, because the provider
 # addresses rotate. A DROP rule is only as good as the DNS answer it was
 # built from, so re-run this script after a DNS rotation and on every boot or
-# VM replacement. Rules this script added for addresses that have rotated away
-# are removed on the next run (the managed set is kept in
+# VM replacement. Rules this script installed for addresses that have rotated
+# away are removed on the next run (the owned set is kept in
 # $AEP_BLOCK_STATE_DIR, default /run/aep-domain-blocks), so an address that is
-# later reused by an unrelated service is not left blocked.
+# later reused by an unrelated service is not left blocked. A DROP that was
+# already present before the script first ran is never recorded as owned and
+# is therefore never deleted by reconciliation.
 #
 # Drops are inserted at the head of OUTPUT (`-I OUTPUT 1`), not appended, so an
 # earlier ACCEPT rule cannot match a blocked destination first. Verification
@@ -63,8 +65,10 @@ flock -w 60 9 || die "another apply-domain-blocks run is still holding the lock"
 ADDED=""
 CURRENT_PAIRS=""
 PREV_PAIRS=""
+OWNED_PAIRS=""
 TMP_STATE=""
 COMMITTED=0
+INSERTED=0
 
 cleanup() {
   local rc=$?
@@ -81,6 +85,7 @@ cleanup() {
   if [ -n "$ADDED" ]; then rm -f "$ADDED"; fi
   if [ -n "$CURRENT_PAIRS" ]; then rm -f "$CURRENT_PAIRS"; fi
   if [ -n "$PREV_PAIRS" ]; then rm -f "$PREV_PAIRS"; fi
+  if [ -n "$OWNED_PAIRS" ]; then rm -f "$OWNED_PAIRS"; fi
   if [ -n "$TMP_STATE" ]; then rm -f "$TMP_STATE"; fi
   exit "$rc"
 }
@@ -137,6 +142,12 @@ else
   : >"$PREV_PAIRS"
 fi
 
+# The subset of the current set this script actually installed (previously
+# owned, or inserted by this run). A DROP that an administrator installed
+# before us is current but not owned, so rotating away never deletes it.
+OWNED_PAIRS="$(mktemp "$STATE_DIR/.owned.XXXXXX")"
+: >"$OWNED_PAIRS"
+
 V6_ROUTE=no
 if [ -n "$(ip -6 route show default 2>/dev/null || true)" ]; then V6_ROUTE=yes; fi
 
@@ -172,8 +183,9 @@ ordered_before_accept() { # $1 = tool, $2 = ip; true when the DROP precedes ever
 # error and must not be mistaken for "absent". Insert at the head so no earlier
 # ACCEPT can swallow the traffic; an existing rule that sits after an ACCEPT is
 # moved to the head.
-apply_drop() { # $1 = iptables|ip6tables, $2 = ip
+apply_drop() { # $1 = iptables|ip6tables, $2 = ip; sets INSERTED when it added one
   local rc=0
+  INSERTED=0
   "$1" -C OUTPUT -d "$2" -j DROP 2>/dev/null || rc=$?
   case "$rc" in
   0)
@@ -188,6 +200,7 @@ apply_drop() { # $1 = iptables|ip6tables, $2 = ip
     ADDED="${ADDED:-$(mktemp "$STATE_DIR/.added.XXXXXX")}"
     "$1" -I OUTPUT 1 -d "$2" -j DROP || die "$1 -I failed for $2"
     printf '%s %s\n' "$1" "$2" >>"$ADDED"
+    INSERTED=1
     ;;
   *) die "$1 -C failed for $2 (exit $rc)" ;;
   esac
@@ -195,7 +208,14 @@ apply_drop() { # $1 = iptables|ip6tables, $2 = ip
 
 while read -r tool ip domain; do
   [ -n "$tool" ] || continue
+  # A rule already in the managed set stays owned even when it is reused.
+  if grep -qxF -- "$tool $ip" "$PREV_PAIRS"; then
+    printf '%s %s\n' "$tool" "$ip" >>"$OWNED_PAIRS"
+  fi
   apply_drop "$tool" "$ip"
+  if [ "$INSERTED" -eq 1 ]; then
+    printf '%s %s\n' "$tool" "$ip" >>"$OWNED_PAIRS"
+  fi
   family=v6
   if [ "$tool" = iptables ]; then family=v4; fi
   echo "blocked ($family): $domain -> $ip"
@@ -237,7 +257,7 @@ while read -r tool ip; do
 done <"$PREV_PAIRS"
 
 TMP_STATE="$(mktemp "$STATE_DIR/.state.XXXXXX")"
-sort -u "$CURRENT_PAIRS" >"$TMP_STATE"
+sort -u "$OWNED_PAIRS" >"$TMP_STATE"
 mv -f "$TMP_STATE" "$STATE_FILE"
 
 echo "Domain blocks applied and verified: ${DOMAINS[*]}"

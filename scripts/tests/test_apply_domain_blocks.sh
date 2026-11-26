@@ -286,6 +286,21 @@ has "missing ip is named" "ip not found"
 lacks "missing ip never prints success" "$SUCCESS"
 t "missing ip applied no rules" "$(nrules iptables)" -eq 0
 
+echo "# case 15: a preinstalled DROP is never adopted or deleted by reconciliation"
+reset_case
+export AEP_BLOCK_DOMAINS="alpha.example"
+printf '192.0.2.10\n' >"$DNS/alpha.example.v4"
+printf 'OUTPUT -d 192.0.2.10 -j DROP\n' >"$STATE/iptables.rules"
+run
+t "a preinstalled DROP still exits 0" "$RC" -eq 0
+t "the preinstalled DROP is not recorded as owned" "$(grep -cxF -- 'iptables 192.0.2.10' "$STATE/managed-rules" 2>/dev/null || true)" -eq 0
+printf '192.0.2.11\n' >"$DNS/alpha.example.v4"
+run
+t "the rotation run exits 0" "$RC" -eq 0
+t "the administrator's DROP survives the rotation" "$(rules iptables | grep -cx -- 'OUTPUT -d 192.0.2.10 -j DROP')" -eq 1
+t "the newly resolved address is blocked" "$(rules iptables | grep -cx -- 'OUTPUT -d 192.0.2.11 -j DROP')" -eq 1
+t "only the installed rule is owned" "$(grep -cxF -- 'iptables 192.0.2.11' "$STATE/managed-rules" 2>/dev/null || true)" -eq 1
+
 if [ "$FAILURES" -ne 0 ]; then
   echo "test_apply_domain_blocks: $FAILURES failure(s)"
   exit 1

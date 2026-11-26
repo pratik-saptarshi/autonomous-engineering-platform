@@ -143,7 +143,9 @@ stop_daemon_for_write() {
 restart_daemon() {
   [ "$STOPPED_DAEMON" = 1 ] || return 0
   mkdir -p "$NS_DIR" 2>/dev/null || true
-  HF_HUB_OFFLINE=1 nohup "$NSMCP" daemon >>"$NS_DIR/daemon.log" 2>&1 &
+  # Close the seed-lock descriptor in the daemon child: an inherited flock
+  # would keep the lock held for the daemon's whole lifetime.
+  HF_HUB_OFFLINE=1 nohup "$NSMCP" daemon >>"$NS_DIR/daemon.log" 2>&1 7>&- &
   local i
   for i in $(seq 1 120); do
     if [ "$(daemon_state)" = up ]; then

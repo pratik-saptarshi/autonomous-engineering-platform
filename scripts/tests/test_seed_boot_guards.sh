@@ -236,6 +236,15 @@ t "three guard_rule memories seeded" "$(count_guards)" -eq 3
 t "the daemon is running again after seeding" "$(daemon_running && echo yes || echo no)" = yes
 case "$OUT" in *"stopping daemon"*) ok "the stop is reported" ;; *) fail "the stop is reported: $OUT" ;; esac
 case "$OUT" in *"daemon restarted"*) ok "the restart is reported" ;; *) fail "the restart is reported: $OUT" ;; esac
+if command -v flock >/dev/null 2>&1; then
+  if flock -n "$HOME/workspace/neurostrata/.seed-guards.lock" -c true 2>/dev/null; then
+    ok "the restarted daemon does not hold the seed lock"
+  else
+    fail "the restarted daemon retains the seed lock"
+  fi
+else
+  ok "flock unavailable; seed-lock inheritance not checked"
+fi
 stop_daemon
 
 echo "# case 6: a rule already present (live wording) is not duplicated"
