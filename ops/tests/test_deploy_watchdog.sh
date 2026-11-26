@@ -199,6 +199,42 @@ DEPLOY_RECEIPT="$SB/nested/receipt-dir/custom.json" run --apply --skip-tests
 t "missing custom receipt dir created and exits 0" "$RC" -eq 0
 t "custom receipt written" "$(test -s "$SB/nested/receipt-dir/custom.json" && echo yes || echo no)" = "yes"
 
+echo "# case 12: a receipt path that resolves to the target or source is refused"
+reset_target
+seed_drifted
+target_before="$(sha "$DEPLOY_TARGET")"
+source_before="$(sha "$SRC")"
+DEPLOY_RECEIPT="$DEPLOY_TARGET" run --apply --skip-tests
+t "receipt==target exits non-zero" "$RC" -ne 0
+has "receipt==target is named" "resolves to the deployment target"
+t "receipt==target left the deployed script intact" "$(sha "$DEPLOY_TARGET")" = "$target_before"
+DEPLOY_RECEIPT="$SRC" run --apply --skip-tests
+t "receipt==source exits non-zero" "$RC" -ne 0
+has "receipt==source is named" "resolves to the canonical source"
+t "receipt==source left the source intact" "$(sha "$SRC")" = "$source_before"
+
+echo "# case 13: a JSON-forbidden control character in a configured path is refused"
+reset_target
+seed_drifted
+DEPLOY_RECEIPT="$SB/bad"$'\v'"receipt.json" run --dry-run
+t "control-character receipt exits non-zero" "$RC" -ne 0
+has "control characters are named" "control characters"
+t "no receipt was written" "$(test -e "$SB/bad"$'\v'"receipt.json" && echo yes || echo no)" = "no"
+
+echo "# case 14: an in-sync target repairs a missing or stale receipt"
+reset_target
+run --apply
+t "first deploy writes the receipt" "$(test -s "$RECEIPT" && echo yes || echo no)" = "yes"
+rm -f "$RECEIPT"
+run --apply
+t "in-sync retry with a missing receipt exits 0" "$RC" -eq 0
+has "the repair is reported" "repaired"
+t "the missing receipt was rewritten" "$(test -s "$RECEIPT" && echo yes || echo no)" = "yes"
+printf '{"sha256": "deadbeef", "target": "%s"}\n' "$DEPLOY_TARGET" >"$RECEIPT"
+run --apply
+t "in-sync retry with a stale receipt exits 0" "$RC" -eq 0
+t "the stale receipt was repaired to the real sha" "$(field sha256)" = "$(sha "$DEPLOY_TARGET")"
+
 if [ "$FAILURES" -ne 0 ]; then
   echo "test_deploy_watchdog: $FAILURES failure(s)"
   exit 1

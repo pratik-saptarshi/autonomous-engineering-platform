@@ -13,7 +13,9 @@
 #      1 — but first run drive_catch_up: the Drive tier may be behind even
 #      when the DB is unchanged (it was unconfigured or failed when this
 #      state was backed up). Note: on the idle path, the daemon IS stopped
-#      by design after the no-change check.
+#      by design after the no-change check, but only when its activity marker
+#      exists and is older than IDLE_SECS and it has no established client
+#      connection; see "Activity" below.
 #   3. On change with the daemon up: SIGTERM the daemon (graceful
 #      checkpoint), copy the DB, sha256-verify the copy against a hash
 #      taken immediately before the copy, and record the local checksum
@@ -26,15 +28,27 @@
 #      checksum stays stale so a later run uploads this backup once Drive
 #      is configured. Prune staging.
 #
+# Activity: stopping a daemon someone is using is worse than postponing a
+# backup. The watchdog stops a healthy daemon only when
+# ~/workspace/neurostrata/.last-daemon-use exists, is numeric, is older than
+# IDLE_SECS, and `ss` shows no established loopback connection to the daemon
+# port. A missing or unreadable marker means "activity unknown", so the daemon
+# is left running. ops/bin/cron-with-boot-gate.sh heartbeats the marker for
+# the duration of a gated job; a direct MCP client that does not write the
+# marker is covered by the connection check when `ss` is available.
+#
 # Crash evidence: this script never restarts the daemon, but it must not let
 # a restart destroy the evidence of a death either. A down daemon is
 # "unexpected" when this watchdog did not stop it: it saw the daemon healthy
-# (.daemon-seen-up) or a client used it after the last accounted stop
-# (.last-daemon-use newer than .daemon-down-accounted), and no intentional
-# stop was recorded since. On an unexpected death, and ONLY then, it writes
-# logs/crash-<UTC>.log (owner-only) and moves daemon.log aside to
-# daemon.log.<UTC>.pre-restart. Both are capped at 10 files. An idle stop by
-# this script is intentional and never produces a bundle.
+# (.daemon-seen-up), a client used it after the last accounted stop
+# (.last-daemon-use newer than .daemon-down-accounted), or daemon.log was
+# written after the last accounted stop (a start-and-die between runs with no
+# client hook), and no intentional stop was recorded since. On an unexpected
+# death, and ONLY then, it writes logs/crash-<UTC>.log (owner-only) and moves
+# daemon.log aside to daemon.log.<UTC>.pre-restart (also owner-only). Both are
+# capped at 10 files. An idle stop by this script is intentional and never
+# produces a bundle. If the bundle cannot be created, the run leaves the death
+# unaccounted so the next run retries.
 #
 # Two watermarks, two tiers: .last-db-sha256 = a verified local copy exists;
 # .last-drive-sha256 = that state was uploaded. Never mark the Drive tier
@@ -207,18 +221,29 @@ mark_down_accounted() {
 # history at all (a first run, or a fresh deploy) it never guesses: it records
 # the baseline and reports "not unexpected".
 daemon_died_unexpectedly() {
-  local last_use accounted
+  local last_use accounted log_mtime
   [ -f "$SEEN_UP_FILE" ] && return 0
   if [ ! -f "$ACCOUNTED_FILE" ]; then
     mark_down_accounted bootstrap
     return 1
   fi
-  last_use="$(cat "$LAST_USE_FILE" 2>/dev/null || true)"
   accounted="$(cut -d ' ' -f 1 "$ACCOUNTED_FILE" 2>/dev/null || true)"
-  case "$last_use$accounted" in
+  case "$accounted" in
   '' | *[!0-9]*) return 1 ;;
   esac
-  [ -n "$last_use" ] && [ -n "$accounted" ] && [ "$last_use" -gt "$accounted" ]
+  last_use="$(cat "$LAST_USE_FILE" 2>/dev/null || true)"
+  case "$last_use" in
+  '' | *[!0-9]*) last_use=0 ;;
+  esac
+  if [ "$last_use" -gt "$accounted" ]; then return 0; fi
+  # No client hook wrote .last-daemon-use, but daemon.log was appended to
+  # after the last accounted down state: a daemon started and died between
+  # watchdog observations. An idle daemon writes nothing to this log.
+  log_mtime="$(stat -c %Y "$DAEMON_LOG" 2>/dev/null || stat -f %m "$DAEMON_LOG" 2>/dev/null || echo 0)"
+  case "$log_mtime" in
+  '' | *[!0-9]*) log_mtime=0 ;;
+  esac
+  [ "$log_mtime" -gt "$accounted" ]
 }
 
 # Move daemon.log aside before anything restarts the daemon. The old restart
@@ -238,6 +263,10 @@ rotate_daemon_log() {
     log "WARNING: pre-restart log rotation failed (non-fatal)"
     return 0
   fi
+  # The retained log may have been group- or world-readable; umask does not
+  # apply to a file that already existed. Restrict it now that it holds crash
+  # evidence.
+  chmod 600 "$target" 2>/dev/null || true
   log "preserved pre-restart daemon log: $target"
   prune_newest "$(dirname "$DAEMON_LOG")" 'daemon.log.*.pre-restart' "$PRE_RESTART_KEEP" || true
 }
@@ -253,7 +282,7 @@ run_probe() {
 # One crash bundle per unexpected death. Every probe is best effort: a probe
 # that fails is recorded as such and never fails the watchdog run.
 capture_death_diagnostics() {
-  local ts out tmp n
+  local ts out tmp n captured=0
   ts="$(date -u +%Y%m%dT%H%M%SZ)"
   if [ -L "$LOGS_DIR" ] || ! mkdir -p "$LOGS_DIR" 2>/dev/null; then
     log "WARNING: cannot use $LOGS_DIR — crash bundle skipped"
@@ -287,6 +316,7 @@ capture_death_diagnostics() {
       chmod 600 "$tmp" 2>/dev/null || true
       if mv -f "$tmp" "$out" 2>/dev/null; then
         log "crash diagnostics: $out"
+        captured=1
       else
         rm -f "$tmp" 2>/dev/null || true
         log "WARNING: failed to finalize crash bundle $out"
@@ -294,14 +324,68 @@ capture_death_diagnostics() {
     else
       log "WARNING: cannot create temp crash bundle in $LOGS_DIR"
     fi
-    prune_newest "$LOGS_DIR" 'crash-*.log' "$CRASH_KEEP" || true
+    if [ "$captured" -eq 1 ]; then
+      prune_newest "$LOGS_DIR" 'crash-*.log' "$CRASH_KEEP" || true
+    fi
   fi
-  rotate_daemon_log
-  mark_down_accounted captured
+  if [ "$captured" -eq 1 ]; then
+    rotate_daemon_log
+    mark_down_accounted captured
+  else
+    # Do not rotate or mark: leave .daemon-seen-up in place so the next run
+    # sees the same death and retries the missing evidence.
+    log "WARNING: crash diagnostics incomplete — the next run will retry capture"
+  fi
 }
 
 daemon_healthy() {
-  "$BIN" status 2>/dev/null | grep -q "status: healthy"
+  local out
+  out="$("$BIN" status 2>/dev/null || true)"
+  # The CLI prints "daemon: listening ... answering" and, when it is also the
+  # build on disk, "status: healthy". Accept either half so a live daemon is
+  # never mistaken for a dead one: copying under a live writer is the failure
+  # this predicate exists to prevent, and a false "healthy" only delays a stop.
+  case "$out" in
+  *"status: healthy"*) return 0 ;;
+  *"daemon: listening"*"answering"*) return 0 ;;
+  esac
+  return 1
+}
+
+# Best-effort second activity signal: an established loopback connection to
+# the daemon port means a client is attached even when no hook has touched
+# .last-daemon-use recently. Missing ss returns "no clients" (fail-open for
+# reaping, which is the caller's existing behavior for hosts without ss).
+daemon_has_clients() {
+  command -v ss >/dev/null 2>&1 || return 1
+  [ -n "$(ss -Htn state established '( dport = :34343 or sport = :34343 )' 2>/dev/null || true)" ]
+}
+
+stop_daemon() {
+  local PIDS PID
+  PIDS="$(pgrep -f '[n]eurostrata-mcp daemon' || true)"
+  if [ -z "$PIDS" ]; then
+    # Healthy a moment ago, no process now: it died between the check and this
+    # stop. Do not record an intentional stop; the caller captures the death.
+    log "daemon was already gone when this run tried to stop it"
+    return 2
+  fi
+  # The binary forks on start, so pgrep can return a parent/zombie plus the
+  # real daemon. Signalling only the first PID (head -1) can miss the live
+  # daemon and brick the backup cycle — signal every match.
+  log "stopping daemon (pids $(echo "$PIDS" | tr '\n' ' '))"
+  for PID in $PIDS; do kill -TERM "$PID" 2>/dev/null || true; done
+  for _ in $(seq 1 30); do
+    pgrep -f '[n]eurostrata-mcp daemon' >/dev/null || break
+    sleep 1
+  done
+  if pgrep -f '[n]eurostrata-mcp daemon' >/dev/null; then
+    log "ERROR: daemon did not exit in 30s — leaving it running, backup skipped"
+    return 1
+  fi
+  log "daemon stopped"
+  mark_down_accounted intentional
+  return 0
 }
 
 # 1. On-demand model (2026-10-17): the daemon is no longer always-on. This
@@ -335,6 +419,23 @@ if ! daemon_healthy; then
     exit 0
   fi
   log "DB changed while daemon was down (sha256 ${NOW_SHA:0:12}…) — backing up quiescent copy"
+  # Recheck immediately before the copy: an operator may have restarted the
+  # daemon after the check at the top of this branch. A live writer means the
+  # DB is not quiescent, so stop it (or capture the death if it vanished).
+  if daemon_healthy; then
+    log "daemon came up after the down check — stopping it before the copy"
+    stop_rc=0
+    stop_daemon || stop_rc=$?
+    case "$stop_rc" in
+    0) ;;
+    2) capture_death_diagnostics ;;
+    *)
+      log "ERROR: daemon would not stop — backup skipped, daemon left running"
+      exit 1
+      ;;
+    esac
+    NOW_SHA="$(sha256sum "$DB" | awk '{print $1}')"
+  fi
   # Unclean-death caveat: if the daemon died without checkpointing, -wal/-shm
   # may hold uncheckpointed frames this copy would miss. Log it loudly; the
   # copy is still the best available state.
@@ -376,41 +477,29 @@ if ! date +%s >"$SEEN_UP_FILE" 2>/dev/null; then
 fi
 log_memory
 
-stop_daemon() {
-  local PIDS PID
-  PIDS="$(pgrep -f '[n]eurostrata-mcp daemon' || true)"
-  if [ -z "$PIDS" ]; then
-    log "daemon already stopped"
-    return 0
-  fi
-  # The binary forks on start, so pgrep can return a parent/zombie plus the
-  # real daemon. Signalling only the first PID (head -1) can miss the live
-  # daemon and brick the backup cycle — signal every match.
-  log "stopping daemon (pids $(echo "$PIDS" | tr '\n' ' '))"
-  for PID in $PIDS; do kill -TERM "$PID" 2>/dev/null || true; done
-  for _ in $(seq 1 30); do
-    pgrep -f '[n]eurostrata-mcp daemon' >/dev/null || break
-    sleep 1
-  done
-  if pgrep -f '[n]eurostrata-mcp daemon' >/dev/null; then
-    log "ERROR: daemon did not exit in 30s — leaving it running, backup skipped"
-    return 1
-  fi
-  log "daemon stopped"
-  mark_down_accounted intentional
-}
-
 # 2. Idle check: an actively-used daemon is left alone; an idle one is
-# backed up (if changed) and stopped. A missing timestamp means the daemon
-# predates on-demand tracking — treat it as idle so the old always-on
-# instance is reaped on the first sweep.
+# backed up (if changed) and stopped. A missing or unreadable marker cannot
+# prove the daemon is idle, so it is treated as active: stopping a daemon an
+# operator or an unwired MCP client is using is worse than postponing a
+# backup. An established client connection is a second activity signal for a
+# marker that only looks stale.
 now="$(date +%s)"
 last_use="$(cat "$LAST_USE_FILE" 2>/dev/null || true)"
-if [ -n "$last_use" ] && [ "$now" -lt "$((last_use + IDLE_SECS))" ]; then
+case "$last_use" in
+'' | *[!0-9]*)
+  log "daemon activity marker missing/unreadable ($LAST_USE_FILE) — cannot prove it is idle, leaving it running"
+  exit 0
+  ;;
+esac
+if [ "$now" -lt "$((last_use + IDLE_SECS))" ]; then
   log "daemon active (last client use $((now - last_use))s ago) — leaving it running"
   exit 0
 fi
-log "daemon idle (last client use: ${last_use:-never}) — backing up and stopping"
+if daemon_has_clients; then
+  log "daemon marker is stale but a client connection is established — leaving it running"
+  exit 0
+fi
+log "daemon idle (last client use: ${last_use}) — backing up and stopping"
 
 # 2. Change detection BEFORE stopping anything: a live sha256sum read is safe
 # here — it is only change detection. A torn read can only trigger a
@@ -433,8 +522,17 @@ if [ -n "$LAST_SHA" ] && [ "$NOW_SHA" = "$LAST_SHA" ]; then
     exit 1
   fi
   prune_staging
-  stop_daemon
-  log "done (daemon stopped, idle)"
+  stop_rc=0
+  stop_daemon || stop_rc=$?
+  case "$stop_rc" in
+  0) ;;
+  2) capture_death_diagnostics ;;
+  *)
+    log "ERROR: daemon would not stop — leaving it running"
+    exit 1
+    ;;
+  esac
+  log "done (daemon idle, unchanged)"
   exit 0
 fi
 
@@ -444,10 +542,18 @@ fi
 # A daemon that will not stop fails the run loudly (exit 1): copying a
 # live DB would produce exactly the torn backup this step exists to
 # prevent, and silently skipping used to mask a wedged daemon forever.
-if ! stop_daemon; then
+# rc=2 means it vanished between the healthy check and the signal: capture
+# that death instead of pretending this run stopped it.
+stop_rc=0
+stop_daemon || stop_rc=$?
+case "$stop_rc" in
+0) ;;
+2) capture_death_diagnostics ;;
+*)
   log "ERROR: daemon would not stop — backup skipped, daemon left running"
   exit 1
-fi
+  ;;
+esac
 
 # 4. Backup + verify: hash the exact bytes being copied, taken immediately
 # before cp, and verify the copy against THAT — not against the earlier

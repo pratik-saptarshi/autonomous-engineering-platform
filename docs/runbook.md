@@ -7,6 +7,7 @@ Evidence labels used below: "checked 2026-11-25" means verified against the upst
 ## Prerequisites
 
 - `python3`, `node` 20+, `git`, `curl`, and network egress.
+- The GitHub CLI (`gh`) installed and authenticated as the user that will run the jobs. `scripts/boot-gate.sh` check 4 runs `gh auth status`, so a fresh host cannot pass the gate without it. Section 1 installs and authenticates it.
 - `gcc` and the ICU development headers (`libicu-dev` on Debian and Ubuntu), because `bd` is built with CGO and links ICU (section 1). Without the headers the build stops with `unicode/uregex.h: No such file or directory` (checked 2026-11-25).
 - glibc 2.39 or newer (Ubuntu 24.04 or newer) to run `neurostrata-mcp`. On Debian 12 the v1.9.0 binary refuses to start with `GLIBC_2.38 not found` (checked 2026-11-25).
 - The Go toolchain: Go 1.27.x under `~/sdk/go`. The VM runs go1.27.2 and CI pins 1.27.4. Section 1 installs it.
@@ -94,6 +95,24 @@ ocr --version  # open-code-review v1.13.1 (<commit>) linux/amd64
 Checked 2026-11-25: in an x86_64 container the checksum passed and `ocr --version` printed `open-code-review v1.13.1 (8eb8334) linux/amd64`. `file` reports a statically linked x86-64 ELF.
 
 Verify (no API key needed): in a scratch git repo, `ocr delegate preview --format json` and `ocr delegate rule --format json <files>` return review specs.
+
+### GitHub CLI (gh)
+
+`gh` is required by `scripts/boot-gate.sh` (check 4) and by the review/issue workflows. Install it from the official GitHub apt repository, then authenticate the user that owns the checkout and will run scheduled jobs:
+
+```bash
+sudo mkdir -p -m 755 /etc/apt/keyrings
+curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+  | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg >/dev/null
+sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+  | sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null
+sudo apt update && sudo apt install -y gh
+gh auth login          # device flow or a token; run as the job user, not root
+gh auth status         # must exit 0; boot-gate check 4 runs exactly this
+```
+
+For a non-interactive host, set `GH_TOKEN` (a fine-grained token with the scopes the jobs need) in the job user's environment instead of `gh auth login`. `gh auth status` must pass for the same user the boot gate runs as; authenticating root does not help a job that runs as the operator.
 
 ### NeuroStrata engine (memory backend)
 
@@ -194,7 +213,7 @@ mkdir -p ~/workspace/neurostrata
 HF_HUB_OFFLINE=1 nohup neurostrata-mcp daemon >> ~/workspace/neurostrata/daemon.log 2>&1 &
 sleep 15
 neurostrata-mcp status
-# expect: "status: healthy" (note: scripts/boot-gate.sh checks for "daemon: listening ... answering"; co-occurrence is UNVERIFIED per docs/daemon-lifecycle-contract.md)
+# expect: "status: healthy" (the same response also prints "daemon: listening ... answering"; scripts/boot-gate.sh accepts that pair and the watchdog accepts either)
 ```
 
 Append with `>>`, never `>`. A truncating redirect destroys the previous run's log, which is the only evidence of an unexpected death (see `docs/limitation-analysis.md` section 1). `HF_HUB_OFFLINE=1` is required because the binary cannot download its model through a TLS-intercepting proxy (see section 2).
@@ -203,11 +222,13 @@ The daemon log must show the embedder initializing from cache with no download a
 
 Note: the binary ships systemd user units, but they cannot be enabled where no user D-Bus exists. `nohup` is the supported fallback; a dead daemon does *not* reliably come back via MCP spawn (verified 2026-10-16). Restart it directly with the `nohup` command above — the canonical watchdog (`ops/bin/watchdog-backup.sh`) captures crash evidence and backs up the DB, and never restarts the daemon itself.
 
+**Idle reaping and the activity marker.** The watchdog stops a healthy daemon only when `~/workspace/neurostrata/.last-daemon-use` exists, is numeric, is older than its `IDLE_SECS` (3600), and `ss` shows no established loopback connection to the daemon port. A missing or unreadable marker means "activity unknown", and the watchdog leaves the daemon running rather than risk killing a session. A job started through `ops/bin/cron-with-boot-gate.sh` refreshes the marker for the whole run (override the path with `AEP_DAEMON_ACTIVITY_FILE`). A direct MCP client that never writes the marker is covered by the connection check when `ss` is installed; without `ss`, the marker is the only evidence, so on such a host the daemon is not reaped until something writes the marker. The watchdog exits 0 without stopping anything when it cannot prove idleness, which means a backup may be postponed; that is deliberate.
+
 **Daemon forking behavior.** The binary forks on startup: briefly after launch, `pgrep -f 'neurostrata-mcp daemon'` returns two PIDs (the forking parent plus the live daemon). Any stop logic must signal *all* matching PIDs, not just the first — `pgrep ... | head -1` can pick the stale parent, leaving the live daemon running until the stop times out (observed 2026-10-17: `ERROR: daemon did not exit in 30s`, backup skipped, unclean-shutdown WAL warning on next start). Use the `[n]` bracket trick (`pgrep -f '[n]eurostrata-mcp daemon'`) so pgrep never matches its own command line, and loop `kill -TERM` over every returned PID. The canonical `ops/bin/watchdog-backup.sh` (and legacy `scripts/watchdog-backup.sh`) implement this.
 
 ### Seed the guard namespace
 
-`scripts/boot-gate.sh` check 3 (guards) needs at least three `guard_rule` memories in the `guard` namespace, and one of them must contain "Destructive GitHub actions". On a fresh VM the namespace is empty and the gate fails closed with `BOOT-GATE: guards FAIL`. Seed it once the daemon is healthy:
+`scripts/boot-gate.sh` check 3 (guards) needs at least three `guard_rule` memories in the `guard` namespace, and one of them must contain "Destructive GitHub actions". On a fresh VM the namespace is empty and the gate fails closed with `BOOT-GATE: guards FAIL`. Seed it once the daemon is healthy (or stopped — the seeder handles both):
 
 ```bash
 scripts/seed-boot-guards.sh --dry-run   # report what would be seeded, write nothing
@@ -215,7 +236,7 @@ scripts/seed-boot-guards.sh             # seed every canonical rule that is abse
 scripts/seed-boot-guards.sh --check     # same test as boot-gate check 3, write nothing
 ```
 
-The script is idempotent. It matches each canonical rule by a short key phrase, so a rule worded differently on an older host still counts and is never duplicated, and a second run changes nothing. It fails loudly (exit 1) when `neurostrata-mcp` is missing or the daemon is not answering, and it never starts the daemon.
+The script is idempotent. It matches each canonical rule by a short key phrase inside an actual `guard_rule` record, so a rule worded differently on an older host still counts, an ordinary memory that merely mentions the phrase does not, and a second run changes nothing. The NeuroStrata store has a single-writer lock and `neurostrata-mcp add` only works while no daemon holds it: when the daemon is answering, the seeder stops it with `neurostrata-mcp shutdown`, seeds, verifies against the store, and restarts it with the `nohup` command from section 3. An EXIT trap restarts it even when a seed step fails, so the seeder never leaves a running daemon stopped. If the daemon was already stopped, it is left stopped. The script fails loudly (exit 1) when `neurostrata-mcp` is missing, when the daemon is busy or will not stop, or when the add fails. Concurrent seed runs are serialized with `flock` (or a lock directory where `flock` is unavailable).
 
 It seeds three rules. The first is universal: destructive GitHub actions (branch deletion, force-push, history rewrite, repository deletion) each need the user's explicit per-action authorization. The second and third are specific to the document-accessibility-pipeline repo (no push without authorization, and the PR merge rule). If you replace the repo-specific rules, keep at least three `guard_rule` memories in the namespace.
 
@@ -266,9 +287,9 @@ Some provider domains (`dolthub.com`, `gastownhall-eventsapi.com`) are bypassed 
 sudo scripts/apply-domain-blocks.sh
 ```
 
-The script needs root. It exits non-zero with a `FATAL:` line when it is not root, when `iptables` or `getent` is missing, or when a domain resolves to no address, and in each of those cases it changes nothing. It resolves the addresses at apply time with `getent ahostsv4` and `getent ahostsv6`, so no address is hardcoded. When the host has an IPv6 default route or a domain publishes an AAAA record, it also writes `ip6tables` rules, and a missing `ip6tables` is a hard failure. It re-checks every rule with `-C` before it prints `Domain blocks applied and verified: ...`, so that line means the rules exist.
+The script needs root. It exits non-zero with a `FATAL:` line when it is not root, when `iptables`, `getent`, `ip`, or `flock` is missing, or when a domain resolves to no address, and in each of those cases it changes nothing. It resolves the addresses at apply time with `getent ahostsv4` and `getent ahostsv6`, so no address is hardcoded. It inserts each DROP at the head of `OUTPUT` (`-I OUTPUT 1`) so an earlier ACCEPT rule cannot match first, and verification checks both presence and that ordering. When the host has an IPv6 default route or a domain publishes an AAAA record, it also writes `ip6tables` rules, and a missing `ip6tables` is a hard failure. `ip` is required so the IPv6 default route is always checked; without it the script fails closed rather than assuming the host is IPv4-only. A failed insert or verification rolls back the rules added by that run, and concurrent runs are serialized with `flock`. It re-checks every rule with `-C` before it prints `Domain blocks applied and verified: ...`, so that line means the rules exist and are ordered ahead of the ACCEPT rules.
 
-The rules are only as current as the DNS answer at the moment of the run. Re-run the script after a DNS rotation, for example from a daily cron entry owned by root. Rules for addresses that have rotated away stay in place and are harmless. To block other domains, set `AEP_BLOCK_DOMAINS` to a space-separated list.
+The rules are only as current as the DNS answer at the moment of the run. Re-run the script after a DNS rotation, for example from a daily cron entry owned by root. The script records the set it manages in `/run/aep-domain-blocks/managed-rules` (override the directory with `AEP_BLOCK_STATE_DIR`) and removes a DROP on the next run when the address it was built from has rotated away, so an address later reused by an unrelated service is not left blocked. Rules it never managed are left alone. To block other domains, set `AEP_BLOCK_DOMAINS` to a space-separated list.
 
 Verify:
 
@@ -283,7 +304,7 @@ sudo ip6tables -S OUTPUT | grep DROP   # present when IPv6 is active
 - [ ] `bd ping` ok; issue lifecycle (create/show/close) works; per-repo isolation confirmed
 - [ ] `bd` metrics OFF, proven by BOTH signals: `bd metrics` reports OFF, **and** `~/.config/bd/config.yaml` carries `disabled: true` under `metrics:` — assert with `grep -A2 '^metrics:' ~/.config/bd/config.yaml | grep -q 'disabled: true'` (exits non-zero when the flag is absent). If either check fails, setup has FAILED — stop and fix before continuing onboarding. A future bd version that moves the setting or changes the default must break setup visibly here, not silently phone home
 - [ ] `ocr delegate preview` returns a review spec with no API key
-- [ ] `neurostrata-mcp status` reports `status: healthy` and `scripts/boot-gate.sh` prints `BOOT-GATE: daemon ok` (note: `boot-gate.sh` checks `daemon: listening ... answering`; equivalence with `status: healthy` is UNVERIFIED per `docs/daemon-lifecycle-contract.md`)
+- [ ] `neurostrata-mcp status` reports `status: healthy` and `scripts/boot-gate.sh` prints `BOOT-GATE: daemon ok` (the CLI prints `daemon: listening ... answering` in the same healthy response; `boot-gate.sh` checks that pair and the watchdog accepts either phrase)
 - [ ] `scripts/seed-boot-guards.sh --check` exits 0 and `scripts/boot-gate.sh` prints `BOOT-GATE: guards ok`
 - [ ] `sudo scripts/apply-domain-blocks.sh` prints `Domain blocks applied and verified:` and `sudo iptables -S OUTPUT` lists a DROP rule for each blocked domain
 - [ ] `ops/bin/deploy-watchdog.sh --check` exits 0 (the deployed watchdog matches `ops/bin/watchdog-backup.sh`)

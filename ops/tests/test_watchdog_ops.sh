@@ -2,10 +2,11 @@
 # test_watchdog_ops.sh — behavioral tests for ops/bin/watchdog-backup.sh.
 #
 # The watchdog under test is the live-derived on-demand watchdog: the
-# daemon is no longer always-on, it stays down after backup, and the MCP
-# client restarts it. Cases below are specified per daemon state against
-# that model (see ops/bin/WATCHDOG-DELTAS.md for how this file differs
-# from the live script it was copied from).
+# daemon is no longer always-on, and the watchdog leaves the daemon down
+# after a backup; restart it directly with nohup when needed (a bare MCP
+# spawn does not reliably start it). Cases below are specified per daemon
+# state against that model (see ops/bin/WATCHDOG-DELTAS.md for how this file
+# differs from the live script it was copied from).
 #
 # Every case runs the real watchdog against a fixture HOME: a stub
 # neurostrata-mcp binary, a fixture DB, and (for up-cases) a REAL
@@ -64,7 +65,14 @@ file_sha() { sha256sum "$1" | awk '{print $1}'; }
 # --- PATH stub: sleep returns immediately (poll loops compress). ---
 mkdir -p "$SB/bin"
 printf '#!/bin/sh\nexit 0\n' >"$SB/bin/sleep"
-chmod +x "$SB/bin/sleep"
+# ss reports one established loopback connection when the case asks for it.
+cat >"$SB/bin/ss" <<'EOF'
+#!/bin/sh
+[ -n "${STUB_SS_ACTIVE:-}" ] && [ -f "$STUB_SS_ACTIVE" ] &&
+  echo "ESTAB 0 0 127.0.0.1:50000 127.0.0.1:34343"
+exit 0
+EOF
+chmod +x "$SB/bin/sleep" "$SB/bin/ss"
 
 # --- Stub neurostrata-mcp (copied into each fixture HOME). ---
 # `status` reports healthy iff the stub daemon's pidfile names a live
@@ -82,9 +90,18 @@ PID_FILE="$NS_DIR/.stub-daemon.pid"
 SIG_FILE="$NS_DIR/.stub-signals.log"
 case "${1:-}" in
   status)
+    if [ -f "$NS_DIR/.stub-force-healthy" ]; then
+      echo "daemon: listening on 127.0.0.1:34343, answering"
+      echo "status: healthy"
+      exit 0
+    fi
     pid="$(cat "$PID_FILE" 2>/dev/null || true)"
     if [ -n "$pid" ] && [ -n "$(tr -d '\0' <"/proc/$pid/cmdline" 2>/dev/null)" ]; then
-      echo "status: healthy"
+      if [ -f "$NS_DIR/.stub-answering-only" ]; then
+        echo "daemon: listening on 127.0.0.1:34343, answering"
+      else
+        echo "status: healthy"
+      fi
     else
       echo "status: stopped"
     fi
@@ -145,7 +162,8 @@ start_fixture_daemon() {
   HOME="$FH" nohup "$(fixture_ns)/bin/neurostrata-mcp" daemon >/dev/null 2>&1 &
   local i
   for i in $(seq 1 50); do
-    if HOME="$FH" "$(fixture_ns)/bin/neurostrata-mcp" status 2>/dev/null | grep -q "status: healthy"; then
+    if HOME="$FH" "$(fixture_ns)/bin/neurostrata-mcp" status 2>/dev/null |
+      grep -qE "status: healthy|daemon: listening.*answering"; then
       return 0
     fi
     /usr/bin/sleep 0.1
@@ -170,6 +188,7 @@ kill_fixture_daemons() {
 run_watchdog() { # run_watchdog [VAR=value ...] — records RC + OUT
   OUT="$FX/out.log"
   env HOME="$FH" PATH="$SB/bin:/usr/local/bin:/usr/bin:/bin" \
+    STUB_SS_ACTIVE="$FX/.ss-active" \
     "$@" bash "$WATCHDOG" >"$OUT" 2>&1
   RC=$?
   CASE_RCS+=("$RC")
@@ -273,6 +292,8 @@ case "$(basename "${PRE_H:-none}")" in
 daemon.log.[0-9]*T[0-9]*Z*.pre-restart) ok "(h) pre-restart name carries a UTC timestamp" ;;
 *) fail "(h) pre-restart name carries a UTC timestamp ($PRE_H)" ;;
 esac
+MODE_PRE="$(stat -c '%a' "$PRE_H" 2>/dev/null || stat -f '%Lp' "$PRE_H" 2>/dev/null || echo '')"
+check "(h) pre-restart log is owner-only (600)" test "$MODE_PRE" = "600"
 # The old restart command truncated daemon.log: it must no longer destroy the evidence.
 : >"$(fixture_ns)/daemon.log"
 check "(h) sentinel survives an old-style truncating restart" grep -q "SENTINEL-H-last-words-before-death" "$PRE_H"
@@ -382,6 +403,82 @@ run_watchdog
 [ "$RC" -eq 0 ] && ok "(n2) unwritable .daemon-down-accounted still exits 0" || fail "(n2) unwritable .daemon-down-accounted still exits 0 (got $RC)"
 check "(n2) warns on .daemon-down-accounted write failure" grep -q "cannot write .*daemon-down-accounted" "$OUT"
 check "(n2) quiescent backup still taken despite accounted-file failure" ls "$(fixture_ns)/backups"/db-*.db
+
+note "case (o): a healthy daemon with no activity marker is left running (cannot prove idle)"
+new_fixture o
+set_changed
+start_fixture_daemon
+run_watchdog
+[ "$RC" -eq 0 ] && ok "(o) exit 0" || fail "(o) exit 0 (got $RC)"
+check "(o) run says the marker is missing" grep -q "activity marker missing" "$OUT"
+check "(o) daemon was never signalled" daemon_running
+check_not "(o) no backup was taken under an active daemon" test -n "$(ls "$(fixture_ns)/backups"/db-*.db 2>/dev/null || true)"
+kill_fixture_daemons
+
+note "case (p): a stale marker with an established client connection is treated as active"
+new_fixture p
+set_changed
+set_last_use 1
+touch "$FX/.ss-active"
+start_fixture_daemon
+run_watchdog
+[ "$RC" -eq 0 ] && ok "(p) exit 0" || fail "(p) exit 0 (got $RC)"
+check "(p) run names the client connection" grep -q "client connection is established" "$OUT"
+check "(p) daemon was never signalled" daemon_running
+check_not "(p) no backup was taken under the connected daemon" test -n "$(ls "$(fixture_ns)/backups"/db-*.db 2>/dev/null || true)"
+kill_fixture_daemons
+
+note "case (q): a death between the healthy check and the stop still yields evidence"
+new_fixture q
+set_changed
+set_last_use 1
+touch "$(fixture_ns)/.stub-force-healthy"
+run_watchdog
+[ "$RC" -eq 0 ] && ok "(q) exit 0" || fail "(q) exit 0 (got $RC)"
+check "(q) run reports the daemon was already gone" grep -q "already gone when this run tried to stop it" "$OUT"
+check "(q) the death produced a crash bundle" test -n "$(find "$(fixture_ns)/logs" -maxdepth 1 -name 'crash-*.log' 2>/dev/null)"
+check "(q) the quiescent backup was still taken" ls "$(fixture_ns)/backups"/db-*.db
+
+note "case (r): a failed crash bundle leaves the death unaccounted so the next run retries"
+new_fixture r
+set_unchanged
+prestage_backup
+date +%s >"$(fixture_ns)/.daemon-seen-up"
+ln -s "$SB/no-such-logs" "$(fixture_ns)/logs"
+run_watchdog
+[ "$RC" -eq 0 ] && ok "(r) first run exits 0" || fail "(r) first run exits 0 (got $RC)"
+check "(r) first run warns capture will retry" grep -q "crash diagnostics incomplete" "$OUT"
+check "(r) the seen-up marker is preserved for the retry" test -f "$(fixture_ns)/.daemon-seen-up"
+check_not "(r) the death was not marked accounted" test -f "$(fixture_ns)/.daemon-down-accounted"
+rm -f "$(fixture_ns)/logs"
+run_watchdog
+check "(r) the retry produces the crash bundle" test -n "$(find "$(fixture_ns)/logs" -maxdepth 1 -name 'crash-*.log' 2>/dev/null)"
+check "(r) the retry marks the death captured" test -f "$(fixture_ns)/.daemon-down-accounted"
+
+note "case (s): daemon.log written after the last accounted stop detects a death with no client hook"
+new_fixture s
+set_unchanged
+prestage_backup
+echo "1 accounted" >"$(fixture_ns)/.daemon-down-accounted"
+echo "SENTINEL-S" >"$(fixture_ns)/daemon.log"
+run_watchdog
+[ "$RC" -eq 0 ] && ok "(s) exit 0" || fail "(s) exit 0 (got $RC)"
+check "(s) the log write counts as an unexpected death" grep -q "did not stop it — capturing crash diagnostics" "$OUT"
+check "(s) a crash bundle was written" test -n "$(find "$(fixture_ns)/logs" -maxdepth 1 -name 'crash-*.log' 2>/dev/null)"
+
+note "case (t): a daemon that only prints the answering phrase is not treated as down"
+new_fixture t
+set_changed
+set_last_use 1
+touch "$(fixture_ns)/.stub-answering-only"
+start_fixture_daemon
+run_watchdog
+[ "$RC" -eq 0 ] && ok "(t) exit 0" || fail "(t) exit 0 (got $RC)"
+check "(t) the answering daemon is treated as healthy" grep -q "daemon healthy" "$OUT"
+check "(t) the daemon was stopped for the backup" grep -q "daemon stopped" "$OUT"
+check_not "(t) no daemon is left running" daemon_running
+check "(t) the backup was taken" ls "$(fixture_ns)/backups"/db-*.db
+kill_fixture_daemons
 
 note "case (f): regression pins over every run above — no 127, no 'command not found'"
 F_OK=1

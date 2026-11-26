@@ -21,7 +21,10 @@
 #       inode and never reads a half-written script. Finally it writes
 #       .watchdog-deploy-receipt.json beside the target (override with
 #       DEPLOY_RECEIPT) holding the UTC time, the git commit of the source,
-#       and the SHA-256. An in-sync target is a no-op.
+#       and the SHA-256. An in-sync target is a no-op, except that a missing
+#       or stale receipt is repaired. Deploys are serialized with flock and
+#       the target is rechecked immediately before the move. A DEPLOY_RECEIPT
+#       that resolves to the target or the canonical source is refused.
 #
 # Rollback: copy the .bak.<UTC timestamp> file back over the target.
 # Exit 2 is a usage error.
@@ -55,9 +58,29 @@ sha_of() { # portable SHA-256 of a file
 json_escape() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
 
 check_clean_path() {
+  # JSON cannot carry raw C0 control characters. Newline, carriage return and
+  # tab are not the only ones; a vertical tab or escape byte would also make
+  # the receipt invalid.
   case "$2" in
-  *$'\n'* | *$'\r'* | *$'\t'*) die "$1 contains control characters" ;;
+  *[[:cntrl:]]*) die "$1 contains control characters" ;;
   esac
+}
+
+# Absolute path with a resolved parent when the parent exists. Lexical
+# fallback keeps the check working for a target directory not created yet.
+normalize_path() {
+  local p="$1" dir base
+  case "$p" in
+  /*) ;;
+  *) p="$PWD/$p" ;;
+  esac
+  dir="${p%/*}"
+  base="${p##*/}"
+  [ -n "$dir" ] || dir=/
+  if [ -d "$dir" ]; then
+    dir="$(cd "$dir" && pwd -P)" || return 1
+  fi
+  printf '%s/%s\n' "$dir" "$base"
 }
 
 MODE=""
@@ -79,6 +102,17 @@ check_clean_path "DEPLOY_TARGET" "$TARGET"
 check_clean_path "DEPLOY_RECEIPT" "$RECEIPT"
 [ -f "$SRC" ] || die "canonical source not found: $SRC"
 SRC_SHA="$(sha_of "$SRC")"
+
+# The receipt is moved into place last. If it names the deployed script or the
+# canonical source, that move would replace the watchdog (or corrupt the
+# checkout) and the deploy could still report success.
+SRC_KEY="$(normalize_path "$SRC")"
+TARGET_KEY="$(normalize_path "$TARGET")"
+RECEIPT_KEY="$(normalize_path "$RECEIPT")"
+[ "$RECEIPT_KEY" != "$TARGET_KEY" ] ||
+  die "DEPLOY_RECEIPT resolves to the deployment target: $RECEIPT"
+[ "$RECEIPT_KEY" != "$SRC_KEY" ] ||
+  die "DEPLOY_RECEIPT resolves to the canonical source: $RECEIPT"
 
 compute_state() {
   # state: missing | in-sync | drift
@@ -119,6 +153,46 @@ backup_path() { # first free <target>.bak.<UTC timestamp>, never overwriting
   echo "$candidate"
 }
 
+compute_commit() {
+  COMMIT="unknown"
+  DIRTY=false
+  if git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1; then
+    COMMIT="$(git -C "$REPO" rev-parse HEAD 2>/dev/null || echo unknown)"
+    if [ -n "$(git -C "$REPO" status --porcelain -- ops/bin/watchdog-backup.sh 2>/dev/null)" ]; then
+      DIRTY=true
+      say "WARNING: ops/bin/watchdog-backup.sh has uncommitted changes, the receipt records source_dirty=true"
+    fi
+  else
+    say "WARNING: $REPO is not a git checkout, the receipt records git_commit=unknown"
+  fi
+}
+
+receipt_is_current() {
+  [ -s "$RECEIPT" ] || return 1
+  grep -qF "\"sha256\": \"$SRC_SHA\"" "$RECEIPT" || return 1
+  grep -qF "\"target\": \"$(json_escape "$TARGET")\"" "$RECEIPT" || return 1
+}
+
+write_receipt() {
+  local rtmp
+  rtmp="$(mktemp "$RECEIPT.tmp.XXXXXX")"
+  trap 'rm -f "${TMP:-}" "$rtmp"' EXIT
+  {
+    echo "{"
+    echo "  \"deployed_at_utc\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\","
+    echo "  \"source\": \"ops/bin/watchdog-backup.sh\","
+    echo "  \"git_commit\": \"$(json_escape "$COMMIT")\","
+    echo "  \"source_dirty\": $DIRTY,"
+    echo "  \"sha256\": \"$SRC_SHA\","
+    echo "  \"target\": \"$(json_escape "$TARGET")\","
+    echo "  \"backup\": \"$(json_escape "$BACKUP")\""
+    echo "}"
+  } >"$rtmp"
+  chmod 644 "$rtmp"
+  mv -f "$rtmp" "$RECEIPT"
+  trap 'rm -f "${TMP:-}"' EXIT
+}
+
 case "$MODE" in
 check)
   report_state
@@ -144,8 +218,27 @@ dry-run)
 
 apply)
   report_state
+  mkdir -p "$(dirname "$TARGET")" "$(dirname "$RECEIPT")"
+  # Serialize concurrent deploys. flock is present on the Linux host this
+  # targets; when it is absent (a macOS dev box) the deploy still works but
+  # cannot be serialized, so say so rather than pretending.
+  if command -v flock >/dev/null 2>&1; then
+    exec 8>"$TARGET.lock"
+    flock -n 8 || die "another deploy is in progress for $TARGET"
+  else
+    say "WARNING: flock not found, concurrent deploys are not serialized"
+  fi
+  compute_state
+
+  compute_commit
   if [ "$STATE" = in-sync ]; then
-    say "already deployed, nothing to do"
+    if receipt_is_current; then
+      say "already deployed, nothing to do"
+    else
+      BACKUP=""
+      write_receipt
+      say "target is in sync but the receipt was missing or stale — repaired $RECEIPT"
+    fi
     exit 0
   fi
 
@@ -158,18 +251,6 @@ apply)
     "$SUITE" || die "behavioral suite failed (check unshare privileges or stop a live daemon); nothing was deployed — do not use --skip-tests blindly"
   fi
 
-  COMMIT="unknown"
-  DIRTY=false
-  if git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1; then
-    COMMIT="$(git -C "$REPO" rev-parse HEAD 2>/dev/null || echo unknown)"
-    if [ -n "$(git -C "$REPO" status --porcelain -- ops/bin/watchdog-backup.sh 2>/dev/null)" ]; then
-      DIRTY=true
-      say "WARNING: ops/bin/watchdog-backup.sh has uncommitted changes, the receipt records source_dirty=true"
-    fi
-  else
-    say "WARNING: $REPO is not a git checkout, the receipt records git_commit=unknown"
-  fi
-
   # Recompute target state after the behavioral suite finishes so a file
   # created or modified in the meantime is never overwritten without a backup.
   compute_state
@@ -178,7 +259,6 @@ apply)
     exit 0
   fi
 
-  mkdir -p "$(dirname "$TARGET")" "$(dirname "$RECEIPT")"
   BACKUP=""
   if [ "$STATE" = drift ]; then
     BACKUP="$(backup_path)"
@@ -187,28 +267,20 @@ apply)
   fi
 
   TMP="$(mktemp "$TARGET.tmp.XXXXXX")"
-  trap 'rm -f "$TMP"' EXIT
+  trap 'rm -f "${TMP:-}"' EXIT
   cp "$SRC" "$TMP"
   chmod 755 "$TMP"
   [ "$(sha_of "$TMP")" = "$SRC_SHA" ] || die "staged copy does not match the source, nothing was deployed"
+  # Recheck immediately before the move: if another writer changed the target
+  # while this run staged the copy, overwriting it would lose that state.
+  CURRENT_SHA=""
+  if [ -f "$TARGET" ]; then CURRENT_SHA="$(sha_of "$TARGET")"; fi
+  [ "$CURRENT_SHA" = "$TARGET_SHA" ] ||
+    die "target changed during the deploy ($TARGET); refusing to overwrite (rollback backup: ${BACKUP:-none})"
   mv -f "$TMP" "$TARGET"
   [ "$(sha_of "$TARGET")" = "$SRC_SHA" ] || die "deployed file does not match the source after the move"
 
-  RTMP="$(mktemp "$RECEIPT.tmp.XXXXXX")"
-  trap 'rm -f "$TMP" "$RTMP"' EXIT
-  {
-    echo "{"
-    echo "  \"deployed_at_utc\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\","
-    echo "  \"source\": \"ops/bin/watchdog-backup.sh\","
-    echo "  \"git_commit\": \"$(json_escape "$COMMIT")\","
-    echo "  \"source_dirty\": $DIRTY,"
-    echo "  \"sha256\": \"$SRC_SHA\","
-    echo "  \"target\": \"$(json_escape "$TARGET")\","
-    echo "  \"backup\": \"$(json_escape "$BACKUP")\""
-    echo "}"
-  } >"$RTMP"
-  chmod 644 "$RTMP"
-  mv -f "$RTMP" "$RECEIPT"
+  write_receipt
 
   say "deployed $TARGET (sha256 $SRC_SHA, commit $COMMIT)"
   say "receipt: $RECEIPT"

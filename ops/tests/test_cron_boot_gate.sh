@@ -40,6 +40,7 @@ cat >"$SB/gate-pass" <<EOF
 #!/usr/bin/env bash
 echo ran >>"$GATE_RAN"
 echo "BOOT-GATE: guards ok"
+echo "BOOT-GATE-RESULT: POLICY-OK"
 exit 0
 EOF
 cat >"$SB/gate-fail" <<EOF
@@ -60,9 +61,9 @@ exit "\${JOB_RC:-0}"
 EOF
 chmod +x "$SB/job"
 
-reset() { rm -f "$CANARY" "$ARGS" "$GATE_RAN" "$SB/cron-gate.log"; }
+reset() { rm -f "$CANARY" "$ARGS" "$GATE_RAN" "$SB/cron-gate.log" "$SB/activity"; }
 run() { # run <env GATE> <wrapper args...>
-  OUT="$(bash "$WRAPPER" "$@" 2>&1)"
+  OUT="$(AEP_DAEMON_ACTIVITY_FILE="$SB/activity" bash "$WRAPPER" "$@" 2>&1)"
   RC=$?
 }
 
@@ -74,6 +75,14 @@ t "the gate ran" "$(exists "$GATE_RAN")" = yes
 t "the job ran" "$(exists "$CANARY")" = yes
 t "arguments are forwarded intact" "$(cat "$ARGS")" = "$(printf 'first arg\nsecond\nthird  spaced')"
 lacks "a passing gate prints no ABORT" "CRON-GATE: ABORT"
+has "a passing gate's result lines reach the log" "BOOT-GATE: guards ok"
+has "a passing gate's result token reaches the log" "BOOT-GATE-RESULT: POLICY-OK"
+t "the activity marker was written" "$(test -s "$SB/activity" && echo yes || echo no)" = yes
+case "$(cat "$SB/activity" 2>/dev/null)" in
+'' | *[!0-9]*) fail "the activity marker holds an epoch" ;;
+*) ok "the activity marker holds an epoch" ;;
+esac
+t "the activity marker is recent" "$(($(date +%s) - $(cat "$SB/activity")))" -lt 300
 reset
 JOB_RC=42 AEP_BOOT_GATE_BIN="$SB/gate-pass" run nightly -- "$SB/job"
 t "the job's exit code 42 is propagated" "$RC" -eq 42

@@ -16,13 +16,19 @@
 # Exit 2 is a usage error and runs neither the gate nor the job.
 #
 # Do NOT wrap the NeuroStrata watchdog job (neurostrata-watchdog). The gate
-# needs an answering daemon, and the watchdog is the job that recovers a dead
-# daemon and backs up while the daemon is down, so gating it would deadlock
-# recovery. See ops/crons/CRONS.md.
+# needs an answering daemon, and the watchdog is the job that backs up and
+# captures crash evidence while the daemon is down. It never restarts the
+# daemon (restart it directly with nohup when needed), so gating it would block
+# crash capture and quiescent backups without enabling any recovery.
+# See ops/crons/CRONS.md.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GATE="${AEP_BOOT_GATE_BIN:-$HERE/../../scripts/boot-gate.sh}"
+# The watchdog stops a healthy daemon only when its activity marker exists and
+# is stale. A gated job touches the marker at start and heartbeats it while the
+# job runs, so a long job cannot be mistaken for an idle daemon and reaped.
+ACTIVITY_FILE="${AEP_DAEMON_ACTIVITY_FILE:-$HOME/workspace/neurostrata/.last-daemon-use}"
 
 usage() {
   echo "usage: $0 <job-name> -- <command...>" >&2
@@ -56,4 +62,32 @@ if [ "$rc" -ne 0 ]; then
   abort "$rc"
 fi
 
-exec "$@"
+# A passing gate's per-check results belong in the scheduler log too.
+printf '%s\n' "$out"
+
+touch_activity() {
+  mkdir -p "$(dirname "$ACTIVITY_FILE")" 2>/dev/null || true
+  date +%s >"$ACTIVITY_FILE" 2>/dev/null || true
+}
+
+touch_activity
+
+# Run the job as a child (not exec) so the activity marker can be refreshed
+# for the whole run. Exit status and stdio still reach the scheduler unchanged.
+"$@" &
+job_pid=$!
+(
+  while kill -0 "$job_pid" 2>/dev/null; do
+    touch_activity
+    sleep 60
+  done
+) &
+hb_pid=$!
+trap 'kill "$hb_pid" 2>/dev/null || true; kill -TERM "$job_pid" 2>/dev/null || true' INT TERM
+
+job_rc=0
+wait "$job_pid" || job_rc=$?
+kill "$hb_pid" 2>/dev/null || true
+wait "$hb_pid" 2>/dev/null || true
+touch_activity
+exit "$job_rc"

@@ -35,7 +35,7 @@ lacks() { # lacks <description> <needle>: ok when $OUT does not contain it
 # --- Private tool dir: only what the script legitimately needs. ---
 BASE="$SB/base"
 mkdir -p "$BASE"
-for tool in awk sort cat grep sed tr head env cut wc dirname touch uniq; do
+for tool in awk sort cat grep sed tr head env cut wc dirname touch uniq flock mkdir mktemp cp mv rm; do
   src="$(command -v "$tool")" && ln -s "$src" "$BASE/$tool"
 done
 ln -s "$BASH" "$BASE/bash"
@@ -46,6 +46,7 @@ STATE="$SB/state"
 DNS="$SB/dns"
 mkdir -p "$STUBS" "$STATE" "$DNS"
 export STUB_STATE="$STATE" STUB_DNS="$DNS"
+export AEP_BLOCK_STATE_DIR="$STATE"
 
 cat >"$STUBS/id" <<'EOF'
 #!/usr/bin/env bash
@@ -84,22 +85,49 @@ ahostsv6)
 esac
 EOF
 # iptables / ip6tables: `-C OUTPUT -d IP -j DROP` exits 1 unless recorded,
-# `-A` records. STUB_IPT_FAIL=1 makes every call fail (exit 4).
-# STUB_IPT_DROP_ADD=1 makes -A succeed without recording (verify must catch).
+# `-A` appends, `-I OUTPUT 1` prepends, `-D` removes one match, and `-S OUTPUT`
+# prints rules in order. STUB_IPT_FAIL=1 makes every call fail (exit 4).
+# STUB_IPT_FAIL_ON=N fails the Nth -A/-I. STUB_IPT_DROP_ADD=1 makes the insert
+# succeed without recording (verify must catch).
 for fam in iptables ip6tables; do
   cat >"$STUBS/$fam" <<EOF
 #!/usr/bin/env bash
 file="\$STUB_STATE/$fam.rules"
+calls="\$STUB_STATE/$fam.inserts"
 touch "\$file"
 [ "\${STUB_IPT_FAIL:-0}" = "1" ] && { echo "$fam: Permission denied" >&2; exit 4; }
 op="\$1"
 shift
-rule="\$*"
 case "\$op" in
--C) grep -qxF -- "\$rule" "\$file" && exit 0 || exit 1 ;;
+-C)
+  grep -qxF -- "\$*" "\$file" && exit 0 || exit 1
+  ;;
 -A)
   [ "\${STUB_IPT_DROP_ADD:-0}" = "1" ] && exit 0
-  printf '%s\n' "\$rule" >>"\$file"
+  printf '%s\n' "\$*" >>"\$file"
+  ;;
+-I)
+  [ "\$1" = OUTPUT ] || exit 2
+  [ "\$2" = 1 ] || exit 2
+  shift 2
+  n=0
+  [ -f "\$calls" ] && n="\$(cat "\$calls")"
+  n=\$((n + 1))
+  echo "\$n" >"\$calls"
+  if [ "\${STUB_IPT_FAIL_ON:-0}" != "0" ] && [ "\$n" -ge "\${STUB_IPT_FAIL_ON}" ]; then
+    echo "$fam: simulated insert failure" >&2
+    exit 4
+  fi
+  [ "\${STUB_IPT_DROP_ADD:-0}" = "1" ] && exit 0
+  { printf 'OUTPUT %s\n' "\$*"; cat "\$file"; } >"\$file.tmp"
+  mv "\$file.tmp" "\$file"
+  ;;
+-D)
+  awk -v r="\$*" 'found == 0 && \$0 == r { found = 1; next } { print }' "\$file" >"\$file.tmp"
+  mv "\$file.tmp" "\$file"
+  ;;
+-S)
+  awk '{ sub(/^OUTPUT /, ""); print "-A OUTPUT " \$0 }' "\$file"
   ;;
 *) exit 2 ;;
 esac
@@ -109,7 +137,7 @@ chmod +x "$STUBS/"*
 
 reset_case() {
   rm -f "$STATE"/* "$DNS"/*
-  unset STUB_UID STUB_V6_ROUTE STUB_IPT_FAIL STUB_IPT_DROP_ADD AEP_BLOCK_DOMAINS
+  unset STUB_UID STUB_V6_ROUTE STUB_IPT_FAIL STUB_IPT_DROP_ADD STUB_IPT_FAIL_ON AEP_BLOCK_DOMAINS
   export AEP_BLOCK_DOMAINS="alpha.example beta.example"
   printf '192.0.2.10\n' >"$DNS/alpha.example.v4"
   printf '192.0.2.20\n' >"$DNS/beta.example.v4"
@@ -212,6 +240,51 @@ run
 t "unverifiable rules exit non-zero" "$RC" -ne 0
 lacks "unverifiable rules never print success" "$SUCCESS"
 has "verification failure is reported" "VERIFY FAIL"
+
+echo "# case 11: drops are inserted ahead of existing ACCEPT rules, not appended"
+reset_case
+printf 'OUTPUT -j ACCEPT\nOUTPUT -d 192.0.2.10 -j DROP\n' >"$STATE/iptables.rules"
+run
+t "an earlier ACCEPT does not fail the run" "$RC" -eq 0
+has "the run prints the verified success line" "$SUCCESS"
+alpha_line="$(rules iptables | grep -nx -- 'OUTPUT -d 192.0.2.10 -j DROP' | cut -d: -f1)"
+beta_line="$(rules iptables | grep -nx -- 'OUTPUT -d 192.0.2.20 -j DROP' | cut -d: -f1)"
+accept_line="$(rules iptables | grep -nx -- 'OUTPUT -j ACCEPT' | cut -d: -f1)"
+t "the alpha drop is present once" "$(rules iptables | grep -cx -- 'OUTPUT -d 192.0.2.10 -j DROP')" -eq 1
+t "the alpha drop precedes the ACCEPT rule" "$alpha_line" -lt "$accept_line"
+t "the beta drop precedes the ACCEPT rule" "$beta_line" -lt "$accept_line"
+
+echo "# case 12: a failed insert rolls back the rules this run already added"
+reset_case
+export STUB_IPT_FAIL_ON=2
+run
+t "a failed second insert exits non-zero" "$RC" -ne 0
+lacks "a partial run never prints success" "$SUCCESS"
+has "the rollback is reported" "ROLLBACK"
+t "the first (partial) rule was removed again" "$(nrules iptables)" -eq 0
+
+echo "# case 13: an address that rotated away is unblocked on the next run"
+reset_case
+export AEP_BLOCK_DOMAINS="alpha.example"
+printf '192.0.2.10\n' >"$DNS/alpha.example.v4"
+run
+t "first run blocks the old address" "$(rules iptables | grep -cx -- 'OUTPUT -d 192.0.2.10 -j DROP')" -eq 1
+printf '192.0.2.11\n' >"$DNS/alpha.example.v4"
+run
+t "the rotated-away address is no longer blocked" "$(rules iptables | grep -cx -- 'OUTPUT -d 192.0.2.10 -j DROP')" -eq 0
+t "the new address is blocked" "$(rules iptables | grep -cx -- 'OUTPUT -d 192.0.2.11 -j DROP')" -eq 1
+has "the removal is reported" "unblocked (rotated away)"
+
+echo "# case 14: a missing ip command fails closed instead of assuming IPv4-only"
+reset_case
+mkdir -p "$SB/noip"
+for tool in id getent iptables ip6tables flock; do ln -sf "$STUBS/$tool" "$SB/noip/$tool"; done
+RUN_PATH="$SB/noip:$BASE" run
+unset RUN_PATH
+t "missing ip exits non-zero" "$RC" -ne 0
+has "missing ip is named" "ip not found"
+lacks "missing ip never prints success" "$SUCCESS"
+t "missing ip applied no rules" "$(nrules iptables)" -eq 0
 
 if [ "$FAILURES" -ne 0 ]; then
   echo "test_apply_domain_blocks: $FAILURES failure(s)"

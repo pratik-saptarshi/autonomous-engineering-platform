@@ -14,11 +14,12 @@ Canonical watchdog source: `~/workspace/neurostrata/bin/watchdog-backup.sh`
   (339 lines, landed in PR #163 as commit `f9dcd636`).
 - Delta F sha256: `f6ee0938d9268a4f931f73100d2ac8adbb3542d0c8494b2c6eaa91a7771ec164`
   (438 lines, issue #21 phase 1).
-- Current sha256 after Delta G: `128a790d416192067f3b033bc4d0d99d9ff2b9793dfd6186cda3a5c870f7de1b`
-  (498 lines, binary SSOT + best-effort state-write hardening + comment truth).
+- Current sha256 after Delta H: `2db7979290cf076c9a96bfb66888317270e4aa1d3d6645ff7b003b54c586997b`
+  (604 lines, review follow-up: activity-aware idle gate, capture retry, health
+  phrase parity, restart-race evidence, owner-only rotated logs).
 - Last verified deployed: not yet deployed to VM from this branch (run
   `ops/bin/deploy-watchdog.sh --check` on the host, then `--apply`).
-- Delta count: seven (A through G).
+- Delta count: eight (A through H).
 - `bash -n ops/bin/watchdog-backup.sh`: clean.
 
 ## Delta A — "Every run" header block rewritten to on-demand truth
@@ -32,8 +33,9 @@ configured Drive upload failed."
 
 After (new header): step 1 states daemon-down is the expected idle state,
 change detection still runs, a changed DB is backed up as a quiescent copy,
-the daemon stays down, the MCP client restarts it, and this script never
-restarts the daemon itself; step 2 notes the daemon-down Drive catch-up
+the daemon stays down, restart it directly with `nohup` when needed, and this
+script never restarts the daemon itself; step 2 notes the daemon-down Drive
+catch-up
 exit-1 and that the idle path stops the daemon by design after the
 no-change check; step 3 describes stop-copy-verify-record with the daemon
 staying down afterwards; the exit-condition line adds the daemon-down
@@ -255,8 +257,8 @@ Defects addressed:
 - Crash-evidence bookkeeping (`SEEN_UP_FILE`, `ACCOUNTED_FILE`, `LOGS_DIR`,
   `rotate_daemon_log`, and `log()`) ran unguarded under `set -euo pipefail`,
   so an unwritable state file could abort backups before the backup ran.
-- Header and inline comments still said the MCP client restarts the daemon,
-  contradicting `docs/limitation-analysis.md` section 1.
+- Header and inline comments still claimed a client-side restart of the
+  daemon, contradicting `docs/limitation-analysis.md` section 1.
 
 Changes in `ops/bin/watchdog-backup.sh`:
 
@@ -281,6 +283,53 @@ binary resolution, missing-binary loud failure, and backup continuation when
 Divergence from the deployed script: the deployed watchdog has none of this
 until it is redeployed. Run `ops/bin/deploy-watchdog.sh --check` on the
 host, then `--apply`.
+
+## Delta H: activity-aware idle gate and evidence-retry hardening (review follow-up)
+
+Defects addressed:
+
+- A missing or unreadable `.last-daemon-use` was treated as idle, so a
+  direct MCP client (the runbook's OpenCode wiring) that never writes the
+  marker could be SIGTERMed mid-session. A marker that existed but was stale
+  had the same effect.
+- `stop_daemon` returned success when it found no PIDs, after a healthy check
+  had just seen the daemon up. A death in that window was recorded as an
+  intentional stop, so no crash bundle was ever taken.
+- `capture_death_diagnostics` marked the death accounted even when the crash
+  bundle could not be created or finalized, so a transient failure lost the
+  evidence permanently.
+- `daemon_healthy` accepted only `status: healthy`, while `boot-gate.sh`
+  accepted `daemon: listening ... answering`. A live daemon that printed only
+  the latter was treated as down and copied without stopping.
+- `rotate_daemon_log` moved a possibly group/world-readable daemon log
+  without tightening its mode.
+- A death between two watchdog observations with no client hook was invisible
+  because detection relied only on `.daemon-seen-up` and `.last-daemon-use`.
+
+Changes in `ops/bin/watchdog-backup.sh`:
+
+- Idle stops now require a numeric `.last-daemon-use` older than `IDLE_SECS`
+  **and** no established loopback connection to the daemon port (`ss`, when
+  available). A missing/unreadable marker means "activity unknown": the
+  daemon is left running and the run exits 0 without stopping it.
+- `stop_daemon` returns 2 when it finds no PIDs. Callers then run
+  `capture_death_diagnostics` and still take the quiescent copy.
+- The down path rechecks `daemon_healthy` immediately before the copy; a
+  daemon that came up is stopped (or its death captured) and the hash is
+  recomputed.
+- `capture_death_diagnostics` only rotates the log and records `captured`
+  after the bundle is finalized; otherwise `.daemon-seen-up` is preserved and
+  the next run retries. Such runs log `crash diagnostics incomplete`.
+- `daemon_healthy` accepts either the `status: healthy` or the
+  `daemon: listening ... answering` form.
+- `daemon_died_unexpectedly` also treats a `daemon.log` mtime newer than the
+  last accounted down state as a death.
+- `rotate_daemon_log` chmods the pre-restart copy to 600.
+
+Tests: cases (o)–(t) in `ops/tests/test_watchdog_ops.sh` (unknown activity,
+connected client, mid-run death, capture retry, log-mtime detection,
+answering-only health output), plus the mode-600 assertion in case (h). The
+whole suite passes under Linux (Docker), not only on the macOS dev host.
 
 ## Notes (not deltas)
 

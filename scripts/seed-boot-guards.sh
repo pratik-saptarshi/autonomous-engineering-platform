@@ -14,14 +14,18 @@
 #     --check    run the same test as boot-gate.sh check 3, write nothing,
 #                exit 1 when it would fail
 #
-# It fails loudly (exit 1) when neurostrata-mcp is missing or the daemon is
-# not answering. It never starts the daemon: see docs/runbook.md, section
-# "Start the daemon". Exit 2 is a usage error.
+# NeuroStrata's store has a single-writer lock: `neurostrata-mcp add` is a
+# direct mutation and only works while no daemon holds the store. If a daemon
+# is answering, this script stops it with `neurostrata-mcp shutdown`, seeds,
+# verifies against the store, and restarts it with the runbook's nohup command
+# (unless it was already stopped, in which case it is left stopped). An
+# EXIT trap restarts it even when a seed fails. It never leaves a running
+# daemon stopped. Exit 2 is a usage error.
 #
 # The canonical wording is also documented in docs/runbook.md, section
-# "Seed the guard namespace". Presence is decided by a short key phrase, so a
-# rule worded differently on a long-lived host still counts and is not
-# seeded a second time.
+# "Seed the guard namespace". Presence is decided by a short key phrase inside
+# an actual guard_rule record, so an ordinary memory that merely mentions the
+# phrase does not count and the rule is still seeded.
 set -euo pipefail
 
 # Same platform-standard locations as boot-gate.sh. They are appended so a
@@ -30,6 +34,10 @@ export PATH="$PATH:$HOME/go/bin:$HOME/sdk/go/bin:$HOME/workspace/neurostrata/bin
 
 NSMCP="neurostrata-mcp"
 MODE="seed"
+NS_DIR="${NEUROSTRATA_HOME:-$HOME/workspace/neurostrata}"
+LOCK_FILE="$NS_DIR/.seed-guards.lock"
+LOCK_DIR=""
+STOPPED_DAEMON=0
 
 RULE_KEYS=(
   "Destructive GitHub actions"
@@ -52,27 +60,33 @@ usage() {
   exit 2
 }
 
-require_daemon() {
-  local out
-  command -v "$NSMCP" >/dev/null 2>&1 ||
-    fail "neurostrata-mcp not found in PATH (install: docs/runbook.md, section 'NeuroStrata engine')"
-  out=$("$NSMCP" status 2>&1) ||
-    fail "neurostrata-mcp status exited non-zero: $out"
-  case "$out" in
-  *"daemon: listening"*"answering"*) ;;
-  *) fail "daemon not answering (start it first: docs/runbook.md, section 'Start the daemon')" ;;
-  esac
-}
-
 list_guards() {
   "$NSMCP" list guard 2>&1 || fail "neurostrata-mcp list guard failed"
 }
 
+# Print only the records whose Type line is exactly guard_rule. The list
+# output separates records with "--- ID: ", and Content may be multi-line, so
+# records are accumulated until the next ID line rather than split on blanks.
+guard_records() { # $1 = list output
+  printf '%s\n' "$1" | awk '
+    function flush() {
+      if (type == "guard_rule") { printf "%s", buf }
+      buf = ""
+      type = ""
+    }
+    /^--- ID: / { flush() }
+    /^Type: / { t = $0; sub(/^Type: /, "", t); type = t }
+    { buf = buf "\n" $0 }
+    END { flush() }
+  '
+}
+
 # Same test as boot-gate.sh check_guards: at least three guard_rule entries
-# and the destructive-actions rule. Prints the problem and returns 1 if not.
-gate_would_pass() { # $1 = list output
+# and the destructive-actions rule in one of those records. Prints the problem
+# and returns 1 if not.
+gate_would_pass() { # $1 = guard_rule records only
   local n
-  n=$(printf '%s\n' "$1" | grep -c "guard_rule" || true)
+  n=$(printf '%s\n' "$1" | grep -c '^--- ID: ' || true)
   if [ "$n" -lt 3 ]; then
     echo "SEED-GUARDS: only $n guard_rule entries found, boot-gate needs >= 3"
     return 1
@@ -86,6 +100,74 @@ gate_would_pass() { # $1 = list output
   esac
 }
 
+daemon_state() { # up | down | busy
+  local rc=0
+  "$NSMCP" status >/dev/null 2>&1 || rc=$?
+  case "$rc" in
+  0 | 3) echo up ;;
+  1) echo down ;;
+  *) echo busy ;;
+  esac
+}
+
+acquire_lock() {
+  mkdir -p "$NS_DIR" 2>/dev/null || fail "cannot create $NS_DIR"
+  if command -v flock >/dev/null 2>&1; then
+    exec 7>"$LOCK_FILE" || fail "cannot open $LOCK_FILE"
+    flock -w 120 7 || fail "another seed-boot-guards run is still running"
+  elif mkdir "$LOCK_FILE.d" 2>/dev/null; then
+    LOCK_DIR="$LOCK_FILE.d"
+  else
+    fail "another seed-boot-guards run is in progress (or remove stale $LOCK_FILE.d)"
+  fi
+}
+
+stop_daemon_for_write() {
+  local st i
+  st="$(daemon_state)"
+  case "$st" in
+  down) return 0 ;;
+  busy) fail "daemon is starting or shutting down; retry when status settles" ;;
+  esac
+  echo "SEED-GUARDS: stopping daemon for the single-writer store lock"
+  "$NSMCP" shutdown >/dev/null 2>&1 ||
+    fail "neurostrata-mcp shutdown failed; nothing was seeded"
+  STOPPED_DAEMON=1
+  for i in $(seq 1 60); do
+    [ "$(daemon_state)" = down ] && return 0
+    sleep 1
+  done
+  fail "daemon did not stop within 60s; nothing was seeded"
+}
+
+restart_daemon() {
+  [ "$STOPPED_DAEMON" = 1 ] || return 0
+  mkdir -p "$NS_DIR" 2>/dev/null || true
+  HF_HUB_OFFLINE=1 nohup "$NSMCP" daemon >>"$NS_DIR/daemon.log" 2>&1 &
+  local i
+  for i in $(seq 1 120); do
+    if [ "$(daemon_state)" = up ]; then
+      STOPPED_DAEMON=0
+      echo "SEED-GUARDS: daemon restarted"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "SEED-GUARDS: WARNING: daemon did not answer within 120s; start it with:" >&2
+  echo "  HF_HUB_OFFLINE=1 nohup neurostrata-mcp daemon >> $NS_DIR/daemon.log 2>&1 &" >&2
+  return 1
+}
+
+on_exit() {
+  local rc=$?
+  trap - EXIT
+  if ! restart_daemon; then
+    [ "$rc" -eq 0 ] && rc=1
+  fi
+  if [ -n "$LOCK_DIR" ]; then rmdir "$LOCK_DIR" 2>/dev/null || true; fi
+  exit "$rc"
+}
+
 case "${1:-}" in
 "") ;;
 --dry-run) MODE="dry-run" ;;
@@ -94,23 +176,31 @@ case "${1:-}" in
 esac
 [ "$#" -le 1 ] || usage
 
-require_daemon
-current=$(list_guards)
+command -v "$NSMCP" >/dev/null 2>&1 ||
+  fail "neurostrata-mcp not found in PATH (install: docs/runbook.md, section 'NeuroStrata engine')"
 
+if [ "$MODE" = seed ]; then
+  acquire_lock
+  trap on_exit EXIT
+fi
+
+current=$(list_guards)
+records=$(guard_records "$current")
+
+MISSING_KEYS=()
+MISSING_TEXTS=()
 i=0
 while [ "$i" -lt "${#RULE_KEYS[@]}" ]; do
   key="${RULE_KEYS[$i]}"
-  case "$current" in
+  case "$records" in
   *"$key"*) echo "SEED-GUARDS: present: $key" ;;
   *)
     case "$MODE" in
     check) echo "SEED-GUARDS: missing: $key" ;;
     dry-run) echo "SEED-GUARDS: would seed: $key" ;;
     seed)
-      if ! out=$("$NSMCP" add guard guard_rule "${RULE_TEXTS[$i]}" 2>&1); then
-        fail "neurostrata-mcp add failed for '$key': $out"
-      fi
-      echo "SEED-GUARDS: seeded: $key"
+      MISSING_KEYS+=("$key")
+      MISSING_TEXTS+=("${RULE_TEXTS[$i]}")
       ;;
     esac
     ;;
@@ -118,11 +208,34 @@ while [ "$i" -lt "${#RULE_KEYS[@]}" ]; do
   i=$((i + 1))
 done
 
-[ "$MODE" = "dry-run" ] && exit 0
+case "$MODE" in
+check)
+  if gate_would_pass "$records"; then
+    echo "SEED-GUARDS: guards ok: boot-gate check 3 would pass"
+    exit 0
+  fi
+  exit 1
+  ;;
+dry-run)
+  exit 0
+  ;;
+esac
 
-# Verify against the daemon's own answer, not against what was just sent.
+if [ "${#MISSING_KEYS[@]}" -gt 0 ]; then
+  stop_daemon_for_write
+  i=0
+  while [ "$i" -lt "${#MISSING_KEYS[@]}" ]; do
+    if ! out=$("$NSMCP" add guard guard_rule "${MISSING_TEXTS[$i]}" 2>&1); then
+      fail "neurostrata-mcp add failed for '${MISSING_KEYS[$i]}': $out"
+    fi
+    echo "SEED-GUARDS: seeded: ${MISSING_KEYS[$i]}"
+    i=$((i + 1))
+  done
+fi
+
+# Verify against the store's own answer, not against what was just sent.
 final=$(list_guards)
-if gate_would_pass "$final"; then
+if gate_would_pass "$(guard_records "$final")"; then
   echo "SEED-GUARDS: guards ok: boot-gate check 3 would pass"
 else
   exit 1

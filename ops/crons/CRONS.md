@@ -44,7 +44,8 @@ page without a fresh decision.
 ops/bin/cron-with-boot-gate.sh <job-name> -- <command...>
 ```
 
-- A passing gate hands over to the command with `exec`, so arguments and the job's exit status reach the scheduler unchanged.
+- A passing gate hands over to the command, prints the gate's per-check lines (including `BOOT-GATE-RESULT: POLICY-OK`), and propagates the job's exit status unchanged.
+- While the job runs, the wrapper heartbeats `~/workspace/neurostrata/.last-daemon-use` (override with `AEP_DAEMON_ACTIVITY_FILE`) so the watchdog cannot mistake a long job that uses the daemon for an idle one and stop it mid-run.
 - A failing gate logs `CRON-GATE: ABORT <job-name> rc=<rc>` on stderr, prints the gate's own reason, exits with the gate's status, and never starts the job.
 - A missing or non-executable gate is a failure with `rc=127`. The wrapper never runs a job it could not gate.
 - `AEP_BOOT_GATE_BIN` overrides the gate path and `AEP_CRON_GATE_LOG` names a file that also receives the ABORT line.

@@ -461,7 +461,10 @@ STALE_RESTART_PATTERNS = (
     r"revives? (?:a |the )?(?:dead |crashed )?daemon",
     r"watchdog cron also revives",
     r"wait for the watchdog cron",
-    r"restarts? it on the next (?:coding loop|MCP)",
+    # \s+ spans a line break: the claim is often wrapped mid-sentence.
+    r"restarts? it\s+on the next\s+(?:coding loop|MCP)",
+    r"recovers? (?:a |the )?(?:dead |crashed )?daemon",
+    r"(?:MCP client|client) restarts? (?:it|the daemon)",
 )
 
 
@@ -525,8 +528,8 @@ FILE_CHECKS = [
 # Each mutation is (file, old, new) and must trip the named check.
 FILE_MUTATIONS = {
     "OPS-DELTAS": [
-        [(OPS_README, "exactly seven documented deltas", "exactly six documented deltas")],
-        [(WATCHDOG_DELTAS, "Delta count: seven", "Delta count: six")],
+        [(OPS_README, "exactly eight documented deltas", "exactly seven documented deltas")],
+        [(WATCHDOG_DELTAS, "Delta count: eight", "Delta count: seven")],
         [(WATCHDOG, "set -euo pipefail", "set -euo pipefail\n# drift")],
     ],
     "RUNBOOK-TRUTH": [
@@ -541,6 +544,9 @@ FILE_MUTATIONS = {
         [("docs/limitation-analysis.md", "an MCP-spawn start", "a dead daemon is restarted automatically on the next MCP spawn, an MCP-spawn start")],
         [("docs/operations.md", "The canonical watchdog (`ops/bin/watchdog-backup.sh`) never restarts the daemon itself", "The watchdog cron also revives a dead daemon on its next run")],
         [("docs/runbook.md", "Restart it directly with the `nohup` command above", "Restart it directly or wait for the watchdog cron")],
+        [("ops/crons/watchdog-cron-record.md", "restart it directly with", "the MCP client restarts it\n   on the next coding loop; or restart it directly with")],
+        [("docs/operations.md", "The canonical watchdog (`ops/bin/watchdog-backup.sh`) never restarts the daemon itself", "The watchdog restarts it\non the next coding loop")],
+        [("docs/operations.md", "The canonical watchdog (`ops/bin/watchdog-backup.sh`) never restarts the daemon itself", "The canonical watchdog recovers a dead daemon")],
     ],
 }
 

@@ -11,14 +11,15 @@ live until it is deployed by hand (see Deployment below).
 `ops/bin/watchdog-backup.sh` is the **canonical SOURCE** for the
 watchdog. It is the live deployed watchdog (base:
 `~/workspace/neurostrata/bin/watchdog-backup.sh`, sha256 recorded in
-`ops/bin/WATCHDOG-DELTAS.md`) plus exactly seven documented deltas:
+`ops/bin/WATCHDOG-DELTAS.md`) plus exactly eight documented deltas:
 a corrected header block, removal of the dead `start_daemon`
 definition, the `stop_daemon` definition moved above its first
 use, shellcheck fixes plus a full `shfmt -i 2` reformat (fix
 round 2), a stop failure that exits 1 instead of exiting 0
 (PR #163), crash evidence capture with pre-restart log
-preservation (issue #21), and binary SSOT resolution with
-best-effort guarded state writes (Delta G). Every deviation from the live script is recorded in
+preservation (issue #21), binary SSOT resolution with
+best-effort guarded state writes (Delta G), and the activity-aware
+idle gate with evidence-retry hardening (Delta H). Every deviation from the live script is recorded in
 `ops/bin/WATCHDOG-DELTAS.md`; no other difference exists.
 
 ## What is legacy, and what is a snapshot
@@ -107,8 +108,8 @@ The deployed watchdog governs runtime, so after a deploy run
 
 | Path | What it is |
 | --- | --- |
-| `ops/bin/watchdog-backup.sh` | Canonical watchdog (live base + 7 documented deltas + reformat) |
-| `ops/bin/WATCHDOG-DELTAS.md` | Delta table: header rewrite, dead-code removal, definition move, shellcheck fixes + reformat, stop-failure exit 1, crash evidence capture, binary SSOT + best-effort hardening |
+| `ops/bin/watchdog-backup.sh` | Canonical watchdog (live base + 8 documented deltas + reformat) |
+| `ops/bin/WATCHDOG-DELTAS.md` | Delta table: header rewrite, dead-code removal, definition move, shellcheck fixes + reformat, stop-failure exit 1, crash evidence capture, binary SSOT + best-effort hardening, activity-aware idle gate + evidence retry |
 | `ops/tests/test_watchdog_ops.sh` | Behavioral test, per daemon state, with PID-namespace isolation guard |
 | `ops/bin/deploy-watchdog.sh` | Deploys the canonical watchdog to the live path: `--check` drift, `--dry-run`, `--apply` with backup and receipt |
 | `ops/tests/test_deploy_watchdog.sh` | Test for the deploy script, run against a throwaway fixture repo and target |
