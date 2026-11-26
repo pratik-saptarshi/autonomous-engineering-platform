@@ -393,15 +393,43 @@ PROFILE_ORIGIN=""
 # command position counts, so an argument that merely looks like `.`
 # is not evidence.
 prefixed_source_p() {
-  local s="$1" w peeled=0
+  local s="$1" w peeled=0 skip_name=0 skip_opts=0
   while :; do
     s="${s#"${s%%[![:space:]]*}"}"
     [ -n "$s" ] || return 1
     w="${s%%[[:space:]]*}"
+    if [ "$skip_name" -eq 1 ]; then
+      # `function NAME` / `function NAME()`: skip the function name.
+      s="${s#"$w"}"
+      skip_name=0
+      peeled=1
+      continue
+    fi
+    if [ "$skip_opts" -eq 1 ]; then
+      case "$w" in
+      -*)
+        s="${s#"$w"}"
+        continue
+        ;;
+      esac
+      skip_opts=0
+    fi
     case "$w" in
-    '!' | '{' | '}' | 'do' | 'then' | 'else' | 'elif' | 'in' | 'if' | 'while' | 'until' | 'command' | 'builtin' | 'function')
+    '!' | '{' | '}' | 'do' | 'then' | 'else' | 'elif' | 'in' | 'if' | 'while' | 'until' | 'time')
       s="${s#"$w"}"
       peeled=1
+      continue
+      ;;
+    'command' | 'builtin')
+      s="${s#"$w"}"
+      peeled=1
+      skip_opts=1
+      continue
+      ;;
+    'function')
+      s="${s#"$w"}"
+      peeled=1
+      skip_name=1
       continue
       ;;
     'case')
@@ -484,6 +512,17 @@ source_word_expands_p() {
       return 0
     fi
     if [ "$ch" = '`' ]; then
+      return 0
+    fi
+    if [ "$ch" = '~' ]; then
+      # normalize_source_word resolves only a leading bare `~` or `~/`.
+      # `~user`, `~+`, `~-`, or a `~` elsewhere stay unknown.
+      if [ "$i" -eq 0 ] && {
+        [ -z "${w:i+1:1}" ] || [ "${w:i+1:1}" = "/" ]
+      }; then
+        i=$((i + 1))
+        continue
+      fi
       return 0
     fi
     i=$((i + 1))
@@ -865,15 +904,16 @@ const_status() {
         *)
           val="$(normalize_path_components "$val")"
           if [ "$val" = "$HOME/.bashrc" ]; then
-            # .bashrc is a regular file written by this installer, so
-            # -d is false. -f/-e/-s are true once it exists; while it
-            # is absent the outcome depends on whether the installer
-            # decides to write it, so stay unknown (counted as
-            # reachable). -r/-w/-x depend on the preserved mode:
-            # unknown, never a skip.
+            # .bashrc is a regular file written by this installer
+            # before any login shell reads it, so -d is false and
+            # -f/-e/-s are true. If it is absent at scan time the
+            # installer is the one that writes it; declaring the test
+            # false would make a `|| source` look reachable and write a
+            # block the login shell then never loads. -r/-w/-x depend on
+            # the preserved mode: unknown, never a skip.
             case "$op" in
             -d) st=f ;;
-            -f | -e | -s) [ -e "$val" ] && st=t || st=u ;;
+            -f | -e | -s) st=t ;;
             *) st=u ;;
             esac
           else
@@ -939,14 +979,30 @@ const_status() {
         # the range `[ -eq ]` accepts). Use it so an out-of-range
         # comparison is not misclassified as false and its reachable
         # source silently dropped.
-        case "$op" in
-        -eq) [[ "$a" -eq "$b" ]] && st=t || st=f ;;
-        -ne) [[ "$a" -ne "$b" ]] && st=t || st=f ;;
-        -lt) [[ "$a" -lt "$b" ]] && st=t || st=f ;;
-        -le) [[ "$a" -le "$b" ]] && st=t || st=f ;;
-        -gt) [[ "$a" -gt "$b" ]] && st=t || st=f ;;
-        -ge) [[ "$a" -ge "$b" ]] && st=t || st=f ;;
-        esac
+        if [ "$bracket" = "[[" ]; then
+          # [[ ]] uses bash arithmetic: canonical decimals wrap at
+          # 64 bits. Model exactly that.
+          case "$op" in
+          -eq) [[ "$a" -eq "$b" ]] && st=t || st=f ;;
+          -ne) [[ "$a" -ne "$b" ]] && st=t || st=f ;;
+          -lt) [[ "$a" -lt "$b" ]] && st=t || st=f ;;
+          -le) [[ "$a" -le "$b" ]] && st=t || st=f ;;
+          -gt) [[ "$a" -gt "$b" ]] && st=t || st=f ;;
+          -ge) [[ "$a" -ge "$b" ]] && st=t || st=f ;;
+          esac
+        else
+          # [ ]/test is decimal and range-limited: an out-of-range
+          # operand is an error (nonzero), so the test is false for
+          # both && and ||. Do not apply [[ ]] wrapping here.
+          case "$op" in
+          -eq) [ "$a" -eq "$b" ] 2>/dev/null && st=t || st=f ;;
+          -ne) [ "$a" -ne "$b" ] 2>/dev/null && st=t || st=f ;;
+          -lt) [ "$a" -lt "$b" ] 2>/dev/null && st=t || st=f ;;
+          -le) [ "$a" -le "$b" ] 2>/dev/null && st=t || st=f ;;
+          -gt) [ "$a" -gt "$b" ] 2>/dev/null && st=t || st=f ;;
+          -ge) [ "$a" -ge "$b" ] 2>/dev/null && st=t || st=f ;;
+          esac
+        fi
       else
         st=u
       fi
@@ -987,7 +1043,7 @@ profile_sources_bashrc() {
   local -a hd_delims=() hd_dash=() hd_lines=() plines=()
   local hd_arith_depth=0
   local file item dup=0 line src seg sep si ssq sdq sch sprev wtxt wch wi wsq wdq
-  local next_seg k f kw cstat run dead line_no last_seg line_sep
+  local next_seg k f kw cstat run dead line_no last_seg line_sep raw_seg
   local cond_pending=0 cond_idx=-1 cond_text="" cond_trim
   local chain_sep="" chain_cstat=u pipe_skip=0
   local last_stat=""

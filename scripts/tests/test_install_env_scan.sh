@@ -1687,10 +1687,7 @@ check "k6-heredoc block appended after the heredoc terminator" test "$(line_of '
 
 note "#200: unit-level profile_sources_bashrc (a source after ||, | or & is detected; quoted/commented/redirect forms are not boundaries)"
 check "K7d || source detected when the guard fails" profile_detected '[ -f ~/.bashrc.missing ] || . ~/.bashrc'
-# With no .bashrc in the probe HOME the guard outcome is unknown, so the
-# fallback source counts: a shadowing SKIP must not prevent the installer
-# from creating the very file the profile tests for (PR #224 finding 2).
-check "K7d || source counted when ~/.bashrc is absent at scan" profile_detected '[ -f ~/.bashrc ] || . ~/.bashrc'
+check "K7d || source skipped when ~/.bashrc exists (bash semantics)" profile_not_detected '[ -f ~/.bashrc ] || . ~/.bashrc'
 check "K7d braced || source detected when the guard fails" profile_detected '[ -f "${HOME}/.bashrc.missing" ] || . "${HOME}/.bashrc"'
 check "K7d glued || source detected" profile_detected 'false||. ~/.bashrc'
 check "K7d | source not counted (pipeline subshell)" profile_not_detected 'echo x | . ~/.bashrc'
@@ -1937,11 +1934,8 @@ check "PR220 false() override makes if false reachable" profile_detected $'false
 check "PR220 function false form makes if false reachable" profile_detected $'function false { return 0; }\nif false; then . ~/.bashrc; fi'
 
 note "PR220-R7: a file-existence guard is evaluated for the login shell after install"
-# When the probe has no .bashrc, the fallback branch is reachable at
-# login; a shadowing SKIP here would stop the installer from creating
-# the file the guard tests (PR #224 finding 2).
-check "PR220 [ -f ~/.bashrc ] || source is reachable when file absent" profile_detected '[ -f ~/.bashrc ] || . ~/.bashrc'
-check "PR220 [ -f \"\$HOME/.bashrc\" ] || source is reachable when file absent" profile_detected '[ -f "$HOME/.bashrc" ] || . "$HOME/.bashrc"'
+check "PR220 [ -f ~/.bashrc ] || source is skipped (file exists post-install)" profile_not_detected '[ -f ~/.bashrc ] || . ~/.bashrc'
+check "PR220 [ -f \"\$HOME/.bashrc\" ] || source is skipped" profile_not_detected '[ -f "$HOME/.bashrc" ] || . "$HOME/.bashrc"'
 check "PR220 [ -f ~/.bashrc ] && source runs (control)" profile_detected '[ -f ~/.bashrc ] && . ~/.bashrc'
 
 note "PR220-R8: backslash-continued physical lines are one logical line"
@@ -1969,7 +1963,7 @@ check "PR220 false || false | false && source is skipped (control)" profile_not_
 
 note "PR220-R11: file tests other than ~/.bashrc stay unknown (earlier startup commands can change them)"
 check "PR220 mkdir then [ -d ~/.cache ] && source is reachable" profile_detected $'mkdir -p "$HOME/.cache"\n[ -d "$HOME/.cache" ] && . ~/.bashrc'
-check "PR220 [ -f ~/.bashrc ] || source is reachable (installer does not create it on SKIP)" profile_detected '[ -f ~/.bashrc ] || . ~/.bashrc'
+check "PR220 [ -f ~/.bashrc ] || source is still skipped (installer guarantee, control)" profile_not_detected '[ -f ~/.bashrc ] || . ~/.bashrc'
 check "PR220 [ -d ~/.bashrc ] || source runs (control)" profile_detected '[ -d ~/.bashrc ] || . ~/.bashrc'
 check "PR220 standalone false && source is skipped (control)" profile_not_detected 'false && . ~/.bashrc'
 
@@ -2121,9 +2115,9 @@ const_status_of() { # const_status_of <command-text>
 check "224a out-of-range -eq matches [[ ]] arithmetic" \
   test "$(const_status_of '[[ 18446744073709551616 -eq 0 ]]')" = t
 
-note "224b: a fallback source is reachable when ~/.bashrc is absent at scan time"
-check "224b || fallback source counted when .bashrc missing" \
-  profile_detected '[ -f ~/.bashrc ] || . ~/.bashrc'
+note "224b: [ -f ~/.bashrc ] is true after install, so a || fallback is never wiring"
+check "224b || fallback with an existing .bashrc is skipped" \
+  profile_not_detected '[ -f ~/.bashrc ] || . ~/.bashrc'
 
 note "224c: relative file test after cd does not resolve against install-time HOME"
 check "224c relative test after cd keeps the fallback reachable" \
@@ -2167,6 +2161,21 @@ check "224d subshell source is not wiring (control)" profile_not_detected '( . ~
 check "224d dead brace group is not wiring (control)" profile_not_detected 'false && { . ~/.bashrc; }'
 check "224d argument that looks like a source is not wiring (control)" profile_not_detected 'echo . ~/.bashrc'
 check "224d [ -w ~/.bashrc ] || source is reachable (mode unknown)" profile_detected '[ -w ~/.bashrc ] || . ~/.bashrc'
+
+note "224e: [ ] out-of-range operands error (false); [[ ]] wraps"
+check "224e [ 9223372036854775808 -eq 9223372036854775808 ] || source runs" profile_detected '[ 9223372036854775808 -eq 9223372036854775808 ] || . ~/.bashrc'
+check "224e [ 9223372036854775808 -lt 0 ] || source runs" profile_detected '[ 9223372036854775808 -lt 0 ] || . ~/.bashrc'
+check "224e ! [ 9223372036854775808 -eq 9223372036854775808 ] && source runs" profile_detected '! [ 9223372036854775808 -eq 9223372036854775808 ] && . ~/.bashrc'
+check "224e [[ 9223372036854775808 -eq 9223372036854775808 ]] || is skipped (wrap control)" profile_not_detected '[[ 9223372036854775808 -eq 9223372036854775808 ]] || . ~/.bashrc'
+check "224e [ 9223372036854775808 -eq 1 ] && is dead (error control)" profile_not_detected '[ 9223372036854775808 -eq 1 ] && . ~/.bashrc'
+
+note "224f: the remaining command prefixes and tilde forms"
+check "224f function NAME { } body counted" profile_detected 'function f { . ~/.bashrc; }; f'
+check "224f command -p source counted" profile_detected 'command -p . ~/.bashrc'
+check "224f command -- source counted" profile_detected 'command -- . ~/.bashrc'
+check "224f builtin -- source counted" profile_detected 'builtin -- . ~/.bashrc'
+check "224f time source counted" profile_detected 'time . ~/.bashrc'
+check "224f . ~user/.bashrc is reachable (unknown home)" profile_detected '. ~neo/.bashrc'
 
 if [ "$FAILURES" -eq 0 ]; then
   echo "test_install_env_scan: checks=$CHECKS"
