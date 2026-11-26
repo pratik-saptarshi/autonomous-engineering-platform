@@ -497,12 +497,78 @@ normalize_path_components() {
   printf '%s' "${out:-/}"
 }
 
+# Heredoc queue helpers shared by the two readers that must not read a
+# heredoc body as code: install_env_block's splitter and
+# profile_sources_bashrc. The caller declares the pending queue — the
+# parallel arrays hd_delims / hd_dash / hd_lines (delimiter, <<- flag,
+# opener line) — and hd_arith_depth, which collect_heredoc_openers
+# (below) fills and carries; the helpers see them by dynamic scope.
+
+# True when the physical line $1 is a heredoc body line or terminator
+# (a heredoc is pending). Only the queue head's delimiter on a line of
+# its own closes it (leading tabs stripped for <<-), and closing pops
+# the queue.
+hd_consume_body() {
+  [ "${#hd_delims[@]}" -gt 0 ] || return 1
+  local probe="$1"
+  if [ "${hd_dash[0]}" = "1" ]; then
+    while [ "${probe:0:1}" = $'\t' ]; do
+      probe="${probe:1}"
+    done
+  fi
+  if [ "$probe" = "${hd_delims[0]}" ]; then
+    hd_delims=("${hd_delims[@]:1}")
+    hd_dash=("${hd_dash[@]:1}")
+    hd_lines=("${hd_lines[@]:1}")
+  fi
+  return 0
+}
+
+# Queue every heredoc the code line $1 opens, recording $2 as the
+# physical line number of each opener.
+hd_note_openers() {
+  local before=${#hd_delims[@]}
+  collect_heredoc_openers "$1"
+  while [ "$before" -lt "${#hd_delims[@]}" ]; do
+    hd_lines+=("$2")
+    before=$((before + 1))
+  done
+}
+
+# Print the outcome the command text $1 provably has: `t` (always
+# succeeds), `f` (always fails), or `u` (unknown — anything that
+# depends on the environment). Only literal constants are recognized:
+# `true`, `:`, `false`, and numeric `[ ]` / `[[ ]]` / `test` comparisons
+# of two literals — enough to name a branch a profile can never take
+# (`if false; then ...`, `[ 0 = 1 ] && ...`) without modeling the shell.
+const_status() {
+  local -a w
+  local IFS=' '
+  read -ra w <<<"$1"
+  case "${w[*]:-}" in
+  true | : | '! false' | '[ 1 = 1 ]' | '[ 0 = 0 ]' | '[[ 1 = 1 ]]' | '[[ 0 = 0 ]]' | 'test 1 = 1' | 'test 0 = 0') printf t ;;
+  false | '! true' | '[ 0 = 1 ]' | '[ 1 = 0 ]' | '[[ 0 = 1 ]]' | '[[ 1 = 0 ]]' | 'test 0 = 1' | 'test 1 = 0') printf f ;;
+  *) printf u ;;
+  esac
+}
+
 # True when $1 (the first existing login startup file) sources ~/.bashrc,
 # following chains of sourced files with a cycle guard. Used only to
 # NAME a shadowing state: a pre-existing profile is never modified.
+# Only reachable text counts: a heredoc body is data (the same pending
+# queue the env block's splitter uses), and a command in a provably
+# dead branch — `if false; then ...`, `false && ...`, `true || ...`,
+# the dead arm of an if on a literal condition (const_status) — never
+# runs. Each command segment carries the separator before it; `&&` /
+# `||` chains track the outcome of the last command that ran, `;`, `&`
+# and `|` start a fresh chain, and a stack of open `if` frames tracks
+# which branch the walk is in.
 profile_sources_bashrc() {
-  local -a queue=("$1") seen=() segs=()
-  local file item dup=0 line src seg si ssq sdq sch sprev wtxt wch wi wsq wdq
+  local -a queue=("$1") seen=() segs=() seps=() fr_cond=() fr_else=()
+  local -a hd_delims=() hd_dash=() hd_lines=()
+  local hd_arith_depth=0
+  local file item dup=0 line src seg sep si ssq sdq sch sprev wtxt wch wi wsq wdq
+  local k f kw cstat run dead
   while [ "${#queue[@]}" -gt 0 ]; do
     file="${queue[0]}"
     queue=("${queue[@]:1}")
@@ -516,7 +582,12 @@ profile_sources_bashrc() {
     done
     [ "$dup" -eq 0 ] || continue
     seen+=("$file")
+    hd_delims=() hd_dash=() hd_lines=() hd_arith_depth=0
+    fr_cond=() fr_else=()
     while IFS= read -r line || [ -n "$line" ]; do
+      # A heredoc body (or its terminator) is data, not commands.
+      if hd_consume_body "$line"; then continue; fi
+      hd_note_openers "$line" 0
       # A comment never counts as sourcing: a commented-out line, or
       # the comment trailing a command, is cut before the scan.
       line="$(strip_trailing_comment "$line")"
@@ -534,8 +605,8 @@ profile_sources_bashrc() {
       # Segments that merely mention .bashrc (a `[ -f ... ]` test, an
       # echo) never match, because only a segment whose first token is
       # `.` or `source` is parsed.
-      segs=()
-      seg="" si=0 ssq=0 sdq=0
+      segs=() seps=()
+      seg="" si=0 ssq=0 sdq=0 sep=""
       while [ "$si" -lt "${#line}" ]; do
         sch="${line:si:1}"
         if [ "$ssq" -eq 1 ]; then
@@ -563,7 +634,8 @@ profile_sources_bashrc() {
           seg+="${line:si:1}"
         elif [ "$sch" = ";" ]; then
           segs+=("$seg")
-          seg=""
+          seps+=("$sep")
+          seg="" sep=";"
         elif [ "$sch" = "&" ] || [ "$sch" = "|" ]; then
           sprev=""
           if [ "$si" -gt 0 ]; then sprev="${line:si-1:1}"; fi
@@ -577,9 +649,11 @@ profile_sources_bashrc() {
             :
           else
             segs+=("$seg")
-            seg=""
+            seps+=("$sep")
+            seg="" sep="$sch"
             if [ "${line:si+1:1}" = "$sch" ]; then
               si=$((si + 1))
+              sep="$sch$sch"
             fi
           fi
         else
@@ -588,14 +662,73 @@ profile_sources_bashrc() {
         si=$((si + 1))
       done
       segs+=("$seg")
-      for seg in "${segs[@]}"; do
-        seg="${seg#"${seg%%[![:space:]]*}"}"
-        case "$seg" in
-        'then'[[:space:]]*)
-          seg="${seg#then}"
-          seg="${seg#"${seg%%[![:space:]]*}"}"
-          ;;
+      seps+=("$sep")
+      cstat=u
+      for ((k = 0; k < ${#segs[@]}; k++)); do
+        seg="${segs[k]}"
+        # Whether the chain lets this segment run: after `&&` only if
+        # the last command that ran can succeed, after `||` only if it
+        # can fail; any other separator starts a fresh chain.
+        run=1
+        case "${seps[k]}" in
+        '&&') [ "$cstat" = f ] && run=0 ;;
+        '||') [ "$cstat" = t ] && run=0 ;;
+        *) cstat=u ;;
         esac
+        # Peel the structural keywords off the front of the segment,
+        # keeping the open-if frames current (a frame is the literal
+        # outcome of its condition and whether the walk is in its
+        # else arm). An `elif` condition is not modeled: it makes the
+        # frame unknown, so everything after it counts.
+        kw=1
+        while [ "$kw" -eq 1 ]; do
+          kw=0
+          seg="${seg#"${seg%%[![:space:]]*}"}"
+          case "$seg" in
+          if | if[[:space:]]*)
+            fr_cond+=("$(const_status "${seg#if}")")
+            fr_else+=(0)
+            seg=""
+            ;;
+          elif | elif[[:space:]]*)
+            if [ "${#fr_cond[@]}" -gt 0 ]; then
+              fr_cond[${#fr_cond[@]} - 1]=u
+              fr_else[${#fr_else[@]} - 1]=0
+            fi
+            seg=""
+            ;;
+          then | then[[:space:]]*)
+            seg="${seg#then}"
+            kw=1
+            ;;
+          else | else[[:space:]]*)
+            if [ "${#fr_else[@]}" -gt 0 ]; then
+              fr_else[${#fr_else[@]} - 1]=1
+            fi
+            seg="${seg#else}"
+            kw=1
+            ;;
+          fi | fi[[:space:]]*)
+            if [ "${#fr_cond[@]}" -gt 0 ]; then
+              unset 'fr_cond[${#fr_cond[@]}-1]' 'fr_else[${#fr_else[@]}-1]'
+            fi
+            seg=""
+            ;;
+          esac
+        done
+        dead=0
+        for ((f = 0; f < ${#fr_cond[@]}; f++)); do
+          if { [ "${fr_else[f]}" -eq 0 ] && [ "${fr_cond[f]}" = f ]; } ||
+            { [ "${fr_else[f]}" -eq 1 ] && [ "${fr_cond[f]}" = t ]; }; then
+            dead=1
+          fi
+        done
+        # A segment the chain or a dead branch skips changes nothing,
+        # not even the outcome the next `&&` / `||` looks at.
+        if [ "$run" -eq 0 ] || [ "$dead" -eq 1 ] || [ -z "$seg" ]; then
+          continue
+        fi
+        cstat="$(const_status "$seg")"
         case "$seg" in
         '.'[[:space:]]* | source[[:space:]]*)
           # Extract the complete path word before normalizing: a
@@ -1535,7 +1668,7 @@ install_env_block() {
   local -a hd_delims=() hd_dash=() hd_lines=()
   local hd_arith_depth=0
   local line trimmed norm in_block=0 seen_block=0 insert_at=-1
-  local unmarked=0 prior_profile="" hd_probe before line_no
+  local unmarked=0 prior_profile="" line_no
   if [ -e "$bashrc" ]; then
     while IFS= read -r line || [ -n "$line" ]; do
       lines+=("$line")
@@ -1543,23 +1676,11 @@ install_env_block() {
   fi
   for ((line_no = 0; line_no < ${#lines[@]}; line_no++)); do
     line="${lines[line_no]}"
-    if [ "${#hd_delims[@]}" -gt 0 ]; then
+    if hd_consume_body "$line"; then
       # Heredoc body (or its terminator): keep verbatim, but mark it as
-      # data. Only the queue head's delimiter on a line of its own
-      # closes the heredoc (leading tabs stripped for <<-).
+      # data.
       kept+=("$line")
       kept_body+=(1)
-      hd_probe="$line"
-      if [ "${hd_dash[0]}" = "1" ]; then
-        while [ "${hd_probe:0:1}" = $'\t' ]; do
-          hd_probe="${hd_probe:1}"
-        done
-      fi
-      if [ "$hd_probe" = "${hd_delims[0]}" ]; then
-        hd_delims=("${hd_delims[@]:1}")
-        hd_dash=("${hd_dash[@]:1}")
-        hd_lines=("${hd_lines[@]:1}")
-      fi
       continue
     fi
     # Markers are recognized whole-line but modulo leading/trailing
@@ -1602,12 +1723,7 @@ install_env_block() {
     '#'*) ;;
     *JAVA_HOME=* | *GHIDRA_INSTALL_DIR=*) unmarked=1 ;;
     esac
-    before=${#hd_delims[@]}
-    collect_heredoc_openers "$line"
-    while [ "$before" -lt "${#hd_delims[@]}" ]; do
-      hd_lines+=("$((line_no + 1))")
-      before=$((before + 1))
-    done
+    hd_note_openers "$line" "$((line_no + 1))"
   done
   # Insertion point, with the stock-skel reachability rule. On
   # Debian/Ubuntu homes the stock .bashrc (/etc/skel/.bashrc) returns

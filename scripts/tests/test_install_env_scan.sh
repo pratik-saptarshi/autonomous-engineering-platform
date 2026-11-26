@@ -1714,6 +1714,65 @@ check_out "k7d env ok" 'INSTALL-RE: env ok' "$OUT"
 check_no_out "k7d no shadowing SKIP" 'login startup is shadowed by' "$OUT"
 check "k7d block written" test "$(marker_count '>>>')" -eq 1
 
+# ================= #198 (K5): heredoc bodies and provably-dead branches are not sourcing =================
+
+note "#198: unit-level profile_sources_bashrc (a heredoc body or a provably-dead branch never counts as sourcing)"
+check "K5 quoted-heredoc body mention not detected" profile_not_detected $'cat <<\'EOF\'\n. ~/.bashrc\nEOF'
+check "K5 unquoted-heredoc body mention not detected" profile_not_detected $'cat <<EOF\n. ~/.bashrc\nEOF'
+check "K5 dash-heredoc body mention not detected (tab-indented terminator)" profile_not_detected $'cat <<-EOF\n\t. ~/.bashrc\n\tEOF'
+check "K5 double-quoted-delimiter heredoc body mention not detected" profile_not_detected $'cat <<"END"\nsource ~/.bashrc\nEND'
+check "K5 heredoc mention with a source after the terminator detected (positive control)" profile_detected $'cat <<\'EOF\'\n. ~/.bashrc\nEOF\n. ~/.bashrc'
+check "K5 heredoc with an unrelated body then a real source detected (positive control)" profile_detected $'cat <<EOF\nhello\nEOF\n[ -f ~/.bashrc ] && . ~/.bashrc'
+check "K5 two heredocs on one line both skipped" profile_not_detected $'cat <<A <<B\n. ~/.bashrc\nA\n. ~/.bashrc\nB'
+check "K5 here-string mention is not a heredoc (control)" profile_detected $'cat <<< hi\n. ~/.bashrc'
+check "K5 if false then-branch not detected" profile_not_detected 'if false; then . ~/.bashrc; fi'
+check "K5 multi-line if false then-branch not detected" profile_not_detected $'if false\nthen\n  . ~/.bashrc\nfi'
+check "K5 multi-line if false (then on the cond line) not detected" profile_not_detected $'if false; then\n  . ~/.bashrc\nfi'
+check "K5 false && source not detected" profile_not_detected 'false && . ~/.bashrc'
+check "K5 [ 0 = 1 ] && source not detected" profile_not_detected '[ 0 = 1 ] && . ~/.bashrc'
+check "K5 [ 1 = 0 ] && source not detected" profile_not_detected '[ 1 = 0 ] && . ~/.bashrc'
+check "K5 true || source not detected" profile_not_detected 'true || . ~/.bashrc'
+check "K5 dead chain through a middle && not detected" profile_not_detected 'false && : && . ~/.bashrc'
+check "K5 nested live if inside a dead if not detected" profile_not_detected 'if false; then if true; then . ~/.bashrc; fi; fi'
+check "K5 else branch of if true not detected" profile_not_detected 'if true; then :; else . ~/.bashrc; fi'
+check "K5 else branch of if false detected" profile_detected 'if false; then :; else . ~/.bashrc; fi'
+check "K5 then branch of if true detected" profile_detected 'if true; then . ~/.bashrc; fi'
+check "K5 unknown condition detected (control)" profile_detected 'if [ -f ~/.bashrc ]; then . ~/.bashrc; fi'
+check "K5 source after a closed dead if detected" profile_detected 'if false; then :; fi; . ~/.bashrc'
+check "K5 source after a closed dead multi-line if detected" profile_detected $'if false\nthen\n  :\nfi\n. ~/.bashrc'
+check "K5 true && source detected (control)" profile_detected 'true && . ~/.bashrc'
+check "K5 false || source detected (control)" profile_detected 'false || . ~/.bashrc'
+check "K5 dead && then || fallback detected" profile_detected 'false && : || . ~/.bashrc'
+check "K5 false ; source detected (a ; ends the dead chain)" profile_detected 'false; . ~/.bashrc'
+check "K5 elif keeps the branch live (conservative control)" profile_detected $'if false; then :\nelif [ -f ~/.x ]; then\n  . ~/.bashrc\nfi'
+
+note "#198: a .bash_profile whose only .bashrc source is a heredoc mention or a dead branch is shadowing (end to end)"
+new_home k5a
+printf 'cat <<'"'"'EOF'"'"'\n. "$HOME/.bashrc"\nEOF\n' >"$FH/.bash_profile"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+run_env install_env_block
+check "k5a rc 0" test "$RC" -eq 0
+check_out "k5a shadowing SKIP line" 'login startup is shadowed by' "$OUT"
+check_no_out "k5a no opaque env ok" 'INSTALL-RE: env ok' "$OUT"
+check "k5a no block composed into an unreachable file" test "$(marker_count '>>>')" -eq 0
+
+new_home k5b
+printf 'if false; then\n  . "$HOME/.bashrc"\nfi\n' >"$FH/.bash_profile"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+run_env install_env_block
+check "k5b rc 0" test "$RC" -eq 0
+check_out "k5b shadowing SKIP line" 'login startup is shadowed by' "$OUT"
+check "k5b no block composed into an unreachable file" test "$(marker_count '>>>')" -eq 0
+
+new_home k5c
+printf 'cat <<'"'"'EOF'"'"'\n. "$HOME/.bashrc"\nEOF\n[ -f "$HOME/.bashrc" ] && . "$HOME/.bashrc"\n' >"$FH/.bash_profile"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+run_env install_env_block
+check "k5c rc 0" test "$RC" -eq 0
+check_out "k5c env ok" 'INSTALL-RE: env ok' "$OUT"
+check_no_out "k5c no shadowing SKIP" 'login startup is shadowed by' "$OUT"
+check "k5c block written" test "$(marker_count '>>>')" -eq 1
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "test_install_env_scan: ALL PASS (sandbox $SB)"
