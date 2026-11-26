@@ -215,6 +215,27 @@ and paths are deliberately left ungated today:
   `gh auth status` check. It has expired and was never an
   unattended caller; named here for completeness.
 
+Environment knobs that move the fence itself:
+
+- `GHG_BYPASS=1` — skips the caps for that call (see
+  [Bypass](#bypass)); the call is still ledgered as `bypass` and
+  counted in `ghg status` and the drift check. An operator
+  decision, never an agent default.
+- `GHG_LIMITS_JSON` — JSON object overriding the per-bucket caps,
+  e.g. `{"search": [[60, 5]]}` (bucket -> `[window_seconds, cap]`
+  pairs). It is merged over the built-in defaults, so buckets it
+  does not mention keep their default caps. It **fails closed**:
+  malformed JSON, a non-object root, an empty window list
+  (`{"core": []}`), or any window or cap that is not a positive
+  integer (zero, negative, boolean) rejects the *entire* override,
+  prints a warning on stderr naming the reason, and applies the
+  built-in defaults. An override can tighten a cap; a broken one
+  can never remove it.
+- `GHG_REAL_GH` — path of the real `gh` that `ghg` and the shim
+  exec (default `/usr/bin/gh`). Whoever controls it controls what
+  actually runs, so it is a trust boundary: set it only to a
+  binary you trust (the test suite points it at a stub).
+
 The two standing unattended callers found by the adoption census
 — the DAP build crons `dap-build-check-3h` and `dap-nightly-build`
 — are **not** in this fence: their conversions to `ghg run` (with

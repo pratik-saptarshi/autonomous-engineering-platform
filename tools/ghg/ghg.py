@@ -438,18 +438,54 @@ class GateBroken(Exception):
     """
 
 
+def _positive_int(x):
+    return isinstance(x, int) and not isinstance(x, bool) and x > 0
+
+
+def _parse_limits_override(raw):
+    """Validate GHG_LIMITS_JSON; return (bucket -> pairs) or raise ValueError."""
+    parsed = json.loads(raw)
+    if not isinstance(parsed, dict):
+        raise ValueError("root must be an object, got %s"
+                         % type(parsed).__name__)
+    out = {}
+    for bucket, pairs in parsed.items():
+        if not isinstance(pairs, list) or not pairs:
+            raise ValueError("bucket %r needs a non-empty list of"
+                             " [window_s, cap] pairs" % bucket)
+        checked = []
+        for pair in pairs:
+            if not (isinstance(pair, (list, tuple)) and len(pair) == 2
+                    and _positive_int(pair[0]) and _positive_int(pair[1])):
+                raise ValueError("bucket %r pair %r is not two positive"
+                                 " integers" % (bucket, pair))
+            checked.append((pair[0], pair[1]))
+        out[str(bucket)] = checked
+    return out
+
+
 def load_limits():
-    """Bucket -> [(window_s, cap)], overridable via GHG_LIMITS_JSON."""
+    """Bucket -> [(window_s, cap)], overridable via GHG_LIMITS_JSON.
+
+    The override is merged over a fresh copy of DEFAULT_LIMITS, so a
+    partial override keeps the default caps of unmentioned buckets. An
+    invalid override (malformed JSON, non-object root, empty or
+    malformed window list, non-positive or boolean numbers) is rejected
+    atomically with a stderr warning and the defaults apply: a broken
+    override must never widen or remove a cap.
+    """
+    override = {}
     raw = os.environ.get("GHG_LIMITS_JSON")
     if raw:
         try:
-            parsed = json.loads(raw)
-            return {str(bucket): [(int(w), int(c)) for w, c in pairs]
-                    for bucket, pairs in parsed.items()}
-        except (ValueError, TypeError):
-            pass  # a broken override must not widen the caps
-    return {bucket: list(pairs)
-            for bucket, pairs in DEFAULT_LIMITS.items()}
+            override = _parse_limits_override(raw)
+        except ValueError as exc:  # JSONDecodeError is a ValueError
+            print("ghg: WARNING ignoring GHG_LIMITS_JSON (%s);"
+                  " using default limits" % exc, file=sys.stderr)
+    limits = {bucket: list(pairs)
+              for bucket, pairs in DEFAULT_LIMITS.items()}
+    limits.update(override)
+    return limits
 
 
 # ------------------------------------------------------------ classify

@@ -8,6 +8,7 @@ injected explicitly (`now=`) wherever a window boundary is the point.
 """
 
 import importlib.util
+import io
 import json
 import os
 import sqlite3
@@ -484,6 +485,92 @@ class TestDefaults(CoreTestCase):
         self.assertEqual(ledger.limits["search"], [(60, 20)])
         self.assertEqual(ledger.limits["code_search"], [(60, 9)])
         self.assertEqual(ledger.limits["content"],
+                         [(60, 40), (3600, 300)])
+
+
+class TestLoadLimits(CoreTestCase):
+    """Issue #203: a bad GHG_LIMITS_JSON must fail closed, atomically."""
+
+    def load(self, raw):
+        os.environ["GHG_LIMITS_JSON"] = raw
+        buf = io.StringIO()
+        saved = sys.stderr
+        sys.stderr = buf
+        try:
+            limits = ghg.load_limits()
+        finally:
+            sys.stderr = saved
+        return limits, buf.getvalue()
+
+    def assert_defaults(self, limits):
+        self.assertEqual(limits, {b: list(p) for b, p
+                                  in ghg.DEFAULT_LIMITS.items()})
+
+    def test_empty_window_list_rejected_and_reserve_refused(self):
+        limits, err = self.load(json.dumps({"core": []}))
+        self.assert_defaults(limits)
+        self.assertIn("GHG_LIMITS_JSON", err)
+        ledger = self.make_ledger({"core": []})
+        self.assertIsNone(
+            ledger.reserve_all([("core", 10000)], "tester", "api x"))
+
+    def test_zero_cap_rejected(self):
+        limits, err = self.load(json.dumps({"core": [[3600, 0]]}))
+        self.assert_defaults(limits)
+        self.assertIn("GHG_LIMITS_JSON", err)
+
+    def test_negative_window_rejected(self):
+        limits, err = self.load(json.dumps({"core": [[-60, 5]]}))
+        self.assert_defaults(limits)
+        self.assertIn("GHG_LIMITS_JSON", err)
+
+    def test_bool_values_rejected(self):
+        for raw in ({"core": [[True, 5]]}, {"core": [[60, True]]}):
+            limits, err = self.load(json.dumps(raw))
+            self.assert_defaults(limits)
+            self.assertIn("GHG_LIMITS_JSON", err)
+
+    def test_malformed_item_shapes_rejected(self):
+        for raw in ('{"core": [[60]]}', '{"core": [[60, 5, 1]]}',
+                    '{"core": [60, 5]}', '{"core": 5}',
+                    '{"core": [["a", 5]]}', '{"core": [[1.5, 5]]}',
+                    '{not json'):
+            limits, err = self.load(raw)
+            self.assert_defaults(limits)
+            self.assertIn("GHG_LIMITS_JSON", err, raw)
+
+    def test_non_dict_root_rejected(self):
+        for raw in ("[]", "5", '"x"', "null"):
+            limits, err = self.load(raw)
+            self.assert_defaults(limits)
+            self.assertIn("GHG_LIMITS_JSON", err, raw)
+
+    def test_one_bad_bucket_rejects_whole_override(self):
+        limits, _ = self.load(json.dumps(
+            {"search": [[60, 5]], "core": []}))
+        self.assert_defaults(limits)  # atomic: search not applied either
+
+    def test_partial_override_preserves_unmentioned_buckets(self):
+        limits, err = self.load(json.dumps({"search": [[60, 5]]}))
+        self.assertEqual(err, "")
+        self.assertEqual(limits["search"], [(60, 5)])
+        for bucket in ("core", "graphql", "mutations"):
+            if bucket in ghg.DEFAULT_LIMITS:
+                self.assertEqual(limits[bucket],
+                                 ghg.DEFAULT_LIMITS[bucket])
+        self.assertEqual(limits["core"], [(3600, 3500)])
+        self.assertEqual(limits["graphql"], [(3600, 3500)])
+        self.assertEqual(set(limits), set(ghg.DEFAULT_LIMITS))
+
+    def test_valid_override_applied_and_defaults_not_mutated(self):
+        before = {b: list(p) for b, p in ghg.DEFAULT_LIMITS.items()}
+        limits, err = self.load(json.dumps(
+            {"content": [[30, 2], [600, 9]]}))
+        self.assertEqual(err, "")
+        self.assertEqual(limits["content"], [(30, 2), (600, 9)])
+        limits["content"].append((1, 1))
+        self.assertEqual(ghg.DEFAULT_LIMITS, before)
+        self.assertEqual(ghg.DEFAULT_LIMITS["content"],
                          [(60, 40), (3600, 300)])
 
 
