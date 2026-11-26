@@ -90,9 +90,11 @@ for tok in "$@"; do
   esac
 done
 safe_argv=${safe_argv# }
-(umask 077
- printf '%s ghg.py failed py_compile; fallback verb=%s argv=%s\n' \
-  "$(date +%s)" "${1:-}" "$safe_argv" >>"$STATE_DIR/fallback.log" 2>/dev/null) || true
+(
+  umask 077
+  printf '%s ghg.py failed py_compile; fallback verb=%s argv=%s\n' \
+    "$(date +%s)" "${1:-}" "$safe_argv" >>"$STATE_DIR/fallback.log" 2>/dev/null
+) || true
 chmod 600 "$STATE_DIR/fallback.log" 2>/dev/null || true
 
 verb=${1:-}
