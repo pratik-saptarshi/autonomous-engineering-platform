@@ -121,13 +121,28 @@ class FormatTests(unittest.TestCase):
         self.assertNotIn("truncated", body.lower())
 
     def test_hostile_report_text_is_neutralised(self):
-        # A skill path can carry an @mention or a fake marker; the
-        # comment must not notify anyone or forge the upsert marker.
+        # A skill path can carry an @mention, HTML tags, markdown links,
+        # or a fake marker; none must render or forge the upsert marker.
         report = ("- skills/@octocat/run.sh\n"
-                  "- <!-- aep:policy-delta -->\n")
+                  "- <!-- aep:policy-delta -->\n"
+                  "- <img src=x onerror=alert(1)> <script>alert(1)</script>\n"
+                  "- skills/[click](https://evil.example) -->\n")
         body = self.fmt(report=report)
         self.assertNotIn("@octocat", body)
+        self.assertNotIn("<img ", body)
+        self.assertNotIn("<script>", body)
+        self.assertNotIn("[click](https://evil.example)", body)
         self.assertEqual(body.count(MARKER), 1)
+
+    def test_truncation_closes_tilde_and_four_backtick_fences(self):
+        big_tilde = "~~~\n" + ("x" * 79 + "\n") * 3000
+        body = self.fmt(report=big_tilde)
+        self.assertLess(len(body.encode("utf-8")), 65000)
+        self.assertIn("\n~~~\n", body)
+        big_four = "````\n" + ("x" * 79 + "\n") * 3000
+        body4 = self.fmt(report=big_four)
+        self.assertLess(len(body4.encode("utf-8")), 65000)
+        self.assertIn("\n````\n", body4)
 
     def test_rejects_bad_metadata(self):
         m = self.m
@@ -168,6 +183,8 @@ class UpsertSelectionTests(unittest.TestCase):
         comments = [
             self.comment(7, "mallory", f"{MARKER}\nfake", "User"),
             self.comment(8, "other-app[bot]", f"{MARKER}\nfake"),
+            self.comment(9, BOT, f"{MARKER}\nfake", "User"),
+            self.comment(10, BOT, f"quoted:\n{MARKER}\nmid-body", "Bot"),
         ]
         self.assertIsNone(self.m.select_upsert_target(comments))
 
@@ -350,6 +367,8 @@ class WorkflowWiringTests(unittest.TestCase):
                    len(self.lines))
         step = "\n".join(self.lines[start:end])
         self.assertIn("always()", step)
+        self.assertIn("!cancelled()", step)
+        self.assertIn("live_head=", step)
         self.assertIn(
             "github.event.pull_request.head.repo.full_name"
             " == github.repository", step)

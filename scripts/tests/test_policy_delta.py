@@ -4813,6 +4813,7 @@ class BoundaryLayerTests(SyntheticRepo):
             "exec": '\nexec("DEFAULT_LIMITS.clear()")\n',
             "globals-call": '\nglobals()["DEFAULT_LIMITS"].clear()\n',
             "vars-call": '\nvars()["DEFAULT_LIMITS"].clear()\n',
+            "vars-mutating-set": '\nvars()["_MUTATING_METHODS"].add("GET")\n',
             "locals-module": '\nlocals()["DEFAULT_LIMITS"].clear()\n',
             "aliased-globals": '\ng = globals\ng()["DEFAULT_LIMITS"].clear()\n',
             "aliased-eval": '\n_e = eval\n_e("1")\n',
@@ -4846,10 +4847,53 @@ class BoundaryLayerTests(SyntheticRepo):
                              'sys._getframe().f_globals["DEFAULT_LIMITS"].clear()\n',
             "func-globals": '\ndef _f():\n    pass\n'
                             '_f.__globals__["DEFAULT_LIMITS"].clear()\n',
+            "sysmodules-attr": '\nimport sys\n'
+                               'sys.modules[__name__].DEFAULT_LIMITS.clear()\n',
+            "sysmodules-rebind": '\nimport sys\n'
+                                 'sys.modules[__name__].DEFAULT_LIMITS = {}\n',
+            "self-import-ghg": '\nimport ghg\nghg.DEFAULT_LIMITS.clear()\n',
+            "import-main": '\nimport __main__\n__main__.DEFAULT_LIMITS = {}\n',
+            "operator-attrgetter": '\nimport operator, sys\n'
+                                   'operator.attrgetter("DEFAULT_LIMITS")'
+                                   '(sys.modules[__name__]).clear()\n',
+            "operator-methodcaller": '\nimport operator, builtins\n'
+                                     'operator.methodcaller("exec", "pass")(builtins)\n',
+            "dict-get-default": '\n{}.get("a", DEFAULT_LIMITS).clear()\n',
+            "max-default": '\nmax([], default=DEFAULT_LIMITS).clear()\n',
+            "augassign-list": '\n_l = []\n_l += [DEFAULT_LIMITS]\n_l[0].clear()\n',
+            "augassign-dict": '\n_d = {}\n_d |= {"t": DEFAULT_LIMITS}\n_d["t"].clear()\n',
+            "dunder-getitem": '\nclass _Box:\n'
+                              '    def __getitem__(self, k):\n'
+                              '        return DEFAULT_LIMITS\n'
+                              '_Box()[0].clear()\n',
+            "dunder-descriptor": '\nclass _Desc:\n'
+                                 '    def __get__(self, obj, tp=None):\n'
+                                 '        return DEFAULT_LIMITS\n',
+            "generator-yield": '\ndef _gen():\n    yield DEFAULT_LIMITS\n',
+            "cprofile-run": '\nimport cProfile\n'
+                            'cProfile.run("DEFAULT_LIMITS.clear()")\n',
         }
         for label, snippet in cases.items():
             with self.subTest(form=label):
                 self.refuses(snippet, label)
+
+    def test_rebinding_without_lineno_node_exits_2_cleanly(self):
+        cases = {
+            "with-as-table": '\nimport contextlib\n'
+                             'with contextlib.nullcontext(1) as DEFAULT_LIMITS:\n'
+                             '    pass\n',
+            "comp-target-table": '\n_x = [1 for DEFAULT_LIMITS in range(2)]\n',
+        }
+        if sys.version_info >= (3, 12):
+            cases["pep695-type-alias"] = '\ntype DEFAULT_LIMITS = int\n'
+            cases["pep695-type-param"] = '\ndef _f[DEFAULT_LIMITS]():\n    pass\n'
+        for label, snippet in cases.items():
+            with self.subTest(form=label):
+                self.write("tools/ghg/ghg.py", GHG_PY + snippet)
+                head = self.commit(label)
+                r = self.run_tool("diff", self.base, head)
+                self.assertEqual(r.returncode, 2, f"{label}: {r.stdout}{r.stderr}")
+                self.assertNotIn("Traceback", r.stderr, label)
 
     def test_layer1_precision_controls_pass(self):
         cases = {
@@ -5016,10 +5060,12 @@ class BoundaryLayerTests(SyntheticRepo):
         for gone in ("getattr", "setattr", "eval", "globals",
                      "builtin-constructor", "dict()/list()"):
             self.assertNotIn(gone, text)
+        self.assertIn("not a sandbox", text)
         self.assertIn("ctypes", text)
         self.assertIn("bytecode", text)
         scope = " | ".join(d["model_scope"])
         self.assertIn("dynamic indirection", scope)
+        self.assertIn("not a Python sandbox", scope)
 
 
 class SkillsTierTests(SyntheticRepo):

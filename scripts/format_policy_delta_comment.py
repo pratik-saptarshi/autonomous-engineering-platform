@@ -74,10 +74,13 @@ def outcome_from_rc(rc):
 def _neutralise(text):
     """Defang report text before it is embedded in a PR comment: a
     skill path such as ``skills/@octocat/x`` must not notify anyone,
-    and a ``<!-- aep:policy-delta`` in a path must not forge the
-    upsert marker."""
+    raw HTML tags/comments (including forged markers and ``-->``) must
+    not render, and markdown links must not inject phishing targets."""
     text = text.replace("@", "@" + _ZWSP)
-    return text.replace("<!--", "&lt;!--")
+    text = re.sub(r"<(?=[A-Za-z/!?])", "&lt;", text)
+    text = text.replace("-->", "--&gt;")
+    text = re.sub(r"\[([^\]]*)\]\(", r"\\[\1\\](", text)
+    return text
 
 
 def _cut_utf8(text, limit):
@@ -94,9 +97,19 @@ def _cut_utf8(text, limit):
 
 
 def _close_open_fence(text):
-    fences = [ln for ln in text.splitlines()
-              if ln.lstrip().startswith("```")]
-    return text + ("\n```" if len(fences) % 2 else "")
+    open_char, open_len = None, 0
+    for ln in text.splitlines():
+        m = re.match(r"^\s*(`{3,}|~{3,})", ln)
+        if not m:
+            continue
+        token = m.group(1)
+        ch, n = token[0], len(token)
+        if open_char is None:
+            open_char, open_len = ch, n
+        elif ch == open_char and n >= open_len \
+                and not ln[m.end():].strip():
+            open_char, open_len = None, 0
+    return text + (f"\n{open_char * open_len}" if open_char else "")
 
 
 def _validate(head_sha, base_sha, run_url, outcome):
@@ -204,9 +217,10 @@ def select_upsert_target(comments):
         user = c.get("user")
         body = c.get("body")
         cid = c.get("id")
-        if not isinstance(user, dict) or user.get("login") != BOT_LOGIN:
+        if not isinstance(user, dict) or user.get("login") != BOT_LOGIN \
+                or user.get("type") != "Bot":
             continue
-        if not isinstance(body, str) or MARKER not in body:
+        if not isinstance(body, str) or not body.lstrip().startswith(MARKER):
             continue
         if not isinstance(cid, int) or isinstance(cid, bool):
             continue

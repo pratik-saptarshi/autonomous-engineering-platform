@@ -47,16 +47,17 @@ Model scope (what the differ sees):
     to a lookup rooted at one, to a container holding one, or to a
     local function returning one), as is passing a table to a
     function or class defined in the same file. Three further
-    boundaries are closed: dynamic indirection (eval/exec/globals/
-    vars/locals, direct or aliased or via builtins; frame and
+    boundaries are checked statically (best-effort AST enforcement;
+    not a Python sandbox): dynamic indirection (eval/exec/globals/
+    vars/locals, direct or aliased or via builtins; frame, module, and
     function-globals reflection; getattr/setattr/delattr on a table,
-    a module object, or a table's own name), builtin-constructor
-    shallow copies (dict(T), list(T.values()), copy.copy(T), ... share
-    the inner bucket lists, so mutating the copy's elements is
-    mutating the table), and a table handed to an imported or unknown
-    callable outside a small read-only allowlist (operator.delitem,
-    functools.partial, ...). What remains outside the model is named
-    in every report.
+    a module object, or a table's own name; stdlib exec helpers),
+    builtin-constructor shallow copies (dict(T), list(T.values()),
+    copy.copy(T), ... share the inner bucket lists, so mutating the
+    copy's elements is mutating the table), and a table handed to an
+    imported or unknown callable outside a small read-only allowlist
+    (operator.delitem, functools.partial, ...). What remains outside
+    the static model is named in every report.
   * .github/skills-sync-scope.txt -- the governed skill set, in the
     file's own three-section grammar: [skills] entries are grants (a
     skill entering scope is newly allowed surface, leaving is newly
@@ -130,7 +131,7 @@ SKILLS_ROOT = "skills"
 
 MODEL_SCOPE = [
     "scripts/policy.data deny-sets (pattern removed = newly allowed, added = newly denied)",
-    "tools/ghg/ghg.py DEFAULT_LIMITS caps and mutating-classification sets (runtime mutation of the modelled tables is refused, not diffed: direct, aliased, via builtin-constructor shallow copies, via external callables, or via dynamic indirection)",
+    "tools/ghg/ghg.py DEFAULT_LIMITS caps and mutating-classification sets (runtime mutation of the modelled tables is checked statically via AST and refused, not diffed: direct, aliased, via builtin-constructor shallow copies, via external callables, or via dynamic indirection; not a Python sandbox)",
     ".github/skills-sync-scope.txt sections: [skills] grants; [exclude-paths]/[exclude-content] exclusions (removal widens = newly allowed)",
     "skills/** tree grants, newly added executable surface classified separately, executable-bit changes on surviving files",
 ]
@@ -140,7 +141,7 @@ NOT_MODELLED = [
     "content changes to non-SKILL.md files in surviving skills (mode and type changes are modelled)",
     "renames within the skills tree (new path reported as an addition only)",
     "symlink retargets in the skills tree",
-    "mutation of ghg's modelled tables below the Python object model: C extensions, ctypes/memory-level access, bytecode or interpreter-internals reflection (code-object rewriting, tracing/debugger hooks), and import-time side effects (ghg.py is read statically, never executed)",
+    "mutation of ghg's modelled tables via arbitrary Python metaprogramming or reflection outside the checked AST spellings (static tripwire, not a sandbox), below the Python object model (C extensions, ctypes/memory-level access, bytecode or interpreter-internals reflection such as code-object rewriting or tracing hooks), or via import-time side effects (ghg.py is read statically, never executed)",
     "anything outside the four modelled artefacts",
 ]
 
@@ -624,9 +625,17 @@ def ghg_binding_census(tree):
     name_all_bound, name_import_map = _ghg_name_facts(tree)
 
     def refuse(name, node, form):
+        ln = getattr(node, "lineno", None)
+        if ln is None:
+            for attr in ("target", "optional_vars", "context_expr", "iter"):
+                sub = getattr(node, attr, None)
+                ln = getattr(sub, "lineno", None)
+                if ln is not None:
+                    break
+        where = f"line {ln}" if ln is not None else "unknown line"
         raise DifferError(
             f"{GHG_PY}: table {name} is rebound by {form} "
-            f"(line {node.lineno}) — the differ accepts only the "
+            f"({where}) — the differ accepts only the "
             "top-level literal/derivation declarations of the ghg "
             "tables and refuses every other binding form")
 
@@ -667,6 +676,17 @@ def ghg_binding_census(tree):
                               ast.ClassDef)):
             if node.name in protected:
                 refuse(node.name, node, "a def/class name")
+            for tp in getattr(node, "type_params", ()):
+                tp_name = getattr(tp, "name", None)
+                if tp_name in protected:
+                    refuse(tp_name, tp, "a type parameter")
+        elif isinstance(node, getattr(ast, "TypeAlias", ())):
+            if isinstance(node.name, ast.Name) and node.name.id in protected:
+                refuse(node.name.id, node, "a type alias")
+            for tp in getattr(node, "type_params", ()):
+                tp_name = getattr(tp, "name", None)
+                if tp_name in protected:
+                    refuse(tp_name, tp, "a type parameter")
         elif isinstance(node, (ast.Import, ast.ImportFrom)):
             for a in node.names:
                 bound = a.asname or a.name.split(".")[0]
@@ -1452,6 +1472,13 @@ def ghg_binding_census(tree):
                     # the call's result IS the table, not a method
                     # result computed on the receiver.
                     return True
+                if expr.func.attr in ("get", "setdefault", "pop") \
+                        and len(expr.args) >= 2 \
+                        and hands_over(expr.args[1]):
+                    return True
+                if any(kw.arg == "default" and hands_over(kw.value)
+                       for kw in expr.keywords):
+                    return True
                 expr = expr.func.value
             else:
                 break
@@ -1856,10 +1883,17 @@ def ghg_binding_census(tree):
             if _q in _COPY_FAMILY:
                 return _copy_shapes(v, _q)
             if isinstance(v.func, ast.Attribute):
+                a = v.func.attr
+                default_shapes = set()
+                if a in ("get", "setdefault", "pop") and len(v.args) >= 2:
+                    default_shapes |= _shapes(v.args[1])
+                for kw in v.keywords:
+                    if kw.arg == "default":
+                        default_shapes |= _shapes(kw.value)
                 recv = _shapes(v.func.value)
                 if not recv:
-                    return {"?"} if hands_over(v) else set()
-                a = v.func.attr
+                    return default_shapes or (
+                        {"?"} if hands_over(v) else set())
                 if a == "values":
                     return {"V" if k == "D" else "?" for k in recv}
                 if a == "items":
@@ -1869,7 +1903,7 @@ def ghg_binding_census(tree):
                 if a in ("get", "__getitem__", "setdefault", "pop"):
                     m = {"D": "L", "V": "?", "I": "?", "L": "F",
                          "F": "F", "?": "?"}
-                    return {m[k] for k in recv}
+                    return {m[k] for k in recv} | default_shapes
                 if a in ("copy", "__copy__"):
                     return recv
                 return {"?"}
@@ -1899,6 +1933,9 @@ def ghg_binding_census(tree):
                  "?": "?"}
             for ks in arg_shapes:
                 out |= {m[k] for k in ks}
+            for kw in call.keywords:
+                if kw.arg == "default":
+                    out |= _shapes(kw.value)
         elif q == "copy.copy":
             for ks in arg_shapes[:1]:
                 out |= ks
@@ -2627,6 +2664,15 @@ def ghg_binding_census(tree):
                     or value.id in lookup_kind_conflicts)
             elif isinstance(value, ast.Call):
                 _conflicted = _call_callee_view_conflicted(value)
+            _scalar_iter = False
+            if isinstance(node, (ast.For, ast.AsyncFor,
+                                 ast.comprehension)):
+                _val_shapes = _shapes(value)
+                if _val_shapes and _val_shapes <= {"L", "F"} \
+                        and not _conflicted:
+                    _scalar_iter = True
+                    for t in targets:
+                        weak.update(_bound_names(t))
             if isinstance(node, (ast.For, ast.AsyncFor,
                                  ast.comprehension)) \
                     and structural_source(value) \
@@ -2652,16 +2698,17 @@ def ghg_binding_census(tree):
                     elif src_attr == "keys":
                         weak.update(_bound_names(t))
             if hands_over(value):
-                for t in targets:
-                    for n in _bound_names(t):
-                        key = binding_key(node, n)
-                        if (key, n) not in watched:
-                            watched.add((key, n))
-                            changed = True
-                        if n not in weak \
-                                and (key, n) not in strong:
-                            strong.add((key, n))
-                            changed = True
+                if not _scalar_iter:
+                    for t in targets:
+                        for n in _bound_names(t):
+                            key = binding_key(node, n)
+                            if (key, n) not in watched:
+                                watched.add((key, n))
+                                changed = True
+                            if n not in weak \
+                                    and (key, n) not in strong:
+                                strong.add((key, n))
+                                changed = True
                 if _record_shapes(node, value, targets):
                     changed = True
     # Two capture channels are refused outright rather than tracked:
@@ -3153,17 +3200,28 @@ def _external_call_read_only(call, resolver):
     return False
 
 
+_EXEC_HELPER_MODULES = {
+    "cProfile", "profile", "pdb", "bdb", "code", "codeop",
+    "runpy", "trace", "timeit", "doctest",
+}
+_SELF_IMPORT_MODULES = {"ghg", "__main__"}
+_DUNDER_RETURN_METHODS = {
+    "__getitem__", "__getattr__", "__getattribute__", "__iter__",
+    "__get__", "__enter__", "__call__", "__next__",
+}
+
+
 def ghg_dynamic_sites(tree, hands_over, is_watched):
-    """[(lineno, description)] for dynamic indirection (Layer 1):
-    evaluating code by string, reaching the namespace
-    (globals()/vars()/locals(), frames, function globals), or
-    reading / writing attributes by name on a watched table, a module
-    object, or the name of a modelled table. Direct names, aliases of
-    the builtins (`g = globals`), and `builtins.NAME` spellings are
-    all refused: the namespace is the table's own owner, so any route
-    to it can rewrite the modelled power invisibly to a literal diff.
-    getattr(args, "actor", None) on an unrelated object is ordinary
-    code and stays accepted."""
+    """[(lineno, description)] for dynamic indirection (Layer 1) and
+    pure-Python escape channels: evaluating code by string, reaching the
+    namespace (globals()/vars()/locals(), frames, function globals,
+    module-attribute access to protected table names, self-imports,
+    stdlib exec helpers), reading/writing attributes by name on a
+    watched table/module/protected name, or laundering a watched table
+    through defaults, augmented assignments, generator yields, or dunder
+    protocol returns. Any access to _REFLECTIVE_ATTRS is refused
+    regardless of receiver. getattr(args, "actor", None) on an unrelated
+    object stays accepted."""
     sites = []
     all_bound, import_map = _ghg_name_facts(tree)
     protected = set(GHG_WATCH_NAMES)
@@ -3233,6 +3291,13 @@ def ghg_dynamic_sites(tree, hands_over, is_watched):
             if node.attr in _REFLECTIVE_ATTRS:
                 sites.append((node.lineno,
                               f"dynamic indirection (.{node.attr})"))
+            elif node.attr in protected:
+                # Reaching a modelled table via attribute access (e.g.
+                # sys.modules[__name__].DEFAULT_LIMITS, ghg.DEFAULT_LIMITS,
+                # __main__.DEFAULT_LIMITS, or any module/object alias).
+                sites.append((node.lineno,
+                              "dynamic indirection (attribute access "
+                              f".{node.attr})"))
             elif (node.attr in _DYNAMIC_BUILTINS
                   or node.attr in _ATTR_BUILTINS) \
                     and (module_ref(node.value, aliases)
@@ -3244,15 +3309,58 @@ def ghg_dynamic_sites(tree, hands_over, is_watched):
                 sites.append((node.lineno,
                               f"dynamic indirection (module."
                               f"{node.attr})"))
+        elif isinstance(node, ast.Import):
+            for a in node.names:
+                top = a.name.split(".")[0]
+                if top in _EXEC_HELPER_MODULES:
+                    sites.append((node.lineno,
+                                  "dynamic indirection (import of "
+                                  f"{a.name})"))
+                elif top in _SELF_IMPORT_MODULES:
+                    sites.append((node.lineno,
+                                  "dynamic indirection (self-import "
+                                  f"of {a.name})"))
         elif isinstance(node, ast.ImportFrom):
+            top = (node.module or "").split(".")[0]
             if node.module == "builtins":
                 for a in node.names:
                     if a.name in _DYNAMIC_BUILTINS or a.name == "*":
                         sites.append((node.lineno,
                                       "dynamic indirection (import "
                                       f"of builtins.{a.name})"))
+            elif top in _EXEC_HELPER_MODULES:
+                sites.append((node.lineno,
+                              "dynamic indirection (import from "
+                              f"{node.module})"))
+            elif top in _SELF_IMPORT_MODULES:
+                sites.append((node.lineno,
+                              "dynamic indirection (self-import from "
+                              f"{node.module})"))
+        elif isinstance(node, ast.AugAssign):
+            if hands_over(node.value):
+                sites.append((node.lineno,
+                              "watched table handed to augmented "
+                              "assignment"))
+        elif isinstance(node, (ast.Yield, ast.YieldFrom)):
+            if node.value is not None and hands_over(node.value):
+                sites.append((node.lineno,
+                              "watched table yielded from generator"))
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                and node.name in _DUNDER_RETURN_METHODS:
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Return) \
+                        and sub.value is not None \
+                        and hands_over(sub.value):
+                    sites.append((sub.lineno,
+                                  f"dunder method {node.name} returns "
+                                  "a watched table"))
         elif isinstance(node, ast.Call):
             q = _qualified_callee(node.func, all_bound, import_map)
+            if q in ("operator.attrgetter", "operator.methodcaller",
+                     "importlib.reload"):
+                sites.append((node.lineno,
+                              f"dynamic indirection ({q})"))
+                continue
             if q is None or not q.startswith("builtins:"):
                 continue
             name = q[len("builtins:"):]
@@ -3742,6 +3850,10 @@ def main(argv=None):
         return 1
     except DifferError as e:
         print(f"check_policy_delta: error: {e}", file=sys.stderr)
+        return 2
+    except Exception as e:
+        print(f"check_policy_delta: internal error: "
+              f"{type(e).__name__}: {e}", file=sys.stderr)
         return 2
 
 
