@@ -67,14 +67,17 @@ jobs:
           RUN_ID: ${{ github.event.workflow_run.id }}
           HEAD_SHA: ${{ github.event.workflow_run.pull_requests[0].head.sha }}
         run: |
-          mkdir -p report
+          # Extract outside the checkout: the artifact is PR-influenced
+          # and must never be able to overwrite a trusted script.
+          mkdir -p "$RUNNER_TEMP/policy-report"
           gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" \
-            --name "policy-delta-$HEAD_SHA" --dir report
+            --name "policy-delta-$HEAD_SHA" \
+            --dir "$RUNNER_TEMP/policy-report"
       - name: Check the report artifact is usable
         id: artifact
         if: steps.trusted.outputs.ok == 'true'
         run: |
-          if [ -s report/policy-delta.md ]; then
+          if [ -s "$RUNNER_TEMP/policy-report/policy-delta.md" ]; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
             echo "ok=false" >> "$GITHUB_OUTPUT"
@@ -91,8 +94,9 @@ jobs:
         run: |
           # The artifact is untrusted data: only files with the exact
           # expected names are read, and the metadata is validated.
-          base_sha="$(cat report/base-sha.txt 2>/dev/null || true)"
-          ack_rc="$(cat report/ack-rc.txt 2>/dev/null || true)"
+          report_dir="$RUNNER_TEMP/policy-report"
+          base_sha="$(cat "$report_dir/base-sha.txt" 2>/dev/null || true)"
+          ack_rc="$(cat "$report_dir/ack-rc.txt" 2>/dev/null || true)"
           case "$base_sha" in
             ''|*[!0-9a-f]*) echo "bad base SHA in artifact; skipping." >&2; exit 0 ;;
           esac
@@ -105,7 +109,7 @@ jobs:
             exit 0
           fi
           python3 scripts/format_policy_delta_comment.py format \
-            --report report/policy-delta.md \
+            --report "$RUNNER_TEMP/policy-report/policy-delta.md" \
             --head-sha "$HEAD_SHA" --base-sha "$base_sha" \
             --run-url "$RUN_URL" --ack-rc "$ack_rc" \
             --output policy-delta-comment.md
