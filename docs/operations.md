@@ -29,6 +29,18 @@ If the daemon is down, restart it with the nohup command above. A bare MCP spawn
 
 A cron job (`neurostrata-watchdog`, every 2 h) runs `~/workspace/neurostrata/bin/watchdog-backup.sh`: it revives a dead daemon, checksums the database, and only when the checksum changed it takes a verified copy (SIGTERM for a checkpoint-consistent copy, sha256-verified) and uploads it to Google Drive (`Musebot-Astro/database`). The last checksum lives in `~/workspace/neurostrata/.last-db-sha256`; run output goes to `~/workspace/neurostrata/watchdog.log`.
 
+### Deploying the canonical watchdog
+
+The canonical watchdog is `ops/bin/watchdog-backup.sh`. The script on the VM can fall behind it, so check before you trust either. From a checkout of this repo on the VM:
+
+```bash
+ops/bin/deploy-watchdog.sh --check     # exit 0 only when the deployed script matches ops/
+ops/bin/deploy-watchdog.sh --dry-run   # show what a deploy would do
+ops/bin/deploy-watchdog.sh --apply     # test, back up, deploy atomically, write a receipt
+```
+
+`--apply` runs `bash -n` and the behavioral suite first, saves a drifted target as `watchdog-backup.sh.bak.<UTC timestamp>` for rollback, and writes `.watchdog-deploy-receipt.json` beside the target with the UTC time, the source commit, and the SHA-256. The target defaults to `~/workspace/neurostrata/bin/watchdog-backup.sh` and can be changed with `DEPLOY_TARGET`. Details are in `ops/README.md`, section "Deployment".
+
 ### Reference vs VM adaptation
 
 The repo carries the portable reference (`scripts/watchdog-backup.sh`); the VM runs an adaptation of it. The lifecycle now lives in both: change detection before any stop/restart decision, no stop when the DB is unchanged, restart-if-unexpectedly-down, restart-after-backup with a 60 s health poll, and an EXIT trap that restarts the daemon after any stop. "Down is intentional" is the reference's portable `WATCHDOG_LEAVE_DOWN_MARKER` file check.

@@ -64,12 +64,36 @@ anything in this directory until it lands and is re-validated.
 
 ## Deployment
 
-`ops/` → live deployment **remains manual** until a deploy task
-exists. This plan provides detection (the gated drift check, Task 10,
-NOT created by this PR) and the live → `ops/` backport direction
-only. Nothing in this PR deploys, and nothing here claims `ops/` is
-deployed. Until a deploy step runs, the live script and `ops/` can
-drift apart; the drift check, when enabled, is what catches that.
+`ops/bin/deploy-watchdog.sh` is the deployment process. The source is always
+`ops/bin/watchdog-backup.sh`, and the target is `DEPLOY_TARGET` (default
+`~/workspace/neurostrata/bin/watchdog-backup.sh`). Running it is still a
+manual operator act. Nothing in CI or in a cron deploys, and nothing in this
+directory claims the live script matches `ops/` until `--check` says so.
+
+```bash
+ops/bin/deploy-watchdog.sh --check      # SHA-256 drift check, exit 0 only when in sync
+ops/bin/deploy-watchdog.sh --dry-run    # show what --apply would do, write nothing
+ops/bin/deploy-watchdog.sh --apply      # bash -n, behavioral suite, backup, atomic deploy, receipt
+```
+
+- `--check` exits 1 on drift and when the target is missing, and prints both
+  hashes. Run it on the host before trusting any claim about live behavior.
+- `--apply` runs `bash -n` and `ops/tests/test_watchdog_ops.sh` first and
+  aborts on a failure. `--skip-tests` skips the suite and prints a warning.
+  The suite needs Linux with `/proc` and PID namespaces.
+- A drifted target is saved as `<target>.bak.<UTC timestamp>` before it is
+  replaced. To roll back, copy that file over the target.
+- The new file is staged beside the target, set to mode 755, hash-verified,
+  and moved into place with `mv`. A watchdog run in progress keeps reading
+  its old inode, so a deploy never corrupts a running script.
+- `.watchdog-deploy-receipt.json` is written beside the target (override with
+  `DEPLOY_RECEIPT`). It records the UTC time, the git commit of the source,
+  whether the source file had uncommitted changes, the SHA-256, the target,
+  and the backup path.
+- An in-sync target is a no-op, so running `--apply` twice is safe.
+
+The deployed watchdog governs runtime, so after a deploy run
+`ops/bin/deploy-watchdog.sh --check` once more and keep the receipt.
 
 ## Contents
 
@@ -78,6 +102,8 @@ drift apart; the drift check, when enabled, is what catches that.
 | `ops/bin/watchdog-backup.sh` | Canonical watchdog (live base + 5 documented deltas + reformat) |
 | `ops/bin/WATCHDOG-DELTAS.md` | Delta table: header rewrite, dead-code removal, definition move, shellcheck fixes + reformat, stop-failure exit 1 |
 | `ops/tests/test_watchdog_ops.sh` | Behavioral test, per daemon state, with PID-namespace isolation guard |
+| `ops/bin/deploy-watchdog.sh` | Deploys the canonical watchdog to the live path: `--check` drift, `--dry-run`, `--apply` with backup and receipt |
+| `ops/tests/test_deploy_watchdog.sh` | Test for the deploy script, run against a throwaway fixture repo and target |
 | `ops/bin/idle-reaper.sh` | Retired standalone reaper, preserved with an in-file retirement banner |
 | `ops/bin/RETIRED.md` | Retirement evidence: standalone reaper retired, idle-stop behavior absorbed into the watchdog |
 | `ops/crons/watchdog-cron-record.md` | Dated scheduler record, derived from the live cron body only |
