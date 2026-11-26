@@ -9,6 +9,7 @@ or defeat a check.
 """
 
 import argparse
+import hashlib
 import html
 import re
 import sys
@@ -362,6 +363,142 @@ MUTATIONS = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Ops and docs truth checks (file based).
+#
+# The checks above read the HTML design documents. The checks below read the
+# repo's live ops files and Markdown docs, so a doc that drifts from the script
+# it describes, or that repeats a claim already disproved, fails CI. Each check
+# takes a {relative path: text} mapping so the self-test can mutate it.
+# ---------------------------------------------------------------------------
+NUMBER_WORDS = {
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+}
+WATCHDOG = "ops/bin/watchdog-backup.sh"
+WATCHDOG_DELTAS = "ops/bin/WATCHDOG-DELTAS.md"
+OPS_README = "ops/README.md"
+OPS_FILES = (WATCHDOG, WATCHDOG_DELTAS, OPS_README)
+# Directories whose Markdown is not live documentation: byte-pinned vendored
+# snapshots and dated plan archives that quote the claims they replaced.
+LIVE_DOC_SKIP = ("reference", "docs/plans", "docs/superpowers", "node_modules", ".git")
+LIVE_DOC_SUFFIXES = (".md", ".html")
+
+
+def is_live_doc(rel):
+    if not rel.endswith(LIVE_DOC_SUFFIXES):
+        return False
+    return not any(rel == skip or rel.startswith(skip + "/") for skip in LIVE_DOC_SKIP)
+
+
+def load_files(root=ROOT):
+    """Return {relative path: text} for the ops files and every live doc."""
+    files = {}
+    for rel in OPS_FILES:
+        path = root / rel
+        if path.exists():
+            files[rel] = path.read_bytes().decode("utf-8")
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or path.suffix not in LIVE_DOC_SUFFIXES:
+            continue
+        rel = path.relative_to(root).as_posix()
+        if is_live_doc(rel):
+            files[rel] = path.read_bytes().decode("utf-8")
+    return files
+
+
+def sha256_text(text):
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def check_watchdog_deltas(files, errors):
+    """The delta record must describe the watchdog file that is actually there."""
+    name = "OPS-DELTAS"
+    for rel in OPS_FILES:
+        if rel not in files:
+            add(errors, name, f"missing file {rel}")
+            return
+    script = files[WATCHDOG]
+    deltas = files[WATCHDOG_DELTAS]
+    current = re.search(
+        r"Current sha256[^`\n]*`([0-9a-f]{64})`\s*\((\d+) lines", deltas
+    )
+    if not current:
+        add(errors, name, "no 'Current sha256 ... (N lines' record in WATCHDOG-DELTAS.md")
+    else:
+        if current.group(1) != sha256_text(script):
+            add(errors, name, "recorded current sha256 does not match ops/bin/watchdog-backup.sh")
+        if int(current.group(2)) != script.count("\n"):
+            add(errors, name, "recorded line count does not match ops/bin/watchdog-backup.sh")
+    letters = re.findall(r"^## Delta ([A-Z])\b", deltas, re.M)
+    count = re.search(r"Delta count: (\w+) \(", deltas)
+    if not count or NUMBER_WORDS.get(count.group(1).lower()) != len(letters):
+        add(errors, name, f"'Delta count' line does not match the {len(letters)} '## Delta' sections")
+    readme = files[OPS_README]
+    exactly = re.search(r"exactly (\w+) documented deltas", readme)
+    if not exactly or NUMBER_WORDS.get(exactly.group(1).lower()) != len(letters):
+        add(errors, name, f"ops/README.md 'exactly N documented deltas' does not match {len(letters)}")
+    table = re.search(r"live base \+ (\d+) documented deltas", readme)
+    if not table or int(table.group(1)) != len(letters):
+        add(errors, name, f"ops/README.md contents table delta count does not match {len(letters)}")
+
+
+FILE_CHECKS = [
+    ("OPS-DELTAS", check_watchdog_deltas),
+]
+
+# Each mutation is (file, old, new) and must trip the named check.
+FILE_MUTATIONS = {
+    "OPS-DELTAS": [
+        [(OPS_README, "exactly five documented deltas", "exactly four documented deltas")],
+        [(WATCHDOG_DELTAS, "Delta count: five", "Delta count: four")],
+        [(WATCHDOG, "set -euo pipefail", "set -euo pipefail\n# drift")],
+    ],
+}
+
+
+def run_file_checks(files):
+    errors = []
+    for _name, fn in FILE_CHECKS:
+        fn(files, errors)
+    return errors
+
+
+def file_self_test():
+    """Baseline must be clean, and every mutation must trip its check."""
+    ok = True
+    files = load_files()
+    baseline = run_file_checks(files)
+    if baseline:
+        print("self-test: ops/docs files are not clean; cannot run file mutations")
+        for error in baseline:
+            print(" -", error)
+        return False
+    for check, mutations in FILE_MUTATIONS.items():
+        for replacements in mutations:
+            mutated = dict(files)
+            for rel, old, new in replacements:
+                if old not in mutated.get(rel, ""):
+                    print(f"self-test: mutation token missing for {check} in {rel}: {old!r}")
+                    ok = False
+                    break
+                mutated[rel] = mutated[rel].replace(old, new, 1)
+            else:
+                errors = run_file_checks(mutated)
+                if not any(error.startswith(check + ":") for error in errors):
+                    print(f"self-test: file mutation did not trip {check}: {replacements[0][1]!r}")
+                    ok = False
+    return ok
+
+
 def self_test():
     """Test primitives and the negative mutation corpus."""
     sample = """
@@ -412,6 +549,8 @@ def self_test():
             if not any(error.startswith(check + ":") for error in errors):
                 print(f"self-test: mutation did not trip {check}")
                 ok = False
+    if not file_self_test():
+        ok = False
     if ok:
         print("self-test: OK")
     return 0 if ok else 1
@@ -430,7 +569,7 @@ def main():
         for path in missing:
             print(" -", path)
         return 2
-    errors = run_check(docs)
+    errors = run_check(docs) + run_file_checks(load_files())
     if errors:
         print(f"{len(errors)} design invariant violation(s):")
         for error in errors:

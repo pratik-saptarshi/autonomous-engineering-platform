@@ -4,11 +4,15 @@ Canonical watchdog source: `~/workspace/neurostrata/bin/watchdog-backup.sh`
 (live script, on-demand model, Oct 28 patch).
 
 - Live sha256: `bb0754cc8c29a5e42599c6a93ff89cee72ceaadc07aa3467517e79729bf0cf86`
-  (332 lines, verified 2026-11-04 at build start; re-verified unchanged at build end)
-- New sha256: `f3cdd2bc533a986bee94d8718e3a096633282d394e33c26887fa99787ce03894`
-  (333 lines, after fix round 2 — Delta D; prior three-delta build was
-  `1598bffb1d3bed8d12b7bfcdcb343634254e261e52b5386f213476d72aaec9ad`,
-  331 lines)
+  (332 lines, verified 2026-11-04 at build start, re-verified unchanged at build end)
+- Delta D build sha256: `f3cdd2bc533a986bee94d8718e3a096633282d394e33c26887fa99787ce03894`
+  (333 lines, after fix round 2, landed in PR #95 as commit `6f93208e`).
+  The prior three-delta build was
+  `1598bffb1d3bed8d12b7bfcdcb343634254e261e52b5386f213476d72aaec9ad`
+  (331 lines).
+- Current sha256 after Delta E: `5199425a830b79bd3715df1cfd87904227e9a13fbf5823d073eb404257f09453`
+  (339 lines, landed in PR #163 as commit `f9dcd636`).
+- Delta count: five (A through E).
 - `bash -n ops/bin/watchdog-backup.sh`: clean.
 
 ## Delta A — "Every run" header block rewritten to on-demand truth
@@ -135,6 +139,45 @@ The retired reaper's SC2188 fix is NOT part of this file's delta
 count — it is recorded in `ops/bin/RETIRED.md` (bare `9>&-` →
 `exec 9>&-` plus reformat; the naive `true 9>&-` was rejected
 because it would have applied only to the `true` command).
+
+## Delta E: stop failure exits 1 instead of exiting 0 (PR #163, commit `f9dcd636`)
+
+Defect: the previous step 3 line was `stop_daemon || exit 0`. A daemon that
+would not stop made the run exit 0 and skip the backup, so a wedged
+daemon looked like a healthy run forever. The only trace was a missing
+"done" line in the log.
+
+Fix: step 3 is now an `if ! stop_daemon` block. On failure it logs
+`ERROR: daemon would not stop` with a note that the backup was skipped
+and the daemon left running, then exits 1. A three-line comment above the
+block explains why.
+
+The header's exit-condition sentence gained a matching clause, so the
+header and the code agree that a daemon that would not stop is a
+failure.
+
+Why exit 1: copying a live DB would produce the torn backup that the
+quiesce step exists to prevent. Skipping the backup is still correct,
+but the run must fail so the scheduler can alert.
+
+Evidence:
+
+- Audit: `git log --oneline -- ops/bin/watchdog-backup.sh` lists exactly
+  two commits, `6f93208e` (PR #95, baseline for Delta A through D) and
+  `f9dcd636` (PR #163, Delta E).
+- `git show f9dcd636 -- ops/bin/watchdog-backup.sh` shows two hunks: the
+  header exit-condition comment (two lines replaced by three) and the
+  step 3 block (two lines replaced by seven). The file went from 333
+  lines to 339 lines and from sha256 `f3cdd2bc...` to `5199425a...`.
+- Regression test: case (g) in `ops/tests/test_watchdog_ops.sh` (wedged
+  daemon on the changed-DB path) asserts a non-zero exit, the "would not
+  stop" log line, and no staged backup. It was added in the same commit.
+
+Divergence from the deployed script: `docs/operations.md` records that
+the deployed adaptation logs the error and exits 0 on a stop failure.
+This repo cannot verify the live host. Until the deploy step in
+`ops/README.md` runs, treat the deployed watchdog as the older behavior
+and run `ops/bin/deploy-watchdog.sh --check` on the host to find out.
 
 ## Notes (not deltas)
 

@@ -11,11 +11,12 @@ live until it is deployed by hand (see Deployment below).
 `ops/bin/watchdog-backup.sh` is the **canonical SOURCE** for the
 watchdog. It is the live deployed watchdog (base:
 `~/workspace/neurostrata/bin/watchdog-backup.sh`, sha256 recorded in
-`ops/bin/WATCHDOG-DELTAS.md`) plus exactly four documented deltas:
+`ops/bin/WATCHDOG-DELTAS.md`) plus exactly five documented deltas:
 a corrected header block, removal of the dead `start_daemon`
 definition, the `stop_daemon` definition moved above its first
-use, and shellcheck fixes plus a full `shfmt -i 2` reformat (fix
-round 2). Every deviation from the live script is recorded in
+use, shellcheck fixes plus a full `shfmt -i 2` reformat (fix
+round 2), and a stop failure that exits 1 instead of exiting 0
+(PR #163). Every deviation from the live script is recorded in
 `ops/bin/WATCHDOG-DELTAS.md`; no other difference exists.
 
 ## What is legacy, and what is a snapshot
@@ -74,8 +75,8 @@ drift apart; the drift check, when enabled, is what catches that.
 
 | Path | What it is |
 | --- | --- |
-| `ops/bin/watchdog-backup.sh` | Canonical watchdog (live base + 4 documented deltas + reformat) |
-| `ops/bin/WATCHDOG-DELTAS.md` | Delta table: header rewrite, dead-code removal, definition move, shellcheck fixes + reformat |
+| `ops/bin/watchdog-backup.sh` | Canonical watchdog (live base + 5 documented deltas + reformat) |
+| `ops/bin/WATCHDOG-DELTAS.md` | Delta table: header rewrite, dead-code removal, definition move, shellcheck fixes + reformat, stop-failure exit 1 |
 | `ops/tests/test_watchdog_ops.sh` | Behavioral test, per daemon state, with PID-namespace isolation guard |
 | `ops/bin/idle-reaper.sh` | Retired standalone reaper, preserved with an in-file retirement banner |
 | `ops/bin/RETIRED.md` | Retirement evidence: standalone reaper retired, idle-stop behavior absorbed into the watchdog |
