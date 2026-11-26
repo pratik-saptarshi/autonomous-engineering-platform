@@ -1957,6 +1957,41 @@ check "PR220 true | false && source is skipped (control)" profile_not_detected '
 check "PR220 false | true && source runs (control)" profile_detected 'false | true && . ~/.bashrc'
 check "PR220 false || false | false && source is skipped (control)" profile_not_detected 'false || false | false && . ~/.bashrc'
 
+note "PR220-R11: file tests other than ~/.bashrc stay unknown (earlier startup commands can change them)"
+check "PR220 mkdir then [ -d ~/.cache ] && source is reachable" profile_detected $'mkdir -p "$HOME/.cache"\n[ -d "$HOME/.cache" ] && . ~/.bashrc'
+check "PR220 [ -f ~/.bashrc ] || source is still skipped (installer guarantee, control)" profile_not_detected '[ -f ~/.bashrc ] || . ~/.bashrc'
+check "PR220 [ -d ~/.bashrc ] || source runs (control)" profile_detected '[ -d ~/.bashrc ] || . ~/.bashrc'
+check "PR220 standalone false && source is skipped (control)" profile_not_detected 'false && . ~/.bashrc'
+
+note "PR220-R12: [[ ]] arithmetic operands keep bash arithmetic semantics (non-decimal spellings are unknown)"
+check "PR220 [[ 010 -eq 8 ]] stays reachable (octal)" profile_detected '[[ 010 -eq 8 ]] && . ~/.bashrc'
+check "PR220 [[ 0x10 -eq 16 ]] stays reachable (hex)" profile_detected '[[ 0x10 -eq 16 ]] && . ~/.bashrc'
+check "PR220 [[ 2 -eq 2 ]] canonical decimal control stays reachable" profile_detected '[[ 2 -eq 2 ]] && . ~/.bashrc'
+check "PR220 [[ 8 -eq 9 ]] canonical decimal control is dead" profile_not_detected '[[ 8 -eq 9 ]] && . ~/.bashrc'
+check "PR220 [ 010 -eq 8 ] non-canonical decimal stays reachable (conservative)" profile_detected '[ 010 -eq 8 ] && . ~/.bashrc'
+
+note "PR220-E2E: a path created earlier in the profile is not treated as absent at login"
+new_home pr220-mut
+printf 'mkdir -p "$HOME/.cache"\n[ -d "$HOME/.cache" ] && . "$HOME/.bashrc"\n' >"$FH/.bash_profile"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+run_env install_env_block
+check "PR220-mut rc 0" test "$RC" -eq 0
+check_out "PR220-mut env ok" 'INSTALL-RE: env ok' "$OUT"
+check "PR220-mut block written" test "$(marker_count '>>>')" -eq 1
+PR220_MUT_VAL="$(env -i HOME="$FH" /bin/bash -c '. "$HOME/.bash_profile"; printf %s "${JAVA_HOME:-}"' 2>/dev/null)"
+check "PR220-mut block reachable through the profile" test "$PR220_MUT_VAL" = "$FH/opt/jdk-$TEMURIN_VERSION"
+
+note "PR220-E2E: an octal [[ ]] comparison reaches the block"
+new_home pr220-oct
+printf '[[ 010 -eq 8 ]] && . "$HOME/.bashrc"\n' >"$FH/.bash_profile"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+run_env install_env_block
+check "PR220-oct rc 0" test "$RC" -eq 0
+check_out "PR220-oct env ok" 'INSTALL-RE: env ok' "$OUT"
+check "PR220-oct block written" test "$(marker_count '>>>')" -eq 1
+PR220_OCT_VAL="$(env -i HOME="$FH" /bin/bash -c '. "$HOME/.bash_profile"; printf %s "${JAVA_HOME:-}"' 2>/dev/null)"
+check "PR220-oct block reachable through the profile" test "$PR220_OCT_VAL" = "$FH/opt/jdk-$TEMURIN_VERSION"
+
 note "PR220-E2E: pipeline-only wiring is named as shadowing end to end"
 new_home pr220-pipe
 printf 'echo x | . "$HOME/.bashrc"\n' >"$FH/.bash_profile"

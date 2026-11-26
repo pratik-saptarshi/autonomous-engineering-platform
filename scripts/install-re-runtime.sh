@@ -557,12 +557,21 @@ literal_word() {
   printf '%s' "$w"
 }
 
-# True when $1 is a (possibly negative) decimal integer literal.
+# True when $1 is a canonical decimal integer literal: an optional `-`
+# followed by digits with no leading zero. Other spellings (`010`,
+# `0x10`, `2#10`, arithmetic expressions, variable names) are
+# arithmetic expressions whose value this scan does not model; inside
+# `[[ ]]` bash reads `010` as octal, so evaluating them as decimal can
+# invert the test.
 numeric_p() {
   local v="$1"
   v="${v#-}"
   [ -n "$v" ] || return 1
   case "$v" in *[!0-9]*) return 1 ;; esac
+  case "$v" in
+  0) return 0 ;;
+  0*) return 1 ;;
+  esac
   return 0
 }
 
@@ -616,7 +625,10 @@ unquoted_glob_p() {
 # evaluated against the filesystem with ~/.bashrc treated as present —
 # the installer writes that file before a login shell reads the profile,
 # so `[ -f ~/.bashrc ] || . ~/.bashrc` skips the source exactly as it
-# does at login.
+# does at login. Any other path stays unknown: earlier commands in the
+# profile (or the login session) can create or remove it, so the
+# install-time filesystem does not establish the login-time result
+# (`mkdir -p ~/.cache; [ -d ~/.cache ] && . ~/.bashrc` runs).
 const_status() {
   local -a w=() t=()
   local IFS=' '
@@ -748,15 +760,10 @@ const_status() {
           # the file exists and is non-empty, so only -d is false.
           [ "$op" = "-d" ] && st=f || st=t
         else
-          case "$op" in
-          -f) [ -f "$val" ] && st=t || st=f ;;
-          -e) [ -e "$val" ] && st=t || st=f ;;
-          -r) [ -r "$val" ] && st=t || st=f ;;
-          -s) [ -s "$val" ] && st=t || st=f ;;
-          -w) [ -w "$val" ] && st=t || st=f ;;
-          -x) [ -x "$val" ] && st=t || st=f ;;
-          -d) [ -d "$val" ] && st=t || st=f ;;
-          esac
+          # Earlier commands in the profile can create or remove any
+          # other path before this test runs, so the install-time
+          # filesystem result is not the login-time result.
+          st=u
         fi
         ;;
       esac
