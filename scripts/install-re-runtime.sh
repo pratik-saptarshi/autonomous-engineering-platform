@@ -502,7 +502,7 @@ normalize_path_components() {
 # NAME a shadowing state: a pre-existing profile is never modified.
 profile_sources_bashrc() {
   local -a queue=("$1") seen=() segs=()
-  local file item dup=0 line src seg si ssq sdq sch wtxt wch wi wsq wdq
+  local file item dup=0 line src seg si ssq sdq sch sprev wtxt wch wi wsq wdq
   while [ "${#queue[@]}" -gt 0 ]; do
     file="${queue[0]}"
     queue=("${queue[@]:1}")
@@ -517,18 +517,20 @@ profile_sources_bashrc() {
     [ "$dup" -eq 0 ] || continue
     seen+=("$file")
     while IFS= read -r line || [ -n "$line" ]; do
+      # A comment never counts as sourcing: a commented-out line, or
+      # the comment trailing a command, is cut before the scan.
+      line="$(strip_trailing_comment "$line")"
       line="${line#"${line%%[![:space:]]*}"}"
-      # A commented-out line never counts as sourcing.
-      case "$line" in
-      '#'*) continue ;;
-      esac
       # A source command counts at the start of the line or in a later
-      # command segment of it: `[ -f ~/.bashrc ] && . ~/.bashrc`, the
-      # single-line `if ...; then . ~/.bashrc; fi`, and the plain forms
-      # all reduce to the segment carrying the source command, which the
-      # parse below then sees in one grammar. The split is quote-aware:
-      # a `;` or `&&` inside quotes or after a backslash is filename
-      # data (`. "$HOME/log;in setup"`), not a segment boundary.
+      # command segment of it: `[ -f ~/.bashrc ] && . ~/.bashrc`,
+      # `[ -f ~/.bashrc ] || . ~/.bashrc`, the single-line
+      # `if ...; then . ~/.bashrc; fi`, and the plain forms all reduce
+      # to the segment carrying the source command, which the parse
+      # below then sees in one grammar. Segments end at `;`, `&&`, `||`,
+      # `|` and `&` — but not at a `>&`, `<&` or `&>` redirection or
+      # the `&` of `|&`. The split is quote-aware: a `;`, `&&` or `|`
+      # inside quotes or after a backslash is filename data
+      # (`. "$HOME/log;in setup"`), not a segment boundary.
       # Segments that merely mention .bashrc (a `[ -f ... ]` test, an
       # echo) never match, because only a segment whose first token is
       # `.` or `source` is parsed.
@@ -562,10 +564,24 @@ profile_sources_bashrc() {
         elif [ "$sch" = ";" ]; then
           segs+=("$seg")
           seg=""
-        elif [ "$sch" = "&" ] && [ "${line:si+1:1}" = "&" ]; then
-          segs+=("$seg")
-          seg=""
-          si=$((si + 1))
+        elif [ "$sch" = "&" ] || [ "$sch" = "|" ]; then
+          sprev=""
+          if [ "$si" -gt 0 ]; then sprev="${line:si-1:1}"; fi
+          if [ "$sch" = "&" ] &&
+            { [ "$sprev" = ">" ] || [ "$sprev" = "<" ] ||
+              [ "${line:si+1:1}" = ">" ]; }; then
+            # `>&`, `<&`, `&>`: a redirection, not a boundary.
+            seg+="$sch"
+          elif [ "$sch" = "&" ] && [ "$sprev" = "|" ]; then
+            # The `&` of `|&` belongs to the boundary just taken.
+            :
+          else
+            segs+=("$seg")
+            seg=""
+            if [ "${line:si+1:1}" = "$sch" ]; then
+              si=$((si + 1))
+            fi
+          fi
         else
           seg+="$sch"
         fi

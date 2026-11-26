@@ -906,7 +906,7 @@ profile_detected() { # profile_detected <profile-line>
 profile_not_detected() { ! profile_detected "$1"; }
 check "R2F2 unquoted braced form detected" profile_detected '. ${HOME}/.bashrc'
 check "R2F2 source-keyword braced form detected" profile_detected 'source "${HOME}/.bashrc"'
-check "R2F2 braced || chain not detected (unchanged)" profile_not_detected '[ -f "${HOME}/.bashrc" ] || . "${HOME}/.bashrc"'
+check "R2F2 braced || chain detected (K7d: || is a segment boundary)" profile_detected '[ -f "${HOME}/.bashrc" ] || . "${HOME}/.bashrc"'
 check "R2F2 braced mention without a source command not detected" profile_not_detected 'echo ". \"${HOME}/.bashrc\""'
 check "R3T7 quoted HOME fragment detected" profile_detected '. "$HOME"/.bashrc'
 check "R3T7 quoted suffix fragment detected" profile_detected '. "$HOME/"'"'"'.bashrc'"'"''
@@ -1678,6 +1678,41 @@ check "k6-heredoc rc 0" test "$RC" -eq 0
 check_out "k6-heredoc env ok" 'INSTALL-RE: env ok' "$OUT"
 check "k6-heredoc body kept verbatim" grep -qxF 'note \' "$FH/.bashrc"
 check "k6-heredoc block appended after the heredoc terminator" test "$(line_of '# >>> re-runtime >>>')" -gt "$(last_line_of 'DOC')"
+
+# ================= #200 (K7d): ||, | and & are command-segment boundaries in the profile reader =================
+
+note "#200: unit-level profile_sources_bashrc (a source after ||, | or & is detected; quoted/commented/redirect forms are not boundaries)"
+check "K7d || source detected" profile_detected '[ -f ~/.bashrc ] || . ~/.bashrc'
+check "K7d braced || source detected" profile_detected '[ -f "${HOME}/.bashrc" ] || . "${HOME}/.bashrc"'
+check "K7d glued || source detected" profile_detected 'false||. ~/.bashrc'
+check "K7d | source detected" profile_detected 'echo x | . ~/.bashrc'
+check "K7d & source detected" profile_detected 'true & . ~/.bashrc'
+check "K7d glued & source detected" profile_detected 'true&. ~/.bashrc'
+check "K7d && source still detected (control)" profile_detected '[ -f ~/.bashrc ] && . ~/.bashrc'
+check "K7d ; source still detected (control)" profile_detected 'true; . ~/.bashrc'
+check "K7d source keyword after || detected" profile_detected '[ -f ~/.bashrc ] || source ~/.bashrc'
+check "K7d double-quoted || is data, not a boundary" profile_not_detected 'echo "a || . ~/.bashrc"'
+check "K7d single-quoted | is data, not a boundary" profile_not_detected "echo 'a | . ~/.bashrc'"
+check "K7d double-quoted & is data, not a boundary" profile_not_detected 'echo "a & . ~/.bashrc"'
+check "K7d escaped \\| is data, not a boundary" profile_not_detected 'echo a \| . ~/.bashrc'
+check "K7d || inside a trailing comment is not a boundary" profile_not_detected 'echo x # a || . ~/.bashrc'
+check "K7d ; inside a trailing comment is not a boundary" profile_not_detected 'echo x # a; . ~/.bashrc'
+check "K7d >& redirection is not a boundary" profile_not_detected 'echo >& . ~/.bashrc'
+check "K7d <& redirection is not a boundary" profile_not_detected 'cat <& . ~/.bashrc'
+check "K7d &> redirection is not a boundary" profile_not_detected 'echo &> . ~/.bashrc'
+check "K7d 2>&1 redirection does not split a mention" profile_not_detected 'echo . ~/.bashrc 2>&1'
+check "K7d a source of another file after || is not ~/.bashrc" profile_not_detected '[ -f ~/.x ] || . ~/.other'
+check "K7d a mention after || without a source command is not detected" profile_not_detected 'true || echo ". ~/.bashrc"'
+
+note "#200: a .bash_profile sourcing .bashrc through || is not shadowing (end to end)"
+new_home k7d
+printf '[ -f "$HOME/.bashrc" ] || . "$HOME/.bashrc"\n' >"$FH/.bash_profile"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+run_env install_env_block
+check "k7d rc 0" test "$RC" -eq 0
+check_out "k7d env ok" 'INSTALL-RE: env ok' "$OUT"
+check_no_out "k7d no shadowing SKIP" 'login startup is shadowed by' "$OUT"
+check "k7d block written" test "$(marker_count '>>>')" -eq 1
 
 echo
 if [ "$FAILURES" -eq 0 ]; then
