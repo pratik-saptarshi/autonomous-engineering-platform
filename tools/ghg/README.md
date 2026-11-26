@@ -169,9 +169,13 @@ caller still sees the child's exit code, plus a loud stderr
 warning — never a masked success that invites a duplicate create.
 
 Privacy: argv is stored with the values of `--body`, `--title`,
-`-m`/`--message`, and `--body-file` replaced by
-`<redacted len=N>` at write time. Response bodies and credentials
-are never stored.
+`-m`/`--message`, `--body-file`, `-H`/`--header` and the `gh api`
+payload flags `-f`/`--field`, `-F`/`--raw-field` and `--input`
+replaced by `<redacted len=N>` at write time, in the separate
+(`-f key=v`), `=` (`--field=key=v`) and attached (`-fkey=v`)
+spellings. The shim's `fallback.log` applies the same flag set (as
+a bare `<redacted>`, without the length). Response bodies and
+credentials are never stored.
 
 ## The fence — known ungated vectors, by name
 

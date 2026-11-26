@@ -461,6 +461,56 @@ class TestRedaction(CoreTestCase):
         self.assertNotIn("SECRET", out)
         self.assertIn("--header=<redacted len=28>", out)
 
+    # Issue #206: gh api payload flags carry request bodies/secrets.
+    # (argv, expected redact_argv output) — the 12 adversarial vectors.
+    API_FIELD_VECTORS = [
+        (["api", "x", "-f", "key=SECRET"],
+         "api x -f <redacted len=10>"),
+        (["api", "x", "--field", "key=SECRET"],
+         "api x --field <redacted len=10>"),
+        (["api", "x", "--field=key=SECRET"],
+         "api x --field=<redacted len=10>"),
+        (["api", "x", "-fkey=SECRET"],
+         "api x -f<redacted len=10>"),
+        (["api", "x", "-F", "key=@secret.txt"],
+         "api x -F <redacted len=15>"),
+        (["api", "x", "-Fkey=SECRET"],
+         "api x -F<redacted len=10>"),
+        (["api", "x", "--raw-field", "key=SECRET"],
+         "api x --raw-field <redacted len=10>"),
+        (["api", "x", "--raw-field=key=SECRET"],
+         "api x --raw-field=<redacted len=10>"),
+        (["api", "x", "--input", "/tmp/SECRET.json"],
+         "api x --input <redacted len=16>"),
+        (["api", "x", "--input=/tmp/SECRET.json"],
+         "api x --input=<redacted len=16>"),
+        # trailing bare flag: no value to redact, must not crash
+        (["api", "x", "-f"], "api x -f"),
+        # non-secret flags and the endpoint survive untouched
+        (["api", "-X", "POST", "--jq", ".id", "repos/o/r/issues"],
+         "api -X POST --jq .id repos/o/r/issues"),
+    ]
+
+    def test_redact_api_field_and_input_flags(self):
+        for argv, expected in self.API_FIELD_VECTORS:
+            with self.subTest(argv=argv):
+                out = ghg.redact_argv(argv)
+                self.assertEqual(out, expected)
+                self.assertNotIn("SECRET", out)
+
+    def test_redact_attached_header_short_form(self):
+        out = ghg.redact_argv(["api", "x", "-HAuthorization: Bearer SECRET"])
+        self.assertNotIn("SECRET", out)
+        self.assertEqual(out, "api x -H<redacted len=28>")
+
+    def test_redact_mixed_flags_keep_non_secret_tokens(self):
+        out = ghg.redact_argv(
+            ["api", "-X", "POST", "-f", "a=SECRET", "--jq", ".id",
+             "-F", "b=SECRET", "repos/o/r"])
+        self.assertEqual(
+            out, "api -X POST -f <redacted len=8> --jq .id"
+                 " -F <redacted len=8> repos/o/r")
+
     def test_non_flag_equals_token_untouched(self):
         out = ghg.redact_argv(["api", "x", "foo=bar"])
         self.assertIn("foo=bar", out)

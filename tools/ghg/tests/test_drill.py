@@ -328,6 +328,46 @@ class TestShimFallback(DrillTestCase):
         self.assertIn("--body <redacted>", fallback)
         self.assertIn("--header=<redacted>", fallback)
 
+    def test_i_fallback_trace_redacts_api_field_and_input_flags(self):
+        # Issue #206: `gh api` payload flags (-f/-F/--field/--raw-field/
+        # --input) must not reach fallback.log in any spelling.
+        broken = self.root / "broken"
+        (broken / "bin").mkdir(parents=True)
+        shutil.copy(SHIM, broken / "bin" / "ghg")
+        (broken / "bin" / "ghg").chmod(0o755)
+        (broken / "ghg.py").write_text("def broken(:\n")
+        proc = subprocess.run(
+            [str(broken / "bin" / "ghg"), "run", "--",
+             "api", "-X", "POST", "--jq", ".id", "repos/o/r/issues",
+             "-f", "k1=SEPFTOK",
+             "--field", "k2=SEPLONGTOK",
+             "--field=k3=EQLONGTOK",
+             "-fk4=ATTFTOK",
+             "-F", "k5=@SEPCAPTOK",
+             "-Fk6=ATTCAPTOK",
+             "--raw-field", "k7=SEPRAWTOK",
+             "--raw-field=k8=EQRAWTOK",
+             "--input", "/tmp/SEPINPUTTOK.json",
+             "--input=/tmp/EQINPUTTOK.json",
+             "-f"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, env=self.env(), timeout=30)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        fallback = (self.state_dir / "fallback.log").read_text()
+        for secret in ("SEPFTOK", "SEPLONGTOK", "EQLONGTOK", "ATTFTOK",
+                       "SEPCAPTOK", "ATTCAPTOK", "SEPRAWTOK", "EQRAWTOK",
+                       "SEPINPUTTOK", "EQINPUTTOK"):
+            self.assertNotIn(secret, fallback)
+        # Non-secret argv is still traced for diagnosis.
+        self.assertIn("api -X POST --jq .id repos/o/r/issues", fallback)
+        for flag in ("-f <redacted>", "--field <redacted>",
+                     "--field=<redacted>", "-f=<redacted>",
+                     "-F <redacted>", "-F=<redacted>",
+                     "--raw-field <redacted>", "--raw-field=<redacted>",
+                     "--input <redacted>", "--input=<redacted>"):
+            self.assertIn(flag, fallback)
+        self.assertTrue(fallback.rstrip().endswith("-f"), fallback)
+
     def test_g_run_through_symlink_uses_real_gate(self):
         # The documented fleet install is a symlink (~/go/bin/ghg ->
         # .../tools/ghg/bin/ghg). The shim must resolve $0's symlink

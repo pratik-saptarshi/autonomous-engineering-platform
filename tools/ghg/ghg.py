@@ -583,16 +583,23 @@ def classify(argv):
 # ------------------------------------------------------------ redaction
 
 _REDACT_FLAGS = {"--body", "--title", "-m", "--message", "--body-file",
-                 "-H", "--header"}
+                 "-H", "--header", "-f", "--field", "-F", "--raw-field",
+                 "--input"}
+# Single-letter flags whose value may be glued on (`-fkey=v`, `-mtext`).
+_REDACT_SHORT_ATTACHED = tuple(f for f in _REDACT_FLAGS
+                               if len(f) == 2 and f[0] == "-")
 
 
 def redact_argv(argv):
     """Join argv for ledger storage, redacting sensitive flag values.
 
-    The values of --body, --title, -m/--message, --body-file and
-    -H/--header are replaced by `<redacted len=N>` in both spellings
-    (`--body text` and `--body=text`). Response bodies/credentials
-    are never stored.
+    The values of --body, --title, -m/--message, --body-file,
+    -H/--header and the `gh api` payload flags -f/--field,
+    -F/--raw-field and --input are replaced by `<redacted len=N>`
+    in every spelling: separate (`--body text`), `=` (`--body=text`)
+    and, for the single-letter flags, attached (`-fkey=v`, `-mtext`).
+    A trailing flag with no value is kept as is. Response
+    bodies/credentials are never stored.
     """
     argv = [str(a) for a in argv]
     out = []
@@ -613,9 +620,8 @@ def redact_argv(argv):
                 out.append("%s=<redacted len=%d>" % (flag, len(value)))
                 i += 1
                 continue
-        if tok.startswith("-m") and not tok.startswith("--") \
-                and len(tok) > 2:
-            out.append("-m<redacted len=%d>" % len(tok[2:]))
+        if len(tok) > 2 and tok[:2] in _REDACT_SHORT_ATTACHED:
+            out.append("%s<redacted len=%d>" % (tok[:2], len(tok[2:])))
             i += 1
             continue
         out.append(tok)

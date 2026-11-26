@@ -35,11 +35,13 @@ fi
 
 # ghg.py is broken: record the fallback and degrade per verb.
 # The trace must not persist sensitive flag values (--body, --title,
-# -m/--message, --body-file, -H/--header — the same set ghg.py's
-# redact_argv covers), in separate-token, `--flag=value`, and combined
-# `-H<value>`/`-m<value>` spellings. Unlike redact_argv the shell
-# rendering omits the value length: `<redacted>`, not
-# `<redacted len=N>` — the length is itself a minor leak.
+# -m/--message, --body-file, -H/--header and the `gh api` payload
+# flags -f/--field, -F/--raw-field, --input — the same set ghg.py's
+# redact_argv covers), in separate-token, `--flag=value`, and attached
+# `-H<value>`/`-m<value>`/`-f<value>`/`-F<value>` spellings. Unlike
+# redact_argv the shell rendering omits the value length:
+# `<redacted>`, not `<redacted len=N>` — the length is itself a minor
+# leak.
 safe_argv=""
 redact_next=0
 for tok in "$@"; do
@@ -49,11 +51,11 @@ for tok in "$@"; do
         continue
     fi
     case $tok in
-        --body|--title|-m|--message|--body-file|-H|--header)
+        --body|--title|-m|--message|--body-file|-H|--header|-f|--field|-F|--raw-field|--input)
             safe_argv="$safe_argv $tok"
             redact_next=1
             ;;
-        --body=*|--title=*|--message=*|--body-file=*|--header=*)
+        --body=*|--title=*|--message=*|--body-file=*|--header=*|--field=*|--raw-field=*|--input=*)
             safe_argv="$safe_argv ${tok%%=*}=<redacted>"
             ;;
         -H?*)
@@ -61,6 +63,12 @@ for tok in "$@"; do
             ;;
         -m?*)
             safe_argv="$safe_argv -m=<redacted>"
+            ;;
+        -f?*)
+            safe_argv="$safe_argv -f=<redacted>"
+            ;;
+        -F?*)
+            safe_argv="$safe_argv -F=<redacted>"
             ;;
         *)
             safe_argv="$safe_argv $tok"
