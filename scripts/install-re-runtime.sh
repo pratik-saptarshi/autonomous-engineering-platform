@@ -582,7 +582,10 @@ unquoted_glob_p() {
     if [ "$dq" -eq 1 ]; then
       case "$ch" in
       \\) i=$((i + 2)) ;;
-      '"') dq=0; i=$((i + 1)) ;;
+      '"')
+        dq=0
+        i=$((i + 1))
+        ;;
       *) i=$((i + 1)) ;;
       esac
       continue
@@ -590,7 +593,10 @@ unquoted_glob_p() {
     case "$ch" in
     "'") sq=1 ;;
     '"') dq=1 ;;
-    \\) i=$((i + 2)); continue ;;
+    \\)
+      i=$((i + 2))
+      continue
+      ;;
     '*' | '?' | '[') return 0 ;;
     esac
     i=$((i + 1))
