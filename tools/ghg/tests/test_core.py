@@ -8,9 +8,11 @@ injected explicitly (`now=`) wherever a window boundary is the point.
 """
 
 import importlib.util
+import io
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import threading
@@ -460,6 +462,56 @@ class TestRedaction(CoreTestCase):
         self.assertNotIn("SECRET", out)
         self.assertIn("--header=<redacted len=28>", out)
 
+    # Issue #206: gh api payload flags carry request bodies/secrets.
+    # (argv, expected redact_argv output) — the 12 adversarial vectors.
+    API_FIELD_VECTORS = [
+        (["api", "x", "-f", "key=SECRET"],
+         "api x -f <redacted len=10>"),
+        (["api", "x", "--field", "key=SECRET"],
+         "api x --field <redacted len=10>"),
+        (["api", "x", "--field=key=SECRET"],
+         "api x --field=<redacted len=10>"),
+        (["api", "x", "-fkey=SECRET"],
+         "api x -f<redacted len=10>"),
+        (["api", "x", "-F", "key=@secret.txt"],
+         "api x -F <redacted len=15>"),
+        (["api", "x", "-Fkey=SECRET"],
+         "api x -F<redacted len=10>"),
+        (["api", "x", "--raw-field", "key=SECRET"],
+         "api x --raw-field <redacted len=10>"),
+        (["api", "x", "--raw-field=key=SECRET"],
+         "api x --raw-field=<redacted len=10>"),
+        (["api", "x", "--input", "/tmp/SECRET.json"],
+         "api x --input <redacted len=16>"),
+        (["api", "x", "--input=/tmp/SECRET.json"],
+         "api x --input=<redacted len=16>"),
+        # trailing bare flag: no value to redact, must not crash
+        (["api", "x", "-f"], "api x -f"),
+        # non-secret flags and the endpoint survive untouched
+        (["api", "-X", "POST", "--jq", ".id", "repos/o/r/issues"],
+         "api -X POST --jq .id repos/o/r/issues"),
+    ]
+
+    def test_redact_api_field_and_input_flags(self):
+        for argv, expected in self.API_FIELD_VECTORS:
+            with self.subTest(argv=argv):
+                out = ghg.redact_argv(argv)
+                self.assertEqual(out, expected)
+                self.assertNotIn("SECRET", out)
+
+    def test_redact_attached_header_short_form(self):
+        out = ghg.redact_argv(["api", "x", "-HAuthorization: Bearer SECRET"])
+        self.assertNotIn("SECRET", out)
+        self.assertEqual(out, "api x -H<redacted len=28>")
+
+    def test_redact_mixed_flags_keep_non_secret_tokens(self):
+        out = ghg.redact_argv(
+            ["api", "-X", "POST", "-f", "a=SECRET", "--jq", ".id",
+             "-F", "b=SECRET", "repos/o/r"])
+        self.assertEqual(
+            out, "api -X POST -f <redacted len=8> --jq .id"
+                 " -F <redacted len=8> repos/o/r")
+
     def test_non_flag_equals_token_untouched(self):
         out = ghg.redact_argv(["api", "x", "foo=bar"])
         self.assertIn("foo=bar", out)
@@ -485,6 +537,233 @@ class TestDefaults(CoreTestCase):
         self.assertEqual(ledger.limits["code_search"], [(60, 9)])
         self.assertEqual(ledger.limits["content"],
                          [(60, 40), (3600, 300)])
+
+
+class TestLoadLimits(CoreTestCase):
+    """Issue #203: a bad GHG_LIMITS_JSON must fail closed, atomically."""
+
+    def load(self, raw):
+        os.environ["GHG_LIMITS_JSON"] = raw
+        buf = io.StringIO()
+        saved = sys.stderr
+        sys.stderr = buf
+        try:
+            limits = ghg.load_limits()
+        finally:
+            sys.stderr = saved
+        return limits, buf.getvalue()
+
+    def assert_defaults(self, limits):
+        self.assertEqual(limits, {b: list(p) for b, p
+                                  in ghg.DEFAULT_LIMITS.items()})
+
+    def test_empty_window_list_rejected_and_reserve_refused(self):
+        limits, err = self.load(json.dumps({"core": []}))
+        self.assert_defaults(limits)
+        self.assertIn("GHG_LIMITS_JSON", err)
+        ledger = self.make_ledger({"core": []})
+        self.assertIsNone(
+            ledger.reserve_all([("core", 10000)], "tester", "api x"))
+
+    def test_zero_cap_rejected(self):
+        limits, err = self.load(json.dumps({"core": [[3600, 0]]}))
+        self.assert_defaults(limits)
+        self.assertIn("GHG_LIMITS_JSON", err)
+
+    def test_negative_window_rejected(self):
+        limits, err = self.load(json.dumps({"core": [[-60, 5]]}))
+        self.assert_defaults(limits)
+        self.assertIn("GHG_LIMITS_JSON", err)
+
+    def test_bool_values_rejected(self):
+        for raw in ({"core": [[True, 5]]}, {"core": [[60, True]]}):
+            limits, err = self.load(json.dumps(raw))
+            self.assert_defaults(limits)
+            self.assertIn("GHG_LIMITS_JSON", err)
+
+    def test_malformed_item_shapes_rejected(self):
+        for raw in ('{"core": [[60]]}', '{"core": [[60, 5, 1]]}',
+                    '{"core": [60, 5]}', '{"core": 5}',
+                    '{"core": [["a", 5]]}', '{"core": [[1.5, 5]]}',
+                    '{not json'):
+            limits, err = self.load(raw)
+            self.assert_defaults(limits)
+            self.assertIn("GHG_LIMITS_JSON", err, raw)
+
+    def test_non_dict_root_rejected(self):
+        for raw in ("[]", "5", '"x"', "null"):
+            limits, err = self.load(raw)
+            self.assert_defaults(limits)
+            self.assertIn("GHG_LIMITS_JSON", err, raw)
+
+    def test_tightening_override_is_accepted(self):
+        limits, _ = self.load(json.dumps(
+            {"search": [[60, 5]],
+             "content": [[60, 1], [3600, 300]]}))
+        self.assertEqual(limits["search"], [(60, 5)])
+        self.assertEqual(limits["content"], [(60, 1), (3600, 300)])
+
+    def test_widening_override_is_rejected(self):
+        limits, err = self.load(json.dumps({"search": [[60, 21]]}))
+        self.assert_defaults(limits)
+        self.assertIn("widens", err)
+
+    def test_new_window_is_rejected(self):
+        limits, err = self.load(json.dumps({"core": [[60, 10]]}))
+        self.assert_defaults(limits)
+        self.assertIn("built-in window", err)
+
+    def test_dropping_a_window_is_rejected(self):
+        limits, err = self.load(json.dumps({"content": [[60, 1]]}))
+        self.assert_defaults(limits)
+        self.assertIn("drops", err)
+
+    def test_duplicate_window_is_rejected(self):
+        limits, err = self.load(json.dumps(
+            {"content": [[60, 1], [60, 2], [3600, 300]]}))
+        self.assert_defaults(limits)
+        self.assertIn("duplicated", err)
+
+    def test_one_bad_bucket_rejects_whole_override(self):
+        limits, _ = self.load(json.dumps(
+            {"search": [[60, 5]], "core": []}))
+        self.assert_defaults(limits)  # atomic: search not applied either
+
+    def test_partial_override_preserves_unmentioned_buckets(self):
+        limits, err = self.load(json.dumps({"search": [[60, 5]]}))
+        self.assertEqual(err, "")
+        self.assertEqual(limits["search"], [(60, 5)])
+        for bucket in ("core", "graphql", "mutations"):
+            if bucket in ghg.DEFAULT_LIMITS:
+                self.assertEqual(limits[bucket],
+                                 ghg.DEFAULT_LIMITS[bucket])
+        self.assertEqual(limits["core"], [(3600, 3500)])
+        self.assertEqual(limits["graphql"], [(3600, 3500)])
+        self.assertEqual(set(limits), set(ghg.DEFAULT_LIMITS))
+
+    def test_valid_override_applied_and_defaults_not_mutated(self):
+        before = {b: list(p) for b, p in ghg.DEFAULT_LIMITS.items()}
+        limits, err = self.load(json.dumps(
+            {"content": [[60, 2], [3600, 9]]}))
+        self.assertEqual(err, "")
+        self.assertEqual(limits["content"], [(60, 2), (3600, 9)])
+        limits["content"].append((1, 1))
+        self.assertEqual(ghg.DEFAULT_LIMITS, before)
+        self.assertEqual(ghg.DEFAULT_LIMITS["content"],
+                         [(60, 40), (3600, 300)])
+
+    def test_deeply_nested_json_rejected_without_fail_open(self):
+        deep = "[" * 200000 + "]" * 200000
+        limits, err = self.load(deep)
+        self.assert_defaults(limits)
+        self.assertIn("GHG_LIMITS_JSON", err)
+        # Ledger still opens and enforces caps (never fails open).
+        ledger = ghg.Ledger(self.root / "ghg.db")
+        try:
+            self.assertIsNone(
+                ledger.reserve_all([("core", 10000)], "tester", "api x"))
+        finally:
+            ledger.close()
+
+    def test_huge_int_rejected_without_overflow(self):
+        huge = 1 << 63
+        for raw in ({"core": [[huge, 10]]}, {"core": [[60, huge]]}):
+            limits, err = self.load(json.dumps(raw))
+            self.assert_defaults(limits)
+            self.assertIn("GHG_LIMITS_JSON", err)
+
+    def test_unknown_bucket_rejected_atomically(self):
+        limits, err = self.load(json.dumps(
+            {"search": [[60, 5]], "cor": [[60, 1]]}))
+        self.assert_defaults(limits)
+        self.assertIn("unknown bucket", err)
+
+
+class TestStateDirMode(CoreTestCase):
+    """Issue #207 D9b: the state dir (ledger, traces) is owner-only."""
+
+    def setUp(self):
+        super().setUp()
+        self.fresh = self.root / "fresh" / "state"
+        self._old_umask = os.umask(0o022)
+
+    def tearDown(self):
+        os.umask(self._old_umask)
+        super().tearDown()
+
+    def mode(self, path):
+        return path.stat().st_mode & 0o777
+
+    def test_open_db_creates_state_dir_0700_under_umask_022(self):
+        conn = ghg.open_db(self.fresh / "ghg.db")
+        conn.close()
+        self.assertEqual(self.mode(self.fresh), 0o700)
+
+    def test_fallback_log_creates_state_dir_0700_under_umask_022(self):
+        os.environ["GHG_STATE_DIR"] = str(self.fresh)
+        ghg._fallback_log("trace line")
+        self.assertEqual(self.mode(self.fresh), 0o700)
+        self.assertIn("trace line", (self.fresh / "fallback.log").read_text())
+
+    def test_existing_shared_dir_is_not_chmodded(self):
+        # A configured dir or DB parent may be shared; chmodding it
+        # would break unrelated users. Files are 0600 instead.
+        self.fresh.mkdir(parents=True)
+        os.chmod(self.fresh, 0o755)
+        ghg._ensure_state_dir(self.fresh)
+        self.assertEqual(self.mode(self.fresh), 0o755)
+        ghg.open_db(self.fresh / "ghg.db").close()
+        self.assertEqual(self.mode(self.fresh), 0o755)
+        self.assertEqual(self.mode(self.fresh / "ghg.db"), 0o600)
+
+    def test_fallback_log_is_0600_in_shared_dir(self):
+        self.fresh.mkdir(parents=True)
+        os.chmod(self.fresh, 0o755)
+        os.environ["GHG_STATE_DIR"] = str(self.fresh)
+        ghg._fallback_log("trace line")
+        self.assertEqual(self.mode(self.fresh), 0o755)
+        self.assertEqual(self.mode(self.fresh / "fallback.log"), 0o600)
+        self.assertIn("trace line",
+                      (self.fresh / "fallback.log").read_text())
+
+    def test_ensure_state_dir_is_idempotent(self):
+        ghg._ensure_state_dir(self.fresh)
+        (self.fresh / "keep").write_text("x")
+        ghg._ensure_state_dir(self.fresh)
+        self.assertEqual(self.mode(self.fresh), 0o700)
+        self.assertTrue((self.fresh / "keep").exists())
+
+    def test_open_db_does_not_chmod_cwd_for_memory_or_bare_relative(self):
+        cwd_dir = self.root / "cwd_probe"
+        cwd_dir.mkdir()
+        os.chmod(cwd_dir, 0o755)
+        old_cwd = os.getcwd()
+        os.chdir(cwd_dir)
+        try:
+            ghg.open_db(":memory:").close()
+            self.assertEqual(self.mode(cwd_dir), 0o755)
+            ghg.open_db("rel.db").close()
+            self.assertEqual(self.mode(cwd_dir), 0o755)
+        finally:
+            os.chdir(old_cwd)
+
+
+class ShimStateDirTests(unittest.TestCase):
+    """The shim must not chmod the working directory (issue #207 D9b)."""
+
+    def test_dot_state_dir_leaves_cwd_mode_alone(self):
+        with tempfile.TemporaryDirectory(prefix="ghg-shim-") as tmp:
+            cwd = Path(tmp) / "project"
+            cwd.mkdir()
+            os.chmod(cwd, 0o755)
+            env = dict(os.environ)
+            env["GHG_STATE_DIR"] = "."
+            env["GHG_REAL_GH"] = "/bin/true"
+            r = subprocess.run(
+                [str(GHG_DIR / "bin" / "ghg"), "--help"],
+                cwd=cwd, env=env, capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(cwd.stat().st_mode & 0o777, 0o755)
 
 
 if __name__ == "__main__":

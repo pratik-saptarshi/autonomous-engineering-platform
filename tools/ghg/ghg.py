@@ -72,6 +72,42 @@ def db_path():
     return state_dir() / "ghg.db"
 
 
+def _ensure_state_dir(path):
+    """Create `path` owner-only (0700) when this process creates it.
+
+    An existing directory is never chmodded: a configured state dir or a
+    database parent can be shared (`/`, `/tmp`, a checkout), and removing
+    group/other access there breaks unrelated services. Files ghg writes
+    are created 0600 instead (see `_fallback_log` and `open_db`), so
+    state stays private without touching a directory's mode. The working
+    directory is exempt for the same reason.
+    """
+    path = Path(path)
+    try:
+        resolved = path.resolve()
+        cwd = Path.cwd().resolve()
+    except OSError:
+        resolved = cwd = None
+    if str(path) in ("", ".") or (resolved is not None
+                                  and resolved == cwd):
+        return
+    if path.is_dir():
+        return
+    try:
+        path.mkdir(parents=True, mode=0o700)
+    except FileExistsError:
+        return  # another process created it first; leave its mode alone
+    except OSError as exc:
+        print("ghg: WARNING cannot create state dir %s: %s" % (path, exc),
+              file=sys.stderr)
+        return
+    try:
+        os.chmod(path, 0o700)
+    except OSError as exc:
+        print("ghg: WARNING cannot restrict %s to 0700: %s" % (path, exc),
+              file=sys.stderr)
+
+
 def real_gh():
     """The one seam through which every real `gh` call resolves."""
     return os.environ.get("GHG_REAL_GH") or "/usr/bin/gh"
@@ -127,9 +163,15 @@ def _exec_real_gh(argv, capture, timeout):
 def _fallback_log(line):
     try:
         directory = state_dir()
-        directory.mkdir(parents=True, exist_ok=True)
-        with open(directory / "fallback.log", "a") as fh:
+        _ensure_state_dir(directory)
+        path = directory / "fallback.log"
+        # 0600 at creation and on every append: the trace holds argv
+        # history, and the directory may be shared (e.g. the working
+        # directory), where its mode is not ours to tighten.
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "a") as fh:
             fh.write("%d %s\n" % (int(time.time()), line))
+        os.chmod(path, 0o600)
     except OSError:
         pass  # the log is a trace, never a reason to block the call
 
@@ -341,8 +383,24 @@ def gated_gh(argv, actor, timeout=None, budget_s=None):
 
 # ------------------------------------------------------------------ db
 
+def _tighten_db_files(path):
+    """Owner-only (0600) for the database and SQLite's side files.
+
+    The parent directory is left alone (it may be shared), so the files
+    themselves carry the privacy guarantee.
+    """
+    for suffix in ("", "-wal", "-shm", "-journal"):
+        target = Path(str(path) + suffix)
+        try:
+            if target.exists():
+                os.chmod(target, 0o600)
+        except OSError:
+            pass
+
+
 def open_db(path):
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    if str(path) != ":memory:":
+        _ensure_state_dir(Path(path).parent)
     conn = sqlite3.connect(str(path), isolation_level=None, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout=5000")
@@ -361,6 +419,8 @@ def open_db(path):
                 time.sleep(0.1 + random.uniform(0, 0.1))
                 continue
             raise
+    if str(path) != ":memory:":
+        _tighten_db_files(Path(path))
     return conn
 
 
@@ -438,18 +498,86 @@ class GateBroken(Exception):
     """
 
 
+_MAX_LIMIT_INT = (1 << 62) - 1
+
+
+def _positive_int(x):
+    return (isinstance(x, int) and not isinstance(x, bool)
+            and 0 < x <= _MAX_LIMIT_INT)
+
+
+def _parse_limits_override(raw):
+    """Validate GHG_LIMITS_JSON; return (bucket -> pairs) or raise.
+
+    An override may only *tighten* the built-in caps. `GHG_LIMITS_JSON`
+    is process environment an agent can set, so accepting a wider cap
+    would let it raise its own budget silently. Every built-in window of
+    a named bucket must be present, no new window may be added, and each
+    cap must be at most the built-in cap.
+    """
+    parsed = json.loads(raw)
+    if not isinstance(parsed, dict):
+        raise ValueError("root must be an object, got %s"
+                         % type(parsed).__name__)
+    out = {}
+    for bucket, pairs in parsed.items():
+        if bucket not in DEFAULT_LIMITS:
+            raise ValueError("unknown bucket %r" % (bucket,))
+        if not isinstance(pairs, list) or not pairs:
+            raise ValueError("bucket %r needs a non-empty list of"
+                             " [window_s, cap] pairs" % bucket)
+        defaults = dict(DEFAULT_LIMITS[bucket])
+        checked, seen = [], set()
+        for pair in pairs:
+            if not (isinstance(pair, (list, tuple)) and len(pair) == 2
+                    and _positive_int(pair[0]) and _positive_int(pair[1])):
+                raise ValueError("bucket %r pair %r is not two positive"
+                                 " bounded integers" % (bucket, pair))
+            window_s, cap = pair
+            if window_s not in defaults:
+                raise ValueError("bucket %r window %ss is not a built-in"
+                                 " window" % (bucket, window_s))
+            if window_s in seen:
+                raise ValueError("bucket %r window %ss is duplicated"
+                                 % (bucket, window_s))
+            seen.add(window_s)
+            if cap > defaults[window_s]:
+                raise ValueError("bucket %r window %ss cap %d widens the"
+                                 " built-in cap %d"
+                                 % (bucket, window_s, cap,
+                                    defaults[window_s]))
+            checked.append((window_s, cap))
+        missing = sorted(set(defaults) - seen)
+        if missing:
+            raise ValueError("bucket %r override drops built-in window(s)"
+                             " %s" % (bucket, ", ".join("%ss" % w
+                                                        for w in missing)))
+        out[str(bucket)] = checked
+    return out
+
+
 def load_limits():
-    """Bucket -> [(window_s, cap)], overridable via GHG_LIMITS_JSON."""
+    """Bucket -> [(window_s, cap)], overridable via GHG_LIMITS_JSON.
+
+    The override is merged over a fresh copy of DEFAULT_LIMITS, so a
+    partial override keeps the default caps of unmentioned buckets. An
+    override may only lower caps: widening a cap, adding or dropping a
+    window, an unknown bucket, an empty or malformed list, and non-
+    positive, out-of-range, or boolean numbers are all rejected
+    atomically with a stderr warning and the defaults apply.
+    """
+    override = {}
     raw = os.environ.get("GHG_LIMITS_JSON")
     if raw:
         try:
-            parsed = json.loads(raw)
-            return {str(bucket): [(int(w), int(c)) for w, c in pairs]
-                    for bucket, pairs in parsed.items()}
-        except (ValueError, TypeError):
-            pass  # a broken override must not widen the caps
-    return {bucket: list(pairs)
-            for bucket, pairs in DEFAULT_LIMITS.items()}
+            override = _parse_limits_override(raw)
+        except (ValueError, TypeError, RecursionError) as exc:
+            print("ghg: WARNING ignoring GHG_LIMITS_JSON (%s);"
+                  " using default limits" % exc, file=sys.stderr)
+    limits = {bucket: list(pairs)
+              for bucket, pairs in DEFAULT_LIMITS.items()}
+    limits.update(override)
+    return limits
 
 
 # ------------------------------------------------------------ classify
@@ -547,16 +675,23 @@ def classify(argv):
 # ------------------------------------------------------------ redaction
 
 _REDACT_FLAGS = {"--body", "--title", "-m", "--message", "--body-file",
-                 "-H", "--header"}
+                 "-H", "--header", "-f", "--field", "-F", "--raw-field",
+                 "--input"}
+# Single-letter flags whose value may be glued on (`-fkey=v`, `-mtext`).
+_REDACT_SHORT_ATTACHED = tuple(f for f in _REDACT_FLAGS
+                               if len(f) == 2 and f[0] == "-")
 
 
 def redact_argv(argv):
     """Join argv for ledger storage, redacting sensitive flag values.
 
-    The values of --body, --title, -m/--message, --body-file and
-    -H/--header are replaced by `<redacted len=N>` in both spellings
-    (`--body text` and `--body=text`). Response bodies/credentials
-    are never stored.
+    The values of --body, --title, -m/--message, --body-file,
+    -H/--header and the `gh api` payload flags -f/--field,
+    -F/--raw-field and --input are replaced by `<redacted len=N>`
+    in every spelling: separate (`--body text`), `=` (`--body=text`)
+    and, for the single-letter flags, attached (`-fkey=v`, `-mtext`).
+    A trailing flag with no value is kept as is. Response
+    bodies/credentials are never stored.
     """
     argv = [str(a) for a in argv]
     out = []
@@ -577,9 +712,8 @@ def redact_argv(argv):
                 out.append("%s=<redacted len=%d>" % (flag, len(value)))
                 i += 1
                 continue
-        if tok.startswith("-m") and not tok.startswith("--") \
-                and len(tok) > 2:
-            out.append("-m<redacted len=%d>" % len(tok[2:]))
+        if len(tok) > 2 and tok[:2] in _REDACT_SHORT_ATTACHED:
+            out.append("%s<redacted len=%d>" % (tok[:2], len(tok[2:])))
             i += 1
             continue
         out.append(tok)
@@ -1396,7 +1530,7 @@ def _append_drift_history(data, now):
         return
     try:
         directory = state_dir()
-        directory.mkdir(parents=True, exist_ok=True)
+        _ensure_state_dir(directory)
         with open(directory / "drift.jsonl", "a") as fh:
             for entry in entries:
                 fh.write(json.dumps(entry) + "\n")

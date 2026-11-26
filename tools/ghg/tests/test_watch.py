@@ -37,47 +37,22 @@ from pathlib import Path
 GHG_DIR = Path(__file__).resolve().parents[1]
 GHG_PY = GHG_DIR / "ghg.py"
 
-STUB_GH = r"""#!/usr/bin/env python3
+# The stub's call counter, call-time log and plan index are claimed under
+# an exclusive flock: concurrent stub invocations (two watchers on
+# different rows, a poller racing a revalidation) used to lose counter
+# updates and read the same plan index, making call counts and the
+# scripted sequence nondeterministic. The counter file is replaced
+# atomically so the test's lock-free readers never see a torn value.
+_STUB_PREAMBLE = r"""#!/usr/bin/env python3
+import fcntl
 import json
 import os
 import sys
 import time
 
-if sys.argv[1:3] != ["run", "view"]:
-    print("stub gh: unexpected argv %r" % (sys.argv,), file=sys.stderr)
-    sys.exit(9)
-
-count_path = os.environ["GHG_STUB_COUNT"]
-times_path = os.environ["GHG_STUB_TIMES"]
-plan_path = os.environ["GHG_STUB_PLAN"]
-
-try:
-    with open(count_path) as f:
-        n = int(f.read().strip() or "0")
-except (OSError, ValueError):
-    n = 0
-with open(count_path, "w") as f:
-    f.write(str(n + 1))
-with open(times_path, "a") as f:
-    f.write("%.6f\n" % time.time())
-
-with open(plan_path) as f:
-    plan = json.load(f)
-entry = plan[min(n, len(plan) - 1)]
-if entry.get("sleep"):
-    time.sleep(entry["sleep"])
-print(json.dumps({"status": entry["status"],
-                  "conclusion": entry.get("conclusion"),
-                  "attempt": entry.get("attempt", 1)}))
 """
 
-COMBINED_STUB_GH = r"""#!/usr/bin/env python3
-import json
-import os
-import sys
-import time
-
-if sys.argv[1:3] == ["api", "rate_limit"]:
+_STUB_API_BLOCK = r"""if sys.argv[1:3] == ["api", "rate_limit"]:
     plan_path = os.environ["GHG_STUB_PLAN"]
     api_count = os.path.join(os.path.dirname(plan_path),
                              "stub-api-count")
@@ -96,7 +71,9 @@ if sys.argv[1:3] == ["api", "rate_limit"]:
         "reset": 9999999999}}}))
     sys.exit(0)
 
-if sys.argv[1:3] != ["run", "view"]:
+"""
+
+_STUB_RUN_VIEW_BLOCK = r"""if sys.argv[1:3] != ["run", "view"]:
     print("stub gh: unexpected argv %r" % (sys.argv,), file=sys.stderr)
     sys.exit(9)
 
@@ -104,15 +81,19 @@ count_path = os.environ["GHG_STUB_COUNT"]
 times_path = os.environ["GHG_STUB_TIMES"]
 plan_path = os.environ["GHG_STUB_PLAN"]
 
-try:
-    with open(count_path) as f:
-        n = int(f.read().strip() or "0")
-except (OSError, ValueError):
-    n = 0
-with open(count_path, "w") as f:
-    f.write(str(n + 1))
-with open(times_path, "a") as f:
-    f.write("%.6f\n" % time.time())
+with open(count_path + ".lock", "a") as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    try:
+        with open(count_path) as f:
+            n = int(f.read().strip() or "0")
+    except (OSError, ValueError):
+        n = 0
+    tmp_path = "%s.%d.tmp" % (count_path, os.getpid())
+    with open(tmp_path, "w") as f:
+        f.write(str(n + 1))
+    os.replace(tmp_path, count_path)
+    with open(times_path, "a") as f:
+        f.write("%.6f\n" % time.time())
 
 with open(plan_path) as f:
     plan = json.load(f)
@@ -123,6 +104,25 @@ print(json.dumps({"status": entry["status"],
                   "conclusion": entry.get("conclusion"),
                   "attempt": entry.get("attempt", 1)}))
 """
+
+STUB_GH = _STUB_PREAMBLE + _STUB_RUN_VIEW_BLOCK
+COMBINED_STUB_GH = _STUB_PREAMBLE + _STUB_API_BLOCK + _STUB_RUN_VIEW_BLOCK
+
+
+# Deadline tests discriminate "bounded by the watch deadline" from
+# "unbounded" by elapsed time, so the unbounded outcome must sit far
+# from the bounded one or scheduler jitter flips the verdict.
+# - A single hung step: the bounded read returns in ~timeout + floor
+#   (< 2s even on a loaded box); unbounded takes SLOW_STUB_SLEEP.
+#   Asserted < SLOW_STUB_SLEEP - 1.5, i.e. >= 1.5s of margin each way.
+SLOW_STUB_SLEEP = 6
+# - Two hung steps under --timeout 2.5: one shared deadline ends at
+#   ~2.5s (+ sub-second floor); two stacked per-step bounds end at
+#   ~5s (each step cut at its own 2.5s). COMPOSED_BOUND sits between,
+#   ~1s clear of both. Stubs sleep 4s so each step really does hit
+#   its cut-off, rather than finishing inside it.
+COMPOSED_STEP_SLEEP = 4
+COMPOSED_BOUND = 4.0
 
 
 def load_ghg_module():
@@ -198,6 +198,23 @@ class WatchTestCase(unittest.TestCase):
         self.assertNotIn("Traceback", err)
         return proc.returncode, out, err
 
+    def set_held_completion_plan(self, hold=None):
+        """One poll that completes, but only after `hold` seconds.
+
+        A watcher that starts AFTER completion legitimately issues its
+        own revalidation read, so coalescing tests asserting exactly one
+        stub call must keep the run in flight until every watcher has
+        started (hold >> process-startup skew). 8s is far above observed
+        startup (~0.1s) and CI jitter; `GHG_TEST_COALESCE_HOLD` can raise
+        it further on a slow machine. The long --interval gives the poll
+        a timeout of interval-5 (> hold); it costs no wall time beyond
+        the hold because the poller exits on completion.
+        """
+        if hold is None:
+            hold = float(os.environ.get("GHG_TEST_COALESCE_HOLD", "8"))
+        self.set_plan([{"status": "completed", "conclusion": "success",
+                        "sleep": hold}])
+
     def watch_row(self, run_id="42"):
         db = sqlite3.connect(self.state_dir / "ghg.db")
         try:
@@ -225,8 +242,9 @@ class TestCoalescing(WatchTestCase):
         self.assertEqual(self.stub_calls(), 3)
 
     def test_c_claim_race_two_watchers(self):
-        self.set_plan([{"status": "completed", "conclusion": "success"}])
-        procs = [self.spawn_watcher(), self.spawn_watcher()]
+        self.set_held_completion_plan()
+        procs = [self.spawn_watcher(interval="30"),
+                 self.spawn_watcher(interval="30")]
         for proc in procs:
             code, out, _ = self.finish(proc)
             self.assertEqual(code, 0)
@@ -437,7 +455,7 @@ class TestCompletedRowRevalidation(WatchTestCase):
             {"status": "in_progress", "conclusion": None, "attempt": 1},
             {"status": "completed", "conclusion": "success", "attempt": 1},
             {"status": "completed", "conclusion": "success", "attempt": 1,
-             "sleep": 2},
+             "sleep": SLOW_STUB_SLEEP},
         ])
         first = self.spawn_watcher()
         code, out, _ = self.finish(first)
@@ -454,7 +472,7 @@ class TestCompletedRowRevalidation(WatchTestCase):
         self.assertIn("ghg watch: run 42 timeout after 0.1s", out)
         self.assertNotIn("conclusion=success", out)
         self.assertEqual(self.stub_calls(), 3)
-        self.assertLess(elapsed, 1.8,
+        self.assertLess(elapsed, SLOW_STUB_SLEEP - 1.5,
                         "revalidation read was not bounded promptly: %.3fs"
                         % elapsed)
 
@@ -500,7 +518,7 @@ class TestCompletedRowRevalidation(WatchTestCase):
             {"status": "in_progress", "conclusion": None, "attempt": 1},
             {"status": "completed", "conclusion": "success", "attempt": 1},
             {"status": "completed", "conclusion": "success", "attempt": 1,
-             "sleep": 2},
+             "sleep": COMPOSED_STEP_SLEEP},
         ])
         first = self.spawn_watcher()
         code, out, _ = self.finish(first)
@@ -519,7 +537,7 @@ class TestCompletedRowRevalidation(WatchTestCase):
             db.commit()
         finally:
             db.close()
-        os.environ["GHG_STUB_API_SLEEP"] = "2"
+        os.environ["GHG_STUB_API_SLEEP"] = str(COMPOSED_STEP_SLEEP)
         self.addCleanup(os.environ.pop, "GHG_STUB_API_SLEEP", None)
         started = time.monotonic()
         second = self.spawn_watcher(timeout_s="2.5")
@@ -532,7 +550,7 @@ class TestCompletedRowRevalidation(WatchTestCase):
         # exactly one more rate_limit fetch and one more run view call.
         self.assertEqual(self.api_calls(), 2)
         self.assertEqual(self.stub_calls(), 3)
-        self.assertLess(elapsed, 3.5,
+        self.assertLess(elapsed, COMPOSED_BOUND,
                         "snapshot + revalidation read were not jointly"
                         " bounded by the watch deadline: %.3fs" % elapsed)
 
@@ -555,17 +573,21 @@ class TestPollDeadline(WatchTestCase):
 
     def test_slow_poll_honors_watch_timeout(self):
         self.set_plan([
-            {"status": "in_progress", "conclusion": None, "sleep": 2},
+            {"status": "in_progress", "conclusion": None,
+             "sleep": SLOW_STUB_SLEEP},
         ])
         started = time.monotonic()
-        proc = self.spawn_watcher(interval="45", timeout_s="0.1")
+        # 1s, not 0.1s: a cold start on a loaded CI runner must still
+        # reach the stub, while 6s of stub sleep proves the read is cut
+        # by the caller's remaining budget rather than its own timeout.
+        proc = self.spawn_watcher(interval="45", timeout_s="1")
         code, out, _ = self.finish(proc)
         elapsed = time.monotonic() - started
         self.assertEqual(code, 1)
-        self.assertIn("ghg watch: run 42 timeout after 0.1s", out)
+        self.assertIn("ghg watch: run 42 timeout after 1s", out)
         self.assertNotIn("conclusion=", out)
         self.assertEqual(self.stub_calls(), 1)
-        self.assertLess(elapsed, 1.8,
+        self.assertLess(elapsed, SLOW_STUB_SLEEP - 1.5,
                         "poll read was not bounded by the remaining"
                         " deadline: %.3fs" % elapsed)
 
@@ -600,10 +622,11 @@ class TestPollDeadline(WatchTestCase):
         # must finish at ~2.5s (+ the sub-second floor), not at the
         # ~4s+ the two stacked per-step bounds allow.
         self.stub.write_text(COMBINED_STUB_GH)
-        os.environ["GHG_STUB_API_SLEEP"] = "2"
+        os.environ["GHG_STUB_API_SLEEP"] = str(COMPOSED_STEP_SLEEP)
         self.addCleanup(os.environ.pop, "GHG_STUB_API_SLEEP", None)
         self.set_plan([
-            {"status": "in_progress", "conclusion": None, "sleep": 2},
+            {"status": "in_progress", "conclusion": None,
+             "sleep": COMPOSED_STEP_SLEEP},
         ])
         started = time.monotonic()
         proc = self.spawn_watcher(interval="45", timeout_s="2.5")
@@ -616,7 +639,7 @@ class TestPollDeadline(WatchTestCase):
         # exactly one rate_limit fetch and one run view call.
         self.assertEqual(self.api_calls(), 1)
         self.assertEqual(self.stub_calls(), 1)
-        self.assertLess(elapsed, 3.5,
+        self.assertLess(elapsed, COMPOSED_BOUND,
                         "snapshot + poll read were not jointly"
                         " bounded by the watch deadline: %.3fs"
                         % elapsed)
@@ -656,9 +679,10 @@ class TestRepoKeyCanonicalization(WatchTestCase):
         self.assertEqual(ghg.canonical_repo("a/b/c/d"), "a/b/c/d")
 
     def test_host_spelling_coalesces(self):
-        self.set_plan([{"status": "completed", "conclusion": "success"}])
-        plain = self.spawn_watcher()
-        hosted = self.spawn_watcher(repo="github.com/owner/repo")
+        self.set_held_completion_plan()
+        plain = self.spawn_watcher(interval="30")
+        hosted = self.spawn_watcher(interval="30",
+                                    repo="github.com/owner/repo")
         for proc in (plain, hosted):
             code, out, _ = self.finish(proc)
             self.assertEqual(code, 0)
@@ -671,9 +695,9 @@ class TestRepoKeyCanonicalization(WatchTestCase):
         self.assertEqual(rows[0][0], "owner/repo#42")
 
     def test_case_spelling_coalesces(self):
-        self.set_plan([{"status": "completed", "conclusion": "success"}])
-        upper = self.spawn_watcher(repo="Owner/Repo")
-        lower = self.spawn_watcher()
+        self.set_held_completion_plan()
+        upper = self.spawn_watcher(interval="30", repo="Owner/Repo")
+        lower = self.spawn_watcher(interval="30")
         for proc in (upper, lower):
             code, out, _ = self.finish(proc)
             self.assertEqual(code, 0)
