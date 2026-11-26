@@ -198,16 +198,20 @@ class WatchTestCase(unittest.TestCase):
         self.assertNotIn("Traceback", err)
         return proc.returncode, out, err
 
-    def set_held_completion_plan(self, hold=2):
+    def set_held_completion_plan(self, hold=None):
         """One poll that completes, but only after `hold` seconds.
 
         A watcher that starts AFTER completion legitimately issues its
         own revalidation read, so coalescing tests asserting exactly one
         stub call must keep the run in flight until every watcher has
-        started (hold >> process-startup skew). The long --interval gives
-        the poll a timeout of interval-5 (> hold); it costs no wall time
-        because the poller exits on completion.
+        started (hold >> process-startup skew). 8s is far above observed
+        startup (~0.1s) and CI jitter; `GHG_TEST_COALESCE_HOLD` can raise
+        it further on a slow machine. The long --interval gives the poll
+        a timeout of interval-5 (> hold); it costs no wall time beyond
+        the hold because the poller exits on completion.
         """
+        if hold is None:
+            hold = float(os.environ.get("GHG_TEST_COALESCE_HOLD", "8"))
         self.set_plan([{"status": "completed", "conclusion": "success",
                         "sleep": hold}])
 
@@ -239,8 +243,8 @@ class TestCoalescing(WatchTestCase):
 
     def test_c_claim_race_two_watchers(self):
         self.set_held_completion_plan()
-        procs = [self.spawn_watcher(interval="10"),
-                 self.spawn_watcher(interval="10")]
+        procs = [self.spawn_watcher(interval="30"),
+                 self.spawn_watcher(interval="30")]
         for proc in procs:
             code, out, _ = self.finish(proc)
             self.assertEqual(code, 0)
@@ -673,8 +677,8 @@ class TestRepoKeyCanonicalization(WatchTestCase):
 
     def test_host_spelling_coalesces(self):
         self.set_held_completion_plan()
-        plain = self.spawn_watcher(interval="10")
-        hosted = self.spawn_watcher(interval="10",
+        plain = self.spawn_watcher(interval="30")
+        hosted = self.spawn_watcher(interval="30",
                                     repo="github.com/owner/repo")
         for proc in (plain, hosted):
             code, out, _ = self.finish(proc)
@@ -689,8 +693,8 @@ class TestRepoKeyCanonicalization(WatchTestCase):
 
     def test_case_spelling_coalesces(self):
         self.set_held_completion_plan()
-        upper = self.spawn_watcher(interval="10", repo="Owner/Repo")
-        lower = self.spawn_watcher(interval="10")
+        upper = self.spawn_watcher(interval="30", repo="Owner/Repo")
+        lower = self.spawn_watcher(interval="30")
         for proc in (upper, lower):
             code, out, _ = self.finish(proc)
             self.assertEqual(code, 0)

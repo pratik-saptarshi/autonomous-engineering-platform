@@ -28,13 +28,22 @@ SHIM_DIR=$(CDPATH= cd -- "$(dirname -- "$GHG_SELF")" && pwd)
 GHG_PY="$SHIM_DIR/../ghg.py"
 STATE_DIR=${GHG_STATE_DIR:-"$HOME/workspace/ghg-state"}
 REAL_GH=${GHG_REAL_GH:-/usr/bin/gh}
-# State dir is owner-only (0700): it holds argv traces. The umask is
-# scoped to a subshell so the exec'd gh/python keep the caller's umask;
-# chmod also tightens a pre-existing looser directory.
-(umask 077 && mkdir -p "$STATE_DIR") 2>/dev/null || true
-chmod 700 "$STATE_DIR" 2>/dev/null || true
+# State dir is owner-only (0700) when this invocation creates it: it
+# holds argv traces. A pre-existing directory (a shared dir, a checkout,
+# the working directory) is never chmodded -- that would remove access
+# for unrelated users and files -- and the files written here are 0600
+# instead.
+# shellcheck disable=SC1007 # same empty-assignment idiom as SHIM_DIR above
+state_real=$(CDPATH= cd -- "$STATE_DIR" 2>/dev/null && pwd -P) || state_real=
+cwd_real=$(pwd -P)
+if [ -n "$state_real" ] && [ "$state_real" = "$cwd_real" ]; then
+  : # never chmod the working directory
+elif [ ! -d "$STATE_DIR" ]; then
+  (umask 077 && mkdir -p "$STATE_DIR") 2>/dev/null &&
+    chmod 700 "$STATE_DIR" 2>/dev/null || true
+fi
 
-if python3 -c 'import py_compile, sys; py_compile.compile(sys.argv[1], cfile=sys.argv[2], doraise=True)' "$GHG_PY" "$STATE_DIR/ghg.pyc" 2>/dev/null; then
+if (umask 077 && python3 -c 'import py_compile, sys; py_compile.compile(sys.argv[1], cfile=sys.argv[2], doraise=True)' "$GHG_PY" "$STATE_DIR/ghg.pyc" 2>/dev/null); then
   exec python3 "$GHG_PY" "$@"
 fi
 
@@ -81,8 +90,10 @@ for tok in "$@"; do
   esac
 done
 safe_argv=${safe_argv# }
-printf '%s ghg.py failed py_compile; fallback verb=%s argv=%s\n' \
-  "$(date +%s)" "${1:-}" "$safe_argv" >>"$STATE_DIR/fallback.log" 2>/dev/null || true
+(umask 077
+ printf '%s ghg.py failed py_compile; fallback verb=%s argv=%s\n' \
+  "$(date +%s)" "${1:-}" "$safe_argv" >>"$STATE_DIR/fallback.log" 2>/dev/null) || true
+chmod 600 "$STATE_DIR/fallback.log" 2>/dev/null || true
 
 verb=${1:-}
 case "$verb" in

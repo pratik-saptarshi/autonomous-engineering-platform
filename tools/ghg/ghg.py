@@ -73,18 +73,34 @@ def db_path():
 
 
 def _ensure_state_dir(path):
-    """Create `path` owner-only (0700), tightening a looser existing dir.
+    """Create `path` owner-only (0700) when this process creates it.
 
-    The ledger and traces hold argv history; mkdir's mode is masked by
-    the umask and ignored for an existing directory, so chmod explicitly.
-    Never chmod the implicit current directory (``"."`` or ``""``).
-    Hardening is best-effort: a directory we cannot chmod (not ours) is
-    warned about, never a reason to block the call.
+    An existing directory is never chmodded: a configured state dir or a
+    database parent can be shared (`/`, `/tmp`, a checkout), and removing
+    group/other access there breaks unrelated services. Files ghg writes
+    are created 0600 instead (see `_fallback_log` and `open_db`), so
+    state stays private without touching a directory's mode. The working
+    directory is exempt for the same reason.
     """
     path = Path(path)
-    if str(path) in ("", "."):
+    try:
+        resolved = path.resolve()
+        cwd = Path.cwd().resolve()
+    except OSError:
+        resolved = cwd = None
+    if str(path) in ("", ".") or (resolved is not None
+                                  and resolved == cwd):
         return
-    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if path.is_dir():
+        return
+    try:
+        path.mkdir(parents=True, mode=0o700)
+    except FileExistsError:
+        return  # another process created it first; leave its mode alone
+    except OSError as exc:
+        print("ghg: WARNING cannot create state dir %s: %s" % (path, exc),
+              file=sys.stderr)
+        return
     try:
         os.chmod(path, 0o700)
     except OSError as exc:
@@ -148,8 +164,14 @@ def _fallback_log(line):
     try:
         directory = state_dir()
         _ensure_state_dir(directory)
-        with open(directory / "fallback.log", "a") as fh:
+        path = directory / "fallback.log"
+        # 0600 at creation and on every append: the trace holds argv
+        # history, and the directory may be shared (e.g. the working
+        # directory), where its mode is not ours to tighten.
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "a") as fh:
             fh.write("%d %s\n" % (int(time.time()), line))
+        os.chmod(path, 0o600)
     except OSError:
         pass  # the log is a trace, never a reason to block the call
 
@@ -361,6 +383,21 @@ def gated_gh(argv, actor, timeout=None, budget_s=None):
 
 # ------------------------------------------------------------------ db
 
+def _tighten_db_files(path):
+    """Owner-only (0600) for the database and SQLite's side files.
+
+    The parent directory is left alone (it may be shared), so the files
+    themselves carry the privacy guarantee.
+    """
+    for suffix in ("", "-wal", "-shm", "-journal"):
+        target = Path(str(path) + suffix)
+        try:
+            if target.exists():
+                os.chmod(target, 0o600)
+        except OSError:
+            pass
+
+
 def open_db(path):
     if str(path) != ":memory:":
         _ensure_state_dir(Path(path).parent)
@@ -382,6 +419,8 @@ def open_db(path):
                 time.sleep(0.1 + random.uniform(0, 0.1))
                 continue
             raise
+    if str(path) != ":memory:":
+        _tighten_db_files(Path(path))
     return conn
 
 
@@ -468,7 +507,14 @@ def _positive_int(x):
 
 
 def _parse_limits_override(raw):
-    """Validate GHG_LIMITS_JSON; return (bucket -> pairs) or raise ValueError."""
+    """Validate GHG_LIMITS_JSON; return (bucket -> pairs) or raise.
+
+    An override may only *tighten* the built-in caps. `GHG_LIMITS_JSON`
+    is process environment an agent can set, so accepting a wider cap
+    would let it raise its own budget silently. Every built-in window of
+    a named bucket must be present, no new window may be added, and each
+    cap must be at most the built-in cap.
+    """
     parsed = json.loads(raw)
     if not isinstance(parsed, dict):
         raise ValueError("root must be an object, got %s"
@@ -480,13 +526,32 @@ def _parse_limits_override(raw):
         if not isinstance(pairs, list) or not pairs:
             raise ValueError("bucket %r needs a non-empty list of"
                              " [window_s, cap] pairs" % bucket)
-        checked = []
+        defaults = dict(DEFAULT_LIMITS[bucket])
+        checked, seen = [], set()
         for pair in pairs:
             if not (isinstance(pair, (list, tuple)) and len(pair) == 2
                     and _positive_int(pair[0]) and _positive_int(pair[1])):
                 raise ValueError("bucket %r pair %r is not two positive"
                                  " bounded integers" % (bucket, pair))
-            checked.append((pair[0], pair[1]))
+            window_s, cap = pair
+            if window_s not in defaults:
+                raise ValueError("bucket %r window %ss is not a built-in"
+                                 " window" % (bucket, window_s))
+            if window_s in seen:
+                raise ValueError("bucket %r window %ss is duplicated"
+                                 % (bucket, window_s))
+            seen.add(window_s)
+            if cap > defaults[window_s]:
+                raise ValueError("bucket %r window %ss cap %d widens the"
+                                 " built-in cap %d"
+                                 % (bucket, window_s, cap,
+                                    defaults[window_s]))
+            checked.append((window_s, cap))
+        missing = sorted(set(defaults) - seen)
+        if missing:
+            raise ValueError("bucket %r override drops built-in window(s)"
+                             " %s" % (bucket, ", ".join("%ss" % w
+                                                        for w in missing)))
         out[str(bucket)] = checked
     return out
 
@@ -496,11 +561,10 @@ def load_limits():
 
     The override is merged over a fresh copy of DEFAULT_LIMITS, so a
     partial override keeps the default caps of unmentioned buckets. An
-    invalid override (malformed or over-nested JSON, non-object root,
-    unknown bucket, empty or malformed window list, non-positive,
-    out-of-range, or boolean numbers) is rejected atomically with a
-    stderr warning and the defaults apply: a broken override must never
-    widen, crash, or remove a cap.
+    override may only lower caps: widening a cap, adding or dropping a
+    window, an unknown bucket, an empty or malformed list, and non-
+    positive, out-of-range, or boolean numbers are all rejected
+    atomically with a stderr warning and the defaults apply.
     """
     override = {}
     raw = os.environ.get("GHG_LIMITS_JSON")

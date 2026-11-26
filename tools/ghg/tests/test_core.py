@@ -12,6 +12,7 @@ import io
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import threading
@@ -595,6 +596,34 @@ class TestLoadLimits(CoreTestCase):
             self.assert_defaults(limits)
             self.assertIn("GHG_LIMITS_JSON", err, raw)
 
+    def test_tightening_override_is_accepted(self):
+        limits, _ = self.load(json.dumps(
+            {"search": [[60, 5]],
+             "content": [[60, 1], [3600, 300]]}))
+        self.assertEqual(limits["search"], [(60, 5)])
+        self.assertEqual(limits["content"], [(60, 1), (3600, 300)])
+
+    def test_widening_override_is_rejected(self):
+        limits, err = self.load(json.dumps({"search": [[60, 21]]}))
+        self.assert_defaults(limits)
+        self.assertIn("widens", err)
+
+    def test_new_window_is_rejected(self):
+        limits, err = self.load(json.dumps({"core": [[60, 10]]}))
+        self.assert_defaults(limits)
+        self.assertIn("built-in window", err)
+
+    def test_dropping_a_window_is_rejected(self):
+        limits, err = self.load(json.dumps({"content": [[60, 1]]}))
+        self.assert_defaults(limits)
+        self.assertIn("drops", err)
+
+    def test_duplicate_window_is_rejected(self):
+        limits, err = self.load(json.dumps(
+            {"content": [[60, 1], [60, 2], [3600, 300]]}))
+        self.assert_defaults(limits)
+        self.assertIn("duplicated", err)
+
     def test_one_bad_bucket_rejects_whole_override(self):
         limits, _ = self.load(json.dumps(
             {"search": [[60, 5]], "core": []}))
@@ -615,9 +644,9 @@ class TestLoadLimits(CoreTestCase):
     def test_valid_override_applied_and_defaults_not_mutated(self):
         before = {b: list(p) for b, p in ghg.DEFAULT_LIMITS.items()}
         limits, err = self.load(json.dumps(
-            {"content": [[30, 2], [600, 9]]}))
+            {"content": [[60, 2], [3600, 9]]}))
         self.assertEqual(err, "")
-        self.assertEqual(limits["content"], [(30, 2), (600, 9)])
+        self.assertEqual(limits["content"], [(60, 2), (3600, 9)])
         limits["content"].append((1, 1))
         self.assertEqual(ghg.DEFAULT_LIMITS, before)
         self.assertEqual(ghg.DEFAULT_LIMITS["content"],
@@ -676,14 +705,26 @@ class TestStateDirMode(CoreTestCase):
         self.assertEqual(self.mode(self.fresh), 0o700)
         self.assertIn("trace line", (self.fresh / "fallback.log").read_text())
 
-    def test_existing_loose_dir_is_tightened(self):
+    def test_existing_shared_dir_is_not_chmodded(self):
+        # A configured dir or DB parent may be shared; chmodding it
+        # would break unrelated users. Files are 0600 instead.
         self.fresh.mkdir(parents=True)
         os.chmod(self.fresh, 0o755)
         ghg._ensure_state_dir(self.fresh)
-        self.assertEqual(self.mode(self.fresh), 0o700)
-        os.chmod(self.fresh, 0o755)
+        self.assertEqual(self.mode(self.fresh), 0o755)
         ghg.open_db(self.fresh / "ghg.db").close()
-        self.assertEqual(self.mode(self.fresh), 0o700)
+        self.assertEqual(self.mode(self.fresh), 0o755)
+        self.assertEqual(self.mode(self.fresh / "ghg.db"), 0o600)
+
+    def test_fallback_log_is_0600_in_shared_dir(self):
+        self.fresh.mkdir(parents=True)
+        os.chmod(self.fresh, 0o755)
+        os.environ["GHG_STATE_DIR"] = str(self.fresh)
+        ghg._fallback_log("trace line")
+        self.assertEqual(self.mode(self.fresh), 0o755)
+        self.assertEqual(self.mode(self.fresh / "fallback.log"), 0o600)
+        self.assertIn("trace line",
+                      (self.fresh / "fallback.log").read_text())
 
     def test_ensure_state_dir_is_idempotent(self):
         ghg._ensure_state_dir(self.fresh)
@@ -705,6 +746,24 @@ class TestStateDirMode(CoreTestCase):
             self.assertEqual(self.mode(cwd_dir), 0o755)
         finally:
             os.chdir(old_cwd)
+
+
+class ShimStateDirTests(unittest.TestCase):
+    """The shim must not chmod the working directory (issue #207 D9b)."""
+
+    def test_dot_state_dir_leaves_cwd_mode_alone(self):
+        with tempfile.TemporaryDirectory(prefix="ghg-shim-") as tmp:
+            cwd = Path(tmp) / "project"
+            cwd.mkdir()
+            os.chmod(cwd, 0o755)
+            env = dict(os.environ)
+            env["GHG_STATE_DIR"] = "."
+            env["GHG_REAL_GH"] = "/bin/true"
+            r = subprocess.run(
+                [str(GHG_DIR / "bin" / "ghg"), "--help"],
+                cwd=cwd, env=env, capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(cwd.stat().st_mode & 0o777, 0o755)
 
 
 if __name__ == "__main__":

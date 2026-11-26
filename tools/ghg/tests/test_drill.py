@@ -369,8 +369,9 @@ class TestShimFallback(DrillTestCase):
         self.assertTrue(fallback.rstrip().endswith("-f"), fallback)
 
     def test_j_shim_creates_state_dir_0700(self):
-        # Issue #207 D9b: the shim creates (and tightens) the state dir
-        # owner-only before writing fallback.log, whatever the umask.
+        # Issue #207 D9b: the shim creates the state dir owner-only
+        # before writing fallback.log, whatever the umask. A pre-existing
+        # shared directory keeps its mode; only the trace is 0600.
         broken = self.root / "broken"
         (broken / "bin").mkdir(parents=True)
         shutil.copy(SHIM, broken / "bin" / "ghg")
@@ -391,8 +392,11 @@ class TestShimFallback(DrillTestCase):
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                     text=True, env=env, timeout=30)
                 self.assertEqual(proc.returncode, 0, proc.stderr)
-                self.assertEqual(state.stat().st_mode & 0o777, 0o700)
-                self.assertTrue((state / "fallback.log").exists())
+                expected = 0o700 if state is fresh else 0o755
+                self.assertEqual(state.stat().st_mode & 0o777, expected)
+                log = state / "fallback.log"
+                self.assertTrue(log.exists())
+                self.assertEqual(log.stat().st_mode & 0o777, 0o600)
         finally:
             os.umask(old_umask)
 

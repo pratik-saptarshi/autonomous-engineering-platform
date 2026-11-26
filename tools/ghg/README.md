@@ -176,8 +176,11 @@ replaced by `<redacted len=N>` at write time, in the separate
 spellings. The shim's `fallback.log` applies the same flag set (as
 a bare `<redacted>`, without the length). Response bodies and
 credentials are never stored. The state dir itself is created
-owner-only (`0700`, tightened if it already existed looser), by
-both `ghg.py` and the shim.
+owner-only (`0700`) by both `ghg.py` and the shim when it does not
+exist. An existing directory is never chmodded -- it may be shared,
+or be the working directory (`GHG_STATE_DIR=.`) -- so the ledger,
+its `-wal`/`-shm` side files, and `fallback.log` are created and
+tightened to `0600` instead.
 
 ## The fence — known ungated vectors, by name
 
@@ -235,8 +238,10 @@ Environment knobs that move the fence itself:
   (`{"core": []}`), or any window or cap that is not a positive
   integer (zero, negative, boolean) rejects the *entire* override,
   prints a warning on stderr naming the reason, and applies the
-  built-in defaults. An override can tighten a cap; a broken one
-  can never remove it.
+  built-in defaults. An override can only **tighten**: every
+  built-in window of a named bucket must be present, no new window
+  may be added, and each cap must be at most the built-in cap, so
+  an agent that can set this variable cannot raise its own budget.
 - `GHG_REAL_GH` — path of the real `gh` that `ghg` and the shim
   exec (default `/usr/bin/gh`). Whoever controls it controls what
   actually runs, so it is a trust boundary: set it only to a
