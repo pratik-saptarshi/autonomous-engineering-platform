@@ -471,9 +471,51 @@ def check_restart_claims(files, errors):
                 add(errors, name, f"{rel} repeats the disproved claim {pattern!r}")
 
 
+RUNBOOK = "docs/runbook.md"
+PLANNED_HEADING = "## Appendix: Planned / not yet implemented"
+# Paths of subsystems that are designed but not built. They may appear only in
+# the Planned appendix, never in the executable flow above it.
+RUNBOOK_FORBIDDEN = (
+    r"~/workspace/bin",
+    r"\$HOME/workspace/bin",
+    r"~/workspace/ralph",
+    r"~/workspace/open-connector",
+    r"client\.py",
+)
+CHECKLIST_FORBIDDEN = (r"ralph-loop", r"backlog\.py", r"open-connector")
+CHECKLIST_HEADING = re.compile(r"^## \d+\. Verification checklist\s*$", re.M)
+
+
+def check_runbook_truth(files, errors):
+    """The runbook's executable flow may only describe components that exist."""
+    name = "RUNBOOK-TRUTH"
+    text = files.get(RUNBOOK)
+    if text is None:
+        add(errors, name, f"missing file {RUNBOOK}")
+        return
+    if len(re.findall("^" + re.escape(PLANNED_HEADING) + r"\s*$", text, re.M)) != 1:
+        add(errors, name, f"expected exactly one '{PLANNED_HEADING}' heading")
+        return
+    main = re.split("^" + re.escape(PLANNED_HEADING) + r"\s*$", text, flags=re.M)[0]
+    for pattern in RUNBOOK_FORBIDDEN:
+        if re.search(pattern, main):
+            add(errors, name, f"main runbook sections cite {pattern!r}, which belongs in the Planned appendix or is stale")
+    heading = CHECKLIST_HEADING.search(main)
+    if not heading:
+        add(errors, name, "no numbered 'Verification checklist' section above the Planned appendix")
+        return
+    rest = main[heading.end():]
+    following = re.search(r"^## ", rest, re.M)
+    checklist = rest[: following.start()] if following else rest
+    for pattern in CHECKLIST_FORBIDDEN:
+        if re.search(pattern, checklist):
+            add(errors, name, f"verification checklist cites planned-only {pattern!r}")
+
+
 FILE_CHECKS = [
     ("OPS-DELTAS", check_watchdog_deltas),
     ("DOCS-RESTART", check_restart_claims),
+    ("RUNBOOK-TRUTH", check_runbook_truth),
 ]
 
 # Each mutation is (file, old, new) and must trip the named check.
@@ -482,6 +524,12 @@ FILE_MUTATIONS = {
         [(OPS_README, "exactly six documented deltas", "exactly five documented deltas")],
         [(WATCHDOG_DELTAS, "Delta count: six", "Delta count: five")],
         [(WATCHDOG, "set -euo pipefail", "set -euo pipefail\n# drift")],
+    ],
+    "RUNBOOK-TRUTH": [
+        [(RUNBOOK, "## 1. Binary tools", "## 1. Binary tools\n\nmkdir -p ~/workspace/bin")],
+        [(RUNBOOK, "## Appendix: Planned / not yet implemented", "## Appendix Planned")],
+        [(RUNBOOK, "## 7. Verification checklist\n", "## 7. Verification checklist\n\n- [ ] `ralph-loop` shows a next run time\n")],
+        [(RUNBOOK, "## 1. Binary tools", "## 1. Binary tools\n\nSee client.py")],
     ],
     "DOCS-RESTART": [
         [("README.md", "revives a dead daemon via direct", "revives a dead daemon via MCP auto-spawn and direct")],

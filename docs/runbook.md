@@ -1,13 +1,37 @@
-# Runbook — reproducing the environment
+# Runbook: reproducing the environment
 
-Exact steps to rebuild this platform on a fresh persistent Linux VM (x86_64). Prerequisites: `python3`, `node` 20+, `git`, `curl`, network egress. All paths are under `$HOME`, which must persist across restarts.
+Exact steps to rebuild this platform on a fresh persistent Linux VM (x86_64). All paths are under `$HOME`, which must persist across restarts. Components that are designed but not built are collected in [Appendix: Planned / not yet implemented](#appendix-planned--not-yet-implemented) and are not part of the steps below.
+
+Evidence labels used below: "checked 2026-11-25" means verified against the upstream project or in a clean x86_64 container while preparing this version. "VM record" means an earlier session recorded it from the VM and it was not re-verified here.
+
+## Prerequisites
+
+- `python3`, `node` 20+, `git`, `curl`, and network egress.
+- `gcc` and the ICU development headers (`libicu-dev` on Debian and Ubuntu), because `bd` is built with CGO and links ICU (section 1). Without the headers the build stops with `unicode/uregex.h: No such file or directory` (checked 2026-11-25).
+- glibc 2.39 or newer (Ubuntu 24.04 or newer) to run `neurostrata-mcp`. On Debian 12 the v1.9.0 binary refuses to start with `GLIBC_2.38 not found` (checked 2026-11-25).
+- The Go toolchain: Go 1.27.x under `~/sdk/go`. The VM runs go1.27.2 and CI pins 1.27.4. Section 1 installs it.
+- `~/go/bin` on `PATH`. Every binary in this runbook installs there.
+- `GOTMPDIR` set to a directory under `$HOME`. On the VM `/tmp` is a small tmpfs (512 MB, VM record), and a large `go install` can fail in the linker with "no space left on device" if it builds there. Section 1 sets it.
 
 ## 1. Binary tools
 
+### Go toolchain and PATH
+
+Install Go under `~/sdk/go`, put `~/sdk/go/bin` and `~/go/bin` on `PATH`, and point `GOTMPDIR` at a directory under `$HOME`:
+
 ```bash
-mkdir -p ~/workspace/bin
-echo 'export PATH="$HOME/workspace/bin:$PATH"' >> ~/.bashrc
+mkdir -p ~/sdk ~/go/bin ~/.gotmp
+cd /tmp
+curl -fsSL -o go1.27.2.linux-amd64.tar.gz https://go.dev/dl/go1.27.2.linux-amd64.tar.gz
+echo "ecbadb99091a3f46e31f5f934b068b1864eafa7995211b39eaddf76996045fe5  go1.27.2.linux-amd64.tar.gz" | sha256sum -c -
+rm -rf ~/sdk/go && tar -C ~/sdk -xzf go1.27.2.linux-amd64.tar.gz
+echo 'export PATH="$HOME/sdk/go/bin:$HOME/go/bin:$PATH"' >> ~/.bashrc
+echo 'export GOTMPDIR="$HOME/.gotmp"' >> ~/.bashrc
+export PATH="$HOME/sdk/go/bin:$HOME/go/bin:$PATH" GOTMPDIR="$HOME/.gotmp"
+go version   # go version go1.27.2 linux/amd64
 ```
+
+The checksum is the one go.dev lists for `go1.27.2.linux-amd64.tar.gz` (checked 2026-11-25). Any Go 1.27.x works. The VM runs go1.27.2 and CI pins 1.27.4.
 
 ### beads (issue tracker)
 
@@ -23,14 +47,27 @@ metrics:
 EOF
 ```
 
+`bd` installs from source into `~/go/bin`. The VM record of 2026-10-19 says this is how the VM's copy was built. It needs Go and `gcc` from the prerequisites. Keep the default CGO build: the upstream README's `CGO_ENABLED=0` recipe is reported to produce a broken embedded database (VM record, not re-tested here).
+
+```bash
+go install github.com/steveyegge/beads/cmd/bd@v1.3.1
+bd --version   # bd version 1.3.1 (dev), the (dev) suffix is expected for a source build
+```
+
+Checked 2026-11-25: on arm64 (the x86_64 emulator crashed the Go runtime before the build finished, so x86_64 was not exercised) with Go 1.27.3 and `libicu-dev` installed, this command built `bd version 1.3.1 (dev)`, and `bd init`, `bd ping`, and `bd create` worked in a scratch repo.
+
+The upstream repo moved from `steveyegge/beads` to `gastownhall/beads`, but the module path inside the v1.3.1 tag is still `github.com/steveyegge/beads`, so the command above is correct for that tag (checked against the tag's `go.mod` on 2026-11-25). Upstream also publishes a v1.3.1 release with a `linux_amd64` tarball and a `checksums.txt`. That is a pinned, checksum-verified alternative to the source build. The VM does not use it. The asset names were checked against the release on 2026-11-25:
+
 ```bash
 cd /tmp
-curl -sL -o beads.tar.gz https://github.com/gastownhall/beads/releases/download/v1.3.1/beads_1.3.1_linux_amd64.tar.gz
-curl -sL -o checksums.txt https://github.com/gastownhall/beads/releases/download/v1.3.1/checksums.txt
-grep linux_amd64 checksums.txt | sha256sum -c -
-tar xzf beads.tar.gz bd && install -m 755 bd ~/workspace/bin/bd
-bd --version   # bd version 1.3.1
+curl -fsSL -O https://github.com/gastownhall/beads/releases/download/v1.3.1/beads_1.3.1_linux_amd64.tar.gz
+curl -fsSL -O https://github.com/gastownhall/beads/releases/download/v1.3.1/checksums.txt
+grep beads_1.3.1_linux_amd64.tar.gz checksums.txt | sha256sum -c -
+tar xzf beads_1.3.1_linux_amd64.tar.gz bd && install -m 755 bd ~/go/bin/bd
+bd --version   # bd version 1.3.1 (<commit>)
 ```
+
+Checked 2026-11-25: in an x86_64 Ubuntu 24.04 container the checksum passed and the extracted binary printed `bd version 1.3.1 (c1c4b642a)`. The tarball avoids the ICU build requirement. Its binary was only run for `--version` there.
 
 Belt and braces: run `bd metrics off` explicitly — it is idempotent, and it covers environments where the pre-seed path differed; the expected status output shows metrics OFF:
 
@@ -43,24 +80,37 @@ Verify: `bd ping` returns ok; `bd init` in a scratch git repo, then create/show/
 
 ### open-code-review (diff review)
 
-Fetch the platform package `@alibaba-group/ocr-linux-x64` (v1.13.1) from npm, extract `package/bin/opencodereview`, and link it:
+`ocr` is a prebuilt Linux x86_64 binary (an ELF file), installed as a real file at `~/go/bin/ocr`. Do not symlink an npm package: the earlier npm-package recipe never matched what runs on the VM. The VM install of v1.13.1 is a VM record from 2026-10-16. The asset names below were checked against the upstream `alibaba/open-code-review` release list on 2026-11-25:
 
 ```bash
-ln -s ~/workspace/open-code-review/package/bin/opencodereview ~/workspace/bin/ocr
-ocr --version  # open-code-review v1.13.1
+cd /tmp
+curl -fsSL -O https://github.com/alibaba/open-code-review/releases/download/v1.13.1/opencodereview-linux-amd64
+curl -fsSL -O https://github.com/alibaba/open-code-review/releases/download/v1.13.1/sha256sum.txt
+grep opencodereview-linux-amd64 sha256sum.txt | sha256sum -c -
+install -m 755 opencodereview-linux-amd64 ~/go/bin/ocr
+ocr --version  # open-code-review v1.13.1 (<commit>) linux/amd64
 ```
+
+Checked 2026-11-25: in an x86_64 container the checksum passed and `ocr --version` printed `open-code-review v1.13.1 (8eb8334) linux/amd64`. `file` reports a statically linked x86-64 ELF.
 
 Verify (no API key needed): in a scratch git repo, `ocr delegate preview --format json` and `ocr delegate rule --format json <files>` return review specs.
 
 ### NeuroStrata engine (memory backend)
 
+The v1.9.0 release tarball installs to `~/go/bin/neurostrata-mcp` (the VM install is a VM record from 2026-10-16 with a SHA-256 check). The binary sits at `dist/linux/neurostrata-mcp` inside the tarball (checked 2026-11-25). The data and log directory is `~/workspace/neurostrata`:
+
 ```bash
-mkdir -p ~/workspace/neurostrata/bin
+mkdir -p ~/workspace/neurostrata
 cd /tmp
-# neurostrata-mcp-linux-amd64.tar.gz from the v1.9.0 release; verify SHA256
-tar xzf neurostrata-mcp-linux-amd64.tar.gz -C ~/workspace/neurostrata/bin
-~/workspace/neurostrata/bin/neurostrata-mcp --version  # neurostrata-mcp 1.9.0
+curl -fsSL -O https://github.com/Cognilogical/NeuroStrata/releases/download/v1.9.0/neurostrata-mcp-linux-amd64.tar.gz
+curl -fsSL -O https://github.com/Cognilogical/NeuroStrata/releases/download/v1.9.0/SHA256SUMS
+grep neurostrata-mcp-linux-amd64.tar.gz SHA256SUMS | sha256sum -c -
+tar xzf neurostrata-mcp-linux-amd64.tar.gz dist/linux/neurostrata-mcp
+install -m 755 dist/linux/neurostrata-mcp ~/go/bin/neurostrata-mcp
+neurostrata-mcp --version  # neurostrata-mcp 1.9.0
 ```
+
+Checked 2026-11-25: in an x86_64 Ubuntu 24.04 container the checksum passed and the binary printed `neurostrata-mcp 1.9.0`.
 
 ### OpenChamber (optional OpenCode workspace)
 
@@ -140,11 +190,14 @@ done
 ## 3. Start the daemon
 
 ```bash
-nohup ~/workspace/neurostrata/bin/neurostrata-mcp daemon > ~/workspace/neurostrata/daemon.log 2>&1 &
+mkdir -p ~/workspace/neurostrata
+HF_HUB_OFFLINE=1 nohup neurostrata-mcp daemon >> ~/workspace/neurostrata/daemon.log 2>&1 &
 sleep 15
-~/workspace/neurostrata/bin/neurostrata-mcp status
+neurostrata-mcp status
 # expect: "status: healthy -- one daemon is serving every console"
 ```
+
+Append with `>>`, never `>`. A truncating redirect destroys the previous run's log, which is the only evidence of an unexpected death (see `docs/limitation-analysis.md` section 1). `HF_HUB_OFFLINE=1` is required because the binary cannot download its model through a TLS-intercepting proxy (see section 2).
 
 The daemon log must show the embedder initializing from cache with no download attempt. The store is created at `~/.config/NeuroStrata/data/db/ladybug.db`.
 
@@ -173,54 +226,39 @@ neurostrata-mcp list guard      # expect: Found 3 memories (or more)
 scripts/boot-gate.sh            # expect: BOOT-GATE: guards ok
 ```
 
-## 4. MCP client and connector registration
+## 4. MCP client registration
 
-The server speaks MCP over stdio (protocol version `2024-11-05`). Write a minimal JSON-RPC client with `list-tools` and `call-tool --name --arguments-file` commands. Two protocol quirks to handle:
+The memory backend is consumed over MCP stdio. The wiring in the VM record of 2026-10-19 is the OpenCode config at `~/.config/opencode/opencode.json`. This repo does not ship that file, so the block below is a record and was not re-read in this change. Use the absolute path of your own `~/go/bin/neurostrata-mcp`:
 
-- After `notifications/initialized`, the server emits a bare `{}` line on stdout. Tolerate non-JSON-RPC lines instead of failing.
-- Maintain an `ALLOWED_TOOLS` allowlist, populated only with tool names reviewed from `list-tools` output. Suggested initial set: `neurostrata_add_memory`, `neurostrata_get_memory`, `neurostrata_search_memory`, `neurostrata_list_namespaces`, `neurostrata_get_snapshot`, `neurostrata_supersede_memory`, `neurostrata_archive_memory`, `neurostrata_append_log`.
-
-Verify end to end:
-
-```bash
-client.py list-tools
-# add a test memory
-client.py call-tool --name neurostrata_add_memory --arguments-file add.json
-# search it back (exercises the embedding model)
-client.py call-tool --name neurostrata_search_memory --arguments-file search.json
-# fetch by id, then archive the test record
+```json
+"mcp": {
+  "neurostrata": {
+    "type": "local",
+    "command": ["/home/<user>/go/bin/neurostrata-mcp"],
+    "enabled": true
+  }
+}
 ```
 
-`add_memory` requires `content`, `namespace`, `project_root`. Set `create_new_namespace: true` only for a genuinely new namespace.
+The daemon must already be running. A bare MCP spawn does not reliably start it (verified 2026-10-16), so start it as in section 3 before a session. Verify with the CLI, which needs no client:
+
+```bash
+neurostrata-mcp status          # expect: status: healthy
+neurostrata-mcp list guard      # lists the guard namespace (seeded in section 3)
+```
+
+From an OpenCode session with the server enabled, the `neurostrata_list_namespaces` tool returns the namespace list.
 
 ## 5. Skill library
 
-Install each skill as `~/workspace/custom-skills/<name>/` containing `SKILL.md` and `skill.yaml`. Adapt upstream repos to local conventions; skip harness-specific plugins, anything needing unavailable credentials, and anything that duplicates an existing skill. Record the source of each skill. The inventory in the README lists all 58 skills and their 12 upstream sources.
+The canonical skill library is `skills/` in this repo (see the component status table in `README.md`). The deployed copy lives at `~/workspace/custom-skills/<name>/`, each skill holding `SKILL.md` and `skill.yaml`. Adapt upstream repos to local conventions. Skip harness-specific plugins, anything that needs unavailable credentials, and anything that duplicates an existing skill. Record the source of each skill. `docs/paperthin-skills.md` catalogs the paperthin skills.
 
 Two local integrations to apply after install:
 
-- `ralph_loop/SKILL.md`: before spawning the worker, search the memory backend for relevant past learnings and include the top hits in the brief; after each iteration, record durable outcomes in the loop's `learnings.md` only — promotion to NeuroStrata happens only as a curator proposal the owner approves, carried out outside the loop, never as a direct write by a loop role.
+- `ralph_loop/SKILL.md`: before spawning the worker, search the memory backend for relevant past learnings and include the top hits in the brief. After each iteration, record durable outcomes in the loop's `learnings.md` only. Promotion to NeuroStrata happens only as a curator proposal the owner approves, carried out outside the loop, never as a direct write by a loop role. The skill exists in this repo, but the scheduler and backlog it drives are planned, not built (see the Planned appendix).
 - `systematic-debugging/SKILL.md`: after a verified fix, inscribe root causes that teach beyond the session as rules.
 
-## 6. Ralph loop and scheduler
-
-```bash
-mkdir -p ~/workspace/ralph/bin
-```
-
-- `backlog.md`: tasks as H2 sections with an ID prefix; metadata (`status`, `labels`, `priority`, `depends-on`) in HTML comments under the heading. Statuses: `to-do`, `in-progress`, `in-review`, `done`.
-- `bin/backlog.py`: `list` and `next` commands (next = highest-priority unblocked to-do task, as JSON).
-- Schedule: one job, id `ralph-loop`, interval 2 h, timeout 7200 s. Body instructs the worker to read the skill, run at most 6 iterations, stop on stall or triple failure, report only when work was done or attention is needed, and write observations to the daily log (never `MEMORY.md`).
-
-## 7. open-connector gateway (optional)
-
-```bash
-cd ~/workspace/open-connector && npm install   # 536 packages; generates the catalog
-```
-
-Start on demand (`start.sh`, ~20 s), discover actions (`oc.py list <service>` / `oc.py doc <action.id>`), execute (`oc.py run <action.id> '<json>'`), stop with `stop.sh`. If provider calls fail on egress, allowlist the host via `OOMOL_CONNECT_EGRESS_TRUSTED_HOSTS`.
-
-## 8. Egress domain blocks
+## 6. Egress domain blocks
 
 Some provider domains (`dolthub.com`, `gastownhall-eventsapi.com`) are bypassed from the egress proxy through `NO_PROXY` in `/etc/environment` and then dropped at the firewall. Apply the drops after every boot and after any VM replacement, because iptables rules do not survive either:
 
@@ -239,16 +277,46 @@ sudo iptables -S OUTPUT | grep DROP    # one DROP rule per resolved IPv4 address
 sudo ip6tables -S OUTPUT | grep DROP   # present when IPv6 is active
 ```
 
-## 9. Verification checklist
+## 7. Verification checklist
 
+- [ ] `go version` reports a go1.27.x toolchain and `command -v bd ocr neurostrata-mcp` lists three paths under `~/go/bin`
 - [ ] `bd ping` ok; issue lifecycle (create/show/close) works; per-repo isolation confirmed
 - [ ] `bd` metrics OFF, proven by BOTH signals: `bd metrics` reports OFF, **and** `~/.config/bd/config.yaml` carries `disabled: true` under `metrics:` — assert with `grep -A2 '^metrics:' ~/.config/bd/config.yaml | grep -q 'disabled: true'` (exits non-zero when the flag is absent). If either check fails, setup has FAILED — stop and fix before continuing onboarding. A future bd version that moves the setting or changes the default must break setup visibly here, not silently phone home
 - [ ] `ocr delegate preview` returns a review spec with no API key
-- [ ] `neurostrata-mcp status` healthy; MCP store/search/fetch/archive round-trip passes
+- [ ] `neurostrata-mcp status` reports `status: healthy` and `scripts/boot-gate.sh` prints `BOOT-GATE: daemon ok`
 - [ ] `scripts/seed-boot-guards.sh --check` exits 0 and `scripts/boot-gate.sh` prints `BOOT-GATE: guards ok`
-- [ ] `sudo scripts/apply-domain-blocks.sh` prints `Domain blocks applied and verified:` and `iptables -S OUTPUT` lists a DROP rule for each blocked domain
-- [ ] `backlog.py next` returns the expected task as JSON
-- [ ] Scheduler shows the `ralph-loop` job with a next run time
-- [ ] Scheduler shows the `neurostrata-watchdog` job; a manual run backs up to Google Drive on DB change
-- [ ] A scheduled run with an empty backlog ends quietly; a run with tasks reports a summary
+- [ ] `sudo scripts/apply-domain-blocks.sh` prints `Domain blocks applied and verified:` and `sudo iptables -S OUTPUT` lists a DROP rule for each blocked domain
+- [ ] `ops/bin/deploy-watchdog.sh --check` exits 0 (the deployed watchdog matches `ops/bin/watchdog-backup.sh`)
+- [ ] The scheduler lists the `neurostrata-watchdog` job (every 2 h, see `ops/crons/CRONS.md`)
 - [ ] (Optional) OpenChamber: `curl -s http://127.0.0.1:3411/health` reports `"openCodeRunning":true` with `"openCodePort":49374`, and the UI session list shows the background service's existing sessions
+
+## Appendix: Planned / not yet implemented
+
+These subsystems were designed and are not built, so none of the steps above depend on them. The text is kept as design reference. Do not follow it expecting a working result. The README component status table is the source of truth for what exists.
+
+### A.1 Ralph loop and scheduler
+
+```bash
+mkdir -p ~/workspace/ralph/bin
+```
+
+- `backlog.md`: tasks as H2 sections with an ID prefix; metadata (`status`, `labels`, `priority`, `depends-on`) in HTML comments under the heading. Statuses: `to-do`, `in-progress`, `in-review`, `done`.
+- `bin/backlog.py`: `list` and `next` commands (next = highest-priority unblocked to-do task, as JSON).
+- Schedule: one job, id `ralph-loop`, interval 2 h, timeout 7200 s. Body instructs the worker to read the skill, run at most 6 iterations, stop on stall or triple failure, report only when work was done or attention is needed, and write observations to the daily log (never `MEMORY.md`).
+
+### A.2 open-connector gateway (optional)
+
+```bash
+cd ~/workspace/open-connector && npm install   # 536 packages; generates the catalog
+```
+
+Start on demand (`start.sh`, ~20 s), discover actions (`oc.py list <service>` / `oc.py doc <action.id>`), execute (`oc.py run <action.id> '<json>'`), stop with `stop.sh`. If provider calls fail on egress, allowlist the host via `OOMOL_CONNECT_EGRESS_TRUSTED_HOSTS`.
+
+### A.3 Custom stdio MCP client
+
+Planned: a hand-written JSON-RPC client at `~/workspace/custom-connectors/custom.neurostrata/bin/client.py` with `list-tools` and `call-tool --name --arguments-file` commands. It is not built. Section 4 uses the OpenCode MCP wiring and the CLI instead. The design notes are kept for anyone who writes one. The server speaks MCP over stdio (protocol version `2024-11-05`). Two protocol quirks to handle:
+
+- After `notifications/initialized`, the server emits a bare `{}` line on stdout. Tolerate non-JSON-RPC lines instead of failing.
+- Maintain an `ALLOWED_TOOLS` allowlist, populated only with tool names reviewed from `list-tools` output. Suggested initial set: `neurostrata_add_memory`, `neurostrata_get_memory`, `neurostrata_search_memory`, `neurostrata_list_namespaces`, `neurostrata_get_snapshot`, `neurostrata_supersede_memory`, `neurostrata_archive_memory`, `neurostrata_append_log`.
+
+Planned end-to-end check: `client.py list-tools`, add a test memory, search it back (this exercises the embedding model), fetch it by id, then archive the test record. `add_memory` requires `content`, `namespace`, `project_root`. Set `create_new_namespace: true` only for a genuinely new namespace.

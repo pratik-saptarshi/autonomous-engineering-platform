@@ -94,8 +94,8 @@ The paths below describe the persistent Linux VM where the environment was built
 | NeuroStrata MCP connector (custom stdio client) | `~/workspace/custom-connectors/custom.neurostrata/` | Reported registered on VM |
 | Embedding model cache (nomic-embed-text-v1.5, 523 MB) | `~/.cache/neuro/models/fastembed` | Reported pre-seeded on VM |
 | Memory store (ladybug.db) | `~/.config/NeuroStrata/data/db/` | Reported live on VM |
-| beads (v1.3.1) | `~/workspace/bin/bd` | Reported installed on VM |
-| open-code-review (v1.13.1) | `~/workspace/bin/ocr` | Reported installed on VM |
+| beads (v1.3.1) | `~/go/bin/bd` | Reported installed on VM |
+| open-code-review (v1.13.1) | `~/go/bin/ocr` | Reported installed on VM |
 | open-connector (catalog 1,641 / 19,526) | `~/workspace/open-connector/` | Reported installed on VM |
 | Scheduler jobs (`ralph-loop`, `neurostrata-watchdog`, `neurostrata-tls-validation`) | cron | Reported active on VM |
 

@@ -21,11 +21,13 @@ Runs report to chat only when tasks were completed or attention is needed. An em
 
 ```bash
 ~/go/bin/neurostrata-mcp status   # health, lock, store size
-tail -20 ~/.local/share/neurostrata/daemon.log   # startup / model load
+tail -20 ~/workspace/neurostrata/daemon.log   # startup / model load
 # restart (direct nohup, appending so the crash evidence survives):
 pkill -f 'neurostrata-mcp daemon'
-HF_HUB_OFFLINE=1 nohup ~/go/bin/neurostrata-mcp daemon >> ~/.local/share/neurostrata/daemon.log 2>&1 &
+HF_HUB_OFFLINE=1 nohup ~/go/bin/neurostrata-mcp daemon >> ~/workspace/neurostrata/daemon.log 2>&1 &
 ```
+
+The canonical watchdog (`ops/bin/watchdog-backup.sh`) reads and rotates `~/workspace/neurostrata/daemon.log`, so the commands above use that path. The deployed adaptation described under "Reference vs VM adaptation" below logs to `~/.local/share/neurostrata/daemon.log` instead. Use whichever file your deployed watchdog reads.
 
 If the daemon is down, restart it with the nohup command above. A bare MCP spawn does not reliably start the daemon (verified 2026-10-16, see `docs/limitation-analysis.md` section 1 and `docs/daemon-lifecycle-contract.md`). The watchdog cron also revives a daemon that died unexpectedly on its next run.
 
