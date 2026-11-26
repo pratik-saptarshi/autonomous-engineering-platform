@@ -175,7 +175,9 @@ replaced by `<redacted len=N>` at write time, in the separate
 (`-f key=v`), `=` (`--field=key=v`) and attached (`-fkey=v`)
 spellings. The shim's `fallback.log` applies the same flag set (as
 a bare `<redacted>`, without the length). Response bodies and
-credentials are never stored.
+credentials are never stored. The state dir itself is created
+owner-only (`0700`, tightened if it already existed looser), by
+both `ghg.py` and the shim.
 
 ## The fence — known ungated vectors, by name
 

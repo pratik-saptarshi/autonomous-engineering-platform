@@ -368,6 +368,34 @@ class TestShimFallback(DrillTestCase):
             self.assertIn(flag, fallback)
         self.assertTrue(fallback.rstrip().endswith("-f"), fallback)
 
+    def test_j_shim_creates_state_dir_0700(self):
+        # Issue #207 D9b: the shim creates (and tightens) the state dir
+        # owner-only before writing fallback.log, whatever the umask.
+        broken = self.root / "broken"
+        (broken / "bin").mkdir(parents=True)
+        shutil.copy(SHIM, broken / "bin" / "ghg")
+        (broken / "bin" / "ghg").chmod(0o755)
+        (broken / "ghg.py").write_text("def broken(:\n")
+        fresh = self.root / "fresh" / "state"
+        loose = self.root / "loose"
+        loose.mkdir()
+        loose.chmod(0o755)
+        old_umask = os.umask(0o022)
+        try:
+            for state in (fresh, loose):
+                env = self.env()
+                env["GHG_STATE_DIR"] = str(state)
+                proc = subprocess.run(
+                    [str(broken / "bin" / "ghg"), "run", "--",
+                     "api", "repos/o/r"],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    text=True, env=env, timeout=30)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                self.assertEqual(state.stat().st_mode & 0o777, 0o700)
+                self.assertTrue((state / "fallback.log").exists())
+        finally:
+            os.umask(old_umask)
+
     def test_g_run_through_symlink_uses_real_gate(self):
         # The documented fleet install is a symlink (~/go/bin/ghg ->
         # .../tools/ghg/bin/ghg). The shim must resolve $0's symlink

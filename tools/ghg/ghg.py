@@ -72,6 +72,23 @@ def db_path():
     return state_dir() / "ghg.db"
 
 
+def _ensure_state_dir(path):
+    """Create `path` owner-only (0700), tightening a looser existing dir.
+
+    The ledger and traces hold argv history; mkdir's mode is masked by
+    the umask and ignored for an existing directory, so chmod explicitly.
+    Hardening is best-effort: a directory we cannot chmod (not ours) is
+    warned about, never a reason to block the call.
+    """
+    path = Path(path)
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        os.chmod(path, 0o700)
+    except OSError as exc:
+        print("ghg: WARNING cannot restrict %s to 0700: %s" % (path, exc),
+              file=sys.stderr)
+
+
 def real_gh():
     """The one seam through which every real `gh` call resolves."""
     return os.environ.get("GHG_REAL_GH") or "/usr/bin/gh"
@@ -127,7 +144,7 @@ def _exec_real_gh(argv, capture, timeout):
 def _fallback_log(line):
     try:
         directory = state_dir()
-        directory.mkdir(parents=True, exist_ok=True)
+        _ensure_state_dir(directory)
         with open(directory / "fallback.log", "a") as fh:
             fh.write("%d %s\n" % (int(time.time()), line))
     except OSError:
@@ -342,7 +359,7 @@ def gated_gh(argv, actor, timeout=None, budget_s=None):
 # ------------------------------------------------------------------ db
 
 def open_db(path):
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    _ensure_state_dir(Path(path).parent)
     conn = sqlite3.connect(str(path), isolation_level=None, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout=5000")
@@ -1438,7 +1455,7 @@ def _append_drift_history(data, now):
         return
     try:
         directory = state_dir()
-        directory.mkdir(parents=True, exist_ok=True)
+        _ensure_state_dir(directory)
         with open(directory / "drift.jsonl", "a") as fh:
             for entry in entries:
                 fh.write(json.dumps(entry) + "\n")

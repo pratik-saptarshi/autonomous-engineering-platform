@@ -624,5 +624,48 @@ class TestLoadLimits(CoreTestCase):
                          [(60, 40), (3600, 300)])
 
 
+class TestStateDirMode(CoreTestCase):
+    """Issue #207 D9b: the state dir (ledger, traces) is owner-only."""
+
+    def setUp(self):
+        super().setUp()
+        self.fresh = self.root / "fresh" / "state"
+        self._old_umask = os.umask(0o022)
+
+    def tearDown(self):
+        os.umask(self._old_umask)
+        super().tearDown()
+
+    def mode(self, path):
+        return path.stat().st_mode & 0o777
+
+    def test_open_db_creates_state_dir_0700_under_umask_022(self):
+        conn = ghg.open_db(self.fresh / "ghg.db")
+        conn.close()
+        self.assertEqual(self.mode(self.fresh), 0o700)
+
+    def test_fallback_log_creates_state_dir_0700_under_umask_022(self):
+        os.environ["GHG_STATE_DIR"] = str(self.fresh)
+        ghg._fallback_log("trace line")
+        self.assertEqual(self.mode(self.fresh), 0o700)
+        self.assertIn("trace line", (self.fresh / "fallback.log").read_text())
+
+    def test_existing_loose_dir_is_tightened(self):
+        self.fresh.mkdir(parents=True)
+        os.chmod(self.fresh, 0o755)
+        ghg._ensure_state_dir(self.fresh)
+        self.assertEqual(self.mode(self.fresh), 0o700)
+        os.chmod(self.fresh, 0o755)
+        ghg.open_db(self.fresh / "ghg.db").close()
+        self.assertEqual(self.mode(self.fresh), 0o700)
+
+    def test_ensure_state_dir_is_idempotent(self):
+        ghg._ensure_state_dir(self.fresh)
+        (self.fresh / "keep").write_text("x")
+        ghg._ensure_state_dir(self.fresh)
+        self.assertEqual(self.mode(self.fresh), 0o700)
+        self.assertTrue((self.fresh / "keep").exists())
+
+
 if __name__ == "__main__":
     unittest.main()
