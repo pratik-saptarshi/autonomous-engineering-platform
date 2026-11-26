@@ -98,7 +98,11 @@ it also adopts the root runbook's §1c.
    inside the ~30s client budget). Auto-spawn was source-verified but, at the
    time of writing, never live-tested per client — verify it for each new
    client before trusting the duty cycle, or a session that starts while the
-   daemon sleeps silently loses its inscriptions.
+   daemon sleeps silently loses its inscriptions. Correction: a live test
+   found that a bare MCP spawn does not reliably start the daemon (verified
+   2026-10-16, see `docs/limitation-analysis.md` section 1 and Gap 1 in
+   `docs/daemon-lifecycle-contract.md`), so this duty cycle is not established
+   as safe. Start the daemon directly before a session that needs it.
 3. **The embedding model is a retrieval dependency, not a detail.** Under
    Nomic, retrievals attempted to write an empty vector and were refused, so
    read counts never rose and the ranking filter had nothing to rank by —

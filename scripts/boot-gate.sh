@@ -6,6 +6,10 @@
 #   1. binaries  — required CLIs are on PATH
 #   2. daemon    — the NeuroStrata daemon is answering
 #   3. guards    — the guard namespace holds the standing guard rules
+#                  (at least three guard_rule memories, one of them
+#                  "Destructive GitHub actions"; on a fresh host run
+#                  scripts/seed-boot-guards.sh, see docs/runbook.md section
+#                  "Seed the guard namespace")
 #   4. gh-auth   — the GitHub CLI is authenticated
 #   5. policy    — the policy data matches the committed version (read-only:
 #                  it creates, copies, and freezes nothing; the committed
@@ -20,8 +24,11 @@
 # docs/boot-gate-policy.md). The policy check's ok line names the resolved
 # path and short digest, and a pass ends with the machine-readable token
 # line "BOOT-GATE-RESULT: POLICY-OK".
-# Scope: this wires the policy check into boot-gate.sh only. Whether and
-# when anything invokes boot-gate.sh is issue #17's unexecuted scope.
+# Scope: this wires the policy check into boot-gate.sh only. Scheduled jobs
+# reach the gate through ops/bin/cron-with-boot-gate.sh, which runs it before
+# the job and aborts the job on failure. A job is gated only when its
+# scheduler entry calls that wrapper (the NeuroStrata watchdog is
+# deliberately excluded, see ops/crons/CRONS.md).
 # Run with --self-test to execute the stub-based negative tests
 # (each prints "SELF-TEST: <case> ok").
 # `--self-test --offline` runs the same cases with fully self-contained
@@ -67,15 +74,31 @@ check_daemon() {
 }
 
 check_guards() {
-  local out n
+  local out n records
   if ! out=$(neurostrata-mcp list guard 2>&1); then
     fail guards "neurostrata-mcp list guard failed: $out"
   fi
-  # Count actual guard_rule entries, not total memories in the namespace
-  n=$(printf '%s\n' "$out" | grep -c "guard_rule" || true)
-  [ "$n" -ge 3 ] || fail guards "only $n guard_rule entries found, need >= 3"
-  printf '%s\n' "$out" | grep -q "Destructive GitHub actions" ||
-    fail guards "destructive-actions guard rule missing"
+  # Count an entry only when its own Type line says guard_rule, and require the
+  # destructive phrase in one of those records. An ordinary memory whose text
+  # merely mentions "guard_rule" or the phrase must not satisfy the gate.
+  records=$(printf '%s\n' "$out" | awk '
+    function flush() {
+      if (type == "guard_rule") { printf "%s", buf }
+      buf = ""
+      type = ""
+    }
+    /^--- ID: / { flush() }
+    /^Type: / { t = $0; sub(/^Type: /, "", t); type = t }
+    { buf = buf "\n" $0 }
+    END { flush() }
+  ')
+  n=$(printf '%s\n' "$records" | grep -c '^--- ID: ' || true)
+  [ "$n" -ge 3 ] ||
+    fail guards "only $n guard_rule entries found, need >= 3 (seed them with scripts/seed-boot-guards.sh, see docs/runbook.md section 'Seed the guard namespace')"
+  case "$records" in
+  *"Destructive GitHub actions"*) ;;
+  *) fail guards "destructive-actions guard rule missing (seed it with scripts/seed-boot-guards.sh, see docs/runbook.md section 'Seed the guard namespace')" ;;
+  esac
   ok guards
 }
 
@@ -130,6 +153,9 @@ case "${STUB_CASE:-}" in
   missing-rule)
     if [ "$1" = "status" ]; then echo "daemon: listening on 127.0.0.1:34343, answering"
     else printf "Found 3 memories in namespace 'guard':\n\n--- ID: x ---\nType: guard_rule\nContent: some other rule\n"; fi ;;
+  decoy)
+    if [ "$1" = "status" ]; then echo "daemon: listening on 127.0.0.1:34343, answering"
+    else printf "Found 3 memories in namespace 'guard':\n\n--- ID: d1 ---\nType: fact\nContent: guard_rule: Destructive GitHub actions are handled elsewhere\n\n--- ID: d2 ---\nType: fact\nContent: guard_rule: Destructive GitHub actions again\n\n--- ID: d3 ---\nType: fact\nContent: guard_rule: Destructive GitHub actions again\n"; fi ;;
   *)
     if [ "$1" = "status" ]; then
       echo "daemon: listening on 127.0.0.1:34343, answering"
@@ -159,6 +185,9 @@ case "\${STUB_CASE:-}" in
   missing-rule)
     if [ "\$1" = "status" ]; then echo "daemon: listening on 127.0.0.1:34343, answering"
     else printf "Found 3 memories in namespace 'guard':\n\n--- ID: x ---\nType: guard_rule\nContent: some other rule\n"; fi ;;
+  decoy)
+    if [ "\$1" = "status" ]; then echo "daemon: listening on 127.0.0.1:34343, answering"
+    else printf "Found 3 memories in namespace 'guard':\n\n--- ID: d1 ---\nType: fact\nContent: guard_rule: Destructive GitHub actions are handled elsewhere\n\n--- ID: d2 ---\nType: fact\nContent: guard_rule: Destructive GitHub actions again\n\n--- ID: d3 ---\nType: fact\nContent: guard_rule: Destructive GitHub actions again\n"; fi ;;
   *) exec "$real_nsmcp" "\$@" ;;
 esac
 EOF
@@ -190,6 +219,7 @@ EOF
   expect_fail daemon-down "daemon-down"
   expect_fail zero-guards "zero-guards"
   expect_fail missing-rule "missing-destructive-rule"
+  expect_fail decoy "non-guard-decoy"
   if [ "$OFFLINE" -eq 1 ]; then
     # Offline, the good gh stub passes by default; the case flips it.
     if GH_STUB_FAIL=1 PATH="$stubdir:$PATH" bash "$gate" >/dev/null 2>&1; then

@@ -30,15 +30,17 @@ bypasses IP firewall rules), block like this:
 #    add to /etc/environment and ~/.bashrc
 export NO_PROXY="$NO_PROXY,dolthub.com,gastownhall-eventsapi.com"
 
-# 2. Drop at the firewall (get IPs via getent hosts):
-iptables -A OUTPUT -d 198.18.111.222 -j DROP
-iptables -A OUTPUT -d 198.18.111.223 -j DROP
+# 2. Drop at the firewall. The script resolves the addresses at apply time,
+#    so nothing here goes stale. It needs root.
+sudo scripts/apply-domain-blocks.sh
 ```
 
 Limitations, stated plainly: no wildcard subdomain blocking (`/etc/hosts` is
 read-only, the iptables string-match module is unavailable), and iptables rules
-don't survive VM replacement — re-apply via `scripts/apply-domain-blocks.sh`.
-If a blocked domain changes IPs, the block won't follow.
+don't survive VM replacement, so re-run `scripts/apply-domain-blocks.sh` on every
+boot. The rules are built from the DNS answer at the moment the script runs. If a
+blocked domain rotates to new addresses, the block does not follow until you run
+the script again. See `docs/runbook.md`, section "Egress domain blocks".
 
 ## Turn off beads telemetry
 

@@ -16,15 +16,22 @@ body lines 20–24. Corrections recorded 2026-11-04.
 
 1. Check the daemon. If the daemon is down, run change detection anyway —
    the daemon is **not** restarted by this job. Under the on-demand model
-   the daemon stays down after a watchdog run; the MCP client restarts it
-   on the next coding loop. This script itself never restarts the daemon.
+   the daemon stays down after a watchdog run; restart it directly with
+   `nohup` when needed. This script itself never restarts the daemon.
 2. Checksum the database and compare against the last recorded checksum.
 3. Only when the checksum changed since the last backup: stop the daemon,
    take a verified copy, upload the copy to the configured Drive folder,
    and record the new checksum. The daemon stays down after the backup.
 4. If nothing changed:
-   - Active daemon: leave it running and report the unchanged state in one line.
-   - Idle daemon: the daemon is stopped by design (see the `IDLE_SECS` idle check in `ops/bin/watchdog-backup.sh`), then report the unchanged state.
+   - Active daemon (`.last-daemon-use` newer than `IDLE_SECS`, or an
+     established client connection): leave it running and report the
+     unchanged state in one line.
+   - Idle daemon (marker present and older than `IDLE_SECS`, with no client
+     connection): the daemon is stopped by design (see the `IDLE_SECS` idle
+     check in `ops/bin/watchdog-backup.sh`), then report the unchanged
+     state.
+   - Activity unknown (no readable marker): leave it running. The watchdog
+     never stops a daemon it cannot prove is idle.
 
 ## Corrections applied 2026-11-04
 

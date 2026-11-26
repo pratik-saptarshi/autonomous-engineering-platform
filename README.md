@@ -94,8 +94,8 @@ The paths below describe the persistent Linux VM where the environment was built
 | NeuroStrata MCP connector (custom stdio client) | `~/workspace/custom-connectors/custom.neurostrata/` | Reported registered on VM |
 | Embedding model cache (nomic-embed-text-v1.5, 523 MB) | `~/.cache/neuro/models/fastembed` | Reported pre-seeded on VM |
 | Memory store (ladybug.db) | `~/.config/NeuroStrata/data/db/` | Reported live on VM |
-| beads (v1.3.1) | `~/workspace/bin/bd` | Reported installed on VM |
-| open-code-review (v1.13.1) | `~/workspace/bin/ocr` | Reported installed on VM |
+| beads (v1.3.1) | `~/go/bin/bd` | Reported installed on VM |
+| open-code-review (v1.13.1) | `~/go/bin/ocr` | Reported installed on VM |
 | open-connector (catalog 1,641 / 19,526) | `~/workspace/open-connector/` | Reported installed on VM |
 | Scheduler jobs (`ralph-loop`, `neurostrata-watchdog`, `neurostrata-tls-validation`) | cron | Reported active on VM |
 
@@ -117,7 +117,7 @@ scripts/watchdog-backup.sh
 
 Full root-cause analysis: [docs/limitation-analysis.md](docs/limitation-analysis.md).
 
-- The NeuroStrata daemon runs under `nohup`, not systemd: this environment has no user D-Bus, so the shipped user units are staged but inactive. Mitigated by a watchdog cron (every 2 h) that revives a dead daemon via MCP auto-spawn, and change-detected database backups to Google Drive. A dead daemon is also restarted automatically on the next MCP spawn.
+- The NeuroStrata daemon runs under `nohup`, not systemd: this environment has no user D-Bus, so the shipped user units are staged but inactive. The canonical watchdog cron (`ops/bin/watchdog-backup.sh`, every 2 h) captures crash evidence and takes change-detected database backups to Google Drive, and never restarts the daemon itself (the legacy `scripts/watchdog-backup.sh` restarted via `nohup`). Recovery requires a direct `nohup` restart; a bare MCP spawn does not reliably start a stopped daemon (verified 2026-10-16). The root cause of repeated unexpected daemon deaths (three on 2026-10-18) is still open, so supervision is only partially mitigated (see `docs/limitation-analysis.md` section 1).
 - The binary cannot download its embedding model through a TLS-intercepting egress proxy (rustls does not trust the proxy CA). Mitigated: the model cache is pre-seeded, a compressed backup is kept in the workspace, and `HF_HUB_OFFLINE=1` is set on the daemon and the MCP client so a cache miss fails fast with a clear error instead of an opaque TLS failure.
 - The open-connector gateway does not survive VM restarts. Mitigated: `oc.py` auto-starts it when a command finds it down; start it by hand with `start.sh` when preferred.
 - The sandbox egress guard blocks provider hosts until allowlisted. Managed through `egress-allowlist.conf`, which `start.sh` reads on every start.
