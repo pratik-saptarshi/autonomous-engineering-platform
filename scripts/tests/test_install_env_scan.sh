@@ -893,10 +893,16 @@ check_no_out "R5T1d no shadowing SKIP" 'login startup is shadowed by' "$OUT"
 check "R5T1d block written" test "$(marker_count '>>>')" -eq 1
 
 note "PR191-R2F2: unit-level profile_sources_bashrc probes for braced forms"
-profile_detected() { # profile_detected <profile-line>
-  local pdir="$SB/psb-probe"
+profile_detected() { # profile_detected <profile-line> [bashrc-mode]
+  local pdir="$SB/psb-probe" mode="${2:-}"
   rm -rf "$pdir"
   mkdir -p "$pdir"
+  # The unary-op and trailing-slash cases are only observable when
+  # ~/.bashrc already exists: the installer preserves its mode.
+  if [ -n "$mode" ]; then
+    printf 'export X=1\n' >"$pdir/.bashrc"
+    chmod "$mode" "$pdir/.bashrc"
+  fi
   printf '%s\n' "$1" >"$pdir/.bash_profile"
   (
     HOME="$pdir"
@@ -907,7 +913,7 @@ profile_detected() { # profile_detected <profile-line>
     profile_sources_bashrc "$pdir/.bash_profile"
   ) >/dev/null 2>&1
 }
-profile_not_detected() { ! profile_detected "$1"; }
+profile_not_detected() { ! profile_detected "$@"; }
 check "R2F2 unquoted braced form detected" profile_detected '. ${HOME}/.bashrc'
 check "R2F2 source-keyword braced form detected" profile_detected 'source "${HOME}/.bashrc"'
 check "R2F2 braced || chain detected (K7d: || is a segment boundary)" profile_detected '[ -f "${HOME}/.bashrc.missing" ] || . "${HOME}/.bashrc"'
@@ -2124,11 +2130,14 @@ check "224c relative test after cd keeps the fallback reachable" \
   profile_detected 'cd /tmp
 [ -f .bashrc ] || . "$HOME/.bashrc"'
 
-note "PR220-R13: every unary op on ~/.bashrc keeps only what the installer guarantees"
-check "PR220 [ -x ~/.bashrc ] || source runs (0644 is not executable)" profile_detected '[ -x ~/.bashrc ] || . ~/.bashrc'
-check "PR220 [ -d ~/.bashrc ] && source is skipped (regular file)" profile_not_detected '[ -d ~/.bashrc ] && . ~/.bashrc'
-check "PR220 [ -f \"\$HOME/.bashrc/\" ] || source runs (trailing slash)" profile_detected '[ -f "$HOME/.bashrc/" ] || . ~/.bashrc'
-check "PR220 [ -e \"\$HOME/.bashrc/.\" ] || source runs (dot component)" profile_detected '[ -e "$HOME/.bashrc/." ] || . ~/.bashrc'
+note "PR220-R13: every unary op on an existing ~/.bashrc (0644) keeps only what the installer guarantees"
+check "PR220 [ -x ~/.bashrc ] || source runs (0644 is not executable)" profile_detected '[ -x ~/.bashrc ] || . ~/.bashrc' 644
+check "PR220 [ -w ~/.bashrc ] || source is reachable (mode unknown)" profile_detected '[ -w ~/.bashrc ] || . ~/.bashrc' 644
+check "PR220 [ -r ~/.bashrc ] || source is reachable (mode unknown)" profile_detected '[ -r ~/.bashrc ] || . ~/.bashrc' 644
+check "PR220 [ -d ~/.bashrc ] && source is skipped (regular file)" profile_not_detected '[ -d ~/.bashrc ] && . ~/.bashrc' 644
+check "PR220 [ -f \"\$HOME/.bashrc/\" ] || source runs (trailing slash)" profile_detected '[ -f "$HOME/.bashrc/" ] || . ~/.bashrc' 644
+check "PR220 [ -e \"\$HOME/.bashrc/.\" ] || source runs (dot component)" profile_detected '[ -e "$HOME/.bashrc/." ] || . ~/.bashrc' 644
+check "PR220 [ -e \"\$HOME/.bashrc/..\" ] || source runs (dotdot component)" profile_detected '[ -e "$HOME/.bashrc/.." ] || . ~/.bashrc' 644
 
 note "PR220-R14: a source word the scan cannot expand counts as possibly wired"
 check "PR220 . \"\$(echo ~/.bashrc)\" is reachable" profile_detected '. "$(echo ~/.bashrc)"'
@@ -2141,9 +2150,9 @@ check "PR220 [[ 10 -gt 010 ]] reachable (octal right operand)" profile_detected 
 check "PR220 [[ -1 -eq 1 ]] dead (negative control)" profile_not_detected '[[ -1 -eq 1 ]] && . ~/.bashrc'
 
 note "PR220-R16: scanning profile text never executes it"
-profile_detected '[ -f "$(touch "$HOME/canary")" ] && . ~/.bashrc'
+check "PR220 scan of a file-test substitution returns a result" profile_detected '[ -f "$(touch "$HOME/canary")" ] && . ~/.bashrc'
 check "PR220 file-test substitution not executed" test ! -e "$SB/psb-probe/canary"
-profile_detected '. "$(touch "$HOME/canary2"; echo ~/.bashrc)"'
+check "PR220 scan of a source-word substitution returns a result" profile_detected '. "$(touch "$HOME/canary2"; echo ~/.bashrc)"'
 check "PR220 source-word substitution not executed" test ! -e "$SB/psb-probe/canary2"
 
 note "224d: a source behind a structural prefix still counts (bash runs it in the login shell)"
@@ -2160,7 +2169,6 @@ check "224d eval source counted" profile_detected "eval '. ~/.bashrc'"
 check "224d subshell source is not wiring (control)" profile_not_detected '( . ~/.bashrc )'
 check "224d dead brace group is not wiring (control)" profile_not_detected 'false && { . ~/.bashrc; }'
 check "224d argument that looks like a source is not wiring (control)" profile_not_detected 'echo . ~/.bashrc'
-check "224d [ -w ~/.bashrc ] || source is reachable (mode unknown)" profile_detected '[ -w ~/.bashrc ] || . ~/.bashrc'
 
 note "224e: [ ] out-of-range operands error (false); [[ ]] wraps"
 check "224e [ 9223372036854775808 -eq 9223372036854775808 ] || source runs" profile_detected '[ 9223372036854775808 -eq 9223372036854775808 ] || . ~/.bashrc'
