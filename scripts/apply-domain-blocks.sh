@@ -211,8 +211,10 @@ apply_drop() { # $1 = iptables|ip6tables, $2 = ip; sets INSERTED when it added o
     "$1" -I OUTPUT 1 -d "$2" -j DROP ||
       die "$1 -I failed while reordering $2 (the original rule is untouched)"
     if [ -z "$oldnum" ]; then
-      echo "WARNING: could not number the superseded rule for $2; both drops were left in place" >&2
-      return 0
+      # Cannot locate the old rule to delete by number. Remove the copy we
+      # just inserted (first match) and fail with the original intact.
+      "$1" -D OUTPUT -d "$2" -j DROP 2>/dev/null || true
+      die "$1 could not number the superseded rule for $2 (original left in place)"
     fi
     if ! "$1" -D OUTPUT "$((oldnum + 1))" 2>/dev/null; then
       # Remove the replacement we just added, leaving the original in place.

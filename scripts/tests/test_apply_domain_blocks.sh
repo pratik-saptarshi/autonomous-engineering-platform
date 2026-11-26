@@ -143,6 +143,7 @@ case "\$op" in
   mv "\$file.tmp" "\$file"
   ;;
 -S)
+  [ "\${STUB_IPT_S_FAIL:-0}" = "1" ] && { echo "$fam: simulated list failure" >&2; exit 4; }
   awk '{ sub(/^OUTPUT /, ""); print "-A OUTPUT " \$0 }' "\$file"
   ;;
 *) exit 2 ;;
@@ -153,7 +154,7 @@ chmod +x "$STUBS/"*
 
 reset_case() {
   rm -f "$STATE"/* "$DNS"/*
-  unset STUB_UID STUB_V6_ROUTE STUB_IPT_FAIL STUB_IPT_DROP_ADD STUB_IPT_FAIL_ON STUB_IPT_DEL_FAIL STUB_IPT_CHECK_FAIL_IP AEP_BLOCK_DOMAINS
+  unset STUB_UID STUB_V6_ROUTE STUB_IPT_FAIL STUB_IPT_DROP_ADD STUB_IPT_FAIL_ON STUB_IPT_DEL_FAIL STUB_IPT_CHECK_FAIL_IP STUB_IPT_S_FAIL AEP_BLOCK_DOMAINS
   export AEP_BLOCK_DOMAINS="alpha.example beta.example"
   printf '192.0.2.10\n' >"$DNS/alpha.example.v4"
   printf '192.0.2.20\n' >"$DNS/beta.example.v4"
@@ -384,6 +385,18 @@ run
 t "the retry exits 0" "$RC" -eq 0
 t "the retry removes the stale DROP" "$(rules iptables | grep -cx -- 'OUTPUT -d 192.0.2.10 -j DROP')" -eq 0
 t "the retry drops the stale ownership" "$(grep -cxF -- 'iptables 192.0.2.10' "$STATE/managed-rules" 2>/dev/null || true)" -eq 0
+
+echo "# case 20: an unlistable chain fails closed without leaving a duplicate"
+reset_case
+export AEP_BLOCK_DOMAINS="alpha.example"
+printf '192.0.2.10\n' >"$DNS/alpha.example.v4"
+printf 'OUTPUT -d 192.0.2.10 -j DROP\nOUTPUT -j ACCEPT\n' >"$STATE/iptables.rules"
+export STUB_IPT_S_FAIL=1
+run
+t "an unlistable chain exits non-zero" "$RC" -ne 0
+t "the original DROP survives" "$(rules iptables | grep -cx -- 'OUTPUT -d 192.0.2.10 -j DROP')" -eq 1
+t "no duplicate DROP was left behind" "$(rules iptables | grep -cx -- 'OUTPUT -d 192.0.2.10 -j DROP')" -eq 1
+unset STUB_IPT_S_FAIL
 
 if [ "$FAILURES" -ne 0 ]; then
   echo "test_apply_domain_blocks: $FAILURES failure(s)"
