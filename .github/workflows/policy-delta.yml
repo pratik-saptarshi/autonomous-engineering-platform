@@ -10,6 +10,13 @@ name: Policy Delta
 # recorded human act, never an approval substitute. It informs the
 # human gate that already exists; it does not replace it.
 #
+# This workflow holds `contents: read` and nothing else. It runs the
+# PR's own scripts (the differ and its tests), so it must never hold a
+# write token: a same-repository PR can edit those scripts. The sticky
+# comment is written by `policy-delta-comment.yml`, which is triggered
+# by `workflow_run` and therefore executes the trusted default-branch
+# workflow and the trusted default-branch formatter, never PR code.
+#
 # This lives in its own workflow because the acknowledgement loop needs
 # the `edited` activity type (a human pastes the token into the PR body
 # after reading the report) -- ci.yml deliberately keeps the default
@@ -32,18 +39,21 @@ concurrency:
 jobs:
   policy-delta:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
       - name: Differ test suite (incl. Phase 0 replay corpus)
-        run: python3 -m unittest discover -s scripts/tests -p "test_policy_delta.py" -v
+        run: python3 -m unittest discover -s scripts/tests -p "test_policy_delta*.py" -v
       - name: Compute policy delta report
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          printf '%s' "$BASE_SHA" > base-sha.txt
           set +e
           python3 scripts/check_policy_delta.py diff "$BASE_SHA" "$HEAD_SHA" --format markdown > policy-delta.md 2>&1
           rc=$?
@@ -53,18 +63,30 @@ jobs:
           fi
           cat policy-delta.md
           cat policy-delta.md >> "$GITHUB_STEP_SUMMARY"
-      - name: Upload policy delta report artifact
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: policy-delta-${{ github.event.pull_request.head.sha }}
-          path: policy-delta.md
-          if-no-files-found: warn
       - name: Acknowledgement check (fail-closed)
+        id: ack
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           printf '%s' "$PR_BODY" > pr-body.txt
+          set +e
           python3 scripts/check_policy_delta.py check "$BASE_SHA" "$HEAD_SHA" --body-file pr-body.txt
+          rc=$?
+          set -e
+          # Persisted for the comment workflow; the step still exits with
+          # the check's own code, so the gate is unchanged.
+          printf '%s' "$rc" > ack-rc.txt
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit "$rc"
+      - name: Upload policy delta report artifact
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: policy-delta-${{ github.event.pull_request.head.sha }}
+          path: |
+            policy-delta.md
+            ack-rc.txt
+            base-sha.txt
+          if-no-files-found: warn
