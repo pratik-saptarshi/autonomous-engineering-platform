@@ -14,9 +14,13 @@ SCRIPT="$ROOT/scripts/install-re-runtime.sh"
 SB="$(mktemp -d "$HOME/.test-install-env-scan.XXXXXX")"
 LIB="$SB/lib.sh"
 FAILURES=0
+CHECKS=0
 
 note() { echo "# $*"; }
-ok() { echo "ok - $*"; }
+ok() {
+  CHECKS=$((CHECKS + 1))
+  echo "ok - $*"
+}
 fail() {
   echo "FAIL - $*"
   FAILURES=$((FAILURES + 1))
@@ -889,10 +893,16 @@ check_no_out "R5T1d no shadowing SKIP" 'login startup is shadowed by' "$OUT"
 check "R5T1d block written" test "$(marker_count '>>>')" -eq 1
 
 note "PR191-R2F2: unit-level profile_sources_bashrc probes for braced forms"
-profile_detected() { # profile_detected <profile-line>
-  local pdir="$SB/psb-probe"
+profile_detected() { # profile_detected <profile-line> [bashrc-mode]
+  local pdir="$SB/psb-probe" mode="${2:-}"
   rm -rf "$pdir"
   mkdir -p "$pdir"
+  # The unary-op and trailing-slash cases are only observable when
+  # ~/.bashrc already exists: the installer preserves its mode.
+  if [ -n "$mode" ]; then
+    printf 'export X=1\n' >"$pdir/.bashrc"
+    chmod "$mode" "$pdir/.bashrc"
+  fi
   printf '%s\n' "$1" >"$pdir/.bash_profile"
   (
     HOME="$pdir"
@@ -903,7 +913,7 @@ profile_detected() { # profile_detected <profile-line>
     profile_sources_bashrc "$pdir/.bash_profile"
   ) >/dev/null 2>&1
 }
-profile_not_detected() { ! profile_detected "$1"; }
+profile_not_detected() { ! profile_detected "$@"; }
 check "R2F2 unquoted braced form detected" profile_detected '. ${HOME}/.bashrc'
 check "R2F2 source-keyword braced form detected" profile_detected 'source "${HOME}/.bashrc"'
 check "R2F2 braced || chain detected (K7d: || is a segment boundary)" profile_detected '[ -f "${HOME}/.bashrc.missing" ] || . "${HOME}/.bashrc"'
@@ -1957,6 +1967,41 @@ check "PR220 true | false && source is skipped (control)" profile_not_detected '
 check "PR220 false | true && source runs (control)" profile_detected 'false | true && . ~/.bashrc'
 check "PR220 false || false | false && source is skipped (control)" profile_not_detected 'false || false | false && . ~/.bashrc'
 
+note "PR220-R11: file tests other than ~/.bashrc stay unknown (earlier startup commands can change them)"
+check "PR220 mkdir then [ -d ~/.cache ] && source is reachable" profile_detected $'mkdir -p "$HOME/.cache"\n[ -d "$HOME/.cache" ] && . ~/.bashrc'
+check "PR220 [ -f ~/.bashrc ] || source is still skipped (installer guarantee, control)" profile_not_detected '[ -f ~/.bashrc ] || . ~/.bashrc'
+check "PR220 [ -d ~/.bashrc ] || source runs (control)" profile_detected '[ -d ~/.bashrc ] || . ~/.bashrc'
+check "PR220 standalone false && source is skipped (control)" profile_not_detected 'false && . ~/.bashrc'
+
+note "PR220-R12: [[ ]] arithmetic operands keep bash arithmetic semantics (non-decimal spellings are unknown)"
+check "PR220 [[ 010 -eq 8 ]] stays reachable (octal)" profile_detected '[[ 010 -eq 8 ]] && . ~/.bashrc'
+check "PR220 [[ 0x10 -eq 16 ]] stays reachable (hex)" profile_detected '[[ 0x10 -eq 16 ]] && . ~/.bashrc'
+check "PR220 [[ 2 -eq 2 ]] canonical decimal control stays reachable" profile_detected '[[ 2 -eq 2 ]] && . ~/.bashrc'
+check "PR220 [[ 8 -eq 9 ]] canonical decimal control is dead" profile_not_detected '[[ 8 -eq 9 ]] && . ~/.bashrc'
+check "PR220 [ 010 -eq 8 ] non-canonical decimal stays reachable (conservative)" profile_detected '[ 010 -eq 8 ] && . ~/.bashrc'
+
+note "PR220-E2E: a path created earlier in the profile is not treated as absent at login"
+new_home pr220-mut
+printf 'mkdir -p "$HOME/.cache"\n[ -d "$HOME/.cache" ] && . "$HOME/.bashrc"\n' >"$FH/.bash_profile"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+run_env install_env_block
+check "PR220-mut rc 0" test "$RC" -eq 0
+check_out "PR220-mut env ok" 'INSTALL-RE: env ok' "$OUT"
+check "PR220-mut block written" test "$(marker_count '>>>')" -eq 1
+PR220_MUT_VAL="$(env -i HOME="$FH" /bin/bash -c '. "$HOME/.bash_profile"; printf %s "${JAVA_HOME:-}"' 2>/dev/null)"
+check "PR220-mut block reachable through the profile" test "$PR220_MUT_VAL" = "$FH/opt/jdk-$TEMURIN_VERSION"
+
+note "PR220-E2E: an octal [[ ]] comparison reaches the block"
+new_home pr220-oct
+printf '[[ 010 -eq 8 ]] && . "$HOME/.bashrc"\n' >"$FH/.bash_profile"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+run_env install_env_block
+check "PR220-oct rc 0" test "$RC" -eq 0
+check_out "PR220-oct env ok" 'INSTALL-RE: env ok' "$OUT"
+check "PR220-oct block written" test "$(marker_count '>>>')" -eq 1
+PR220_OCT_VAL="$(env -i HOME="$FH" /bin/bash -c '. "$HOME/.bash_profile"; printf %s "${JAVA_HOME:-}"' 2>/dev/null)"
+check "PR220-oct block reachable through the profile" test "$PR220_OCT_VAL" = "$FH/opt/jdk-$TEMURIN_VERSION"
+
 note "PR220-E2E: pipeline-only wiring is named as shadowing end to end"
 new_home pr220-pipe
 printf 'echo x | . "$HOME/.bashrc"\n' >"$FH/.bash_profile"
@@ -2058,7 +2103,90 @@ check_out "PR220-EG-ok env ok" 'INSTALL-RE: env ok' "$OUT"
 check "PR220-EG-ok user line kept" grep -qxF 'export AFTER=1' "$FH/.bashrc"
 
 echo
+# ================= PR #224 review findings: false shadowing SKIPs =================
+note "224a: canonical decimal operands outside [ -eq ] range follow bash arithmetic"
+const_status_of() { # const_status_of <command-text>
+  local pdir="$SB/cs-probe"
+  rm -rf "$pdir"
+  mkdir -p "$pdir"
+  (
+    HOME="$pdir"
+    export HOME
+    # shellcheck disable=SC1090 # the fixture library is generated above
+    source "$LIB"
+    set +eu
+    const_status "$1"
+  ) 2>/dev/null
+}
+check "224a out-of-range -eq matches [[ ]] arithmetic" \
+  test "$(const_status_of '[[ 18446744073709551616 -eq 0 ]]')" = t
+
+note "224b: [ -f ~/.bashrc ] is true after install, so a || fallback is never wiring"
+check "224b || fallback with an existing .bashrc is skipped" \
+  profile_not_detected '[ -f ~/.bashrc ] || . ~/.bashrc'
+
+note "224c: relative file test after cd does not resolve against install-time HOME"
+check "224c relative test after cd keeps the fallback reachable" \
+  profile_detected 'cd /tmp
+[ -f .bashrc ] || . "$HOME/.bashrc"'
+
+note "PR220-R13: every unary op on an existing ~/.bashrc (0644) keeps only what the installer guarantees"
+check "PR220 [ -x ~/.bashrc ] || source runs (0644 is not executable)" profile_detected '[ -x ~/.bashrc ] || . ~/.bashrc' 644
+check "PR220 [ -w ~/.bashrc ] || source is reachable (mode unknown)" profile_detected '[ -w ~/.bashrc ] || . ~/.bashrc' 644
+check "PR220 [ -r ~/.bashrc ] || source is reachable (mode unknown)" profile_detected '[ -r ~/.bashrc ] || . ~/.bashrc' 644
+check "PR220 [ -d ~/.bashrc ] && source is skipped (regular file)" profile_not_detected '[ -d ~/.bashrc ] && . ~/.bashrc' 644
+check "PR220 [ -f \"\$HOME/.bashrc/\" ] || source runs (trailing slash)" profile_detected '[ -f "$HOME/.bashrc/" ] || . ~/.bashrc' 644
+check "PR220 [ -e \"\$HOME/.bashrc/.\" ] || source runs (dot component)" profile_detected '[ -e "$HOME/.bashrc/." ] || . ~/.bashrc' 644
+check "PR220 [ -e \"\$HOME/.bashrc/..\" ] || source runs (dotdot component)" profile_detected '[ -e "$HOME/.bashrc/.." ] || . ~/.bashrc' 644
+
+note "PR220-R14: a source word the scan cannot expand counts as possibly wired"
+check "PR220 . \"\$(echo ~/.bashrc)\" is reachable" profile_detected '. "$(echo ~/.bashrc)"'
+check "PR220 . \"\${VAR:-~/.bashrc}\" is reachable" profile_detected '. "${VAR:-$HOME/.bashrc}"'
+check "PR220 . \"\$UNSET/rc\" is reachable" profile_detected '. "$UNSET/rc"'
+
+note "PR220-R15: numeric operands follow bash arithmetic and non-canonical spellings stay unknown"
+check "PR220 [[ 9 -lt 010 ]] reachable (non-canonical right operand)" profile_detected '[[ 9 -lt 010 ]] && . ~/.bashrc'
+check "PR220 [[ 10 -gt 010 ]] reachable (octal right operand)" profile_detected '[[ 10 -gt 010 ]] && . ~/.bashrc'
+check "PR220 [[ -1 -eq 1 ]] dead (negative control)" profile_not_detected '[[ -1 -eq 1 ]] && . ~/.bashrc'
+
+note "PR220-R16: scanning profile text never executes it"
+check "PR220 scan of a file-test substitution returns a result" profile_detected '[ -f "$(touch "$HOME/canary")" ] && . ~/.bashrc'
+check "PR220 file-test substitution not executed" test ! -e "$SB/psb-probe/canary"
+check "PR220 scan of a source-word substitution returns a result" profile_detected '. "$(touch "$HOME/canary2"; echo ~/.bashrc)"'
+check "PR220 source-word substitution not executed" test ! -e "$SB/psb-probe/canary2"
+
+note "224d: a source behind a structural prefix still counts (bash runs it in the login shell)"
+check "224d brace group source counted" profile_detected '{ . ~/.bashrc; }'
+check "224d bang source counted" profile_detected '! . ~/.bashrc'
+check "224d case arm source counted" profile_detected 'case x in x) . ~/.bashrc ;; esac'
+check "224d while body source counted" profile_detected 'while true; do . ~/.bashrc; break; done'
+check "224d for body source counted" profile_detected 'for i in 1; do . ~/.bashrc; done'
+check "224d function body plus call counted" profile_detected 'f() { . ~/.bashrc; }; f'
+check "224d command prefix counted" profile_detected 'command . ~/.bashrc'
+check "224d builtin prefix counted" profile_detected 'builtin . ~/.bashrc'
+check "224d assignment prefix counted" profile_detected 'X=1 . ~/.bashrc'
+check "224d eval source counted" profile_detected "eval '. ~/.bashrc'"
+check "224d subshell source is not wiring (control)" profile_not_detected '( . ~/.bashrc )'
+check "224d dead brace group is not wiring (control)" profile_not_detected 'false && { . ~/.bashrc; }'
+check "224d argument that looks like a source is not wiring (control)" profile_not_detected 'echo . ~/.bashrc'
+
+note "224e: [ ] out-of-range operands error (false); [[ ]] wraps"
+check "224e [ 9223372036854775808 -eq 9223372036854775808 ] || source runs" profile_detected '[ 9223372036854775808 -eq 9223372036854775808 ] || . ~/.bashrc'
+check "224e [ 9223372036854775808 -lt 0 ] || source runs" profile_detected '[ 9223372036854775808 -lt 0 ] || . ~/.bashrc'
+check "224e ! [ 9223372036854775808 -eq 9223372036854775808 ] && source runs" profile_detected '! [ 9223372036854775808 -eq 9223372036854775808 ] && . ~/.bashrc'
+check "224e [[ 9223372036854775808 -eq 9223372036854775808 ]] || is skipped (wrap control)" profile_not_detected '[[ 9223372036854775808 -eq 9223372036854775808 ]] || . ~/.bashrc'
+check "224e [ 9223372036854775808 -eq 1 ] && is dead (error control)" profile_not_detected '[ 9223372036854775808 -eq 1 ] && . ~/.bashrc'
+
+note "224f: the remaining command prefixes and tilde forms"
+check "224f function NAME { } body counted" profile_detected 'function f { . ~/.bashrc; }; f'
+check "224f command -p source counted" profile_detected 'command -p . ~/.bashrc'
+check "224f command -- source counted" profile_detected 'command -- . ~/.bashrc'
+check "224f builtin -- source counted" profile_detected 'builtin -- . ~/.bashrc'
+check "224f time source counted" profile_detected 'time . ~/.bashrc'
+check "224f . ~user/.bashrc is reachable (unknown home)" profile_detected '. ~neo/.bashrc'
+
 if [ "$FAILURES" -eq 0 ]; then
+  echo "test_install_env_scan: checks=$CHECKS"
   echo "test_install_env_scan: ALL PASS (sandbox $SB)"
   rm -rf "$SB"
   exit 0
