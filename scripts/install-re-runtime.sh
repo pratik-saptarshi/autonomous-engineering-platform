@@ -101,6 +101,12 @@ fail() { # $1 = check name, $2 = reason
   exit 1
 }
 
+# fail, after removing the temp file $1 so a failed write leaves nothing behind.
+fail_rm() { # $1 = temp file, $2 = check name, $3 = reason
+  rm -f "$1"
+  fail "$2" "$3"
+}
+
 ok() { # $1 = check name
   echo "INSTALL-RE: $1 ok"
 }
@@ -1396,7 +1402,7 @@ install_env_block() {
   ENV_SKIP_REASON=""
   local bashrc="$HOME/.bashrc"
   local bak="$HOME/.bashrc.install-re-runtime.bak"
-  local tmp="$HOME/.bashrc.install-re-runtime.tmp"
+  local tmp=""
   # One-time as-found backup, before any inspection or modification:
   # the .bashrc exactly as found (damaged or not) is preserved if the
   # backup is absent, so a later refusal can always name a real path
@@ -1645,22 +1651,27 @@ install_env_block() {
 
   # Compose the new file in a same-directory temp file, fsync it,
   # then install it by atomic mv — a crash leaves the old file or the
-  # new one, never a torn one. The temp file is created fresh by the
-  # redirection below, so it carries 0666 & ~umask: without the chmod
-  # after composing, the rename would silently replace an existing
-  # .bashrc's permissions with the umask default (a 0600 .bashrc
-  # becomes 0644 under umask 022, exposing previously private shell
-  # configuration on a traversable home). Capture the existing file's
-  # mode and carry it onto the temp file; with no pre-existing .bashrc
-  # there is no mode to preserve and the temp keeps its umask-derived
-  # mode. The stat must dereference (-L): for a symlinked .bashrc the
-  # plain stat reports the link's own mode (0777), and the rename would
+  # new one, never a torn one. The temp file comes from mktemp (a
+  # fresh, unpredictable name created exclusively with mode 0600), so
+  # a symlink planted at a guessable path in $HOME is never followed
+  # (issue #207), and every failure past this point removes it
+  # (fail_rm). Its mode is set explicitly: left alone, the rename
+  # would silently replace an existing .bashrc's permissions with
+  # mktemp's 0600 (a 0644 .bashrc would become private, and a fresh
+  # one would ignore the user's umask). Capture the existing file's
+  # mode and carry it onto the temp file; with no pre-existing
+  # .bashrc, apply the umask-derived mode a plain redirection would
+  # have produced. The
+  # stat must dereference (-L): for a symlinked .bashrc the plain
+  # stat reports the link's own mode (0777), and the rename would
   # install a world-writable file (Codex P1 on PR #135).
   local i bashrc_mode=""
   if [ -e "$bashrc" ]; then
     bashrc_mode=$(stat -L -c %a "$bashrc") || fail env "cannot stat $bashrc"
+  else
+    bashrc_mode=$(printf '%o' $((0666 & ~$(umask))))
   fi
-  rm -f "$tmp"
+  tmp=$(mktemp "$HOME/.bashrc.install-re-runtime.XXXXXX") || fail env "cannot create a temp file in $HOME"
   # shellcheck disable=SC2016 # the composed block must contain literal $HOME/$PATH — they expand in the login shell that reads it, not at install time
   {
     for ((i = 0; i < insert_at; i++)); do
@@ -1676,12 +1687,10 @@ install_env_block() {
     for ((i = insert_at; i < ${#kept[@]}; i++)); do
       printf '%s\n' "${kept[i]}"
     done
-  } >"$tmp" || fail env "cannot compose new .bashrc in $tmp"
-  if [ -n "$bashrc_mode" ]; then
-    chmod "$bashrc_mode" "$tmp" || fail env "cannot apply permissions $bashrc_mode to $tmp"
-  fi
-  sync "$tmp" || fail env "cannot fsync $tmp"
-  mv "$tmp" "$bashrc" || fail env "cannot install new .bashrc over $bashrc"
+  } >"$tmp" || fail_rm "$tmp" env "cannot compose new .bashrc in $tmp"
+  chmod "$bashrc_mode" "$tmp" || fail_rm "$tmp" env "cannot apply permissions $bashrc_mode to $tmp"
+  sync "$tmp" || fail_rm "$tmp" env "cannot fsync $tmp"
+  mv "$tmp" "$bashrc" || fail_rm "$tmp" env "cannot install new .bashrc over $bashrc"
   ENV_OUTCOME="ok"
   ok env
 }

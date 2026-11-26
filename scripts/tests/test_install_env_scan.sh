@@ -67,11 +67,12 @@ new_home() { # new_home <case-name>
   mkdir -p "$FH"
   OUT="$SB/case-$1/out"
 }
-run_env() { # run_env <function-name>
+run_env() { # run_env <function-name>; RUN_PATH_PREFIX / RUN_UMASK optionally prepend a PATH dir / set a umask
   (
     HOME="$FH"
-    PATH="$SB/bin:$PATH"
+    PATH="${RUN_PATH_PREFIX:+$RUN_PATH_PREFIX:}$SB/bin:$PATH"
     export HOME PATH
+    [ -z "${RUN_UMASK:-}" ] || umask "$RUN_UMASK"
     # shellcheck disable=SC1090 # the fixture library is generated above
     source "$LIB"
     set +eu
@@ -1336,6 +1337,46 @@ SHA="$(file_sha "$FH/.bashrc")"
 run_env install_env_block
 check "K2R3a second run rc 0" test "$RC" -eq 0
 check "K2R3a fixed point" test "$(file_sha "$FH/.bashrc")" = "$SHA"
+
+# ================= #207: unpredictable temp path for the .bashrc write =================
+
+stray_temps() { # stray_temps: count install temp leftovers (not the .bak, not a planted symlink)
+  find "$FH" -maxdepth 1 -name '.bashrc.install-re-runtime.*' ! -name '*.bak' ! -type l | wc -l | tr -d ' '
+}
+
+note "#207a: a planted symlink at the old fixed temp path is never followed or touched"
+new_home 207a
+printf 'export USER_LINE=1\n' >"$FH/.bashrc"
+printf 'canary-original\n' >"$FH/canary"
+ln -s "$FH/canary" "$FH/.bashrc.install-re-runtime.tmp"
+CANARY_SHA="$(file_sha "$FH/canary")"
+run_env install_env_block
+check "207a rc 0" test "$RC" -eq 0
+check_out "207a env ok" 'INSTALL-RE: env ok' "$OUT"
+check "207a canary content untouched" test "$(file_sha "$FH/canary")" = "$CANARY_SHA"
+check "207a planted symlink untouched" test -L "$FH/.bashrc.install-re-runtime.tmp"
+check "207a symlink still points at the canary" test "$(readlink "$FH/.bashrc.install-re-runtime.tmp")" = "$FH/canary"
+check "207a block written to .bashrc" test "$(marker_count '>>>')" -eq 1
+check "207a no temp leftovers" test "$(stray_temps)" -eq 0
+
+note "#207b: a failed compose step leaves no temp file behind"
+new_home 207b
+printf 'export USER_LINE=1\n' >"$FH/.bashrc"
+mkdir -p "$SB/failbin"
+printf '#!/bin/bash\nexit 1\n' >"$SB/failbin/sync"
+chmod +x "$SB/failbin/sync"
+BASHRC_SHA="$(file_sha "$FH/.bashrc")"
+RUN_PATH_PREFIX="$SB/failbin" run_env install_env_block
+check "207b failure rc nonzero" test "$RC" -ne 0
+check_out "207b names the fsync failure" 'cannot fsync' "$OUT"
+check "207b no temp leftovers after failure" test "$(stray_temps)" -eq 0
+check "207b .bashrc unchanged after failure" test "$(file_sha "$FH/.bashrc")" = "$BASHRC_SHA"
+
+note "#207c: new-file mode stays umask-derived (mktemp's 0600 is not inherited)"
+new_home 207c
+RUN_UMASK=022 run_env install_env_block
+check "207c rc 0" test "$RC" -eq 0
+check "207c fresh .bashrc is 0644 under umask 022" test "$(/usr/bin/stat -c %a "$FH/.bashrc" 2>/dev/null || /usr/bin/stat -f %Lp "$FH/.bashrc")" = "644"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then
