@@ -686,13 +686,34 @@ profile_sources_bashrc() {
           seg="${seg#"${seg%%[![:space:]]*}"}"
           case "$seg" in
           if | if[[:space:]]*)
-            fr_cond+=("$(const_status "${seg#if}")")
+            if [ "$run" -eq 0 ]; then
+              # Whole `if ... fi` is skipped by a dead `&&`/`||` chain.
+              fr_cond+=(d)
+            else
+              # Only a single-segment condition (end of line, or `; then`)
+              # has a known literal outcome; a compound condition such as
+              # `if false || [ -f ~/.bashrc ]; then` stays unknown (`u`).
+              if [ $((k + 1)) -eq "${#segs[@]}" ]; then
+                fr_cond+=("$(const_status "${seg#if}")")
+              else
+                next_seg="${segs[k + 1]}"
+                next_seg="${next_seg#"${next_seg%%[![:space:]]*}"}"
+                if [ "${seps[k + 1]}" = ";" ] &&
+                  { [ "$next_seg" = "then" ] || [[ "$next_seg" == then[[:space:]]* ]]; }; then
+                  fr_cond+=("$(const_status "${seg#if}")")
+                else
+                  fr_cond+=(u)
+                fi
+              fi
+            fi
             fr_else+=(0)
             seg=""
             ;;
           elif | elif[[:space:]]*)
             if [ "${#fr_cond[@]}" -gt 0 ]; then
-              fr_cond[${#fr_cond[@]} - 1]=u
+              if [ "${fr_cond[${#fr_cond[@]} - 1]}" != d ]; then
+                fr_cond[${#fr_cond[@]} - 1]=u
+              fi
               fr_else[${#fr_else[@]} - 1]=0
             fi
             seg=""
@@ -718,7 +739,8 @@ profile_sources_bashrc() {
         done
         dead=0
         for ((f = 0; f < ${#fr_cond[@]}; f++)); do
-          if { [ "${fr_else[f]}" -eq 0 ] && [ "${fr_cond[f]}" = f ]; } ||
+          if [ "${fr_cond[f]}" = d ] ||
+            { [ "${fr_else[f]}" -eq 0 ] && [ "${fr_cond[f]}" = f ]; } ||
             { [ "${fr_else[f]}" -eq 1 ] && [ "${fr_cond[f]}" = t ]; }; then
             dead=1
           fi
@@ -1847,7 +1869,7 @@ install_env_block() {
   # writer tore the file — fail, naming the file and the backup,
   # rather than silently "repairing" over lost user content.
   if [ "${#kept[@]}" -gt 0 ] &&
-    ! printf '%s\n' "${kept[@]}" | bash -n >/dev/null 2>&1; then
+    ! printf '%s\n' "${kept[@]}" | bash -O extglob -n >/dev/null 2>&1; then
     fail env "$bashrc is damaged outside the re-runtime block (kept content fails bash -n); refusing to rewrite it; as-found backup at $bak"
   fi
   # bash -n exits 0 with only a warning on an unterminated heredoc, so
@@ -3162,7 +3184,7 @@ EOF
 export EDITOR=vim
 alias ll='ls -l'
 EOF
-  printf '# user profile\n' >"$envhome/.profile"
+  printf '# user profile\n. ~/.bashrc\n' >"$envhome/.profile"
   cp "$envhome/.bashrc" "$selftest_root/env-a-orig"
   out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
   cp "$envhome/.bashrc" "$selftest_root/env-a-run1"
@@ -3185,11 +3207,11 @@ EOF
   fi
   report_stage env-block-idempotent "$pass"
 
-  # (b) A pre-existing user .profile is never modified, and the block
-  # header records it as pre-existing.
+  # (b) A pre-existing user .profile that sources .bashrc is never
+  # modified, and the block header records it as pre-existing.
   reset_env
   printf '# user bashrc\nexport EDITOR=vim\n' >"$envhome/.bashrc"
-  printf '# my own profile\nexport PROFILE_SENTINEL=1\n' >"$envhome/.profile"
+  printf '# my own profile\nexport PROFILE_SENTINEL=1\n. ~/.bashrc\n' >"$envhome/.profile"
   cp "$envhome/.profile" "$selftest_root/env-b-profile"
   out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
   pass=0
@@ -3199,6 +3221,21 @@ EOF
     pass=1
   fi
   report_stage env-profile-pre-existing "$pass"
+
+  # (b2) A pre-existing user .profile that does NOT source .bashrc
+  # triggers the #197 shadowing SKIP and leaves .profile untouched.
+  reset_env
+  printf '# user bashrc\nexport EDITOR=vim\n' >"$envhome/.bashrc"
+  printf '# my own profile\nexport PROFILE_SENTINEL=1\n' >"$envhome/.profile"
+  cp "$envhome/.profile" "$selftest_root/env-b2-profile"
+  out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
+  pass=0
+  if [ "$rc" -eq 0 ] &&
+    cmp -s "$selftest_root/env-b2-profile" "$envhome/.profile" &&
+    printf '%s\n' "$out" | grep -qF "INSTALL-RE: env SKIP: login startup is shadowed by $envhome/.profile"; then
+    pass=1
+  fi
+  report_stage env-profile-non-sourcing-skip "$pass"
 
   # (c) With no .profile, one is created sourcing ~/.bashrc, the header
   # records the creation, and a second run stays byte-identical (the
@@ -3232,7 +3269,7 @@ EOF
   # recorded value.
   reset_env
   printf '# user bashrc\nexport EDITOR=vim\n' >"$envhome/.bashrc"
-  printf '# user profile\n' >"$envhome/.profile"
+  printf '# user profile\n. ~/.bashrc\n' >"$envhome/.profile"
   out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
   pass=0
   if [ "$rc" -eq 0 ] &&
@@ -3261,7 +3298,7 @@ export EDITOR=vim
 # >>> re-runtime >>>
 export JAVA_HOME="$HOME/opt/jdk-25.0.4.1+1"
 EOF
-  printf '# user profile\n' >"$envhome/.profile"
+  printf '# user profile\n. ~/.bashrc\n' >"$envhome/.profile"
   out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
   pass=0
   # shellcheck disable=SC2016 # the grep pattern matches the composed block's literal line
@@ -3398,7 +3435,7 @@ export PATH="$JAVA_HOME/bin:$GHIDRA_INSTALL_DIR/support:$HOME/opt/radare2/bin:$P
 export LD_LIBRARY_PATH="$HOME/opt/radare2/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 # <<< re-runtime <<<
 EOF
-  printf '# user profile\n' >"$envhome/.profile"
+  printf '# user profile\n. ~/.bashrc\n' >"$envhome/.profile"
   cp "$envhome/.bashrc" "$selftest_root/env-i-orig"
   out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
   cp "$envhome/.bashrc" "$selftest_root/env-i-run1"
@@ -3437,7 +3474,7 @@ esac
 SCRIPT
 export EDITOR=vim
 EOF
-  printf '# user profile\n' >"$envhome/.profile"
+  printf '# user profile\n. ~/.bashrc\n' >"$envhome/.profile"
   cp "$envhome/.bashrc" "$selftest_root/env-j-orig"
   out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
   cp "$envhome/.bashrc" "$selftest_root/env-j-run1"
@@ -3483,7 +3520,7 @@ esac
 
 export EDITOR=vim
 EOF
-  printf '# user profile\n' >"$envhome/.profile"
+  printf '# user profile\n. ~/.bashrc\n' >"$envhome/.profile"
   out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
   cp "$envhome/.bashrc" "$selftest_root/env-k-run1"
   out2=$(run_env install_env_block 2>&1) && rc2=0 || rc2=$?
@@ -3530,7 +3567,7 @@ esac
 
 export EDITOR=vim
 FIXTURE
-  printf '# user profile\n' >"$envhome/.profile"
+  printf '# user profile\n. ~/.bashrc\n' >"$envhome/.profile"
   out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
   cp "$envhome/.bashrc" "$selftest_root/env-l-run1"
   out2=$(run_env install_env_block 2>&1) && rc2=0 || rc2=$?
@@ -3572,7 +3609,7 @@ esac
 
 export EDITOR=vim
 FIXTURE
-  printf '# user profile\n' >"$envhome/.profile"
+  printf '# user profile\n. ~/.bashrc\n' >"$envhome/.profile"
   out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
   cp "$envhome/.bashrc" "$selftest_root/env-m-run1"
   out2=$(run_env install_env_block 2>&1) && rc2=0 || rc2=$?
@@ -3617,7 +3654,7 @@ esac
 
 export EDITOR=vim
 FIXTURE
-  printf '# user profile\n' >"$envhome/.profile"
+  printf '# user profile\n. ~/.bashrc\n' >"$envhome/.profile"
   out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
   cp "$envhome/.bashrc" "$selftest_root/env-n-run1"
   out2=$(run_env install_env_block 2>&1) && rc2=0 || rc2=$?
@@ -3658,7 +3695,7 @@ case $- in
 esac
 export EDITOR=vim
 FIXTURE
-  printf '# user profile\n' >"$envhome/.profile"
+  printf '# user profile\n. ~/.bashrc\n' >"$envhome/.profile"
   out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
   cp "$envhome/.bashrc" "$selftest_root/env-o-run1"
   out2=$(run_env install_env_block 2>&1) && rc2=0 || rc2=$?
@@ -3703,7 +3740,7 @@ esac
 
 export EDITOR=vim
 FIXTURE
-  printf '# user profile\n' >"$envhome/.profile"
+  printf '# user profile\n. ~/.bashrc\n' >"$envhome/.profile"
   out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
   cp "$envhome/.bashrc" "$selftest_root/env-p-run1"
   out2=$(run_env install_env_block 2>&1) && rc2=0 || rc2=$?
@@ -3748,7 +3785,7 @@ esac
 
 export EDITOR=vim
 FIXTURE
-  printf '# user profile\n' >"$envhome/.profile"
+  printf '# user profile\n. ~/.bashrc\n' >"$envhome/.profile"
   out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
   cp "$envhome/.bashrc" "$selftest_root/env-q-run1"
   out2=$(run_env install_env_block 2>&1) && rc2=0 || rc2=$?

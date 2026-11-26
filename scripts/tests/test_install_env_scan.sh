@@ -585,7 +585,7 @@ check_out "122 names the as-found backup" "$FH/.bashrc.install-re-runtime.bak" "
 check_no_out "122 no env ok" 'INSTALL-RE: env ok' "$OUT"
 check "122 file left untouched" cmp -s "$SB/case-122/orig" "$FH/.bashrc"
 check "122 backup holds as-found bytes" cmp -s "$SB/case-122/orig" "$FH/.bashrc.install-re-runtime.bak"
-check "122 no block composed" test ! -f "$FH/.bashrc.install-re-runtime.tmp"
+check "122 no block composed" bash -c 'shopt -s nullglob; f=("$1"/.bashrc.install-re-runtime.*); for x in "${f[@]}"; do [ "$x" = "$1/.bashrc.install-re-runtime.bak" ] || exit 1; done' _ "$FH"
 
 # ================= PR #191 R3-T6: multiline arithmetic is not a heredoc =================
 
@@ -1745,6 +1745,13 @@ check "K5 false || source detected (control)" profile_detected 'false || . ~/.ba
 check "K5 dead && then || fallback detected" profile_detected 'false && : || . ~/.bashrc'
 check "K5 false ; source detected (a ; ends the dead chain)" profile_detected 'false; . ~/.bashrc'
 check "K5 elif keeps the branch live (conservative control)" profile_detected $'if false; then :\nelif [ -f ~/.x ]; then\n  . ~/.bashrc\nfi'
+check "K5 compound if false || cond stays live (J2)" profile_detected 'if false || [ -f ~/.bashrc ]; then . ~/.bashrc; fi'
+check "K5 compound if [ 0 = 1 ] || cond stays live (J2)" profile_detected 'if [ 0 = 1 ] || [ -f ~/.bashrc ]; then . ~/.bashrc; fi'
+check "K5 compound if false; true stays live (J2)" profile_detected 'if false; true; then . ~/.bashrc; fi'
+check "K5 compound if false | true stays live (J2)" profile_detected 'if false | true; then . ~/.bashrc; fi'
+check "K5 compound if true && cond else stays live (J2)" profile_detected 'if true && [ -f ~/.x ]; then :; else . ~/.bashrc; fi'
+check "K5 dead chain before if true skipped" profile_not_detected 'false && if true; then . ~/.bashrc; fi'
+check "K5 dead chain before if true else skipped" profile_not_detected 'false && if true; then :; else . ~/.bashrc; fi'
 
 note "#198: a .bash_profile whose only .bashrc source is a heredoc mention or a dead branch is shadowing (end to end)"
 new_home k5a
@@ -1856,6 +1863,25 @@ run_env install_env_block
 check "k3e rc 0" test "$RC" -eq 0
 check_out "k3e shadowing SKIP line" 'login startup is shadowed by' "$OUT"
 check "k3e no .bashrc created" test ! -e "$FH/.bashrc"
+
+note "#202 end-to-end: extglob mid-pattern with shopt -s extglob passes damage gate and places block before guard"
+new_home extglob_e2e
+cat >"$FH/.bashrc" <<'EOF2'
+shopt -s extglob
+if false; then
+  case x in @(a|b)c) if b; then :; fi ;; esac
+fi
+case $- in
+  *i*) ;;
+  *) return;;
+esac
+export AFTER=1
+EOF2
+run_env install_env_block
+check "extglob_e2e rc 0" test "$RC" -eq 0
+check_out "extglob_e2e env ok" 'INSTALL-RE: env ok' "$OUT"
+E2E_VAL="$(env -i HOME="$FH" /bin/bash -c '. "$HOME/.bashrc"; printf %s "${JAVA_HOME:-}"' 2>/dev/null)"
+check "extglob_e2e block reachable in noninteractive source" test "$E2E_VAL" = "$FH/opt/jdk-$TEMURIN_VERSION"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then
