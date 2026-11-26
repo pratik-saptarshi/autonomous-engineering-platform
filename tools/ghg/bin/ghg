@@ -39,8 +39,9 @@ cwd_real=$(pwd -P)
 if [ -n "$state_real" ] && [ "$state_real" = "$cwd_real" ]; then
   : # never chmod the working directory
 elif [ ! -d "$STATE_DIR" ]; then
-  (umask 077 && mkdir -p "$STATE_DIR") 2>/dev/null &&
+  if (umask 077 && mkdir -p "$STATE_DIR") 2>/dev/null; then
     chmod 700 "$STATE_DIR" 2>/dev/null || true
+  fi
 fi
 
 if (umask 077 && python3 -c 'import py_compile, sys; py_compile.compile(sys.argv[1], cfile=sys.argv[2], doraise=True)' "$GHG_PY" "$STATE_DIR/ghg.pyc" 2>/dev/null); then

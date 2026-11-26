@@ -577,11 +577,14 @@ class TestPollDeadline(WatchTestCase):
              "sleep": SLOW_STUB_SLEEP},
         ])
         started = time.monotonic()
-        proc = self.spawn_watcher(interval="45", timeout_s="0.1")
+        # 1s, not 0.1s: a cold start on a loaded CI runner must still
+        # reach the stub, while 6s of stub sleep proves the read is cut
+        # by the caller's remaining budget rather than its own timeout.
+        proc = self.spawn_watcher(interval="45", timeout_s="1")
         code, out, _ = self.finish(proc)
         elapsed = time.monotonic() - started
         self.assertEqual(code, 1)
-        self.assertIn("ghg watch: run 42 timeout after 0.1s", out)
+        self.assertIn("ghg watch: run 42 timeout after 1s", out)
         self.assertNotIn("conclusion=", out)
         self.assertEqual(self.stub_calls(), 1)
         self.assertLess(elapsed, SLOW_STUB_SLEEP - 1.5,
