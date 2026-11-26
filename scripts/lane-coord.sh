@@ -2429,7 +2429,7 @@ json.dump(data, open(sys.argv[1], "w"))
 #!/usr/bin/env bash
 case "${1:-}" in
 status) echo "daemon: listening on 127.0.0.1:34343, answering" ;;
-list) printf 'guard_rule a\nguard_rule b\nguard_rule c\nDestructive GitHub actions\n' ;;
+list) printf "Found 3 memories in namespace 'guard':\n\n--- ID: a ---\nType: guard_rule\nContent: rule a\n\n--- ID: b ---\nType: guard_rule\nContent: rule b\n\n--- ID: c ---\nType: guard_rule\nContent: Destructive GitHub actions\n" ;;
 *) exit 1 ;;
 esac
 STUBEOF
