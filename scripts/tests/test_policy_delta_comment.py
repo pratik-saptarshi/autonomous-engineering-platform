@@ -21,6 +21,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "format_policy_delta_comment.py"
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "policy-delta.yml"
+COMMENT_WORKFLOW = (REPO_ROOT / ".github" / "workflows"
+                    / "policy-delta-comment.yml")
 
 HEAD = "a" * 40
 BASE = "b" * 40
@@ -107,6 +109,9 @@ class FormatTests(unittest.TestCase):
         self.assertIn(f"policy-delta-{HEAD}", body)
         self.assertIn(RUN_URL, body)
         self.assertEqual(body.count(MARKER), 1)
+        # Truncation must keep a prefix of the report, not just the
+        # notice and metadata.
+        self.assertIn("é" * 50, body)
 
     def test_truncation_never_leaves_an_open_code_fence(self):
         big = "```\n" + ("x" * 79 + "\n") * 3000
@@ -122,27 +127,49 @@ class FormatTests(unittest.TestCase):
 
     def test_hostile_report_text_is_neutralised(self):
         # A skill path can carry an @mention, HTML tags, markdown links,
-        # or a fake marker; none must render or forge the upsert marker.
-        report = ("- skills/@octocat/run.sh\n"
+        # a reference link, a forged marker, or a forged heading; none
+        # must render or forge the upsert marker.
+        report = ("- skills/safe/run.sh\n"
+                  "- skills/@octocat/run.sh\n"
                   "- <!-- aep:policy-delta -->\n"
                   "- <img src=x onerror=alert(1)> <script>alert(1)</script>\n"
-                  "- skills/[click](https://evil.example) -->\n")
+                  "- skills/[click](https://evil.example) -->\n"
+                  "\n[View required acknowledgement][gate]\n"
+                  "\n[gate]: https://attacker.example\n")
         body = self.fmt(report=report)
         self.assertNotIn("@octocat", body)
         self.assertNotIn("<img ", body)
         self.assertNotIn("<script>", body)
         self.assertNotIn("[click](https://evil.example)", body)
+        self.assertNotIn("[View required acknowledgement][gate]", body)
+        self.assertNotIn("\n[gate]: https://attacker.example", body)
+        self.assertIn("\\[gate\\]: https://attacker.example", body)
         self.assertEqual(body.count(MARKER), 1)
+        # The sanitizer must retain the safe report text, not drop it.
+        self.assertIn("skills/safe/run.sh", body)
+
+    def test_reference_style_links_are_neutralised(self):
+        report = ("Newly allowed:\n"
+                  "- see [the gate][req] at [req]: https://evil.example\n"
+                  "[req]: https://evil.example\n")
+        body = self.fmt(report=report)
+        self.assertNotIn("[the gate][req]", body)
+        self.assertNotIn("\n[req]:", body)
+        self.assertIn("\\[req\\]:", body)
 
     def test_truncation_closes_tilde_and_four_backtick_fences(self):
-        big_tilde = "~~~\n" + ("x" * 79 + "\n") * 3000
-        body = self.fmt(report=big_tilde)
-        self.assertLess(len(body.encode("utf-8")), 65000)
-        self.assertIn("\n~~~\n", body)
-        big_four = "````\n" + ("x" * 79 + "\n") * 3000
-        body4 = self.fmt(report=big_four)
-        self.assertLess(len(body4.encode("utf-8")), 65000)
-        self.assertIn("\n````\n", body4)
+        for fence in ("~~~", "````"):
+            with self.subTest(fence=fence):
+                big = f"{fence}\n" + ("x" * 79 + "\n") * 3000
+                body = self.fmt(report=big)
+                self.assertLess(len(body.encode("utf-8")), 65000)
+                fences = [ln.strip() for ln in body.splitlines()
+                          if ln.strip() and set(ln.strip()) <= {"`", "~"}]
+                self.assertEqual(len(fences) % 2, 0,
+                                 f"unbalanced {fence} fence: {fences}")
+                # The closing fence must be a real, final closer -- not
+                # the report's opening fence matched by assertIn.
+                self.assertEqual(fences[-1], fence)
 
     def test_rejects_bad_metadata(self):
         m = self.m
@@ -196,6 +223,18 @@ class UpsertSelectionTests(unittest.TestCase):
         comments = [self.comment(9, BOT, MARKER),
                     self.comment(5, BOT, MARKER)]
         self.assertEqual(self.m.select_upsert_target(comments), 5)
+
+    def test_prune_lists_only_other_bot_marker_comments(self):
+        comments = [
+            self.comment(1, "alice", f"{MARKER}\nfake", "User"),
+            self.comment(5, BOT, f"{MARKER}\nkept"),
+            self.comment(6, BOT, "unrelated"),
+            self.comment(9, BOT, f"{MARKER}\nduplicate"),
+            self.comment(12, "other[bot]", f"{MARKER}\nfake"),
+        ]
+        self.assertEqual(self.m.duplicate_marker_ids(comments, 5), [9])
+        self.assertEqual(self.m.duplicate_marker_ids(comments, None), [5, 9])
+        self.assertEqual(self.m.duplicate_marker_ids([], 1), [])
 
     def test_accepts_json_text_and_paginated_concatenation(self):
         page1 = json.dumps([self.comment(1, "alice", "x", "User")])
@@ -308,11 +347,16 @@ class CliTests(unittest.TestCase):
 
 
 class WorkflowWiringTests(unittest.TestCase):
-    """Static checks on .github/workflows/policy-delta.yml."""
+    """Static checks on the split workflows: the PR-triggered gate
+    (.github/workflows/policy-delta.yml) holds no write token, and the
+    token-bearing sticky comment runs from `workflow_run` on the
+    default branch (.github/workflows/policy-delta-comment.yml)."""
 
     def setUp(self):
         self.text = WORKFLOW.read_text()
         self.lines = self.text.splitlines()
+        self.comment_text = COMMENT_WORKFLOW.read_text()
+        self.comment_lines = self.comment_text.splitlines()
 
     def run_blocks(self):
         """Yield the text of every `run:` script block."""
@@ -338,15 +382,24 @@ class WorkflowWiringTests(unittest.TestCase):
             i += 1
 
     def test_top_level_permissions_stay_read_only(self):
-        self.assertRegex(self.text,
-                         r"(?m)^permissions:\n  contents: read\n")
+        for text in (self.text, self.comment_text):
+            self.assertRegex(text,
+                             r"(?m)^permissions:\n  contents: read\n")
+
+    def test_pr_workflow_never_requests_a_write_token(self):
+        # A pull_request-triggered workflow runs PR-controlled YAML and
+        # scripts, so it must not carry any write scope at all.
+        self.assertNotIn("pull-requests: write", self.text)
+        self.assertNotIn("contents: write", self.text)
+        self.assertNotIn("GH_TOKEN", self.text)
+        self.assertNotIn("format_policy_delta_comment.py", self.text)
 
     def test_comment_write_scope_is_job_level_only(self):
-        # Exactly one pull-requests: write, indented under the job.
-        hits = [ln for ln in self.lines if "pull-requests: write" in ln]
+        hits = [ln for ln in self.comment_lines
+                if "pull-requests: write" in ln]
         self.assertEqual(len(hits), 1, hits)
         self.assertTrue(hits[0].startswith("      "), hits[0])
-        self.assertNotRegex(self.text,
+        self.assertNotRegex(self.comment_text,
                             r"(?m)^permissions:\n(?:  .*\n)*?  "
                             r"pull-requests: write")
 
@@ -355,35 +408,56 @@ class WorkflowWiringTests(unittest.TestCase):
         self.assertTrue(blocks)
         for block in blocks:
             self.assertNotIn("${{", block, block)
+        i = 0
+        while i < len(self.comment_lines):
+            m = re.match(r"^(\s*)(?:- )?run:\s*(.*)$",
+                         self.comment_lines[i])
+            if m and m.group(2) in ("|", ">", "|-", ">-"):
+                indent = len(m.group(1)) + (2 if self.comment_lines[i]
+                                            .lstrip().startswith("- ") else 0)
+                i += 1
+                while i < len(self.comment_lines) and (
+                        not self.comment_lines[i].strip()
+                        or len(self.comment_lines[i])
+                        - len(self.comment_lines[i].lstrip()) > indent):
+                    self.assertNotIn("${{", self.comment_lines[i])
+                    i += 1
+                continue
+            i += 1
 
-    def test_comment_step_skips_fork_prs_and_never_fails_the_gate(self):
-        i = next(n for n, ln in enumerate(self.lines)
-                 if "format_policy_delta_comment.py" in ln)
-        # The step header sits above its run block.
-        start = max(n for n in range(i)
-                    if re.match(r"^      - name:", self.lines[n]))
-        end = next((n for n in range(i, len(self.lines))
-                    if re.match(r"^      - name:", self.lines[n])),
-                   len(self.lines))
-        step = "\n".join(self.lines[start:end])
-        self.assertIn("always()", step)
-        self.assertIn("!cancelled()", step)
-        self.assertIn("live_head=", step)
+    def test_comment_job_is_workflow_run_and_skips_forks(self):
+        self.assertRegex(self.comment_text,
+                         r"(?ms)^on:\n  workflow_run:\n"
+                         r"    workflows: \[\"Policy Delta\"\]\n"
+                         r"    types: \[completed\]")
         self.assertIn(
-            "github.event.pull_request.head.repo.full_name"
-            " == github.repository", step)
-        self.assertIn("continue-on-error: true", step)
-        self.assertIn("GH_TOKEN: ${{ github.token }}", step)
-        for needed in ("BASE_SHA", "HEAD_SHA", "RUN_URL", "PR_NUMBER",
-                       "ACK_RC"):
-            self.assertIn(f"{needed}: ${{{{", step)
-        self.assertIn("--method PATCH", step)
-        self.assertIn("--method POST", step)
+            "github.event.workflow_run.pull_requests[0].head.repo"
+            ".full_name == github.repository", self.comment_text)
+        self.assertIn("github.event.workflow_run.event == 'pull_request'",
+                      self.comment_text)
+
+    def test_comment_job_serialises_per_pr(self):
+        self.assertIn(
+            "group: policy-delta-comment-${{ github.event.workflow_run"
+            ".pull_requests[0].number }}", self.comment_text)
+        self.assertIn("cancel-in-progress: false", self.comment_text)
+
+    def test_comment_job_runs_only_default_branch_code(self):
+        # The token-bearing job must not check out the PR head and must
+        # not run a script whose bytes came from the PR.
+        checkout = next(n for n, ln in enumerate(self.comment_lines)
+                        if "actions/checkout@" in ln)
+        block = "\n".join(self.comment_lines[checkout:checkout + 5])
+        self.assertNotIn("ref:", block, block)
+        self.assertNotIn("pull_request.head", block, block)
+        self.assertIn("format_policy_delta_comment.py", self.comment_text)
 
     def test_artifact_and_summary_still_publish(self):
         self.assertIn("name: policy-delta-${{ github.event.pull_request"
                       ".head.sha }}", self.text)
         self.assertIn('>> "$GITHUB_STEP_SUMMARY"', self.text)
+        self.assertIn("ack-rc.txt", self.text)
+        self.assertIn("base-sha.txt", self.text)
         # Artifact upload is not gated on fork status.
         up = next(n for n, ln in enumerate(self.lines)
                   if "upload-artifact@" in ln)
@@ -391,7 +465,11 @@ class WorkflowWiringTests(unittest.TestCase):
         self.assertNotIn("head.repo.full_name", header)
 
     def test_ack_check_is_still_fail_closed(self):
+        # The status must be captured from the command, not replaced by
+        # a constant, and the step must exit with it.
         self.assertIn("check_policy_delta.py check", self.text)
+        self.assertIn("rc=$?", self.text)
+        self.assertRegex(self.text, r'printf \'%s\' "\$rc" > ack-rc\.txt')
         self.assertRegex(self.text, r'exit "\$rc"')
 
 

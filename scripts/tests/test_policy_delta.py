@@ -4872,6 +4872,54 @@ class BoundaryLayerTests(SyntheticRepo):
             "generator-yield": '\ndef _gen():\n    yield DEFAULT_LIMITS\n',
             "cprofile-run": '\nimport cProfile\n'
                             'cProfile.run("DEFAULT_LIMITS.clear()")\n',
+            # Peer-review regressions (PR #223). Each was a live bypass:
+            # the differ reported a literal-only delta while the change
+            # mutated a watched table at runtime.
+            "expanded-key-kwarg": '\nsorted(DEFAULT_LIMITS.values(), '
+                                  '**{"key": list.clear})\n',
+            "deepcopy-memo-kwarg": '\nimport copy\n'
+                                   'copy.deepcopy([], memo=DEFAULT_LIMITS)\n',
+            "deepcopy-memo-positional": '\nimport copy\n'
+                                        'copy.deepcopy([], DEFAULT_LIMITS)\n',
+            "isinstance-metaclass": '\nclass _M(type):\n'
+                                    '    def __instancecheck__(cls, inst):\n'
+                                    '        inst.clear()\n'
+                                    'isinstance(DEFAULT_LIMITS,\n'
+                                    '           type("_X", (_M,), {}))\n',
+            "globals-aliased-then-rebound": '\n_g = globals\n'
+                                            'globals = None\n'
+                                            '_g()["DEFAULT_LIMITS"].clear()\n',
+            "sysmodules-get": '\nimport sys\n'
+                              'sys.modules.get("builtins").exec("pass")\n',
+            "closurevars-globals": '\nimport inspect\n'
+                                   'def _f():\n    return DEFAULT_LIMITS\n'
+                                   'inspect.getclosurevars(_f)'
+                                   '.globals["DEFAULT_LIMITS"].clear()\n',
+            "attrgetter-alias": '\nimport operator, sys\n'
+                                '_ag = operator.attrgetter\n'
+                                '_ag("DEFAULT_LIMITS")'
+                                '(sys.modules[__name__]).clear()\n',
+            "methodcaller-alias": '\nimport operator, builtins\n'
+                                  '_mc = operator.methodcaller\n'
+                                  '_mc("exec", "pass")(builtins)\n',
+            "import-module-cprofile": '\nimport importlib\n'
+                                      'importlib.import_module("cProfile")'
+                                      '.run("DEFAULT_LIMITS.clear()")\n',
+            "import-module-alias": '\nimport importlib as _il\n'
+                                   '_il.import_module("cProfile")'
+                                   '.run("DEFAULT_LIMITS.clear()")\n',
+            "starred-table-arg": '\n_args = [DEFAULT_LIMITS]\n'
+                                 'sorted(*_args)\n',
+            "rebound-import-callee": '\nfrom json import dumps as _d\n'
+                                     '_d = lambda t: t.clear()\n'
+                                     '_d(DEFAULT_LIMITS)\n',
+            "unknown-method-receiver": '\ndef _f(obj):\n'
+                                       '    return obj.get("k", '
+                                       'DEFAULT_LIMITS)\n',
+            "subclass-method-receiver": '\nclass _X:\n'
+                                        '    def get(self, *a):\n'
+                                        '        DEFAULT_LIMITS.clear()\n'
+                                        '_X().get(DEFAULT_LIMITS)\n',
         }
         for label, snippet in cases.items():
             with self.subTest(form=label):
@@ -4894,6 +4942,11 @@ class BoundaryLayerTests(SyntheticRepo):
                 r = self.run_tool("diff", self.base, head)
                 self.assertEqual(r.returncode, 2, f"{label}: {r.stdout}{r.stderr}")
                 self.assertNotIn("Traceback", r.stderr, label)
+                # A generic catch-all must not mask a broken refusal:
+                # the diff has to name the table and the refusal reason.
+                self.assertIn("DEFAULT_LIMITS", r.stderr, label)
+                self.assertRegex(r.stderr,
+                                 r"rebound by|modelled power is mutated")
 
     def test_layer1_precision_controls_pass(self):
         cases = {
@@ -5025,8 +5078,8 @@ class BoundaryLayerTests(SyntheticRepo):
             "sorted-keys": '\n_s = sorted(DEFAULT_LIMITS)\n',
             "iter-next": '\n_i = iter(_MUTATING_METHODS)\nnext(_i)\n',
             "repr-str": '\n_r = repr(DEFAULT_LIMITS) + str(LIMITS)\n',
-            "isinstance-type": '\n_b = isinstance(DEFAULT_LIMITS, dict) '
-                               'and type(DEFAULT_LIMITS) is dict\n',
+            "type-introspection": '\n_b = type(DEFAULT_LIMITS) is dict '
+                                   'and isinstance("x", str)\n',
             "json-dumps": '\nimport json\n_j = json.dumps(DEFAULT_LIMITS)\n',
             "frozenset": '\n_f = frozenset(_MUTATING_METHODS)\n',
             "tuple-flat": '\n_t = tuple(_MUTATING_SUBCOMMANDS)\n',
@@ -5201,6 +5254,23 @@ class ReportAndAckTests(SyntheticRepo):
         self.assertIn("gcloud", r.stdout)
         self.assertIn("does not cover", r.stdout)
         self.assertIn("policy-delta-sha256:", r.stdout)
+
+    def test_markdown_fields_cannot_forge_structure(self):
+        # A git filename may contain a newline; rendered verbatim it
+        # could forge a report heading or a reference link.
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "check_policy_delta_md", REAL_SCRIPT)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        line = mod._md_literal(
+            "evil\n\n## Forged [x](https://e) [g]: https://e <b>@here")
+        self.assertNotIn("\n", line)
+        self.assertNotRegex(line, r"(?<!\\)\]\(https")
+        self.assertIn("\\](", line)
+        self.assertNotIn("<b>", line)
+        self.assertNotIn("@here", line)
+        self.assertIn("\\[", line)
 
     def fingerprint(self, head):
         r = self.run_tool("diff", self.base, head, "--format", "markdown")

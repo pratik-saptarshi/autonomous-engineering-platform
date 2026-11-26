@@ -75,11 +75,18 @@ def _neutralise(text):
     """Defang report text before it is embedded in a PR comment: a
     skill path such as ``skills/@octocat/x`` must not notify anyone,
     raw HTML tags/comments (including forged markers and ``-->``) must
-    not render, and markdown links must not inject phishing targets."""
+    not render, and markdown links -- inline, reference-style, and
+    link definitions -- must not inject phishing targets."""
     text = text.replace("@", "@" + _ZWSP)
     text = re.sub(r"<(?=[A-Za-z/!?])", "&lt;", text)
     text = text.replace("-->", "--&gt;")
-    text = re.sub(r"\[([^\]]*)\]\(", r"\\[\1\\](", text)
+    text = re.sub(r"\[([^\]\n]*)\]\(", r"\\[\1\\](", text)
+    # `[label][ref]` renders as a link only while a `[ref]: url`
+    # definition exists, so defang both spellings.
+    text = re.sub(r"\[([^\]\n]*)\]\[([^\]\n]*)\]",
+                  r"\\[\1\\]\\[\2\\]", text)
+    text = re.sub(r"(?m)^([ \t]*)\[([^\]\n]+)\]:",
+                  r"\1\\[\2\\]:", text)
     return text
 
 
@@ -205,6 +212,19 @@ def parse_comments(comments):
     return out
 
 
+def _is_sticky(c):
+    """True for a comment this workflow owns: authored by
+    ``github-actions[bot]`` with the hidden marker first in the body."""
+    if not isinstance(c, dict):
+        return False
+    user = c.get("user")
+    body = c.get("body")
+    if not isinstance(user, dict) or user.get("login") != BOT_LOGIN \
+            or user.get("type") != "Bot":
+        return False
+    return isinstance(body, str) and body.lstrip().startswith(MARKER)
+
+
 def select_upsert_target(comments):
     """The id of the existing sticky comment to PATCH, or None (POST a
     new one): the lowest-id comment authored by ``github-actions[bot]``
@@ -212,21 +232,29 @@ def select_upsert_target(comments):
     ignored even if they carry the marker."""
     best = None
     for c in parse_comments(comments):
-        if not isinstance(c, dict):
+        if not _is_sticky(c):
             continue
-        user = c.get("user")
-        body = c.get("body")
         cid = c.get("id")
-        if not isinstance(user, dict) or user.get("login") != BOT_LOGIN \
-                or user.get("type") != "Bot":
-            continue
-        if not isinstance(body, str) or not body.lstrip().startswith(MARKER):
-            continue
         if not isinstance(cid, int) or isinstance(cid, bool):
             continue
         if best is None or cid < best:
             best = cid
     return best
+
+
+def duplicate_marker_ids(comments, keep_id):
+    """Ids of the other bot-authored sticky comments, for deletion after
+    a concurrent create raced the upsert. `keep_id` is the comment the
+    upsert selected (or just created)."""
+    out = []
+    for c in parse_comments(comments):
+        if not _is_sticky(c):
+            continue
+        cid = c.get("id")
+        if isinstance(cid, int) and not isinstance(cid, bool) \
+                and cid != keep_id:
+            out.append(cid)
+    return sorted(out)
 
 
 def plan_upsert(comments, new_body):
@@ -265,6 +293,9 @@ def main(argv=None):
     p = sub.add_parser("plan")
     p.add_argument("--comments", required=True)
     p.add_argument("--body-file", required=True)
+    q = sub.add_parser("prune")
+    q.add_argument("--comments", required=True)
+    q.add_argument("--keep", required=True, type=int)
     args = ap.parse_args(argv)
     try:
         if args.cmd == "format":
@@ -280,12 +311,16 @@ def main(argv=None):
                                   args.run_url, outcome)
             with open(args.output, "w", encoding="utf-8") as fh:
                 fh.write(body)
-        else:
+        elif args.cmd == "plan":
             action, cid = plan_upsert(_read(args.comments),
                                       _read(args.body_file))
             print(f"action={action}")
             if cid is not None:
                 print(f"comment_id={int(cid)}")
+        else:
+            for cid in duplicate_marker_ids(_read(args.comments),
+                                            args.keep):
+                print(cid)
     except (ValueError, OSError) as e:
         print(f"format_policy_delta_comment: error: {e}",
               file=sys.stderr)

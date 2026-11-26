@@ -1,0 +1,161 @@
+name: Policy Delta Comment
+
+# The sticky policy-delta PR comment (issue #154), in its own
+# `workflow_run` workflow on purpose.
+#
+# A `pull_request`-triggered workflow executes the PR's version of the
+# YAML and of the scripts it calls, so any job in it can be rewritten by
+# a same-repository PR to use the write token it was granted. This
+# workflow instead runs after "Policy Delta" completes, always from the
+# default branch: the YAML, the checkout, and
+# `scripts/format_policy_delta_comment.py` are trusted. PR code never
+# runs here with a token.
+#
+# The report artifact produced by the PR run is DATA. It is size-capped
+# and defanged by the formatter before it reaches the comment, and the
+# run is skipped for forks (their head repo differs). The comment is
+# informational and never part of the gate: a missing artifact or a
+# failed upsert does not change the `policy-delta` status check.
+
+on:
+  workflow_run:
+    workflows: ["Policy Delta"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  comment:
+    # Only same-repository pull_request runs; branch pushes and fork
+    # PRs are skipped (a fork's token here would still be the base
+    # repo's, so the skip is enforced, not incidental).
+    if: >
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.pull_requests[0].head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: write
+    # Serialize per PR: a cancelled/retried run must not race an older
+    # one into creating a second sticky comment or overwriting a newer
+    # body. Pending runs queue here instead of running concurrently.
+    concurrency:
+      group: policy-delta-comment-${{ github.event.workflow_run.pull_requests[0].number }}
+      cancel-in-progress: false
+    steps:
+      - name: Check out the trusted default branch (never the PR head)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Check the trusted formatter is available
+        id: trusted
+        run: |
+          if [ -f scripts/format_policy_delta_comment.py ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "The sticky-comment formatter is not on the default branch yet; skipping."
+          fi
+      - name: Download the report artifact from the completed run
+        if: steps.trusted.outputs.ok == 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          HEAD_SHA: ${{ github.event.workflow_run.pull_requests[0].head.sha }}
+        run: |
+          mkdir -p report
+          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --name "policy-delta-$HEAD_SHA" --dir report
+      - name: Check the report artifact is usable
+        id: artifact
+        if: steps.trusted.outputs.ok == 'true'
+        run: |
+          if [ -s report/policy-delta.md ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "No policy-delta report artifact for this run; skipping the comment."
+          fi
+      - name: Upsert sticky policy-delta PR comment
+        if: steps.artifact.outputs.ok == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
+          HEAD_SHA: ${{ github.event.workflow_run.pull_requests[0].head.sha }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+        run: |
+          # The artifact is untrusted data: only files with the exact
+          # expected names are read, and the metadata is validated.
+          base_sha="$(cat report/base-sha.txt 2>/dev/null || true)"
+          ack_rc="$(cat report/ack-rc.txt 2>/dev/null || true)"
+          case "$base_sha" in
+            ''|*[!0-9a-f]*) echo "bad base SHA in artifact; skipping." >&2; exit 0 ;;
+          esac
+          case "$ack_rc" in
+            ''|*[!0-9]*) ack_rc="" ;;
+          esac
+          live_head="$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq .head.sha)"
+          if [ "$live_head" != "$HEAD_SHA" ]; then
+            echo "PR head moved to $live_head (this run is $HEAD_SHA); skipping stale comment upsert."
+            exit 0
+          fi
+          python3 scripts/format_policy_delta_comment.py format \
+            --report report/policy-delta.md \
+            --head-sha "$HEAD_SHA" --base-sha "$base_sha" \
+            --run-url "$RUN_URL" --ack-rc "$ack_rc" \
+            --output policy-delta-comment.md
+          gh api --paginate "repos/$REPO/issues/$PR_NUMBER/comments?per_page=100" > policy-delta-comments.json
+          plan="$(python3 scripts/format_policy_delta_comment.py plan \
+            --comments policy-delta-comments.json \
+            --body-file policy-delta-comment.md)"
+          action="$(printf '%s\n' "$plan" | sed -n 's/^action=//p')"
+          comment_id="$(printf '%s\n' "$plan" | sed -n 's/^comment_id=//p')"
+          # Re-check the head immediately before writing: the listing and
+          # formatting above take time.
+          live_head="$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq .head.sha)"
+          if [ "$live_head" != "$HEAD_SHA" ]; then
+            echo "PR head moved to $live_head mid-run; not writing."
+            exit 0
+          fi
+          case "$action" in
+            create)
+              created="$(gh api --method POST "repos/$REPO/issues/$PR_NUMBER/comments" -F body=@policy-delta-comment.md)"
+              comment_id="$(printf '%s' "$created" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
+              ;;
+            update)
+              case "$comment_id" in
+                ''|*[!0-9]*)
+                  echo "unexpected comment_id: $comment_id" >&2
+                  exit 1
+                  ;;
+              esac
+              gh api --method PATCH "repos/$REPO/issues/comments/$comment_id" -F body=@policy-delta-comment.md
+              ;;
+            noop)
+              echo "Sticky comment $comment_id already current; not rewriting."
+              ;;
+            *)
+              echo "unexpected upsert plan: $plan" >&2
+              exit 1
+              ;;
+          esac
+          # A raced or retried create can leave a duplicate; keep the
+          # selected comment and delete any other bot marker comment.
+          case "$comment_id" in
+            ''|*[!0-9]*) exit 0 ;;
+          esac
+          gh api --paginate "repos/$REPO/issues/$PR_NUMBER/comments?per_page=100" > policy-delta-after.json
+          python3 scripts/format_policy_delta_comment.py prune \
+            --comments policy-delta-after.json --keep "$comment_id" \
+            > policy-delta-duplicates.txt
+          while read -r duplicate_id; do
+            case "$duplicate_id" in
+              ''|*[!0-9]*) continue ;;
+            esac
+            gh api --method DELETE "repos/$REPO/issues/comments/$duplicate_id" || true
+          done < policy-delta-duplicates.txt

@@ -121,6 +121,7 @@ import argparse
 import ast
 import hashlib
 import json
+import re
 import subprocess
 import sys
 
@@ -442,7 +443,11 @@ _REFLECTIVE_ATTRS = {"__globals__", "f_globals", "f_locals",
                      "cell_contents", "__dict__", "_getframe",
                      "currentframe", "get_objects", "get_referrers",
                      "get_referents", "__getattribute__",
-                     "__getattr__", "__setattr__", "__delattr__"}
+                     "__getattr__", "__setattr__", "__delattr__",
+                     # `inspect.getclosurevars(f).globals` /
+                     # `.nonlocals` expose the tables a function
+                     # references without any frame or dunder read.
+                     "getclosurevars", "globals", "nonlocals"}
 _ATTR_BUILTINS = {"getattr", "setattr", "delattr"}
 
 # Builtin / stdlib callables that return an object sharing the shallow
@@ -459,7 +464,10 @@ _COPY_FAMILY = {"builtins:dict", "builtins:list", "builtins:tuple",
 # aliasing consequence: they return scalars/strings, or write the
 # table out, and keep no reference to it.
 _READONLY_CALLS = {"builtins:len", "builtins:repr", "builtins:str",
-                   "builtins:isinstance", "builtins:issubclass",
+                   # isinstance/issubclass are NOT allowlisted: a
+                   # custom metaclass's __instancecheck__ /
+                   # __subclasscheck__ runs with the table as its
+                   # argument (and can mutate or retain it).
                    "builtins:type", "builtins:id", "builtins:hash",
                    "builtins:bool", "builtins:any", "builtins:all",
                    "builtins:sum", "builtins:print", "builtins:format",
@@ -481,6 +489,89 @@ _SAFE_KEY_FUNCS = {"builtins:len", "builtins:str", "builtins:repr",
                    "builtins:bool", "builtins:id", "builtins:hash"}
 
 
+def _ghg_scope_facts(tree):
+    """(scope_of, parent, bindings) for the module and every nested
+    function / lambda / class scope.
+
+    ``scope_of[id(node)]`` is the scope node holding ``node``;
+    ``parent[id(scope)]`` is the enclosing scope; ``bindings[id(scope)]``
+    maps a name to the earliest line it is bound in that scope
+    (parameters bind at their ``def``/``lambda`` line). A dynamic-builtin
+    read is only considered shadowed when a binding of that name exists
+    in an enclosing scope *at or before* the read -- a binding later in
+    the file (or in an unrelated scope) does not hide the builtin.
+    Comprehension targets are not treated as scopes: refusing a
+    comprehension variable that happens to be named like a builtin is
+    the fail-closed direction."""
+    scope_of, parent, bindings = {id(tree): tree}, {}, {}
+
+    def add(scope, name, line):
+        if not name:
+            return
+        d = bindings.setdefault(id(scope), {})
+        if name not in d or line < d[name]:
+            d[name] = line
+
+    def bind(scope, target, line):
+        for n in _bound_names(target):
+            add(scope, n, line)
+
+    def walk(node, scope, line=None):
+        here = getattr(node, "lineno", line if line is not None else 0)
+        for child in ast.iter_child_nodes(node):
+            scope_of[id(child)] = scope
+            child_line = getattr(child, "lineno", here)
+            inner = scope
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                  ast.Lambda)):
+                for arg in (list(child.args.posonlyargs)
+                            + list(child.args.args)
+                            + list(child.args.kwonlyargs)):
+                    add(child, arg.arg, child.lineno)
+                for extra in (child.args.vararg, child.args.kwarg):
+                    if extra is not None:
+                        add(child, extra.arg, child.lineno)
+                if not isinstance(child, ast.Lambda):
+                    add(scope, child.name, child.lineno)
+                parent[id(child)] = scope
+                bindings.setdefault(id(child), {})
+                inner = child
+            elif isinstance(child, ast.ClassDef):
+                add(scope, child.name, child.lineno)
+                parent[id(child)] = scope
+                bindings.setdefault(id(child), {})
+                inner = child
+            elif isinstance(child, ast.Assign):
+                for t in child.targets:
+                    bind(scope, t, child.lineno)
+            elif isinstance(child, (ast.AnnAssign, ast.AugAssign,
+                                    ast.NamedExpr)):
+                if child.target is not None:
+                    bind(scope, child.target, child.lineno)
+            elif isinstance(child, (ast.For, ast.AsyncFor)):
+                bind(scope, child.target, child.lineno)
+            elif isinstance(child, ast.withitem):
+                # `with ... as NAME:` -- the withitem has no lineno; the
+                # enclosing `with` statement's line is the binding line.
+                if child.optional_vars is not None:
+                    bind(scope, child.optional_vars, here)
+            elif isinstance(child, ast.ExceptHandler):
+                add(scope, child.name, child.lineno)
+            elif isinstance(child, (ast.Import, ast.ImportFrom)):
+                for a in child.names:
+                    if a.name != "*":
+                        add(scope, a.asname or a.name.split(".")[0],
+                            child.lineno)
+            elif isinstance(child, getattr(ast, "Match", ())):
+                for case in child.cases:
+                    for n in _pattern_captures(case.pattern):
+                        add(scope, n, child.lineno)
+            walk(child, inner, child_line)
+
+    walk(tree, tree, getattr(tree, "lineno", 0))
+    return scope_of, parent, bindings
+
+
 def _ghg_name_facts(tree):
     """(all_bound, import_map): every name any binding form in the
     file binds (so a builtin name that is rebound anywhere is no
@@ -488,37 +579,43 @@ def _ghg_name_facts(tree):
     object path for imports (`import copy as c` -> {"c": "copy"};
     `from operator import setitem` -> {"setitem": "operator.setitem"})."""
     all_bound, import_map = set(), {}
+    rebound = set()
     for node in ast.walk(tree):
         if isinstance(node, (ast.Assign,)):
             for t in node.targets:
-                all_bound.update(_bound_names(t))
+                rebound.update(_bound_names(t))
         elif isinstance(node, (ast.AnnAssign, ast.AugAssign,
                                ast.NamedExpr)):
-            all_bound.update(_bound_names(node.target))
+            rebound.update(_bound_names(node.target))
         elif isinstance(node, (ast.For, ast.AsyncFor,
                                ast.comprehension)):
-            all_bound.update(_bound_names(node.target))
+            rebound.update(_bound_names(node.target))
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
                                ast.Lambda)):
             if not isinstance(node, ast.Lambda):
-                all_bound.add(node.name)
+                rebound.add(node.name)
             a = node.args
             for arg in (list(a.posonlyargs) + list(a.args)
                         + list(a.kwonlyargs)):
-                all_bound.add(arg.arg)
+                rebound.add(arg.arg)
             if a.vararg:
-                all_bound.add(a.vararg.arg)
+                rebound.add(a.vararg.arg)
             if a.kwarg:
-                all_bound.add(a.kwarg.arg)
+                rebound.add(a.kwarg.arg)
         elif isinstance(node, ast.ClassDef):
-            all_bound.add(node.name)
+            rebound.add(node.name)
         elif isinstance(node, ast.ExceptHandler):
             if node.name:
-                all_bound.add(node.name)
+                rebound.add(node.name)
         elif isinstance(node, ast.withitem):
             if node.optional_vars is not None:
-                all_bound.update(_bound_names(node.optional_vars))
-        elif isinstance(node, ast.Import):
+                rebound.update(_bound_names(node.optional_vars))
+        elif isinstance(node, getattr(ast, "Match", ())):
+            for case in node.cases:
+                rebound.update(_pattern_captures(case.pattern))
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
             for a in node.names:
                 local = a.asname or a.name.split(".")[0]
                 all_bound.add(local)
@@ -532,9 +629,13 @@ def _ghg_name_facts(tree):
                     import_map[local] = f"{node.module}.{a.name}"
                 else:
                     import_map[local] = f".{a.name}"
-        elif isinstance(node, getattr(ast, "Match", ())):
-            for case in node.cases:
-                all_bound.update(_pattern_captures(case.pattern))
+
+    all_bound.update(rebound)
+    # An imported name rebound by any other binding no longer denotes
+    # the import: `from json import dumps as _d; _d = lambda t:
+    # t.clear(); _d(DEFAULT_LIMITS)` must not resolve as json.dumps.
+    for name in rebound:
+        import_map.pop(name, None)
     return all_bound, import_map
 
 
@@ -3019,7 +3120,8 @@ def ghg_mutation_sites(tree, is_watched, hands_over, local_defs,
                     desc = "modelled table passed as a call argument"
             if desc is None \
                     and any(hands_over_strong(a) for a in args) \
-                    and not _external_call_read_only(node, resolver):
+                    and not _external_call_read_only(
+                        node, resolver, hands_over_strong, hands_over):
                 # Layer 3: an imported / builtin / unknown callable
                 # outside the read-only allowlist received a table
                 # (operator.delitem(T, k), a stored callable, a
@@ -3044,6 +3146,9 @@ class _CalleeResolver:
 
     def __init__(self, tree, all_bound, import_map):
         self.all_bound, self.import_map = all_bound, import_map
+        self.defined_methods = {
+            n.name for n in ast.walk(tree)
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
         self.values, self.opaque, self.funcs = {}, set(), {}
         for node in ast.walk(tree):
             if isinstance(node, ast.Assign):
@@ -3168,7 +3273,43 @@ class _CalleeResolver:
         return {"?"}
 
 
-def _external_call_read_only(call, resolver):
+def _readonly_method_receiver_ok(expr, resolver, seen=frozenset()):
+    """True only for a receiver whose method lookup is a modelled
+    builtin container/str: a literal, a name bound only to such
+    literals, or a call to an allowlisted constructor. An unknown
+    receiver can override `get`/`join`/`items`/... and mutate the
+    watched table handed to it, so the method name alone proves
+    nothing."""
+    if isinstance(expr, (ast.Constant, ast.List, ast.Tuple, ast.Set,
+                         ast.Dict)):
+        return True
+    if isinstance(expr, ast.Name):
+        if expr.id in seen or expr.id in resolver.opaque:
+            return False
+        values = resolver.values.get(expr.id) or []
+        if not values:
+            return False
+        return all(_readonly_method_receiver_ok(v, resolver,
+                                                seen | {expr.id})
+                   for v in values)
+    if isinstance(expr, ast.Call):
+        cands = resolver.candidates(expr.func)
+        return bool(cands) and all(c in (
+            "builtins:dict", "builtins:list", "builtins:set",
+            "builtins:str", "builtins:tuple", "builtins:frozenset",
+            "builtins:bytes", "builtins:sorted", "builtins:reversed",
+            "builtins:enumerate", "builtins:zip")
+            for c in cands)
+    if isinstance(expr, (ast.IfExp, ast.BoolOp, ast.NamedExpr)):
+        leaves = resolver._wrapper_leaves(expr)
+        return bool(leaves) and all(
+            _readonly_method_receiver_ok(leaf, resolver, seen)
+            for leaf in leaves)
+    return False
+
+
+def _external_call_read_only(call, resolver, hands_over_strong=None,
+                             hands_over=None):
     """A call that may receive a watched table without any mutation
     or retention consequence: a copy-family constructor (whose
     result carries the table's taint in the census), a read-only
@@ -3176,17 +3317,33 @@ def _external_call_read_only(call, resolver):
     container, or a factory -- every callable the callee may denote
     must qualify), or a read-only method (str.join over keys, set
     algebra). `key=` callables of sorted/min/max run on the elements,
-    so they must be provably read-only too."""
+    so they must be provably read-only too. Star-args and expanded
+    keywords are unanalysable and never accepted: a `**{"key":
+    list.clear}` mapping, or a `memo=`/second positional handed the
+    table itself, would otherwise reach the call unchecked."""
     cands = resolver.candidates(call.func)
     if cands and all(c in _COPY_FAMILY or c in _READONLY_CALLS
                      for c in cands):
+        if any(isinstance(a, ast.Starred) for a in call.args):
+            return False
         for kw in call.keywords:
+            if kw.arg is None:
+                return False
+            if hands_over_strong is not None and hands_over_strong(
+                    kw.value):
+                return False
             if kw.arg == "key" and not (
                     isinstance(kw.value, ast.Constant)
                     or (resolver.candidates(kw.value)
                         and resolver.candidates(kw.value)
                         <= _SAFE_KEY_FUNCS)):
                 return False
+        if "copy.deepcopy" in cands and len(call.args) > 1 \
+                and hands_over_strong is not None \
+                and hands_over_strong(call.args[1]):
+            # copy.deepcopy(x, memo) writes its memo through the
+            # second positional argument.
+            return False
         return True
     if isinstance(call.func, ast.Attribute) \
             and call.func.attr in _READONLY_METHODS \
@@ -3195,8 +3352,27 @@ def _external_call_read_only(call, resolver):
         root = call.func
         while isinstance(root, ast.Attribute):
             root = root.value
-        return not (isinstance(root, ast.Name)
-                    and root.id in resolver.import_map)
+        if isinstance(root, ast.Name) and root.id in resolver.import_map:
+            return False
+        if _readonly_method_receiver_ok(call.func.value, resolver):
+            return True
+        # An unresolved receiver can override the method and mutate a
+        # watched table handed to it (`obj.get(k, TABLE)`, or a class in
+        # this file redefining `get`). Refuse unless the method is not
+        # overridden in this file and every watched argument is a
+        # loop/parameter binding (a bucket's element), not the whole
+        # table or a module-level alias of one.
+        if call.func.attr in resolver.defined_methods:
+            return False
+        if hands_over is None:
+            return False
+        passed = list(call.args) + [kw.value for kw in call.keywords]
+        for arg in passed:
+            if not hands_over(arg):
+                continue
+            if not isinstance(arg, ast.Name) or arg.id not in resolver.opaque:
+                return False
+        return True
     return False
 
 
@@ -3224,6 +3400,20 @@ def ghg_dynamic_sites(tree, hands_over, is_watched):
     object stays accepted."""
     sites = []
     all_bound, import_map = _ghg_name_facts(tree)
+    scope_of, scope_parent, scope_bindings = _ghg_scope_facts(tree)
+
+    def shadowed(name, node):
+        """True only when the nearest enclosing scope binds `name` at or
+        before this read. A binding elsewhere in the file does not hide
+        a dynamic builtin (`g = globals` above a later `globals = None`
+        still reads the builtin)."""
+        scope = scope_of.get(id(node))
+        while scope is not None:
+            binds = scope_bindings.get(id(scope), {})
+            if name in binds and binds[name] <= node.lineno:
+                return True
+            scope = scope_parent.get(id(scope))
+        return False
     protected = set(GHG_WATCH_NAMES)
     named = protected | _DYNAMIC_BUILTINS | _REFLECTIVE_ATTRS \
         | _ATTR_BUILTINS
@@ -3240,6 +3430,14 @@ def ghg_dynamic_sites(tree, hands_over, is_watched):
         if isinstance(e, ast.Attribute):
             return module_ref(e.value, aliases)
         if isinstance(e, ast.Call):
+            # sys.modules.get("builtins") / sys.modules.pop(...) yield
+            # a module object just as sys.modules["builtins"] does.
+            f = e.func
+            if isinstance(f, ast.Attribute) \
+                    and f.attr in ("get", "pop", "setdefault") \
+                    and isinstance(f.value, ast.Attribute) \
+                    and f.value.attr == "modules":
+                return True
             q = _qualified_callee(e.func, all_bound, import_map)
             return q == "builtins:__import__" \
                 or (q is not None and q.endswith("import_module"))
@@ -3271,17 +3469,59 @@ def ghg_dynamic_sites(tree, hands_over, is_watched):
                             aliases.add(n)
                             grew = True
 
+    # Aliases of the reflective/execution helpers keep their danger:
+    # `ag = operator.attrgetter; ag(...)` must refuse exactly like the
+    # direct spelling, and so must a module alias
+    # (`il = importlib; il.import_module("cProfile")`).
+    _HELPER_ATTRS = {"attrgetter", "methodcaller", "reload",
+                     "import_module", "getclosurevars"}
+    helper_aliases, grew = set(), True
+    while grew:
+        grew = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                v, ts = node.value, node.targets
+            elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)) \
+                    and node.value is not None:
+                v, ts = node.value, [node.target]
+            else:
+                continue
+            q = _qualified_callee(v, all_bound, import_map)
+            dangerous = (
+                (isinstance(v, ast.Name)
+                 and (v.id in _DYNAMIC_BUILTINS
+                      or v.id in _ATTR_BUILTINS
+                      or v.id in helper_aliases))
+                or (isinstance(v, ast.Attribute)
+                    and v.attr in _HELPER_ATTRS)
+                or (q is not None and (q in (
+                    "operator.attrgetter", "operator.methodcaller",
+                    "importlib.reload") or q.endswith(
+                        (".attrgetter", ".methodcaller", ".reload",
+                         ".import_module", ".getclosurevars")))))
+            if dangerous:
+                for t in ts:
+                    for n in _bound_names(t):
+                        if n not in helper_aliases:
+                            helper_aliases.add(n)
+                            grew = True
+
     call_funcs = {id(n.func) for n in ast.walk(tree)
                   if isinstance(n, ast.Call)}
     for node in ast.walk(tree):
         if isinstance(node, ast.Name) \
-                and not isinstance(node.ctx, (ast.Store, ast.Del)) \
-                and node.id not in all_bound:
+                and not isinstance(node.ctx, (ast.Store, ast.Del)):
             if node.id in _DYNAMIC_BUILTINS:
-                sites.append((node.lineno,
-                              f"dynamic indirection ({node.id})"))
+                # A read of eval/exec/globals/vars/locals that resolves
+                # to the builtin is refused. Rebinding the name in an
+                # unrelated scope, or only later in this one, must not
+                # hide the read (`g = globals; globals = None; g()`).
+                if not shadowed(node.id, node):
+                    sites.append((node.lineno,
+                                  f"dynamic indirection ({node.id})"))
             elif node.id in _ATTR_BUILTINS \
-                    and id(node) not in call_funcs:
+                    and id(node) not in call_funcs \
+                    and node.id not in all_bound:
                 sites.append((node.lineno,
                               f"{node.id} captured as a value"))
         elif isinstance(node, ast.Attribute):
@@ -3355,6 +3595,18 @@ def ghg_dynamic_sites(tree, hands_over, is_watched):
                                   f"dunder method {node.name} returns "
                                   "a watched table"))
         elif isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) \
+                    and node.func.id in helper_aliases:
+                sites.append((node.lineno,
+                              "dynamic indirection (aliased helper "
+                              f"{node.func.id})"))
+                continue
+            if isinstance(node.func, ast.Attribute) \
+                    and node.func.attr in _HELPER_ATTRS:
+                sites.append((node.lineno,
+                              "dynamic indirection (."
+                              f"{node.func.attr})"))
+                continue
             q = _qualified_callee(node.func, all_bound, import_map)
             if q in ("operator.attrgetter", "operator.methodcaller",
                      "importlib.reload"):
@@ -3744,6 +3996,20 @@ def render_json(delta):
     return json.dumps(delta, indent=1, sort_keys=True) + "\n"
 
 
+def _md_literal(text):
+    """A report field rendered as literal inline text. Artefact names
+    and notes can carry attacker-chosen characters (a git filename may
+    contain a newline); rendered verbatim in the markdown report they
+    could forge a heading, open a reference link, or inject HTML."""
+    s = str(text)
+    s = s.replace("\\", "\\\\").replace("`", "\\`")
+    s = s.replace("[", "\\[").replace("]", "\\]")
+    s = s.replace("<", "&lt;").replace(">", "&gt;")
+    s = s.replace("@", "@\u200b")
+    s = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", s)
+    return s.replace("\r", " ").replace("\n", " ")
+
+
 def render_markdown(delta):
     fp = fingerprint(delta)
     lines = [
@@ -3765,18 +4031,19 @@ def render_markdown(delta):
     if delta["newly_allowed"]:
         ex = set(delta["newly_allowed_executable"])
         for item in delta["newly_allowed"]:
-            lines.append(f"- {item}" + (" **[executable surface]**"
-                                         if item in ex else ""))
+            lines.append(f"- {_md_literal(item)}"
+                         + (" **[executable surface]**"
+                            if item in ex else ""))
     else:
         lines.append("- (none)")
     lines += ["", "### Newly denied", ""]
     if delta["newly_denied"]:
-        lines += [f"- {item}" for item in delta["newly_denied"]]
+        lines += [f"- {_md_literal(item)}" for item in delta["newly_denied"]]
     else:
         lines.append("- (none)")
     if delta["notes"]:
         lines += ["", "### Notes", ""]
-        lines += [f"- {n}" for n in delta["notes"]]
+        lines += [f"- {_md_literal(n)}" for n in delta["notes"]]
     lines += [
         "",
         "### Proposal block (human completes)",
