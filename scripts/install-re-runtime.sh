@@ -1124,7 +1124,7 @@ ctrl_head_opens_unclosed() {
   *) return 1 ;;
   esac
   # Tokenize the masked head.
-  local -a toks=()
+  local -a toks=() sp_after=()
   local word=""
   local n=${#head} j
   for ((j = 0; j < n; j++)); do
@@ -1134,6 +1134,10 @@ ctrl_head_opens_unclosed() {
       if [ -n "$word" ]; then
         toks+=("$word")
         word=""
+      elif [ "${#toks[@]}" -gt 0 ] && [ "${toks[${#toks[@]} - 1]}" = ')' ]; then
+        # Remember a `)` followed by whitespace: the pattern walk
+        # reads it as the end of a pattern word (see below).
+        sp_after[${#toks[@]} - 1]=1
       fi
       ;;
     ';' | '&' | '|')
@@ -1143,6 +1147,10 @@ ctrl_head_opens_unclosed() {
       fi
       if [ $((j + 1)) -lt "$n" ] && [ "${head:j+1:1}" = "$ch" ]; then
         toks+=("$ch$ch")
+        j=$((j + 1))
+      elif [ "$ch" = ';' ] && [ "${head:j+1:1}" = '&' ]; then
+        # `;&` (case fall-through) ends an arm just as `;;` does.
+        toks+=(';&')
         j=$((j + 1))
       else
         toks+=("$ch")
@@ -1157,6 +1165,18 @@ ctrl_head_opens_unclosed() {
           word=""
         fi
         toks+=("\$(")
+        ;;
+      *[@*+?!])
+        # An extglob group opener: `@(` `*(` `+(` `?(` `!(` glued to
+        # the pattern text before it. Its prefix character belongs to
+        # the token; the walk counts the group separately from a
+        # substitution's parens.
+        word="${word%?}"
+        if [ -n "$word" ]; then
+          toks+=("$word")
+          word=""
+        fi
+        toks+=('@(')
         ;;
       *)
         if [ -n "$word" ]; then
@@ -1184,10 +1204,11 @@ ctrl_head_opens_unclosed() {
   # head opens and leaves open; pending counts `if` / `case` openers
   # still awaiting their `then` / `in`. cstate/cpdepth track, per
   # open case, whether the walk is in its pattern list (p) or an arm
-  # body (b), and the command-substitution depth inside a pattern.
+  # body (b), and the depth of parenthesized groups inside a pattern:
+  # substitutions (`$(`) and extglob groups (`@(` `*(` `+(` `?(` `!(`).
   local -a cstate=() cpdepth=()
   local depth=0 pending=0 cpending=0 elif_pending=0 func_ctx=0 cmdpos=1 bracepos=0 popstate=0
-  local tok nxt prev="" k top
+  local tok nxt prev="" k top pat_ends
   for ((k = 0; k < ${#toks[@]}; k++)); do
     tok="${toks[k]}"
     nxt=""
@@ -1200,31 +1221,49 @@ ctrl_head_opens_unclosed() {
         # state is tracked for every closer, not just esac: a
         # keyword spelled like a pattern is data, and the arm body
         # after the pattern's `)` is a command position again.
-        # A pattern's own parens open no tracked nesting: the
-        # optional leading `(` and an extglob group's `(` are closed
-        # by the pattern's terminating `)`. Only substitution parens
-        # open a depth the walk counts, because a substitution's `)`
-        # is internal to the pattern — any other `)` ends it.
+        # A pattern's own optional leading `(` opens no tracked
+        # nesting: it is closed by the pattern's terminating `)`.
+        # Substitution parens and extglob groups do open a depth the
+        # walk counts, because their `)` is internal to the pattern
+        # — extglob groups may sit anywhere in it (`@(a|b)c)`,
+        # `@(a|@(b|c)))`) — so only a `)` at depth zero ends it. The
+        # depth resets with the next pattern (`;;`, `;&`).
         case "$tok" in
-        "\$(")
+        "\$(" | '@(')
           cpdepth[top]=$((cpdepth[top] + 1))
           ;;
         '(')
-          # A `(` inside a substitution nests — a subshell, or the
-          # second paren of an arithmetic `$((` — and its `)` closes
-          # the substitution, not the pattern. At the pattern's own
+          # A `(` inside a substitution or group nests — a subshell,
+          # or the second paren of an arithmetic `$((` — and its `)`
+          # closes that group, not the pattern. At the pattern's own
           # level the token falls through uncounted (see above).
           if [ "${cpdepth[top]}" -gt 0 ]; then
             cpdepth[top]=$((cpdepth[top] + 1))
           fi
           ;;
         ')')
+          pat_ends=0
           if [ "${cpdepth[top]}" -gt 0 ]; then
             cpdepth[top]=$((cpdepth[top] - 1))
+            # A group closing the pattern word with whitespace after
+            # it and no `|` or `)` next (`case x in *(a|b) cmd`) has
+            # no terminator of its own — a malformed arm; read its
+            # close paren as the pattern's end so the arm body is
+            # still walked as commands.
+            if [ "${cpdepth[top]}" -eq 0 ] && [ -n "${sp_after[k]:-}" ] &&
+              [ -n "$nxt" ] && [ "$nxt" != '|' ] && [ "$nxt" != ')' ]; then
+              pat_ends=1
+            fi
           else
+            pat_ends=1
+          fi
+          if [ "$pat_ends" -eq 1 ]; then
             cstate[top]=b
             cmdpos=1
           fi
+          ;;
+        ';;' | ';&')
+          cpdepth[top]=0
           ;;
         'esac')
           if [ "$2" = 'esac' ]; then depth=$((depth - 1)); fi
@@ -1244,22 +1283,22 @@ ctrl_head_opens_unclosed() {
     # the function whose `function` keyword or name precedes it.
     bracepos=0
     case "$prev" in
-    '' | ';' | ';;' | '&&' | '||' | '&' | '|' | "\$(" | '(' | ')' | 'then' | 'else' | 'do' | '{' | '!')
+    '' | ';' | ';;' | ';&' | '&&' | '||' | '&' | '|' | "\$(" | '(' | '@(' | ')' | 'then' | 'else' | 'do' | '{' | '!')
       bracepos=1
       ;;
     esac
     if [ "$func_ctx" -eq 1 ]; then bracepos=1; fi
     case "$tok" in
-    ';' | ';;' | '&' | '|' | '&&' | '||')
+    ';' | ';;' | ';&' | '&' | '|' | '&&' | '||')
       cmdpos=1
       func_ctx=0
-      if [ "$tok" = ';;' ] && [ "${#cstate[@]}" -gt 0 ]; then
+      if { [ "$tok" = ';;' ] || [ "$tok" = ';&' ]; } && [ "${#cstate[@]}" -gt 0 ]; then
         top=$((${#cstate[@]} - 1))
         cstate[top]=p
         cpdepth[top]=0
       fi
       ;;
-    "\$(" | '(')
+    "\$(" | '(' | '@(')
       cmdpos=1
       ;;
     ')')

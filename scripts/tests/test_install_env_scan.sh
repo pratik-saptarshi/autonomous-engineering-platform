@@ -1549,6 +1549,40 @@ BLOCK_LINE="$(line_of '# >>> re-runtime >>>')"
 GUARD_LINE="$(line_of 'if [ -z "$PS1" ]')"
 check "cp1-return block before the guard" test "$BLOCK_LINE" -lt "$GUARD_LINE"
 
+# ================= #202: an extglob group mid-pattern =================
+
+note "#202: unit-level closer grammar (an extglob group inside a case pattern does not end the pattern at its own close paren)"
+check "202 mid-pattern @() arm-body if does not pop an outer fi" closer_stuck 'case x in @(a|b)c) if b; then :; fi' 'fi'
+check "202 mid-pattern *() arm-body if does not pop an outer fi" closer_stuck 'case x in *(a|b)c) if b; then :; fi' 'fi'
+check "202 mid-pattern +() arm-body if does not pop an outer fi" closer_stuck 'case x in +(a|b)c) if b; then :; fi' 'fi'
+check "202 mid-pattern ?() arm-body if does not pop an outer fi" closer_stuck 'case x in ?(a|b)c) if b; then :; fi' 'fi'
+check "202 mid-pattern !() arm-body if does not pop an outer fi" closer_stuck 'case x in !(a|b)c) if b; then :; fi' 'fi'
+check "202 prefixed mid-pattern group arm-body if does not pop an outer fi" closer_stuck 'case x in pre@(a|b)post) if b; then :; fi' 'fi'
+check "202 nested groups arm-body if does not pop an outer fi" closer_stuck 'case x in @(a|@(b|c))) if b; then :; fi' 'fi'
+check "202 nested mid-pattern groups arm-body if does not pop an outer fi" closer_stuck 'case x in @(a|*(b|c)d)e) if b; then :; fi' 'fi'
+check "202 two groups in one pattern arm-body if does not pop an outer fi" closer_stuck 'case x in @(a|b)@(c|d)) if b; then :; fi' 'fi'
+check "202 leading-paren pattern with a group arm-body if does not pop an outer fi" closer_stuck 'case x in (@(a|b)c) if b; then :; fi' 'fi'
+check "202 mid-pattern group arm-body case does not pop an outer esac" closer_stuck 'case x in @(a|b)c) case y in y) :;; esac' 'esac'
+check "202 group with a substitution arm-body if does not pop an outer fi" closer_stuck 'case x in @(a|$(echo b))c) if b; then :; fi' 'fi'
+check "202 second arm after a group arm keeps tracking" closer_stuck 'case x in @(a|b)c) :;; d) if b; then :; fi' 'fi'
+check "202 ;; resets a stale group depth" closer_stuck 'case x in @(a ;; b) if y; then :; fi' 'fi'
+check "202 ;& resets a stale group depth" closer_stuck 'case x in @(a ;& b) if y; then :; fi' 'fi'
+check "202 valid leading group with its own terminator arm-body if does not pop an outer fi" closer_stuck 'case x in @(a|b)) if b; then :; fi' 'fi'
+check "202 group then alternation arm-body if does not pop an outer fi" closer_stuck 'case x in @(a|b) | c) if b; then :; fi' 'fi'
+check "202 ;;& resets a stale group depth" closer_stuck 'case x in @(a ;;& b) if y; then :; fi' 'fi'
+check "202 quoted group is plain data (control)" closer_stuck 'case x in "@(a|b)") if b; then :; fi' 'fi'
+check "202 single-quoted group is plain data (control)" closer_stuck "case x in '@(a|b)') if b; then :; fi" 'fi'
+check "202 leading group (K2R3) still ends at its own paren (control)" closer_stuck 'case x in @(a|b) if b; then :; fi' 'fi'
+check "202 leading star group (K2R3) still ends at its own paren (control)" closer_stuck 'case x in *(a|b) if b; then :; fi' 'fi'
+check "202 plain pattern (K2R3) still ends at its paren (control)" closer_stuck 'case x in a|b) if b; then :; fi' 'fi'
+check "202 pattern-only group line still lets the tail fi pop (control)" closer_pops 'case x in @(a|b)c) :;; esac; fi' 'fi'
+
+# No end-to-end fixture: the installer's damage check parses the kept
+# content with a plain `bash -n`, which rejects extglob syntax before
+# any `shopt -s extglob` could take effect, so such a .bashrc never
+# reaches the guard scan. The unit-level closer grammar above is the
+# observable surface of this fix.
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "test_install_env_scan: ALL PASS (sandbox $SB)"
