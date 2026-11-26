@@ -90,6 +90,19 @@ PID_FILE="$NS_DIR/.stub-daemon.pid"
 SIG_FILE="$NS_DIR/.stub-signals.log"
 case "${1:-}" in
   status)
+    if [ -f "$NS_DIR/.stub-flip-status" ]; then
+      n=0
+      [ -f "$NS_DIR/.stub-status-count" ] && n="$(cat "$NS_DIR/.stub-status-count")"
+      n=$((n + 1))
+      echo "$n" >"$NS_DIR/.stub-status-count"
+      if [ "$n" -eq 1 ]; then
+        echo "status: stopped"
+        exit 1
+      fi
+      echo "daemon: listening on 127.0.0.1:34343, answering"
+      echo "status: healthy"
+      exit 0
+    fi
     if [ -f "$NS_DIR/.stub-force-healthy" ]; then
       echo "daemon: listening on 127.0.0.1:34343, answering"
       echo "status: healthy"
@@ -479,6 +492,28 @@ check "(t) the daemon was stopped for the backup" grep -q "daemon stopped" "$OUT
 check_not "(t) no daemon is left running" daemon_running
 check "(t) the backup was taken" ls "$(fixture_ns)/backups"/db-*.db
 kill_fixture_daemons
+
+note "case (u): a daemon that starts during the down path is not stopped while in use"
+new_fixture u
+set_changed
+set_last_use "$(date +%s)"
+touch "$FX/.ss-active"
+touch "$(fixture_ns)/.stub-flip-status"
+run_watchdog
+[ "$RC" -eq 0 ] && ok "(u) exit 0" || fail "(u) exit 0 (got $RC)"
+check "(u) run says the daemon came up in use" grep -q "came up after the down check and is in use" "$OUT"
+check_not "(u) no backup was taken under the newly active daemon" test -n "$(ls "$(fixture_ns)/backups"/db-*.db 2>/dev/null || true)"
+check_not "(u) the new daemon was not signalled" test -f "$(fixture_ns)/.stub-signals.log"
+
+note "case (v): a daemon that starts during the down path and is idle is still backed up"
+new_fixture v
+set_changed
+set_last_use 1
+touch "$(fixture_ns)/.stub-flip-status"
+run_watchdog
+[ "$RC" -eq 0 ] && ok "(v) exit 0" || fail "(v) exit 0 (got $RC)"
+check "(v) run says it stops the idle daemon before the copy" grep -q "stopping it before the copy" "$OUT"
+check "(v) the backup was taken" ls "$(fixture_ns)/backups"/db-*.db
 
 note "case (f): regression pins over every run above — no 127, no 'command not found'"
 F_OK=1

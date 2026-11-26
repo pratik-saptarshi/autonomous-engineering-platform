@@ -361,6 +361,19 @@ daemon_has_clients() {
   [ -n "$(ss -Htn state established '( dport = :34343 or sport = :34343 )' 2>/dev/null || true)" ]
 }
 
+# Idle only when a numeric marker is older than IDLE_SECS and no client is
+# attached. Missing/unreadable means "unknown", which is not idle.
+daemon_idle() {
+  local now last_use
+  now="$(date +%s)"
+  last_use="$(cat "$LAST_USE_FILE" 2>/dev/null || true)"
+  case "$last_use" in
+  '' | *[!0-9]*) return 1 ;;
+  esac
+  [ "$now" -ge "$((last_use + IDLE_SECS))" ] || return 1
+  ! daemon_has_clients
+}
+
 stop_daemon() {
   local PIDS PID
   PIDS="$(pgrep -f '[n]eurostrata-mcp daemon' || true)"
@@ -420,9 +433,15 @@ if ! daemon_healthy; then
   fi
   log "DB changed while daemon was down (sha256 ${NOW_SHA:0:12}…) — backing up quiescent copy"
   # Recheck immediately before the copy: an operator may have restarted the
-  # daemon after the check at the top of this branch. A live writer means the
-  # DB is not quiescent, so stop it (or capture the death if it vanished).
+  # daemon after the check at the top of this branch. Apply the same activity
+  # gate as the healthy path: a daemon that just came up with a fresh marker
+  # or an attached client is in use, so defer the backup instead of stopping
+  # the session that just started.
   if daemon_healthy; then
+    if ! daemon_idle; then
+      log "daemon came up after the down check and is in use — deferring the backup"
+      exit 0
+    fi
     log "daemon came up after the down check — stopping it before the copy"
     stop_rc=0
     stop_daemon || stop_rc=$?

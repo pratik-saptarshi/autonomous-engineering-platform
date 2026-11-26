@@ -14,8 +14,8 @@ Canonical watchdog source: `~/workspace/neurostrata/bin/watchdog-backup.sh`
   (339 lines, landed in PR #163 as commit `f9dcd636`).
 - Delta F sha256: `f6ee0938d9268a4f931f73100d2ac8adbb3542d0c8494b2c6eaa91a7771ec164`
   (438 lines, issue #21 phase 1).
-- Current sha256 after Delta H: `2db7979290cf076c9a96bfb66888317270e4aa1d3d6645ff7b003b54c586997b`
-  (604 lines, review follow-up: activity-aware idle gate, capture retry, health
+- Current sha256 after Delta H: `b69257cd3993b479247f3825802f6c4982ac5ce0ae0951dd7770add368259e09`
+  (623 lines, review follow-up: activity-aware idle gate, capture retry, health
   phrase parity, restart-race evidence, owner-only rotated logs).
 - Last verified deployed: not yet deployed to VM from this branch (run
   `ops/bin/deploy-watchdog.sh --check` on the host, then `--apply`).
@@ -326,9 +326,11 @@ Changes in `ops/bin/watchdog-backup.sh`:
   last accounted down state as a death.
 - `rotate_daemon_log` chmods the pre-restart copy to 600.
 
-Tests: cases (o)–(t) in `ops/tests/test_watchdog_ops.sh` (unknown activity,
+Tests: cases (o)–(v) in `ops/tests/test_watchdog_ops.sh` (unknown activity,
 connected client, mid-run death, capture retry, log-mtime detection,
-answering-only health output), plus the mode-600 assertion in case (h). The
+answering-only health output, a daemon that starts during the down path
+while in use, and the same start when idle), plus the mode-600 assertion in
+case (h). The
 whole suite passes under Linux (Docker), not only on the macOS dev host.
 
 ## Notes (not deltas)
