@@ -17,6 +17,15 @@ name: Policy Delta
 # The differ's own test suite runs here, in this full-history checkout,
 # so the Phase 0 replay corpus (which needs the historical commits)
 # actually executes in CI instead of skipping on a shallow checkout.
+#
+# The same report is also surfaced as ONE sticky PR comment (marker
+# `<!-- aep:policy-delta -->`, updated in place per head SHA) so the
+# reviewer sees the delta without opening the run. The comment is
+# informational and never part of the gate: it is skipped cleanly for
+# fork PRs (their token is read-only), a failure to post it does not
+# fail the job, and the artifact + job summary publish regardless. The
+# comment is rewritten only when its content changed, so an `edited`
+# re-run that computes the same thing causes no churn.
 
 on:
   pull_request:
@@ -32,13 +41,19 @@ concurrency:
 jobs:
   policy-delta:
     runs-on: ubuntu-latest
+    # Comment write scope lives on this job only; the workflow default
+    # above stays read-only. Fork PRs get a read-only token regardless,
+    # and the comment step below skips them explicitly.
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
       - name: Differ test suite (incl. Phase 0 replay corpus)
-        run: python3 -m unittest discover -s scripts/tests -p "test_policy_delta.py" -v
+        run: python3 -m unittest discover -s scripts/tests -p "test_policy_delta*.py" -v
       - name: Compute policy delta report
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -61,10 +76,56 @@ jobs:
           path: policy-delta.md
           if-no-files-found: warn
       - name: Acknowledgement check (fail-closed)
+        id: ack
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           printf '%s' "$PR_BODY" > pr-body.txt
+          set +e
           python3 scripts/check_policy_delta.py check "$BASE_SHA" "$HEAD_SHA" --body-file pr-body.txt
+          rc=$?
+          set -e
+          # Recorded for the sticky comment; the step still fails with
+          # the check's own exit code, so the gate is unchanged.
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit "$rc"
+      - name: Upsert sticky policy-delta PR comment (same-repo PRs only)
+        if: always() && github.event.pull_request.head.repo.full_name == github.repository
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ACK_RC: ${{ steps.ack.outputs.rc }}
+        run: |
+          python3 scripts/format_policy_delta_comment.py format \
+            --report policy-delta.md \
+            --head-sha "$HEAD_SHA" --base-sha "$BASE_SHA" \
+            --run-url "$RUN_URL" --ack-rc "$ACK_RC" \
+            --output policy-delta-comment.md
+          gh api --paginate "repos/$REPO/issues/$PR_NUMBER/comments?per_page=100" > policy-delta-comments.json
+          plan="$(python3 scripts/format_policy_delta_comment.py plan \
+            --comments policy-delta-comments.json \
+            --body-file policy-delta-comment.md)"
+          action="$(printf '%s\n' "$plan" | sed -n 's/^action=//p')"
+          comment_id="$(printf '%s\n' "$plan" | sed -n 's/^comment_id=//p')"
+          case "$action" in
+            create)
+              gh api --method POST "repos/$REPO/issues/$PR_NUMBER/comments" -F body=@policy-delta-comment.md
+              ;;
+            update)
+              gh api --method PATCH "repos/$REPO/issues/comments/$comment_id" -F body=@policy-delta-comment.md
+              ;;
+            noop)
+              echo "Sticky comment $comment_id already current; not rewriting."
+              ;;
+            *)
+              echo "unexpected upsert plan: $plan" >&2
+              exit 1
+              ;;
+          esac
