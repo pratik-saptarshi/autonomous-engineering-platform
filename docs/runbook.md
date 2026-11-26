@@ -220,13 +220,33 @@ cd ~/workspace/open-connector && npm install   # 536 packages; generates the cat
 
 Start on demand (`start.sh`, ~20 s), discover actions (`oc.py list <service>` / `oc.py doc <action.id>`), execute (`oc.py run <action.id> '<json>'`), stop with `stop.sh`. If provider calls fail on egress, allowlist the host via `OOMOL_CONNECT_EGRESS_TRUSTED_HOSTS`.
 
-## 8. Verification checklist
+## 8. Egress domain blocks
+
+Some provider domains (`dolthub.com`, `gastownhall-eventsapi.com`) are bypassed from the egress proxy through `NO_PROXY` in `/etc/environment` and then dropped at the firewall. Apply the drops after every boot and after any VM replacement, because iptables rules do not survive either:
+
+```bash
+sudo scripts/apply-domain-blocks.sh
+```
+
+The script needs root. It exits non-zero with a `FATAL:` line when it is not root, when `iptables` or `getent` is missing, or when a domain resolves to no address, and in each of those cases it changes nothing. It resolves the addresses at apply time with `getent ahostsv4` and `getent ahostsv6`, so no address is hardcoded. When the host has an IPv6 default route or a domain publishes an AAAA record, it also writes `ip6tables` rules, and a missing `ip6tables` is a hard failure. It re-checks every rule with `-C` before it prints `Domain blocks applied and verified: ...`, so that line means the rules exist.
+
+The rules are only as current as the DNS answer at the moment of the run. Re-run the script after a DNS rotation, for example from a daily cron entry owned by root. Rules for addresses that have rotated away stay in place and are harmless. To block other domains, set `AEP_BLOCK_DOMAINS` to a space-separated list.
+
+Verify:
+
+```bash
+sudo iptables -S OUTPUT | grep DROP    # one DROP rule per resolved IPv4 address
+sudo ip6tables -S OUTPUT | grep DROP   # present when IPv6 is active
+```
+
+## 9. Verification checklist
 
 - [ ] `bd ping` ok; issue lifecycle (create/show/close) works; per-repo isolation confirmed
 - [ ] `bd` metrics OFF, proven by BOTH signals: `bd metrics` reports OFF, **and** `~/.config/bd/config.yaml` carries `disabled: true` under `metrics:` — assert with `grep -A2 '^metrics:' ~/.config/bd/config.yaml | grep -q 'disabled: true'` (exits non-zero when the flag is absent). If either check fails, setup has FAILED — stop and fix before continuing onboarding. A future bd version that moves the setting or changes the default must break setup visibly here, not silently phone home
 - [ ] `ocr delegate preview` returns a review spec with no API key
 - [ ] `neurostrata-mcp status` healthy; MCP store/search/fetch/archive round-trip passes
 - [ ] `scripts/seed-boot-guards.sh --check` exits 0 and `scripts/boot-gate.sh` prints `BOOT-GATE: guards ok`
+- [ ] `sudo scripts/apply-domain-blocks.sh` prints `Domain blocks applied and verified:` and `iptables -S OUTPUT` lists a DROP rule for each blocked domain
 - [ ] `backlog.py next` returns the expected task as JSON
 - [ ] Scheduler shows the `ralph-loop` job with a next run time
 - [ ] Scheduler shows the `neurostrata-watchdog` job; a manual run backs up to Google Drive on DB change
