@@ -46,10 +46,17 @@ Model scope (what the differ sees):
     per scope with shadow-aware resolution (names bound to a table,
     to a lookup rooted at one, to a container holding one, or to a
     local function returning one), as is passing a table to a
-    function or class defined in the same file. Mutation via dynamic
-    indirection (getattr/setattr/eval/globals()), via imported or
-    builtin callables, or through builtin-constructor copies remains
-    outside the model and is named as such in every report.
+    function or class defined in the same file. Three further
+    boundaries are closed: dynamic indirection (eval/exec/globals/
+    vars/locals, direct or aliased or via builtins; frame and
+    function-globals reflection; getattr/setattr/delattr on a table,
+    a module object, or a table's own name), builtin-constructor
+    shallow copies (dict(T), list(T.values()), copy.copy(T), ... share
+    the inner bucket lists, so mutating the copy's elements is
+    mutating the table), and a table handed to an imported or unknown
+    callable outside a small read-only allowlist (operator.delitem,
+    functools.partial, ...). What remains outside the model is named
+    in every report.
   * .github/skills-sync-scope.txt -- the governed skill set, in the
     file's own three-section grammar: [skills] entries are grants (a
     skill entering scope is newly allowed surface, leaving is newly
@@ -79,11 +86,11 @@ hosts, data-level effects of changed skill *content*, content changes
 to non-SKILL.md files in surviving skills (mode and type changes ARE
 modelled), renames within the skills tree (the new path is reported as
 an addition; the old path is not reported as a removal), symlink
-retargets in the skills tree, indirect mutation of ghg's modelled
-tables via dynamic indirection (getattr/setattr/eval/globals()/vars()),
-via imported/builtin callables the tables are passed to, or through
-builtin-constructor copies (dict()/list()), and anything outside the
-four artefacts above.
+retargets in the skills tree, mutation of ghg's modelled tables
+below the Python object model (C extensions, ctypes, bytecode or
+interpreter-internals reflection) and import-time side effects (ghg.py
+is read statically, never executed), and anything outside the four
+artefacts above.
 
 Usage:
 
@@ -123,7 +130,7 @@ SKILLS_ROOT = "skills"
 
 MODEL_SCOPE = [
     "scripts/policy.data deny-sets (pattern removed = newly allowed, added = newly denied)",
-    "tools/ghg/ghg.py DEFAULT_LIMITS caps and mutating-classification sets (runtime mutation of the modelled tables is refused, not diffed)",
+    "tools/ghg/ghg.py DEFAULT_LIMITS caps and mutating-classification sets (runtime mutation of the modelled tables is refused, not diffed: direct, aliased, via builtin-constructor shallow copies, via external callables, or via dynamic indirection)",
     ".github/skills-sync-scope.txt sections: [skills] grants; [exclude-paths]/[exclude-content] exclusions (removal widens = newly allowed)",
     "skills/** tree grants, newly added executable surface classified separately, executable-bit changes on surviving files",
 ]
@@ -133,7 +140,7 @@ NOT_MODELLED = [
     "content changes to non-SKILL.md files in surviving skills (mode and type changes are modelled)",
     "renames within the skills tree (new path reported as an addition only)",
     "symlink retargets in the skills tree",
-    "indirect mutation of ghg's modelled tables via dynamic indirection (getattr/setattr/eval/globals()/vars()), via imported/builtin callables the tables are passed to, or through builtin-constructor copies (dict()/list())",
+    "mutation of ghg's modelled tables below the Python object model: C extensions, ctypes/memory-level access, bytecode or interpreter-internals reflection (code-object rewriting, tracing/debugger hooks), and import-time side effects (ghg.py is read statically, never executed)",
     "anything outside the four modelled artefacts",
 ]
 
@@ -415,6 +422,161 @@ def _scope_maps(tree):
     return scope_of, scope_parent
 
 
+# --------------------------------------------------------------------
+# Boundary layers (issue #149): dynamic indirection, builtin-constructor
+# shallow copies, and external callables. The shared name facts below
+# resolve a callee to a qualified spelling ("copy.copy", "builtins:list")
+# the same way for the census (copy taint) and the site checks.
+
+# Names that give runtime access to the namespace or evaluate code by
+# string. Referencing one at all (call, alias, argument) is refused:
+# an alias (`g = globals; g()`) is exactly the evasion.
+_DYNAMIC_BUILTINS = {"eval", "exec", "globals", "vars", "locals",
+                     "__import__", "__builtins__"}
+# Attribute spellings that reach the namespace / frames / captured
+# cells of running code (frames, function globals, closure cells,
+# the garbage collector's referrer graph).
+_REFLECTIVE_ATTRS = {"__globals__", "f_globals", "f_locals",
+                     "f_builtins", "__builtins__", "__closure__",
+                     "cell_contents", "__dict__", "_getframe",
+                     "currentframe", "get_objects", "get_referrers",
+                     "get_referents", "__getattribute__",
+                     "__getattr__", "__setattr__", "__delattr__"}
+_ATTR_BUILTINS = {"getattr", "setattr", "delattr"}
+
+# Builtin / stdlib callables that return an object sharing the shallow
+# structure of their iterable argument (the elements ARE the same
+# objects): their result carries the argument's taint (see the shape
+# lattice in ghg_binding_census). dict/list/tuple/set/frozenset/sorted/
+# reversed/iter/next/min/max/enumerate/zip/copy.copy.
+_COPY_FAMILY = {"builtins:dict", "builtins:list", "builtins:tuple",
+                "builtins:set", "builtins:frozenset", "builtins:sorted",
+                "builtins:reversed", "builtins:iter", "builtins:next",
+                "builtins:min", "builtins:max", "builtins:enumerate",
+                "builtins:zip", "copy.copy"}
+# Read-only callables a watched table may be handed to without any
+# aliasing consequence: they return scalars/strings, or write the
+# table out, and keep no reference to it.
+_READONLY_CALLS = {"builtins:len", "builtins:repr", "builtins:str",
+                   "builtins:isinstance", "builtins:issubclass",
+                   "builtins:type", "builtins:id", "builtins:hash",
+                   "builtins:bool", "builtins:any", "builtins:all",
+                   "builtins:sum", "builtins:print", "builtins:format",
+                   "builtins:ascii", "builtins:callable",
+                   "builtins:hasattr", "json.dumps", "json.dump",
+                   "json.loads", "json.load", "copy.deepcopy",
+                   "pprint.pformat", "pprint.pprint"}
+# Read-only method names a table may be passed to as an argument
+# (str.join over keys, set algebra over flat sets, ...).
+_READONLY_METHODS = {"join", "format", "format_map", "startswith",
+                     "endswith", "get", "keys", "values", "items",
+                     "index", "count", "issubset", "issuperset",
+                     "isdisjoint", "union", "intersection",
+                     "difference", "symmetric_difference",
+                     "__contains__", "__len__", "__eq__", "__ne__"}
+# `key=` callables for sorted/min/max that cannot mutate an element.
+_SAFE_KEY_FUNCS = {"builtins:len", "builtins:str", "builtins:repr",
+                   "builtins:int", "builtins:float", "builtins:abs",
+                   "builtins:bool", "builtins:id", "builtins:hash"}
+
+
+def _ghg_name_facts(tree):
+    """(all_bound, import_map): every name any binding form in the
+    file binds (so a builtin name that is rebound anywhere is no
+    longer provably the builtin), and local-name -> dotted module /
+    object path for imports (`import copy as c` -> {"c": "copy"};
+    `from operator import setitem` -> {"setitem": "operator.setitem"})."""
+    all_bound, import_map = set(), {}
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Assign,)):
+            for t in node.targets:
+                all_bound.update(_bound_names(t))
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign,
+                               ast.NamedExpr)):
+            all_bound.update(_bound_names(node.target))
+        elif isinstance(node, (ast.For, ast.AsyncFor,
+                               ast.comprehension)):
+            all_bound.update(_bound_names(node.target))
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                               ast.Lambda)):
+            if not isinstance(node, ast.Lambda):
+                all_bound.add(node.name)
+            a = node.args
+            for arg in (list(a.posonlyargs) + list(a.args)
+                        + list(a.kwonlyargs)):
+                all_bound.add(arg.arg)
+            if a.vararg:
+                all_bound.add(a.vararg.arg)
+            if a.kwarg:
+                all_bound.add(a.kwarg.arg)
+        elif isinstance(node, ast.ClassDef):
+            all_bound.add(node.name)
+        elif isinstance(node, ast.ExceptHandler):
+            if node.name:
+                all_bound.add(node.name)
+        elif isinstance(node, ast.withitem):
+            if node.optional_vars is not None:
+                all_bound.update(_bound_names(node.optional_vars))
+        elif isinstance(node, ast.Import):
+            for a in node.names:
+                local = a.asname or a.name.split(".")[0]
+                all_bound.add(local)
+                import_map[local] = a.name if a.asname \
+                    else a.name.split(".")[0]
+        elif isinstance(node, ast.ImportFrom):
+            for a in node.names:
+                local = a.asname or a.name
+                all_bound.add(local)
+                if node.module and not node.level:
+                    import_map[local] = f"{node.module}.{a.name}"
+                else:
+                    import_map[local] = f".{a.name}"
+        elif isinstance(node, getattr(ast, "Match", ())):
+            for case in node.cases:
+                all_bound.update(_pattern_captures(case.pattern))
+    return all_bound, import_map
+
+
+def _qualified_callee(func, all_bound, import_map):
+    """Resolve a call's func to a qualified spelling or None:
+    "builtins:NAME" for a builtin that no binding in the file
+    shadows, a dotted path for an import-rooted name/attribute chain
+    (`copy.copy`, `operator.setitem`; `builtins.X` normalises to
+    "builtins:X"), else None (a local / unknown callee)."""
+    attrs = []
+    cur = func
+    while isinstance(cur, ast.Attribute):
+        attrs.append(cur.attr)
+        cur = cur.value
+    if not isinstance(cur, ast.Name):
+        return None
+    attrs.reverse()
+    if cur.id in import_map:
+        path = import_map[cur.id].split(".") + attrs
+        if path[0] == "builtins" and len(path) == 2:
+            return f"builtins:{path[1]}"
+        return ".".join(path)
+    if cur.id in all_bound:
+        return None
+    if not attrs:
+        return f"builtins:{cur.id}"
+    return None
+
+
+def _elements_immutable(node):
+    """The literal's elements/values are all immutable (constants or
+    tuples of them): copying the container shares nothing mutable."""
+    def immutable(e):
+        return isinstance(e, ast.Constant) or (
+            isinstance(e, ast.Tuple)
+            and all(immutable(x) for x in e.elts))
+    if isinstance(node, (ast.Set, ast.Tuple, ast.List)):
+        return all(immutable(e) for e in node.elts)
+    if isinstance(node, ast.Dict):
+        return all(immutable(v) for v in node.values)
+    return False
+
+
 def ghg_binding_census(tree):
     """Whitelist census of every binding touching the ghg tables.
 
@@ -448,15 +610,18 @@ def ghg_binding_census(tree):
     class-local binding and restores the outward resolution for
     later class-body reads. Two capture channels are refused outright: a
     lambda returning a watched table, and a bound mutator method of
-    a watched table captured as a value. What remains outside is
-    dynamic indirection
-    (getattr/setattr/eval/globals()/vars()), imported/builtin
-    callables, and builtin-constructor copies -- named in the
-    boundary every report carries.
+    a watched table captured as a value. Builtin-constructor shallow
+    copies (dict(T), list(T.values()), copy.copy(T), ...) carry the
+    table's taint through the shape lattice below (a copy of a bucket's
+    own list of tuples shares nothing mutable and does not). The
+    dynamic-indirection and external-callable boundaries are enforced
+    in ghg_dynamic_sites / ghg_mutation_sites. What remains outside is
+    named in the boundary every report carries.
     """
     protected = set(GHG_WATCH_NAMES)
     body_ids = {id(n) for n in tree.body}
     definitions = {}
+    name_all_bound, name_import_map = _ghg_name_facts(tree)
 
     def refuse(name, node, form):
         raise DifferError(
@@ -1260,6 +1425,16 @@ def ghg_binding_census(tree):
         are NOT transparent: they produce new objects."""
         expr = value
         while True:
+            if isinstance(expr, ast.Call):
+                # A builtin-constructor / copy-family call
+                # (dict(T), list(T.values()), copy.copy(T), ...)
+                # builds a NEW container holding the SAME element
+                # objects: it denotes the table's inner lists iff the
+                # argument's shape exposes them (see _copy_taints).
+                _cq = _qualified_callee(expr.func, name_all_bound,
+                                        name_import_map)
+                if _cq in _COPY_FAMILY:
+                    return _copy_taints(expr, _cq)
             if isinstance(expr, ast.Attribute) \
                     and (expr.attr in property_returns
                          or expr.attr in class_table_attrs):
@@ -1624,10 +1799,175 @@ def ghg_binding_census(tree):
     _named_container_hands_over = set()
     _named_container_taints = set()
 
+    # Shape lattice for builtin-constructor copies. A copy
+    # (dict(T), list(T.values()), ...) is a fresh container whose
+    # ELEMENTS are the table's own inner objects, so it only matters
+    # when those elements are mutable. Each watched binding carries
+    # the set of shapes it may denote (per scope, like `watched`):
+    #   D  dict whose values are mutable inner lists (DEFAULT_LIMITS,
+    #      LIMITS); iterating it yields keys
+    #   V  container of inner lists (D.values(), list of them)
+    #   I  container of (key, inner list) pairs (D.items())
+    #   L  one inner list of immutable tuples (a bucket's caps)
+    #   F  flat: every element is immutable (keys, the sets, tuples)
+    #   ?  unknown -- treated as exposing (the safe direction)
+    # A copy of D/V/I/? shares mutable inner lists with the table
+    # (the copy hands over); a copy of L or F shares nothing
+    # mutable (list(pairs) is the table's own legitimate deep
+    # derivation). Kindless watched names are unknown ("?") once the
+    # fixpoint has otherwise settled (shape_final); before that an
+    # unsettled name contributes nothing, so the answer only ever
+    # grows and the fixpoint stays monotone.
+    shape_sets = {k: set() for k in ("D", "V", "I", "L", "F", "?")}
+    for _pn in protected:
+        _decl = definitions.get(_pn)
+        _flat = _decl is not None \
+            and _elements_immutable(_decl.value)
+        shape_sets["F" if _flat else "D"].add((None, _pn))
+    shape_final = False
+
+    def _kinds_of_name(n):
+        ks = {k for k, ss in shape_sets.items() if resolve_in(n, ss)}
+        if not ks and shape_final and is_watched(n):
+            return {"?"}
+        return ks
+
+    def _shapes(v):
+        """Shapes the expression may denote (empty = not a table
+        reference, or not settled yet)."""
+        if isinstance(v, ast.Name):
+            return _kinds_of_name(v)
+        if isinstance(v, ast.Subscript):
+            m = {"D": "L", "V": "L", "I": "?", "L": "F", "F": "F",
+                 "?": "?"}
+            return {m[k] for k in _shapes(v.value)}
+        if isinstance(v, (ast.IfExp, ast.BoolOp, ast.NamedExpr)):
+            out = set()
+            for leaf in _value_leaves(v):
+                out |= _shapes(leaf)
+            return out
+        if isinstance(v, (ast.Starred, ast.Await)):
+            return _shapes(v.value)
+        if isinstance(v, ast.Attribute):
+            return {"?"} if hands_over(v) else set()
+        if isinstance(v, ast.Call):
+            _q = _qualified_callee(v.func, name_all_bound,
+                                   name_import_map)
+            if _q in _COPY_FAMILY:
+                return _copy_shapes(v, _q)
+            if isinstance(v.func, ast.Attribute):
+                recv = _shapes(v.func.value)
+                if not recv:
+                    return {"?"} if hands_over(v) else set()
+                a = v.func.attr
+                if a == "values":
+                    return {"V" if k == "D" else "?" for k in recv}
+                if a == "items":
+                    return {"I" if k == "D" else "?" for k in recv}
+                if a == "keys":
+                    return {"F"}
+                if a in ("get", "__getitem__", "setdefault", "pop"):
+                    m = {"D": "L", "V": "?", "I": "?", "L": "F",
+                         "F": "F", "?": "?"}
+                    return {m[k] for k in recv}
+                if a in ("copy", "__copy__"):
+                    return recv
+                return {"?"}
+            return {"?"} if hands_over(v) else set()
+        return {"?"} if hands_over(v) else set()
+
+    def _copy_shapes(call, q):
+        """Result shapes of a copy-family call over its arguments."""
+        pos = [a.value if isinstance(a, ast.Starred) else a
+               for a in call.args]
+        arg_shapes = [_shapes(a) for a in pos]
+        out = set()
+        if q in ("builtins:next", "builtins:min", "builtins:max") \
+                and len(pos) != 1:
+            # max(a, b): the arguments ARE the candidates.
+            for ks in arg_shapes:
+                out |= ks
+        elif q == "builtins:dict":
+            m = {"D": "D", "I": "D", "L": "F", "F": "F", "V": "?",
+                 "?": "?"}
+            for ks in arg_shapes[:1]:
+                out |= {m[k] for k in ks}
+            for kw in call.keywords:
+                out |= {"?"} if _shapes(kw.value) else set()
+        elif q in ("builtins:next", "builtins:min", "builtins:max"):
+            m = {"D": "F", "V": "L", "I": "?", "L": "F", "F": "F",
+                 "?": "?"}
+            for ks in arg_shapes:
+                out |= {m[k] for k in ks}
+        elif q == "copy.copy":
+            for ks in arg_shapes[:1]:
+                out |= ks
+        elif q in ("builtins:enumerate", "builtins:zip"):
+            m = {"D": "F", "V": "?", "I": "?", "L": "F", "F": "F",
+                 "?": "?"}
+            for ks in arg_shapes:
+                out |= {m[k] for k in ks}
+        else:
+            # list/tuple/set/frozenset/sorted/reversed/iter: the
+            # result holds the argument's iterated elements.
+            m = {"D": "F", "V": "V", "I": "I", "L": "F", "F": "F",
+                 "?": "?"}
+            for ks in arg_shapes[:1]:
+                out |= {m[k] for k in ks}
+        return out
+
+    def _copy_taints(call, q):
+        # The result IS (or holds) a mutable inner object of the
+        # table unless it is provably flat. L counts: next()/min()/
+        # max() over a V return the shared inner list itself, while
+        # a copy OF an L is already F.
+        return bool(_copy_shapes(call, q) & {"D", "V", "I", "L", "?"})
+
+    _ELEM = {"D": "F", "V": "L", "I": "?", "L": "F", "F": "F", "?": "?"}
+
+    def _record_shapes(node, value, targets):
+        """Deposit the shapes of a binding's targets (monotone)."""
+        grew = False
+        itk = _shapes(value)
+        if not itk:
+            return False
+
+        def put(names, ks):
+            nonlocal grew
+            for n in names:
+                key = binding_key(node, n)
+                for k in ks:
+                    if (key, n) not in shape_sets[k]:
+                        shape_sets[k].add((key, n))
+                        grew = True
+
+        iterating = isinstance(node, (ast.For, ast.AsyncFor,
+                                      ast.comprehension))
+        for t in targets:
+            if isinstance(t, ast.Name):
+                put([t.id], {_ELEM[k] for k in itk} if iterating
+                    else itk)
+            elif iterating and isinstance(t, (ast.Tuple, ast.List)) \
+                    and all(isinstance(e, ast.Name) for e in t.elts):
+                for k in itk:
+                    if k == "I" and len(t.elts) >= 2:
+                        put([t.elts[0].id], {"F"})
+                        put([t.elts[1].id], {"L"})
+                        put([e.id for e in t.elts[2:]], {"?"})
+                    elif k in ("D", "L", "F"):
+                        put([e.id for e in t.elts], {"F"})
+                    else:
+                        put([e.id for e in t.elts], {"?"})
+            else:
+                put(_bound_names(t), {"?"})
+        return grew
+
     changed = True
     _guard = 0
-    while changed:
+    while changed or not shape_final:
         _guard += 1
+        if not changed:
+            shape_final = True
         if _guard > 200:
             # Directness oscillation on a pathological call
             # graph: fall back to no direct callees (the
@@ -2322,6 +2662,8 @@ def ghg_binding_census(tree):
                                 and (key, n) not in strong:
                             strong.add((key, n))
                             changed = True
+                if _record_shapes(node, value, targets):
+                    changed = True
     # Two capture channels are refused outright rather than tracked:
     # a lambda returning a watched table (an anonymous callable the
     # name-based returning set cannot see), and a bound mutator
@@ -2492,11 +2834,12 @@ def ghg_mutation_sites(tree, is_watched, hands_over, local_defs,
     receivers may also be calls to functions returning a table), and
     a watched table passed to a function or class defined IN this
     file (the callee can mutate it; the differ cannot rule it out,
-    so it refuses). Passing a table to an imported or builtin
-    callable (list(), json.dumps(), sorted(), ...) is ordinary
-    read/copy use in this file's style and is named in the boundary
-    instead. Read-only aliasing and read-only method calls on the
-    tables (.get/.items/iteration) are not sites."""
+    so it refuses). Passing a table to an imported, builtin or
+    otherwise unknown callable is refused unless the callable is on
+    the small read-only allowlist (len/sorted/json.dumps/... --
+    copy-family constructors propagate the table's taint in the
+    census instead). Read-only aliasing and read-only method calls
+    on the tables (.get/.items/iteration) are not sites."""
 
     def hands_over_strong(expr):
         """The expression hands over a table-grade reference: a
@@ -2546,6 +2889,8 @@ def ghg_mutation_sites(tree, is_watched, hands_over, local_defs,
         return False
 
     sites = []
+    all_bound, import_map = _ghg_name_facts(tree)
+    resolver = _CalleeResolver(tree, all_bound, import_map)
     for node in ast.walk(tree):
         if isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Store):
             if hands_over(node.value):
@@ -2625,8 +2970,312 @@ def ghg_mutation_sites(tree, is_watched, hands_over, local_defs,
                              and is_callee_form(node.func))):
                 if any(hands_over_strong(a) for a in args):
                     desc = "modelled table passed as a call argument"
+            if desc is None \
+                    and any(hands_over_strong(a) for a in args) \
+                    and not _external_call_read_only(node, resolver):
+                # Layer 3: an imported / builtin / unknown callable
+                # outside the read-only allowlist received a table
+                # (operator.delitem(T, k), a stored callable, a
+                # callable returned by a call, ...). It can mutate or
+                # retain the table and the differ cannot see inside.
+                desc = ("modelled table passed to an external or "
+                        "unknown callable outside the read-only "
+                        "allowlist")
             if desc is not None:
                 sites.append((node.lineno, desc))
+    return sites
+
+
+class _CalleeResolver:
+    """Resolves a callee expression to the set of qualified callables
+    it may denote, through names, conditional / boolean / walrus
+    wrappers, subscripts of literal containers of callables, and
+    calls of locally defined factories ("?" = unresolvable, which is
+    never read-only). `_run = json.dumps`, `[sorted][0]`,
+    `(f if c else f)()` therefore resolve exactly like the direct
+    spelling does."""
+
+    def __init__(self, tree, all_bound, import_map):
+        self.all_bound, self.import_map = all_bound, import_map
+        self.values, self.opaque, self.funcs = {}, set(), {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                for t in node.targets:
+                    if isinstance(t, ast.Name):
+                        self.values.setdefault(t.id, []).append(
+                            node.value)
+                    else:
+                        self.opaque.update(_bound_names(t))
+            elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)):
+                if node.value is not None \
+                        and isinstance(node.target, ast.Name):
+                    self.values.setdefault(node.target.id, []).append(
+                        node.value)
+                else:
+                    self.opaque.update(_bound_names(node.target))
+            elif isinstance(node, (ast.AugAssign, ast.For,
+                                   ast.AsyncFor, ast.comprehension)):
+                self.opaque.update(_bound_names(node.target))
+            elif isinstance(node, ast.withitem):
+                if node.optional_vars is not None:
+                    self.opaque.update(
+                        _bound_names(node.optional_vars))
+            elif isinstance(node, ast.ExceptHandler):
+                if node.name:
+                    self.opaque.add(node.name)
+            elif isinstance(node, getattr(ast, "Match", ())):
+                for case in node.cases:
+                    self.opaque.update(_pattern_captures(case.pattern))
+            elif isinstance(node, (ast.FunctionDef,
+                                   ast.AsyncFunctionDef)):
+                self.funcs.setdefault(node.name, []).append(node)
+            elif isinstance(node, ast.ClassDef):
+                self.opaque.add(node.name)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                 ast.Lambda)):
+                a = node.args
+                for arg in (list(a.posonlyargs) + list(a.args)
+                            + list(a.kwonlyargs)):
+                    self.opaque.add(arg.arg)
+                for extra in (a.vararg, a.kwarg):
+                    if extra:
+                        self.opaque.add(extra.arg)
+
+    def _wrapper_leaves(self, e):
+        if isinstance(e, ast.IfExp):
+            return self._wrapper_leaves(e.body) \
+                + self._wrapper_leaves(e.orelse)
+        if isinstance(e, ast.BoolOp):
+            return [x for v in e.values
+                    for x in self._wrapper_leaves(v)]
+        if isinstance(e, ast.NamedExpr):
+            return self._wrapper_leaves(e.value)
+        return [e]
+
+    def candidates(self, e, seen=frozenset()):
+        leaves = self._wrapper_leaves(e)
+        if len(leaves) != 1 or leaves[0] is not e:
+            out = set()
+            for leaf in leaves:
+                out |= self.candidates(leaf, seen)
+            return out
+        if isinstance(e, (ast.Name, ast.Attribute)):
+            q = _qualified_callee(e, self.all_bound, self.import_map)
+            if q is not None:
+                return {q}
+            if isinstance(e, ast.Name):
+                if e.id in seen or e.id in self.opaque \
+                        or e.id in self.funcs \
+                        or e.id not in self.values:
+                    return {"?"} if e.id not in seen else set()
+                out = set()
+                for v in self.values[e.id]:
+                    out |= self.candidates(v, seen | {e.id})
+                return out
+            return {"?"}
+        if isinstance(e, ast.Subscript):
+            return self._elements(e.value, seen)
+        if isinstance(e, ast.Call):
+            out = set()
+            for leaf in self._wrapper_leaves(e.func):
+                if isinstance(leaf, ast.Name) and leaf.id in self.funcs \
+                        and leaf.id not in self.opaque \
+                        and ("fn", leaf.id) not in seen:
+                    for fn in self.funcs[leaf.id]:
+                        for sub in ast.walk(fn):
+                            if isinstance(sub, ast.Return) \
+                                    and sub.value is not None:
+                                out |= self.candidates(
+                                    sub.value,
+                                    seen | {("fn", leaf.id)})
+                else:
+                    out.add("?")
+            return out or {"?"}
+        return {"?"}
+
+    def _elements(self, c, seen):
+        if isinstance(c, (ast.List, ast.Tuple, ast.Set)):
+            out = set()
+            for x in c.elts:
+                out |= self.candidates(x, seen)
+            return out or {"?"}
+        if isinstance(c, ast.Dict):
+            out = set()
+            for x in c.values:
+                out |= self.candidates(x, seen)
+            return out or {"?"}
+        if isinstance(c, ast.Name):
+            if c.id in seen:
+                return set()
+            if c.id in self.opaque or c.id not in self.values:
+                return {"?"}
+            out = set()
+            for v in self.values[c.id]:
+                out |= self._elements(v, seen | {c.id})
+            return out
+        if isinstance(c, (ast.IfExp, ast.BoolOp, ast.NamedExpr)):
+            out = set()
+            for leaf in self._wrapper_leaves(c):
+                out |= self._elements(leaf, seen)
+            return out
+        return {"?"}
+
+
+def _external_call_read_only(call, resolver):
+    """A call that may receive a watched table without any mutation
+    or retention consequence: a copy-family constructor (whose
+    result carries the table's taint in the census), a read-only
+    builtin / stdlib callable (also through an alias, a literal
+    container, or a factory -- every callable the callee may denote
+    must qualify), or a read-only method (str.join over keys, set
+    algebra). `key=` callables of sorted/min/max run on the elements,
+    so they must be provably read-only too."""
+    cands = resolver.candidates(call.func)
+    if cands and all(c in _COPY_FAMILY or c in _READONLY_CALLS
+                     for c in cands):
+        for kw in call.keywords:
+            if kw.arg == "key" and not (
+                    isinstance(kw.value, ast.Constant)
+                    or (resolver.candidates(kw.value)
+                        and resolver.candidates(kw.value)
+                        <= _SAFE_KEY_FUNCS)):
+                return False
+        return True
+    if isinstance(call.func, ast.Attribute) \
+            and call.func.attr in _READONLY_METHODS \
+            and _qualified_callee(call.func, resolver.all_bound,
+                                  resolver.import_map) is None:
+        root = call.func
+        while isinstance(root, ast.Attribute):
+            root = root.value
+        return not (isinstance(root, ast.Name)
+                    and root.id in resolver.import_map)
+    return False
+
+
+def ghg_dynamic_sites(tree, hands_over, is_watched):
+    """[(lineno, description)] for dynamic indirection (Layer 1):
+    evaluating code by string, reaching the namespace
+    (globals()/vars()/locals(), frames, function globals), or
+    reading / writing attributes by name on a watched table, a module
+    object, or the name of a modelled table. Direct names, aliases of
+    the builtins (`g = globals`), and `builtins.NAME` spellings are
+    all refused: the namespace is the table's own owner, so any route
+    to it can rewrite the modelled power invisibly to a literal diff.
+    getattr(args, "actor", None) on an unrelated object is ordinary
+    code and stays accepted."""
+    sites = []
+    all_bound, import_map = _ghg_name_facts(tree)
+    protected = set(GHG_WATCH_NAMES)
+    named = protected | _DYNAMIC_BUILTINS | _REFLECTIVE_ATTRS \
+        | _ATTR_BUILTINS
+    builtins_mods = {n for n, path in import_map.items()
+                     if path == "builtins"}
+
+    def module_ref(e, aliases):
+        if isinstance(e, ast.Name):
+            return e.id in import_map or e.id in aliases
+        if isinstance(e, ast.Subscript):
+            return (isinstance(e.value, ast.Attribute)
+                    and e.value.attr == "modules") \
+                or module_ref(e.value, aliases)
+        if isinstance(e, ast.Attribute):
+            return module_ref(e.value, aliases)
+        if isinstance(e, ast.Call):
+            q = _qualified_callee(e.func, all_bound, import_map)
+            return q == "builtins:__import__" \
+                or (q is not None and q.endswith("import_module"))
+        if isinstance(e, (ast.IfExp, ast.BoolOp, ast.NamedExpr)):
+            return any(module_ref(leaf, aliases)
+                       for leaf in (e.body, e.orelse)
+                       ) if isinstance(e, ast.IfExp) else (
+                any(module_ref(x, aliases) for x in e.values)
+                if isinstance(e, ast.BoolOp)
+                else module_ref(e.value, aliases))
+        return False
+
+    # Names bound (anywhere) to a module object.
+    aliases, grew = set(), True
+    while grew:
+        grew = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                v, ts = node.value, node.targets
+            elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)) \
+                    and node.value is not None:
+                v, ts = node.value, [node.target]
+            else:
+                continue
+            if module_ref(v, aliases):
+                for t in ts:
+                    for n in _bound_names(t):
+                        if n not in aliases:
+                            aliases.add(n)
+                            grew = True
+
+    call_funcs = {id(n.func) for n in ast.walk(tree)
+                  if isinstance(n, ast.Call)}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) \
+                and not isinstance(node.ctx, (ast.Store, ast.Del)) \
+                and node.id not in all_bound:
+            if node.id in _DYNAMIC_BUILTINS:
+                sites.append((node.lineno,
+                              f"dynamic indirection ({node.id})"))
+            elif node.id in _ATTR_BUILTINS \
+                    and id(node) not in call_funcs:
+                sites.append((node.lineno,
+                              f"{node.id} captured as a value"))
+        elif isinstance(node, ast.Attribute):
+            root = node
+            while isinstance(root, ast.Attribute):
+                root = root.value
+            if node.attr in _REFLECTIVE_ATTRS:
+                sites.append((node.lineno,
+                              f"dynamic indirection (.{node.attr})"))
+            elif (node.attr in _DYNAMIC_BUILTINS
+                  or node.attr in _ATTR_BUILTINS) \
+                    and (module_ref(node.value, aliases)
+                         or (isinstance(root, ast.Name)
+                             and root.id in builtins_mods)):
+                # builtins.eval / importlib.import_module("builtins")
+                # .exec / sys.modules["builtins"].globals / a name
+                # bound to any of those.
+                sites.append((node.lineno,
+                              f"dynamic indirection (module."
+                              f"{node.attr})"))
+        elif isinstance(node, ast.ImportFrom):
+            if node.module == "builtins":
+                for a in node.names:
+                    if a.name in _DYNAMIC_BUILTINS or a.name == "*":
+                        sites.append((node.lineno,
+                                      "dynamic indirection (import "
+                                      f"of builtins.{a.name})"))
+        elif isinstance(node, ast.Call):
+            q = _qualified_callee(node.func, all_bound, import_map)
+            if q is None or not q.startswith("builtins:"):
+                continue
+            name = q[len("builtins:"):]
+            if name in _ATTR_BUILTINS:
+                args = node.args
+                if not args or any(isinstance(a, ast.Starred)
+                                   for a in args):
+                    sites.append((node.lineno,
+                                  f"{name}() with unanalysable "
+                                  "arguments"))
+                elif hands_over(args[0]) or module_ref(args[0], aliases):
+                    sites.append((node.lineno,
+                                  f"{name}() on a modelled table or "
+                                  "module object"))
+                elif len(args) > 1 \
+                        and isinstance(args[1], ast.Constant) \
+                        and args[1].value in named:
+                    sites.append((node.lineno,
+                                  f"{name}() naming "
+                                  f"{args[1].value!r}"))
+            elif name in _DYNAMIC_BUILTINS:
+                sites.append((node.lineno,
+                              f"dynamic indirection ({name})"))
     return sites
 
 
@@ -2645,6 +3294,7 @@ def model_ghg(text):
                                local_defs, local_methods, is_strong,
                                callee_aliases, callable_classes,
                                returning_callables, is_callee_form)
+    sites += ghg_dynamic_sites(tree, hands_over, is_watched)
     if sites:
         detail = "; ".join(f"line {ln}: {desc}" for ln, desc in sites[:5])
         raise DifferError(
