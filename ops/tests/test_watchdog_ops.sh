@@ -89,6 +89,9 @@ case "${1:-}" in
       echo "status: stopped"
     fi
     ;;
+  --version)
+    echo "neurostrata-mcp 0.0.0-stub"
+    ;;
   daemon)
     echo $$ >"$PID_FILE"
     if [ -f "$NS_DIR/.stub-ignore-term" ]; then
@@ -251,6 +254,90 @@ run_watchdog
 check "(g) run reports stop failure" grep -q "would not stop" "$OUT"
 check "(g) no backup staged" test -z "$(ls "$(fixture_ns)/backups"/db-*.db 2>/dev/null || true)"
 kill_fixture_daemons
+
+note "case (h): unexpected death — pre-restart log survives a truncating restart"
+new_fixture h
+set_unchanged
+prestage_backup
+set_last_use "$(date +%s)"
+start_fixture_daemon
+run_watchdog # healthy and active: the watchdog records that the daemon was up
+echo "SENTINEL-H-last-words-before-death" >"$(fixture_ns)/daemon.log"
+kill_fixture_daemons # SIGKILL: no TERM, no intentional stop
+run_watchdog
+[ "$RC" -eq 0 ] && ok "(h) exit 0" || fail "(h) exit 0 (got $RC)"
+PRE_H="$(find "$(fixture_ns)" -maxdepth 1 -name 'daemon.log.*.pre-restart' | head -n 1)"
+check "(h) a daemon.log.<UTC-ts>.pre-restart file exists" test -n "$PRE_H"
+check "(h) the pre-restart file holds the sentinel" grep -q "SENTINEL-H-last-words-before-death" "$PRE_H"
+case "$(basename "${PRE_H:-none}")" in
+daemon.log.[0-9]*T[0-9]*Z*.pre-restart) ok "(h) pre-restart name carries a UTC timestamp" ;;
+*) fail "(h) pre-restart name carries a UTC timestamp ($PRE_H)" ;;
+esac
+# The old restart command truncated daemon.log: it must no longer destroy the evidence.
+: >"$(fixture_ns)/daemon.log"
+check "(h) sentinel survives an old-style truncating restart" grep -q "SENTINEL-H-last-words-before-death" "$PRE_H"
+
+note "case (i): unexpected death — a crash bundle is written, owner-only"
+CRASH_I="$(find "$(fixture_ns)/logs" -maxdepth 1 -name 'crash-*.log' 2>/dev/null | head -n 1)"
+check "(i) crash-<UTC-ts>.log exists under logs/" test -n "$CRASH_I"
+check "(i) run says it captured diagnostics" grep -q "crash diagnostics" "$OUT"
+check "(i) bundle has a UTC timestamp" grep -Eq '^crash bundle captured [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z' "$CRASH_I"
+check "(i) bundle holds the daemon.log tail" grep -q "SENTINEL-H-last-words-before-death" "$CRASH_I"
+check "(i) bundle has a dmesg section" grep -q "== kernel OOM hints" "$CRASH_I"
+check "(i) bundle has free -m" grep -q "== free -m ==" "$CRASH_I"
+check "(i) bundle has df -h" grep -q "== df -h ==" "$CRASH_I"
+check "(i) bundle has ulimit -a" grep -q "== ulimit -a ==" "$CRASH_I"
+check "(i) bundle records the binary version" grep -q "neurostrata-mcp 0.0.0-stub" "$CRASH_I"
+MODE_I="$(stat -c '%a' "$CRASH_I" 2>/dev/null || stat -f '%Lp' "$CRASH_I")"
+check "(i) bundle is owner-only (600)" test "$MODE_I" = "600"
+run_watchdog
+check "(i) a second run does not capture the same death again" test "$(find "$(fixture_ns)/logs" -maxdepth 1 -name 'crash-*.log' | wc -l | tr -d ' ')" = "1"
+kill_fixture_daemons
+
+note "case (j): retention cap holds over 15 unexpected deaths"
+new_fixture j
+set_unchanged
+prestage_backup
+for n in $(seq 1 15); do
+  # The marker stands in for "a healthy run saw the daemon up" so 15 deaths
+  # run quickly. Case (h) covers the real healthy-then-killed flow.
+  date +%s >"$(fixture_ns)/.daemon-seen-up"
+  echo "SENTINEL-J-$n" >"$(fixture_ns)/daemon.log"
+  run_watchdog
+done
+check "(j) at most 10 crash bundles kept" test "$(find "$(fixture_ns)/logs" -maxdepth 1 -name 'crash-*.log' | wc -l | tr -d ' ')" = "10"
+check "(j) at most 10 pre-restart logs kept" test "$(find "$(fixture_ns)" -maxdepth 1 -name 'daemon.log.*.pre-restart' | wc -l | tr -d ' ')" = "10"
+check "(j) the newest pre-restart log is kept" grep -rq "SENTINEL-J-15" "$(fixture_ns)" --include='daemon.log.*.pre-restart'
+check_not "(j) the oldest pre-restart log was pruned" grep -rq "SENTINEL-J-1$" "$(fixture_ns)" --include='daemon.log.*.pre-restart'
+
+note "case (k): intentional idle stop emits NO crash bundle"
+new_fixture k
+set_unchanged
+prestage_backup
+set_last_use 1
+start_fixture_daemon
+echo "SENTINEL-K" >"$(fixture_ns)/daemon.log"
+run_watchdog # idle daemon: the watchdog stops it on purpose
+[ "$RC" -eq 0 ] && ok "(k) idle stop exits 0" || fail "(k) idle stop exits 0 (got $RC)"
+check_not "(k) daemon stopped" daemon_running
+run_watchdog # daemon is now down because the watchdog stopped it
+[ "$RC" -eq 0 ] && ok "(k) next run exits 0" || fail "(k) next run exits 0 (got $RC)"
+check_not "(k) no crash bundle after an intentional stop" test -n "$(find "$(fixture_ns)/logs" -maxdepth 1 -name 'crash-*.log' 2>/dev/null)"
+check_not "(k) no pre-restart log after an intentional stop" test -n "$(find "$(fixture_ns)" -maxdepth 1 -name 'daemon.log.*.pre-restart' 2>/dev/null)"
+check "(k) daemon.log is left in place" grep -q "SENTINEL-K" "$(fixture_ns)/daemon.log"
+kill_fixture_daemons
+
+note "case (l): classification without a prior healthy run"
+new_fixture l
+set_unchanged
+prestage_backup
+set_last_use "$(date +%s)"
+run_watchdog # daemon down, no history at all: never guess a crash
+check_not "(l) first-ever down run (no history) emits no crash bundle" test -n "$(find "$(fixture_ns)/logs" -maxdepth 1 -name 'crash-*.log' 2>/dev/null)"
+echo 100 >"$(fixture_ns)/.last-daemon-use"
+echo "50 intentional" >"$(fixture_ns)/.daemon-down-accounted"
+run_watchdog # client used the daemon after the last accounted stop, now it is down
+check "(l) client use after the last accounted stop counts as unexpected" test -n "$(find "$(fixture_ns)/logs" -maxdepth 1 -name 'crash-*.log' 2>/dev/null)"
 
 note "case (f): regression pins over every run above — no 127, no 'command not found'"
 F_OK=1

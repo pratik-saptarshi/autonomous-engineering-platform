@@ -11,12 +11,13 @@ live until it is deployed by hand (see Deployment below).
 `ops/bin/watchdog-backup.sh` is the **canonical SOURCE** for the
 watchdog. It is the live deployed watchdog (base:
 `~/workspace/neurostrata/bin/watchdog-backup.sh`, sha256 recorded in
-`ops/bin/WATCHDOG-DELTAS.md`) plus exactly five documented deltas:
+`ops/bin/WATCHDOG-DELTAS.md`) plus exactly six documented deltas:
 a corrected header block, removal of the dead `start_daemon`
 definition, the `stop_daemon` definition moved above its first
 use, shellcheck fixes plus a full `shfmt -i 2` reformat (fix
-round 2), and a stop failure that exits 1 instead of exiting 0
-(PR #163). Every deviation from the live script is recorded in
+round 2), a stop failure that exits 1 instead of exiting 0
+(PR #163), and crash evidence capture with pre-restart log
+preservation (issue #21). Every deviation from the live script is recorded in
 `ops/bin/WATCHDOG-DELTAS.md`; no other difference exists.
 
 ## What is legacy, and what is a snapshot
@@ -99,8 +100,8 @@ The deployed watchdog governs runtime, so after a deploy run
 
 | Path | What it is |
 | --- | --- |
-| `ops/bin/watchdog-backup.sh` | Canonical watchdog (live base + 5 documented deltas + reformat) |
-| `ops/bin/WATCHDOG-DELTAS.md` | Delta table: header rewrite, dead-code removal, definition move, shellcheck fixes + reformat, stop-failure exit 1 |
+| `ops/bin/watchdog-backup.sh` | Canonical watchdog (live base + 6 documented deltas + reformat) |
+| `ops/bin/WATCHDOG-DELTAS.md` | Delta table: header rewrite, dead-code removal, definition move, shellcheck fixes + reformat, stop-failure exit 1, crash evidence capture |
 | `ops/tests/test_watchdog_ops.sh` | Behavioral test, per daemon state, with PID-namespace isolation guard |
 | `ops/bin/deploy-watchdog.sh` | Deploys the canonical watchdog to the live path: `--check` drift, `--dry-run`, `--apply` with backup and receipt |
 | `ops/tests/test_deploy_watchdog.sh` | Test for the deploy script, run against a throwaway fixture repo and target |

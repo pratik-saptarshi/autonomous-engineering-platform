@@ -26,6 +26,16 @@
 #      checksum stays stale so a later run uploads this backup once Drive
 #      is configured. Prune staging.
 #
+# Crash evidence: this script never restarts the daemon, but it must not let
+# a restart destroy the evidence of a death either. A down daemon is
+# "unexpected" when this watchdog did not stop it: it saw the daemon healthy
+# (.daemon-seen-up) or a client used it after the last accounted stop
+# (.last-daemon-use newer than .daemon-down-accounted), and no intentional
+# stop was recorded since. On an unexpected death, and ONLY then, it writes
+# logs/crash-<UTC>.log (owner-only) and moves daemon.log aside to
+# daemon.log.<UTC>.pre-restart. Both are capped at 10 files. An idle stop by
+# this script is intentional and never produces a bundle.
+#
 # Two watermarks, two tiers: .last-db-sha256 = a verified local copy exists;
 # .last-drive-sha256 = that state was uploaded. Never mark the Drive tier
 # done without a successful upload.
@@ -135,17 +145,100 @@ log_memory() {
 LOGS_DIR="$HOME/workspace/neurostrata/logs"
 IDLE_SECS=3600
 LAST_USE_FILE="$HOME/workspace/neurostrata/.last-daemon-use"
+DAEMON_LOG="$HOME/workspace/neurostrata/daemon.log"
+# Written when a healthy daemon is observed, removed once a down state is
+# accounted for. Its presence on a down daemon means "it was up and nobody
+# stopped it".
+SEEN_UP_FILE="$HOME/workspace/neurostrata/.daemon-seen-up"
+# "<epoch> <reason>", written when a down state is accounted for (an
+# intentional stop by this script, a captured death, or a bootstrap).
+ACCOUNTED_FILE="$HOME/workspace/neurostrata/.daemon-down-accounted"
+CRASH_KEEP=10
+PRE_RESTART_KEEP=10
 
-# Rotate a daemon log with a date-timestamp; prune to keep the 5 most recent.
+# Keep the newest $3 files matching glob $2 in directory $1 (by mtime).
+prune_newest() {
+  find "$1" -maxdepth 1 -type f -name "$2" -printf '%T@ %p\0' 2>/dev/null | sort -znr | tail -z -n +"$(($3 + 1))" | cut -z -d ' ' -f 2- | xargs -0 -r rm -f
+}
+
+# Accounting for a down state: remember when, and why, so a later run can tell
+# an intentional stop from a death.
+mark_down_accounted() {
+  rm -f "$SEEN_UP_FILE"
+  echo "$(date +%s) $1" >"$ACCOUNTED_FILE"
+}
+
+# True when the daemon is down and this watchdog did not stop it. With no
+# history at all (a first run, or a fresh deploy) it never guesses: it records
+# the baseline and reports "not unexpected".
+daemon_died_unexpectedly() {
+  local last_use accounted
+  [ -f "$SEEN_UP_FILE" ] && return 0
+  if [ ! -f "$ACCOUNTED_FILE" ]; then
+    mark_down_accounted bootstrap
+    return 1
+  fi
+  last_use="$(cat "$LAST_USE_FILE" 2>/dev/null || true)"
+  accounted="$(cut -d ' ' -f 1 "$ACCOUNTED_FILE" 2>/dev/null || true)"
+  case "$last_use$accounted" in
+  '' | *[!0-9]*) return 1 ;;
+  esac
+  [ -n "$last_use" ] && [ -n "$accounted" ] && [ "$last_use" -gt "$accounted" ]
+}
+
+# Move daemon.log aside before anything restarts the daemon. The old restart
+# command truncated it (`> daemon.log`), which destroyed the only evidence of
+# an overnight death. The rotated copy is never touched by a restart.
 rotate_daemon_log() {
-  local src="$1" ts base
-  [ -f "$src" ] && [ -s "$src" ] || return 0
+  local ts target n
+  [ -s "$DAEMON_LOG" ] || return 0
+  ts="$(date -u +%Y%m%dT%H%M%SZ)"
+  target="$DAEMON_LOG.$ts.pre-restart"
+  n=1
+  while [ -e "$target" ]; do
+    target="$DAEMON_LOG.$ts-$n.pre-restart"
+    n=$((n + 1))
+  done
+  mv -f "$DAEMON_LOG" "$target"
+  log "preserved pre-restart daemon log: $target"
+  prune_newest "$(dirname "$DAEMON_LOG")" 'daemon.log.*.pre-restart' "$PRE_RESTART_KEEP"
+}
+
+# One crash bundle per unexpected death. Every probe is best effort: a probe
+# that fails is recorded as such and never fails the watchdog run.
+capture_death_diagnostics() {
+  local ts out n
+  ts="$(date -u +%Y%m%dT%H%M%SZ)"
   mkdir -p "$LOGS_DIR"
-  ts="$(date +%Y%m%d-%H%M%S)"
-  base="daemon-$ts.log"
-  mv -f "$src" "$LOGS_DIR/$base"
-  log "rotated daemon log -> logs/$base"
-  find "$LOGS_DIR" -maxdepth 1 -type f -name 'daemon-*.log' -printf '%T@ %p\0' 2>/dev/null | sort -znr | tail -z -n +6 | cut -z -d ' ' -f 2- | xargs -0 -r rm -f
+  out="$LOGS_DIR/crash-$ts.log"
+  n=1
+  while [ -e "$out" ]; do
+    out="$LOGS_DIR/crash-$ts-$n.log"
+    n=$((n + 1))
+  done
+  (
+    umask 077
+    {
+      echo "crash bundle captured $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      echo "== last 100 lines of daemon.log =="
+      tail -n 100 "$DAEMON_LOG" 2>&1 || echo "(daemon.log unreadable)"
+      echo "== kernel OOM hints (dmesg) =="
+      { dmesg 2>&1 || echo "(dmesg unreadable)"; } | { grep -iE 'out of memory|oom-kill|oom_reaper|killed process|memory cgroup|neurostrata|unreadable' || echo "(no OOM hints found)"; } | tail -n 50
+      echo "== free -m =="
+      free -m 2>&1 || echo "(free unavailable)"
+      echo "== df -h =="
+      df -h 2>&1 || echo "(df unavailable)"
+      echo "== ulimit -a =="
+      ulimit -a 2>&1 || echo "(ulimit unavailable)"
+      echo "== neurostrata-mcp --version =="
+      "$BIN" --version 2>&1 || echo "(version unavailable)"
+    } >"$out" 2>&1
+  ) || true
+  chmod 600 "$out" 2>/dev/null || true
+  log "crash diagnostics: $out"
+  rotate_daemon_log
+  mark_down_accounted captured
+  prune_newest "$LOGS_DIR" 'crash-*.log' "$CRASH_KEEP"
 }
 
 daemon_healthy() {
@@ -162,6 +255,10 @@ daemon_healthy() {
 # the DB is quiescent and the copy needs no stop/copy ceremony — a plain
 # verified copy is consistent.
 if ! daemon_healthy; then
+  if daemon_died_unexpectedly; then
+    log "WARNING: daemon is down and this watchdog did not stop it — capturing crash diagnostics"
+    capture_death_diagnostics
+  fi
   log "daemon down (on-demand idle) — running change detection anyway"
   if [ ! -f "$DB" ]; then
     log "no DB file yet — nothing to back up"
@@ -216,6 +313,7 @@ if ! daemon_healthy; then
   exit 0
 fi
 log "daemon healthy"
+date +%s >"$SEEN_UP_FILE"
 log_memory
 
 stop_daemon() {
@@ -239,6 +337,7 @@ stop_daemon() {
     return 1
   fi
   log "daemon stopped"
+  mark_down_accounted intentional
 }
 
 # 2. Idle check: an actively-used daemon is left alone; an idle one is

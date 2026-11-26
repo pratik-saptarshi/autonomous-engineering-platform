@@ -479,8 +479,8 @@ FILE_CHECKS = [
 # Each mutation is (file, old, new) and must trip the named check.
 FILE_MUTATIONS = {
     "OPS-DELTAS": [
-        [(OPS_README, "exactly five documented deltas", "exactly four documented deltas")],
-        [(WATCHDOG_DELTAS, "Delta count: five", "Delta count: four")],
+        [(OPS_README, "exactly six documented deltas", "exactly five documented deltas")],
+        [(WATCHDOG_DELTAS, "Delta count: six", "Delta count: five")],
         [(WATCHDOG, "set -euo pipefail", "set -euo pipefail\n# drift")],
     ],
     "DOCS-RESTART": [
