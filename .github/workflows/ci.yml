@@ -78,6 +78,41 @@ jobs:
       - run: bash scripts/tests/test_install_re_runtime.sh
       - run: bash scripts/tests/test_install_env_scan.sh
 
+  # Bounded claim: on macOS and Windows (Git Bash) lane-coord loud-skips instead
+  # of failing mid-run. --self-test exits 0 with the SKIP line (a skipped suite
+  # is a pass) and an operational command exits 1 with it (a caller reading a
+  # claim's exit status must never see unexecuted work as a started lane). The
+  # full self-test still runs on Linux in `script-tests`; this job covers only
+  # the guard on the platforms where the real uname fires it.
+  lane-coord-non-linux:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: lane-coord --self-test skips cleanly (exit 0)
+        run: |
+          rc=0
+          out=$(bash scripts/lane-coord.sh --self-test 2>&1) || rc=$?
+          printf '%s\n' "$out"
+          [ "$rc" -eq 0 ] || { echo "ERROR: --self-test exited $rc, expected 0"; exit 1; }
+          printf '%s\n' "$out" | grep -qF "SKIP: lane-coord requires flock/proc (Linux-only)" || { echo "ERROR: missing SKIP line"; exit 1; }
+      - name: lane-coord operational command refuses (exit 1)
+        run: |
+          rc=0
+          out=$(bash scripts/lane-coord.sh status 2>&1) || rc=$?
+          printf '%s\n' "$out"
+          [ "$rc" -eq 1 ] || { echo "ERROR: status exited $rc, expected 1"; exit 1; }
+          printf '%s\n' "$out" | grep -qF "SKIP: lane-coord requires flock/proc (Linux-only)" || { echo "ERROR: missing SKIP line"; exit 1; }
+
   go-checks:
     runs-on: ubuntu-latest
     steps:
