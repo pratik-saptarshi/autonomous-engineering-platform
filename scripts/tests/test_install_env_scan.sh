@@ -1583,6 +1583,102 @@ check "202 pattern-only group line still lets the tail fi pop (control)" closer_
 # reaches the guard scan. The unit-level closer grammar above is the
 # observable surface of this fix.
 
+# ================= #199 (K6): a guard split across physical lines by a continuation =================
+
+note "#199: unit-level continuation grammar (an unescaped trailing backslash outside quotes and comments continues the line)"
+line_continues_p() { # line_continues_p <physical-line>
+  (
+    # shellcheck disable=SC1090 # the fixture library is generated above
+    source "$LIB"
+    set +eu
+    line_continues "$1"
+  ) >/dev/null 2>&1
+}
+line_continues_n() { ! line_continues_p "$1"; }
+check "K6 single trailing backslash continues" line_continues_p 'case $- \'
+check "K6 backslash after text continues" line_continues_p 'echo a \'
+check "K6 three trailing backslashes continue" line_continues_p 'echo a \\\'
+check "K6 even trailing backslashes do not continue" line_continues_n 'echo a \\'
+check "K6 four trailing backslashes do not continue" line_continues_n 'echo a \\\\'
+check "K6 no backslash does not continue" line_continues_n 'echo a'
+check "K6 backslash before trailing space does not continue (escaped space)" line_continues_n 'echo a\ '
+check "K6 backslash inside single quotes does not continue" line_continues_n "echo 'a \\"
+check "K6 backslash inside a comment does not continue" line_continues_n 'echo a # note \'
+check "K6 whole-line comment does not continue" line_continues_n '# note \'
+check "K6 backslash inside double quotes continues" line_continues_p 'echo "a \'
+check "K6 backslash before a carriage return does not continue (bash escapes the CR)" line_continues_n $'echo a \\\r'
+check "K6 empty line does not continue" line_continues_n ''
+
+# cont_fixture <case> <guard-text> <first-guard-physical-line>: a
+# guard written across continued lines. The block must land before the
+# FIRST physical line of the logical guard — never between its pieces.
+cont_fixture() {
+  local name="$1" guard="$2" first="$3" marker first_line after_line val sha
+  new_home "$name"
+  {
+    printf 'export BEFORE_GUARD=1\n'
+    printf '%s\n' "$guard"
+    printf 'export AFTER=1\n'
+  } >"$FH/.bashrc"
+  run_env install_env_block
+  check "$name rc 0" test "$RC" -eq 0
+  check_out "$name env ok" 'INSTALL-RE: env ok' "$OUT"
+  marker="$(line_of '# >>> re-runtime >>>')"
+  first_line="$(line_of "$first")"
+  after_line="$(line_of 'export AFTER=1')"
+  check "$name block before the first physical guard line" test "$marker" -lt "$first_line"
+  check "$name block before the trailing content" test "$marker" -lt "$after_line"
+  check "$name guard lines stay verbatim and adjacent" grep -qxF "$first" "$FH/.bashrc"
+  check "$name kept content still parses" bash -n "$FH/.bashrc"
+  val="$(env -i HOME="$FH" /bin/bash -c '. "$HOME/.bashrc"; printf %s "${JAVA_HOME:-}"' 2>/dev/null)"
+  check "$name block reachable in a noninteractive source" test "$val" = "$FH/opt/jdk-$TEMURIN_VERSION"
+  sha="$(file_sha "$FH/.bashrc")"
+  run_env install_env_block
+  check "$name second run rc 0" test "$RC" -eq 0
+  check "$name fixed point" test "$(file_sha "$FH/.bashrc")" = "$sha"
+}
+
+note "#199: a guard whose opener is split by a continuation is recognized (end to end)"
+cont_fixture k6-case $'case $- \\\nin *i*) ;; *) return;; esac' 'case $- \'
+cont_fixture k6-case-multi $'case $- \\\nin\n  *i*) ;;\n  *) return;;\nesac' 'case $- \'
+cont_fixture k6-if $'if [[ $- != *i* ]] \\\n; then\n  return\nfi' 'if [[ $- != *i* ]] \'
+cont_fixture k6-ps1 $'[ -z "$PS1" ] \\\n&& return' '[ -z "$PS1" ] \'
+cont_fixture k6-ps1-or $'[ -n "$PS1" ] || \\\nreturn' '[ -n "$PS1" ] || \'
+cont_fixture k6-three-pieces $'[ -z \\\n"$PS1" ] \\\n&& return' '[ -z \'
+
+note "#199: an even trailing backslash count is not a continuation (control)"
+new_home k6-even
+cat >"$FH/.bashrc" <<'EOF2'
+echo a \\
+case $- in
+  *i*) ;;
+  *) return;;
+esac
+export AFTER=1
+EOF2
+run_env install_env_block
+check "k6-even rc 0" test "$RC" -eq 0
+check_out "k6-even env ok" 'INSTALL-RE: env ok' "$OUT"
+BLOCK_LINE="$(line_of '# >>> re-runtime >>>')"
+GUARD_LINE="$(line_of 'case $- in')"
+check "k6-even block before the guard (not joined into the echo line)" test "$BLOCK_LINE" -lt "$GUARD_LINE"
+check "k6-even echo line stays before the block" test "$(line_of 'echo a')" -lt "$BLOCK_LINE"
+
+note "#199: a continued line inside a heredoc body is data, not a join (control)"
+new_home k6-heredoc
+cat >"$FH/.bashrc" <<'EOF2'
+cat >/dev/null <<'DOC'
+note \
+case $- in
+DOC
+export AFTER=1
+EOF2
+run_env install_env_block
+check "k6-heredoc rc 0" test "$RC" -eq 0
+check_out "k6-heredoc env ok" 'INSTALL-RE: env ok' "$OUT"
+check "k6-heredoc body kept verbatim" grep -qxF 'note \' "$FH/.bashrc"
+check "k6-heredoc block appended after the heredoc terminator" test "$(line_of '# >>> re-runtime >>>')" -gt "$(last_line_of 'DOC')"
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "test_install_env_scan: ALL PASS (sandbox $SB)"

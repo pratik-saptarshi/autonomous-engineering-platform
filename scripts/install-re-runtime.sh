@@ -982,6 +982,26 @@ strip_trailing_comment() {
   printf '%s' "$out"
 }
 
+# True when the physical line $1 continues onto the next one: it ends
+# in a backslash that is not itself escaped (an odd run — `\\` is an
+# escaped backslash and continues nothing), outside single quotes and
+# outside a comment. Both are decided by the same lexing the other
+# line predicates use (strip_trailing_comment, mask_quoted): a masked
+# trailing backslash was escaped or quoted. A backslash inside double
+# quotes does continue the line, as in bash. A CR after the backslash
+# defeats it — bash escapes the CR instead — so a CRLF line is never
+# joined with its successor.
+line_continues() {
+  case "$1" in
+  *\\) ;;
+  *) return 1 ;;
+  esac
+  local s
+  s="$(strip_trailing_comment "$1")"
+  s="$(mask_quoted "$s")"
+  [ "${s: -1}" = "\\" ]
+}
+
 # Print the closer (`}`, `fi`, `esac`) when $1 opens a function, if, or
 # case body; return 1 otherwise. Kept permissive on purpose: a false
 # opener usually only moves the block earlier in top-level files, where
@@ -1594,10 +1614,24 @@ install_env_block() {
   # candidate so its `return` arm can close the region. Heredoc body
   # lines are skipped via flags from the splitter above.
   local -a struct_stack=() region_stack=()
-  local region_start=-1
+  local region_start=-1 logical logical_start
   for ((scan = 0; scan < ${#kept[@]}; scan++)); do
     [ "${kept_body[scan]}" -eq 1 ] && continue
-    trimmed="${kept[scan]#"${kept[scan]%%[![:space:]]*}"}"
+    # A command split across physical lines by trailing backslashes
+    # is one logical line (a guard such as `case $- \` / `in ...` is
+    # recognized as written): the scan reads the joined text, and a
+    # guard found in it lands before its FIRST physical line, so the
+    # block never splits a continued command. kept[] itself stays
+    # verbatim. A heredoc body line is never a continuation piece.
+    logical="${kept[scan]}"
+    logical_start=$scan
+    while line_continues "${kept[scan]}" &&
+      [ $((scan + 1)) -lt ${#kept[@]} ] &&
+      [ "${kept_body[scan + 1]}" -eq 0 ]; do
+      logical="${logical%\\}${kept[scan + 1]}"
+      scan=$((scan + 1))
+    done
+    trimmed="${logical#"${logical%%[![:space:]]*}"}"
     rtrim="${trimmed%"${trimmed##*[![:space:]]}"}"
     case "$rtrim" in
     '#'*) continue ;;
@@ -1648,13 +1682,13 @@ install_env_block() {
       # One-line guards (Arch/PS1 forms, braced or not).
       case "$rtrim" in
       *return*)
-        guard_at=$scan
+        guard_at=$logical_start
         break
         ;;
       esac
       # Multi-line guard: remember the opener; its body decides.
       if [ -n "$opener" ]; then
-        region_start=$scan
+        region_start=$logical_start
         region_stack+=("$opener")
       fi
     fi
