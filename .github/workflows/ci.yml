@@ -51,6 +51,29 @@ jobs:
         with:
           go-version: '1.27.4'
       - run: python3 -m unittest discover -s scripts/tests -v
+      - name: ghg suite (stub gh, no live GitHub; executed-test count asserted)
+        # unittest discovery treats a test file that is deleted or fails to
+        # load as fewer tests, not a failure, and a skip counts as a pass.
+        # The 14 OpenTelemetry tests skip when the optional (pinned, not
+        # installed here) opentelemetry packages are absent, so the floor
+        # is on tests actually EXECUTED (ran - skipped): other tests going
+        # quiet cannot hide behind that allowance. Raise `expected` when
+        # tests are added (135 run, 14 skipped today).
+        run: |
+          expected=121
+          out=$(python3 -m unittest discover -s tools/ghg/tests -v 2>&1) || { printf '%s\n' "$out"; echo "ERROR: ghg suite failed"; exit 1; }
+          printf '%s\n' "$out"
+          ran=$(printf '%s\n' "$out" | sed -n 's/^Ran \([0-9][0-9]*\) tests\{0,1\} in .*/\1/p' | tail -n 1)
+          if [ -z "$ran" ]; then
+            echo "ERROR: could not read the test count from unittest output"
+            exit 1
+          fi
+          skipped=$(printf '%s\n' "$out" | sed -n 's/^OK (skipped=\([0-9][0-9]*\))$/\1/p' | tail -n 1)
+          executed=$((ran - ${skipped:-0}))
+          if [ "$executed" -lt "$expected" ]; then
+            echo "ERROR: ghg suite executed $executed tests (ran $ran, skipped ${skipped:-0}), expected at least $expected; a test was deleted, failed to load or was skipped"
+            exit 1
+          fi
       - name: Vendor freshness blocks (15 provenance files, no live API)
         run: python3 scripts/vendor_graph.py --root . --no-live --strict
       - name: Vendor freshness detector self-test
