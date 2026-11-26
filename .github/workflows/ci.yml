@@ -94,12 +94,16 @@ jobs:
       - run: bash scripts/boot-gate.sh --self-test --offline
       - run: bash scripts/tests/test_watchdog.sh
       - run: bash scripts/tests/test_watchdog_bin_guard.sh
+      - run: bash scripts/tests/test_seed_boot_guards.sh
+      - run: bash scripts/tests/test_apply_domain_blocks.sh
       - run: bash scripts/tests/test_vendor_sync.sh
       - run: bash scripts/tests/test_package_vm.sh
       - run: bash scripts/tests/test_package_oci.sh
       - run: bash scripts/tests/test_makefile.sh
       - run: bash scripts/tests/test_verify_signals.sh
       - run: bash ops/tests/test_watchdog_ops.sh
+      - run: bash ops/tests/test_deploy_watchdog.sh
+      - run: bash ops/tests/test_cron_boot_gate.sh
       - run: bash scripts/install-re-runtime.sh --self-test --offline
       - run: bash scripts/tests/test_install_re_runtime.sh
       - run: bash scripts/tests/test_install_env_scan.sh

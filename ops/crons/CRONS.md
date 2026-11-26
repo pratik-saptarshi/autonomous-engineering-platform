@@ -35,3 +35,23 @@ Evidence verified at build time (2026-11-04):
 The kit's earlier scheduler page described a 168h export job; that job
 no longer exists in the live scheduler. Do not re-create it from the kit
 page without a fresh decision.
+
+## Gating autonomous jobs with the boot gate
+
+`ops/bin/cron-with-boot-gate.sh` runs `scripts/boot-gate.sh` before a scheduled job and refuses to start the job when the gate fails. Wrap a job by putting the wrapper in front of its command in the scheduler entry:
+
+```bash
+ops/bin/cron-with-boot-gate.sh <job-name> -- <command...>
+```
+
+- A passing gate hands over to the command, prints the gate's per-check lines (including `BOOT-GATE-RESULT: POLICY-OK`), and propagates the job's exit status unchanged.
+- While the job runs, the wrapper heartbeats `~/workspace/neurostrata/.last-daemon-use` (override with `AEP_DAEMON_ACTIVITY_FILE`) so the watchdog cannot mistake a long job that uses the daemon for an idle one and stop it mid-run.
+- A failing gate logs `CRON-GATE: ABORT <job-name> rc=<rc>` on stderr, prints the gate's own reason, exits with the gate's status, and never starts the job.
+- A missing or non-executable gate is a failure with `rc=127`. The wrapper never runs a job it could not gate.
+- `AEP_BOOT_GATE_BIN` overrides the gate path and `AEP_CRON_GATE_LOG` names a file that also receives the ABORT line.
+
+This repo ships the wrapper and its test (`ops/tests/test_cron_boot_gate.sh`). It does not edit any host scheduler, so no job is gated until an operator changes that job's scheduler entry. Gate every job that starts an autonomous agent session.
+
+### Exclusion: the NeuroStrata watchdog
+
+Do not wrap `neurostrata-watchdog`. The gate's daemon check needs an answering daemon, while the watchdog must run even when the daemon is down so it can capture crash evidence and back up a changed database (the canonical watchdog never restarts the daemon itself; recover manually with `nohup`). Wrapping it behind the boot gate would block crash capture and quiescent backups whenever the daemon is down. The watchdog stays ungated and keeps the entry shown in the table above.

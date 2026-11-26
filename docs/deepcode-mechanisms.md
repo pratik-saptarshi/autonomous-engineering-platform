@@ -137,7 +137,7 @@ Every claim manifest records the outcome as `policy_integrity`, with `policy_pat
 
 The token line is the machine-readable confirmation of a pass — `BOOT-GATE-RESULT: POLICY-OK` is printed only when the policy check passed.
 
-Scope statement: this check runs whenever an operator or a cron invokes `boot-gate.sh`. Wiring boot-gate into crons is issue #17 and is **not** delivered here — nothing in this mechanism claims cron enforcement.
+Scope statement: this check runs whenever an operator or a cron invokes `boot-gate.sh`. The wrapper `ops/bin/cron-with-boot-gate.sh <job-name> -- <command...>` (issue #17) runs the gate before a scheduled job and aborts the job with `CRON-GATE: ABORT <job-name> rc=<rc>` when the gate fails or is missing. The repo ships the wrapper, not host scheduler configuration, so enforcement exists only for jobs whose scheduler entry calls the wrapper. The NeuroStrata watchdog is deliberately left ungated to avoid a recovery deadlock (see `ops/crons/CRONS.md`).
 
 ### Runbook: change policy safely
 

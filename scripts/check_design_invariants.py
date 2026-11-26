@@ -9,6 +9,7 @@ or defeat a check.
 """
 
 import argparse
+import hashlib
 import html
 import re
 import sys
@@ -362,6 +363,228 @@ MUTATIONS = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Ops and docs truth checks (file based).
+#
+# The checks above read the HTML design documents. The checks below read the
+# repo's live ops files and Markdown docs, so a doc that drifts from the script
+# it describes, or that repeats a claim already disproved, fails CI. Each check
+# takes a {relative path: text} mapping so the self-test can mutate it.
+# ---------------------------------------------------------------------------
+NUMBER_WORDS = {
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+}
+WATCHDOG = "ops/bin/watchdog-backup.sh"
+WATCHDOG_DELTAS = "ops/bin/WATCHDOG-DELTAS.md"
+OPS_README = "ops/README.md"
+OPS_FILES = (WATCHDOG, WATCHDOG_DELTAS, OPS_README)
+# Directories whose Markdown is not live documentation: byte-pinned vendored
+# snapshots and dated plan archives that quote the claims they replaced.
+LIVE_DOC_SKIP = ("reference", "docs/plans", "docs/superpowers", "node_modules", ".git")
+LIVE_DOC_SUFFIXES = (".md", ".html")
+
+
+def is_live_doc(rel):
+    if not rel.endswith(LIVE_DOC_SUFFIXES):
+        return False
+    return not any(rel == skip or rel.startswith(skip + "/") for skip in LIVE_DOC_SKIP)
+
+
+def load_files(root=ROOT):
+    """Return {relative path: text} for the ops files and every live doc."""
+    files = {}
+    for rel in OPS_FILES:
+        path = root / rel
+        if path.exists():
+            files[rel] = path.read_bytes().decode("utf-8")
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or path.suffix not in LIVE_DOC_SUFFIXES:
+            continue
+        rel = path.relative_to(root).as_posix()
+        if is_live_doc(rel):
+            files[rel] = path.read_bytes().decode("utf-8")
+    return files
+
+
+def sha256_text(text):
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def check_watchdog_deltas(files, errors):
+    """The delta record must describe the watchdog file that is actually there."""
+    name = "OPS-DELTAS"
+    for rel in OPS_FILES:
+        if rel not in files:
+            add(errors, name, f"missing file {rel}")
+            return
+    script = files[WATCHDOG]
+    deltas = files[WATCHDOG_DELTAS]
+    current = re.search(
+        r"Current sha256[^`\n]*`([0-9a-f]{64})`\s*\((\d+) lines", deltas
+    )
+    if not current:
+        add(errors, name, "no 'Current sha256 ... (N lines' record in WATCHDOG-DELTAS.md")
+    else:
+        if current.group(1) != sha256_text(script):
+            add(errors, name, "recorded current sha256 does not match ops/bin/watchdog-backup.sh")
+        if int(current.group(2)) != script.count("\n"):
+            add(errors, name, "recorded line count does not match ops/bin/watchdog-backup.sh")
+    letters = re.findall(r"^## Delta ([A-Z])\b", deltas, re.M)
+    count = re.search(r"Delta count: (\w+) \(", deltas)
+    if not count or NUMBER_WORDS.get(count.group(1).lower()) != len(letters):
+        add(errors, name, f"'Delta count' line does not match the {len(letters)} '## Delta' sections")
+    readme = files[OPS_README]
+    exactly = re.search(r"exactly (\w+) documented deltas", readme)
+    if not exactly or NUMBER_WORDS.get(exactly.group(1).lower()) != len(letters):
+        add(errors, name, f"ops/README.md 'exactly N documented deltas' does not match {len(letters)}")
+    table = re.search(r"live base \+ (\d+) documented deltas", readme)
+    if not table or int(table.group(1)) != len(letters):
+        add(errors, name, f"ops/README.md contents table delta count does not match {len(letters)}")
+
+
+# Claims already disproved: a bare MCP spawn does not reliably start the
+# daemon (docs/limitation-analysis.md section 1, verified 2026-10-16), and the
+# canonical watchdog (ops/bin/watchdog-backup.sh) never restarts the daemon.
+STALE_RESTART_PATTERNS = (
+    r"via MCP auto-spawn",
+    r"(?<!never )(?<!not )restarts? it automatically",
+    r"restarted automatically on the next MCP",
+    r"revives? (?:a |the )?(?:dead |crashed )?daemon",
+    r"watchdog cron also revives",
+    r"wait for the watchdog cron",
+    # \s+ spans a line break: the claim is often wrapped mid-sentence.
+    r"restarts? it\s+on the next\s+(?:coding loop|MCP)",
+    r"recovers? (?:a |the )?(?:dead |crashed )?daemon",
+    r"(?:MCP client|client) restarts? (?:it|the daemon)",
+)
+
+
+def check_restart_claims(files, errors):
+    name = "DOCS-RESTART"
+    for rel, text in sorted(files.items()):
+        if not is_live_doc(rel):
+            continue
+        for pattern in STALE_RESTART_PATTERNS:
+            if re.search(pattern, text, re.I):
+                add(errors, name, f"{rel} repeats the disproved claim {pattern!r}")
+
+
+RUNBOOK = "docs/runbook.md"
+PLANNED_HEADING = "## Appendix: Planned / not yet implemented"
+# Paths of subsystems that are designed but not built. They may appear only in
+# the Planned appendix, never in the executable flow above it.
+RUNBOOK_FORBIDDEN = (
+    r"~/workspace/bin",
+    r"\$HOME/workspace/bin",
+    r"~/workspace/ralph",
+    r"~/workspace/open-connector",
+    r"client\.py",
+)
+CHECKLIST_FORBIDDEN = (r"ralph-loop", r"backlog\.py", r"open-connector")
+CHECKLIST_HEADING = re.compile(r"^## \d+\. Verification checklist\s*$", re.M)
+
+
+def check_runbook_truth(files, errors):
+    """The runbook's executable flow may only describe components that exist."""
+    name = "RUNBOOK-TRUTH"
+    text = files.get(RUNBOOK)
+    if text is None:
+        add(errors, name, f"missing file {RUNBOOK}")
+        return
+    if len(re.findall("^" + re.escape(PLANNED_HEADING) + r"\s*$", text, re.M)) != 1:
+        add(errors, name, f"expected exactly one '{PLANNED_HEADING}' heading")
+        return
+    main = re.split("^" + re.escape(PLANNED_HEADING) + r"\s*$", text, flags=re.M)[0]
+    for pattern in RUNBOOK_FORBIDDEN:
+        if re.search(pattern, main):
+            add(errors, name, f"main runbook sections cite {pattern!r}, which belongs in the Planned appendix or is stale")
+    heading = CHECKLIST_HEADING.search(main)
+    if not heading:
+        add(errors, name, "no numbered 'Verification checklist' section above the Planned appendix")
+        return
+    rest = main[heading.end():]
+    following = re.search(r"^## ", rest, re.M)
+    checklist = rest[: following.start()] if following else rest
+    for pattern in CHECKLIST_FORBIDDEN:
+        if re.search(pattern, checklist):
+            add(errors, name, f"verification checklist cites planned-only {pattern!r}")
+
+
+FILE_CHECKS = [
+    ("OPS-DELTAS", check_watchdog_deltas),
+    ("DOCS-RESTART", check_restart_claims),
+    ("RUNBOOK-TRUTH", check_runbook_truth),
+]
+
+# Each mutation is (file, old, new) and must trip the named check.
+FILE_MUTATIONS = {
+    "OPS-DELTAS": [
+        [(OPS_README, "exactly eight documented deltas", "exactly seven documented deltas")],
+        [(WATCHDOG_DELTAS, "Delta count: eight", "Delta count: seven")],
+        [(WATCHDOG, "set -euo pipefail", "set -euo pipefail\n# drift")],
+    ],
+    "RUNBOOK-TRUTH": [
+        [(RUNBOOK, "## 1. Binary tools", "## 1. Binary tools\n\nmkdir -p ~/workspace/bin")],
+        [(RUNBOOK, "## Appendix: Planned / not yet implemented", "## Appendix Planned")],
+        [(RUNBOOK, "## 7. Verification checklist\n", "## 7. Verification checklist\n\n- [ ] `ralph-loop` shows a next run time\n")],
+        [(RUNBOOK, "## 1. Binary tools", "## 1. Binary tools\n\nSee client.py")],
+    ],
+    "DOCS-RESTART": [
+        [("README.md", "never restarts the daemon itself", "restarts via MCP auto-spawn")],
+        [("docs/operations.md", "If the daemon is down, restart it", "If the daemon is down, the next MCP client spawn restarts it automatically. Restart it")],
+        [("docs/limitation-analysis.md", "an MCP-spawn start", "a dead daemon is restarted automatically on the next MCP spawn, an MCP-spawn start")],
+        [("docs/operations.md", "The canonical watchdog (`ops/bin/watchdog-backup.sh`) never restarts the daemon itself", "The watchdog cron also revives a dead daemon on its next run")],
+        [("docs/runbook.md", "Restart it directly with the `nohup` command above", "Restart it directly or wait for the watchdog cron")],
+        [("ops/crons/watchdog-cron-record.md", "restart it directly with", "the MCP client restarts it\n   on the next coding loop; or restart it directly with")],
+        [("docs/operations.md", "The canonical watchdog (`ops/bin/watchdog-backup.sh`) never restarts the daemon itself", "The watchdog restarts it\non the next coding loop")],
+        [("docs/operations.md", "The canonical watchdog (`ops/bin/watchdog-backup.sh`) never restarts the daemon itself", "The canonical watchdog recovers a dead daemon")],
+    ],
+}
+
+
+def run_file_checks(files):
+    errors = []
+    for _name, fn in FILE_CHECKS:
+        fn(files, errors)
+    return errors
+
+
+def file_self_test():
+    """Baseline must be clean, and every mutation must trip its check."""
+    ok = True
+    files = load_files()
+    baseline = run_file_checks(files)
+    if baseline:
+        print("self-test: ops/docs files are not clean; cannot run file mutations")
+        for error in baseline:
+            print(" -", error)
+        return False
+    for check, mutations in FILE_MUTATIONS.items():
+        for replacements in mutations:
+            mutated = dict(files)
+            for rel, old, new in replacements:
+                if old not in mutated.get(rel, ""):
+                    print(f"self-test: mutation token missing for {check} in {rel}: {old!r}")
+                    ok = False
+                    break
+                mutated[rel] = mutated[rel].replace(old, new, 1)
+            else:
+                errors = run_file_checks(mutated)
+                if not any(error.startswith(check + ":") for error in errors):
+                    print(f"self-test: file mutation did not trip {check}: {replacements[0][1]!r}")
+                    ok = False
+    return ok
+
+
 def self_test():
     """Test primitives and the negative mutation corpus."""
     sample = """
@@ -412,6 +635,8 @@ def self_test():
             if not any(error.startswith(check + ":") for error in errors):
                 print(f"self-test: mutation did not trip {check}")
                 ok = False
+    if not file_self_test():
+        ok = False
     if ok:
         print("self-test: OK")
     return 0 if ok else 1
@@ -430,7 +655,7 @@ def main():
         for path in missing:
             print(" -", path)
         return 2
-    errors = run_check(docs)
+    errors = run_check(docs) + run_file_checks(load_files())
     if errors:
         print(f"{len(errors)} design invariant violation(s):")
         for error in errors:
