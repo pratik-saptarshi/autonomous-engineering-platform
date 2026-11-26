@@ -123,7 +123,18 @@ case "\$op" in
   mv "\$file.tmp" "\$file"
   ;;
 -D)
-  awk -v r="\$*" 'found == 0 && \$0 == r { found = 1; next } { print }' "\$file" >"\$file.tmp"
+  by_spec=1
+  if [ "\$1" = OUTPUT ]; then
+    case "\${2:-}" in
+    '' | *[!0-9]*) ;;
+    *) by_spec=0 ;;
+    esac
+  fi
+  if [ "\$by_spec" = 1 ]; then
+    awk -v r="\$*" 'found == 0 && \$0 == r { found = 1; next } { print }' "\$file" >"\$file.tmp"
+  else
+    awk -v n="\$2" 'NR != n { print }' "\$file" >"\$file.tmp"
+  fi
   mv "\$file.tmp" "\$file"
   ;;
 -S)
@@ -300,6 +311,18 @@ t "the rotation run exits 0" "$RC" -eq 0
 t "the administrator's DROP survives the rotation" "$(rules iptables | grep -cx -- 'OUTPUT -d 192.0.2.10 -j DROP')" -eq 1
 t "the newly resolved address is blocked" "$(rules iptables | grep -cx -- 'OUTPUT -d 192.0.2.11 -j DROP')" -eq 1
 t "only the installed rule is owned" "$(grep -cxF -- 'iptables 192.0.2.11' "$STATE/managed-rules" 2>/dev/null || true)" -eq 1
+
+echo "# case 16: a failed reorder keeps the original DROP in place"
+reset_case
+export AEP_BLOCK_DOMAINS="alpha.example"
+printf '192.0.2.10\n' >"$DNS/alpha.example.v4"
+printf 'OUTPUT -j ACCEPT\nOUTPUT -d 192.0.2.10 -j DROP\n' >"$STATE/iptables.rules"
+export STUB_IPT_FAIL_ON=1
+run
+t "a failed reorder insert exits non-zero" "$RC" -ne 0
+t "the original DROP survives the failed reorder" "$(rules iptables | grep -cx -- 'OUTPUT -d 192.0.2.10 -j DROP')" -eq 1
+t "the original ACCEPT survives too" "$(rules iptables | grep -cx -- 'OUTPUT -j ACCEPT')" -eq 1
+unset STUB_IPT_FAIL_ON
 
 if [ "$FAILURES" -ne 0 ]; then
   echo "test_apply_domain_blocks: $FAILURES failure(s)"

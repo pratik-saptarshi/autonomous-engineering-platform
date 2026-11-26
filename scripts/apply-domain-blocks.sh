@@ -171,6 +171,18 @@ first_accept_position() { # $1 = iptables|ip6tables
   "$1" -S OUTPUT 2>/dev/null | awk '/-j ACCEPT$/ { print NR; exit }'
 }
 
+# Rule number within OUTPUT (1-based, counting only -A lines), for -D by
+# number. Used to delete the superseded old rule after its replacement is in
+# place: deleting by spec would remove the replacement instead.
+rule_number() { # $1 = tool, $2 = ip
+  "$1" -S OUTPUT 2>/dev/null | awk -v ip="$2" '
+    /^-A OUTPUT / {
+      n++
+      if ($0 ~ "-d " ip "(/[0-9]+)? -j DROP$") { print n; exit }
+    }
+  '
+}
+
 ordered_before_accept() { # $1 = tool, $2 = ip; true when the DROP precedes every ACCEPT
   local pos accept
   pos="$(rule_position "$1" "$2")"
@@ -190,10 +202,21 @@ apply_drop() { # $1 = iptables|ip6tables, $2 = ip; sets INSERTED when it added o
   case "$rc" in
   0)
     ordered_before_accept "$1" "$2" && return 0
-    "$1" -D OUTPUT -d "$2" -j DROP 2>/dev/null ||
-      die "$1 -D failed while reordering $2"
+    # Install the replacement before removing the original. The old rule is
+    # deleted by number after the insert, because -D by spec would remove the
+    # new copy at the head. If the insert fails, the original DROP is intact.
+    oldnum="$(rule_number "$1" "$2")"
     "$1" -I OUTPUT 1 -d "$2" -j DROP ||
-      die "$1 -I failed while reordering $2"
+      die "$1 -I failed while reordering $2 (the original rule is untouched)"
+    if [ -z "$oldnum" ]; then
+      echo "WARNING: could not number the superseded rule for $2; both drops were left in place" >&2
+      return 0
+    fi
+    if ! "$1" -D OUTPUT "$((oldnum + 1))" 2>/dev/null; then
+      # Remove the replacement we just added, leaving the original in place.
+      "$1" -D OUTPUT -d "$2" -j DROP 2>/dev/null || true
+      die "$1 -D failed while removing the superseded rule for $2"
+    fi
     echo "reordered drop ahead of OUTPUT accept rules: $2" >&2
     ;;
   1)
