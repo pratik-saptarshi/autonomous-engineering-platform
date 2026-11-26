@@ -431,8 +431,11 @@ class WorkflowWiringTests(unittest.TestCase):
                          r"    workflows: \[\"Policy Delta\"\]\n"
                          r"    types: \[completed\]")
         self.assertIn(
-            "github.event.workflow_run.pull_requests[0].head.repo"
-            ".full_name == github.repository", self.comment_text)
+            "github.event.workflow_run.pull_requests[0].head.repo.id"
+            " == github.event.repository.id", self.comment_text)
+        # The workflow_run repo ref has no full_name; asserting one would
+        # make the job condition permanently false (PR #223 finding).
+        self.assertNotIn("head.repo.full_name", self.comment_text)
         self.assertIn("github.event.workflow_run.event == 'pull_request'",
                       self.comment_text)
 
