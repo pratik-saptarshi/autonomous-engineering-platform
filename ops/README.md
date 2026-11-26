@@ -11,13 +11,14 @@ live until it is deployed by hand (see Deployment below).
 `ops/bin/watchdog-backup.sh` is the **canonical SOURCE** for the
 watchdog. It is the live deployed watchdog (base:
 `~/workspace/neurostrata/bin/watchdog-backup.sh`, sha256 recorded in
-`ops/bin/WATCHDOG-DELTAS.md`) plus exactly six documented deltas:
+`ops/bin/WATCHDOG-DELTAS.md`) plus exactly seven documented deltas:
 a corrected header block, removal of the dead `start_daemon`
 definition, the `stop_daemon` definition moved above its first
 use, shellcheck fixes plus a full `shfmt -i 2` reformat (fix
 round 2), a stop failure that exits 1 instead of exiting 0
-(PR #163), and crash evidence capture with pre-restart log
-preservation (issue #21). Every deviation from the live script is recorded in
+(PR #163), crash evidence capture with pre-restart log
+preservation (issue #21), and binary SSOT resolution with
+best-effort guarded state writes (Delta G). Every deviation from the live script is recorded in
 `ops/bin/WATCHDOG-DELTAS.md`; no other difference exists.
 
 ## What is legacy, and what is a snapshot
@@ -42,7 +43,7 @@ runtime is in question, the deployed script is the authority. The two
 rules do not conflict because they answer different questions (what
 to cite vs. what actually runs).
 
-## Allowlisted absolute path
+## Allowlisted absolute path and binary resolution
 
 One absolute path is carried over from the live script, allowlisted
 here with its justification: `/opt/hatch/bin/hatch_gws_cli` is the
@@ -50,7 +51,13 @@ runtime binary the watchdog invokes for the Drive upload tier. It is
 the only absolute path in the canonical script, and it is required:
 without it there is no Drive tier. No value is embedded alongside
 it — no folder id, no credential, no account identifier appears in
-`ops/`. Every other path in the kit uses `~/workspace/…` tilde form.
+`ops/`.
+
+For `neurostrata-mcp`, the canonical watchdog resolves `AEP_MCP_BIN` if
+set, else `~/go/bin/neurostrata-mcp` (matching `docs/runbook.md`), else
+`~/workspace/neurostrata/bin/neurostrata-mcp`, else `PATH`, and exits 1
+loudly if none is executable. All other state and staging paths use
+`$HOME/workspace/neurostrata/` and `$HOME/.config/NeuroStrata/`.
 
 ## Validated runtime scope
 
@@ -100,8 +107,8 @@ The deployed watchdog governs runtime, so after a deploy run
 
 | Path | What it is |
 | --- | --- |
-| `ops/bin/watchdog-backup.sh` | Canonical watchdog (live base + 6 documented deltas + reformat) |
-| `ops/bin/WATCHDOG-DELTAS.md` | Delta table: header rewrite, dead-code removal, definition move, shellcheck fixes + reformat, stop-failure exit 1, crash evidence capture |
+| `ops/bin/watchdog-backup.sh` | Canonical watchdog (live base + 7 documented deltas + reformat) |
+| `ops/bin/WATCHDOG-DELTAS.md` | Delta table: header rewrite, dead-code removal, definition move, shellcheck fixes + reformat, stop-failure exit 1, crash evidence capture, binary SSOT + best-effort hardening |
 | `ops/tests/test_watchdog_ops.sh` | Behavioral test, per daemon state, with PID-namespace isolation guard |
 | `ops/bin/deploy-watchdog.sh` | Deploys the canonical watchdog to the live path: `--check` drift, `--dry-run`, `--apply` with backup and receipt |
 | `ops/tests/test_deploy_watchdog.sh` | Test for the deploy script, run against a throwaway fixture repo and target |

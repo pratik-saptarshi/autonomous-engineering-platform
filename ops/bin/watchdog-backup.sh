@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
 # watchdog-backup.sh — NeuroStrata daemon watchdog + change-detected DB backup.
 #
-# Every run (on-demand model: the daemon is no longer always-on — the MCP
-# client starts it lazily at the beginning of a coding loop, and this
-# watchdog stops it after IDLE_SECS without use):
+# Every run (on-demand model; requires Linux /proc, flock, and GNU coreutils):
 #   1. Daemon-down is the expected idle state, not an error: if the daemon
 #      is down, still run change detection, and back up a changed DB as a
 #      quiescent copy (no writer, so no stop ceremony is needed). The
-#      daemon stays down afterwards; the MCP client restarts it on the
-#      next coding loop. This script never restarts the daemon itself.
+#      daemon stays down afterwards; restart it directly with nohup when
+#      needed (a bare MCP spawn does not reliably start the daemon). This
+#      script never restarts the daemon itself.
 #   2. Checksum the DB. If unchanged since the last backup, log and exit 0 —
 #      except on the daemon-down path, where a failed Drive catch-up exits
 #      1 — but first run drive_catch_up: the Drive tier may be behind even
@@ -19,7 +18,8 @@
 #      checkpoint), copy the DB, sha256-verify the copy against a hash
 #      taken immediately before the copy, and record the local checksum
 #      (.last-db-sha256) independently of Drive. The daemon stays down
-#      afterwards; the MCP client restarts it.
+#      afterwards; restart it directly with nohup when needed (never
+#      rely on a bare MCP spawn).
 #   4. Upload the copy to Google Drive when configured (folder id file +
 #      hatch_gws_cli present) and record .last-drive-sha256; otherwise the
 #      local backup is the only tier and the run still succeeds — the Drive
@@ -46,8 +46,8 @@
 # daemon-down no-change path) Drive catch-up failed, or the daemon would
 # not stop (a wedged daemon fails loudly — never a silent skip).
 set -euo pipefail
+umask 077
 
-BIN="$HOME/workspace/neurostrata/bin/neurostrata-mcp"
 DB="$HOME/.config/NeuroStrata/data/db/ladybug.db"
 STAGE="$HOME/workspace/neurostrata/backups"
 SHA_FILE="$HOME/workspace/neurostrata/.last-db-sha256"
@@ -56,8 +56,40 @@ FOLDER_ID_FILE="$HOME/workspace/neurostrata/.drive-database-folder-id"
 LOG="$HOME/workspace/neurostrata/watchdog.log"
 export HF_HUB_OFFLINE=1
 
-log() { echo "[$(date '+%F %T')] $*" | tee -a "$LOG"; }
+log() {
+  local msg
+  msg="[$(date '+%F %T')] $*"
+  printf '%s\n' "$msg" | tee -a "$LOG" 2>/dev/null || printf '%s\n' "$msg"
+}
 mkdir -p "$STAGE"
+
+resolve_bin() {
+  if [ -n "${AEP_MCP_BIN:-}" ]; then
+    if [ -x "$AEP_MCP_BIN" ]; then
+      BIN="$AEP_MCP_BIN"
+      return 0
+    fi
+    log "ERROR: AEP_MCP_BIN ($AEP_MCP_BIN) is not executable"
+    return 1
+  fi
+  if [ -x "$HOME/go/bin/neurostrata-mcp" ]; then
+    BIN="$HOME/go/bin/neurostrata-mcp"
+    return 0
+  fi
+  if [ -x "$HOME/workspace/neurostrata/bin/neurostrata-mcp" ]; then
+    BIN="$HOME/workspace/neurostrata/bin/neurostrata-mcp"
+    return 0
+  fi
+  if command -v neurostrata-mcp >/dev/null 2>&1; then
+    BIN="$(command -v neurostrata-mcp)"
+    return 0
+  fi
+  log "ERROR: neurostrata-mcp not found in ~/go/bin, ~/workspace/neurostrata/bin, or PATH"
+  return 1
+}
+
+BIN=""
+resolve_bin
 
 # Concurrency guard: two overlapping runs must never SIGTERM/copy together.
 # NOTE: fd 9 must not leak into the daemon (see 9>&- in start_daemon) — an
@@ -123,6 +155,7 @@ archive_logs() {
   tar -czf "$archive" -C "$HOME/workspace/neurostrata" \
     daemon.log watchdog.log logs 2>/dev/null || true
   if [ -f "$archive" ]; then
+    chmod 600 "$archive" 2>/dev/null || true
     log "logs archived: $archive"
   else
     log "WARNING: log archive failed (non-fatal)"
@@ -162,10 +195,12 @@ prune_newest() {
 }
 
 # Accounting for a down state: remember when, and why, so a later run can tell
-# an intentional stop from a death.
+# an intentional stop from a death. Best-effort: never aborts a backup run.
 mark_down_accounted() {
-  rm -f "$SEEN_UP_FILE"
-  echo "$(date +%s) $1" >"$ACCOUNTED_FILE"
+  rm -f "$SEEN_UP_FILE" 2>/dev/null || true
+  if ! echo "$(date +%s) $1" >"$ACCOUNTED_FILE" 2>/dev/null; then
+    log "WARNING: cannot write $ACCOUNTED_FILE — crash classification degraded"
+  fi
 }
 
 # True when the daemon is down and this watchdog did not stop it. With no
@@ -199,61 +234,84 @@ rotate_daemon_log() {
     target="$DAEMON_LOG.$ts-$n.pre-restart"
     n=$((n + 1))
   done
-  mv -f "$DAEMON_LOG" "$target"
+  if ! mv -f "$DAEMON_LOG" "$target" 2>/dev/null; then
+    log "WARNING: pre-restart log rotation failed (non-fatal)"
+    return 0
+  fi
   log "preserved pre-restart daemon log: $target"
-  prune_newest "$(dirname "$DAEMON_LOG")" 'daemon.log.*.pre-restart' "$PRE_RESTART_KEEP"
+  prune_newest "$(dirname "$DAEMON_LOG")" 'daemon.log.*.pre-restart' "$PRE_RESTART_KEEP" || true
+}
+
+run_probe() {
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 10 "$@"
+  else
+    "$@"
+  fi
 }
 
 # One crash bundle per unexpected death. Every probe is best effort: a probe
 # that fails is recorded as such and never fails the watchdog run.
 capture_death_diagnostics() {
-  local ts out n
+  local ts out tmp n
   ts="$(date -u +%Y%m%dT%H%M%SZ)"
-  mkdir -p "$LOGS_DIR"
-  out="$LOGS_DIR/crash-$ts.log"
-  n=1
-  while [ -e "$out" ]; do
-    out="$LOGS_DIR/crash-$ts-$n.log"
-    n=$((n + 1))
-  done
-  (
-    umask 077
-    {
-      echo "crash bundle captured $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-      echo "== last 100 lines of daemon.log =="
-      tail -n 100 "$DAEMON_LOG" 2>&1 || echo "(daemon.log unreadable)"
-      echo "== kernel OOM hints (dmesg) =="
-      { dmesg 2>&1 || echo "(dmesg unreadable)"; } | { grep -iE 'out of memory|oom-kill|oom_reaper|killed process|memory cgroup|neurostrata|unreadable' || echo "(no OOM hints found)"; } | tail -n 50
-      echo "== free -m =="
-      free -m 2>&1 || echo "(free unavailable)"
-      echo "== df -h =="
-      df -h 2>&1 || echo "(df unavailable)"
-      echo "== ulimit -a =="
-      ulimit -a 2>&1 || echo "(ulimit unavailable)"
-      echo "== neurostrata-mcp --version =="
-      "$BIN" --version 2>&1 || echo "(version unavailable)"
-    } >"$out" 2>&1
-  ) || true
-  chmod 600 "$out" 2>/dev/null || true
-  log "crash diagnostics: $out"
+  if [ -L "$LOGS_DIR" ] || ! mkdir -p "$LOGS_DIR" 2>/dev/null; then
+    log "WARNING: cannot use $LOGS_DIR — crash bundle skipped"
+  else
+    out="$LOGS_DIR/crash-$ts.log"
+    n=1
+    while [ -e "$out" ]; do
+      out="$LOGS_DIR/crash-$ts-$n.log"
+      n=$((n + 1))
+    done
+    tmp="$(mktemp "$LOGS_DIR/.crash-$ts.XXXXXX" 2>/dev/null || true)"
+    if [ -n "$tmp" ]; then
+      (
+        umask 077
+        {
+          echo "crash bundle captured $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "== last 100 lines of daemon.log =="
+          tail -n 100 "$DAEMON_LOG" 2>&1 || echo "(daemon.log unreadable)"
+          echo "== kernel OOM hints (dmesg) =="
+          { run_probe dmesg 2>&1 || echo "(dmesg unreadable)"; } | { grep -iE 'out of memory|oom-kill|oom_reaper|killed process|memory cgroup|neurostrata|unreadable' || echo "(no OOM hints found)"; } | tail -n 50
+          echo "== free -m =="
+          run_probe free -m 2>&1 || echo "(free unavailable)"
+          echo "== df -h =="
+          run_probe df -h 2>&1 || echo "(df unavailable)"
+          echo "== ulimit -a =="
+          ulimit -a 2>&1 || echo "(ulimit unavailable)"
+          echo "== neurostrata-mcp --version =="
+          run_probe "$BIN" --version 2>&1 || echo "(version unavailable)"
+        } >"$tmp" 2>&1
+      ) || true
+      chmod 600 "$tmp" 2>/dev/null || true
+      if mv -f "$tmp" "$out" 2>/dev/null; then
+        log "crash diagnostics: $out"
+      else
+        rm -f "$tmp" 2>/dev/null || true
+        log "WARNING: failed to finalize crash bundle $out"
+      fi
+    else
+      log "WARNING: cannot create temp crash bundle in $LOGS_DIR"
+    fi
+    prune_newest "$LOGS_DIR" 'crash-*.log' "$CRASH_KEEP" || true
+  fi
   rotate_daemon_log
   mark_down_accounted captured
-  prune_newest "$LOGS_DIR" 'crash-*.log' "$CRASH_KEEP"
 }
 
 daemon_healthy() {
   "$BIN" status 2>/dev/null | grep -q "status: healthy"
 }
 
-# 1. On-demand model (2026-10-17): the daemon is no longer always-on. The MCP
-# client starts it lazily at the beginning of a coding loop; this watchdog
-# stops it after IDLE_SECS without use. If it is down, that is the expected
-# idle state — but the DB can still drift between daemon sessions (2026-10-23:
-# a change from Oct 18 sat ~5 days unbacked-up because change detection only
-# ran when the daemon was up). So daemon-down runs still do change detection
-# and back up when the DB moved. With the daemon down there is no writer, so
-# the DB is quiescent and the copy needs no stop/copy ceremony — a plain
-# verified copy is consistent.
+# 1. On-demand model (2026-10-17): the daemon is no longer always-on. This
+# watchdog stops it after IDLE_SECS without use and never restarts it. If it
+# is down, that is the expected idle state — but the DB can still drift
+# between daemon sessions (2026-10-23: a change from Oct 18 sat ~5 days
+# unbacked-up because change detection only ran when the daemon was up). So
+# daemon-down runs still do change detection and back up when the DB moved.
+# With the daemon down there is no writer, so the DB is quiescent and the
+# copy needs no stop/copy ceremony — a plain verified copy is consistent.
 if ! daemon_healthy; then
   if daemon_died_unexpectedly; then
     log "WARNING: daemon is down and this watchdog did not stop it — capturing crash diagnostics"
@@ -313,7 +371,9 @@ if ! daemon_healthy; then
   exit 0
 fi
 log "daemon healthy"
-date +%s >"$SEEN_UP_FILE"
+if ! date +%s >"$SEEN_UP_FILE" 2>/dev/null; then
+  log "WARNING: cannot write $SEEN_UP_FILE — crash detection degraded"
+fi
 log_memory
 
 stop_daemon() {
@@ -379,8 +439,8 @@ if [ -n "$LAST_SHA" ] && [ "$NOW_SHA" = "$LAST_SHA" ]; then
 fi
 
 # 3. Quiesce: SIGTERM the daemon so the copy is checkpoint-consistent.
-# On-demand model: the daemon stays down after this — the MCP client
-# restarts it on the next coding loop.
+# On-demand model: the daemon stays down after this; restart it directly
+# with nohup when needed (a bare MCP spawn does not reliably start it).
 # A daemon that will not stop fails the run loudly (exit 1): copying a
 # live DB would produce exactly the torn backup this step exists to
 # prevent, and silently skipping used to mask a wedged daemon forever.
@@ -404,7 +464,7 @@ if [ "$CP_SHA" != "$SRC_SHA" ]; then
 fi
 log "local backup OK: $STAGE_FILE"
 
-# Daemon stays down (on-demand model) — the MCP client restarts it next run.
+# Daemon stays down (on-demand model); restart it directly with nohup when needed.
 
 # Archive logs with the backup for forensics.
 archive_logs "$TS"

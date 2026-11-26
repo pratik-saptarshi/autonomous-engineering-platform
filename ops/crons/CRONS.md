@@ -53,4 +53,4 @@ This repo ships the wrapper and its test (`ops/tests/test_cron_boot_gate.sh`). I
 
 ### Exclusion: the NeuroStrata watchdog
 
-Do not wrap `neurostrata-watchdog`. The gate's daemon check needs an answering daemon. The watchdog is the job that revives a daemon that died unexpectedly and that backs up the database while the daemon is down, so a gate in front of it would block the only recovery path whenever recovery is needed. The watchdog stays ungated and keeps the entry shown in the table above.
+Do not wrap `neurostrata-watchdog`. The gate's daemon check needs an answering daemon, while the watchdog must run even when the daemon is down so it can capture crash evidence and back up a changed database (the canonical watchdog never restarts the daemon itself; recover manually with `nohup`). Wrapping it behind the boot gate would block crash capture and quiescent backups whenever the daemon is down. The watchdog stays ungated and keeps the entry shown in the table above.

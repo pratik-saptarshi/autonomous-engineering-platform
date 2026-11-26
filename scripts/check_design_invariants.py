@@ -452,12 +452,16 @@ def check_watchdog_deltas(files, errors):
 
 
 # Claims already disproved: a bare MCP spawn does not reliably start the
-# daemon (docs/limitation-analysis.md section 1, verified 2026-10-16), so no
-# live doc may promise a revive through it.
+# daemon (docs/limitation-analysis.md section 1, verified 2026-10-16), and the
+# canonical watchdog (ops/bin/watchdog-backup.sh) never restarts the daemon.
 STALE_RESTART_PATTERNS = (
     r"via MCP auto-spawn",
-    r"restarts? it automatically",
+    r"(?<!never )(?<!not )restarts? it automatically",
     r"restarted automatically on the next MCP",
+    r"revives? (?:a |the )?(?:dead |crashed )?daemon",
+    r"watchdog cron also revives",
+    r"wait for the watchdog cron",
+    r"restarts? it on the next (?:coding loop|MCP)",
 )
 
 
@@ -521,8 +525,8 @@ FILE_CHECKS = [
 # Each mutation is (file, old, new) and must trip the named check.
 FILE_MUTATIONS = {
     "OPS-DELTAS": [
-        [(OPS_README, "exactly six documented deltas", "exactly five documented deltas")],
-        [(WATCHDOG_DELTAS, "Delta count: six", "Delta count: five")],
+        [(OPS_README, "exactly seven documented deltas", "exactly six documented deltas")],
+        [(WATCHDOG_DELTAS, "Delta count: seven", "Delta count: six")],
         [(WATCHDOG, "set -euo pipefail", "set -euo pipefail\n# drift")],
     ],
     "RUNBOOK-TRUTH": [
@@ -532,9 +536,11 @@ FILE_MUTATIONS = {
         [(RUNBOOK, "## 1. Binary tools", "## 1. Binary tools\n\nSee client.py")],
     ],
     "DOCS-RESTART": [
-        [("README.md", "revives a dead daemon via direct", "revives a dead daemon via MCP auto-spawn and direct")],
+        [("README.md", "never restarts the daemon itself", "restarts via MCP auto-spawn")],
         [("docs/operations.md", "If the daemon is down, restart it", "If the daemon is down, the next MCP client spawn restarts it automatically. Restart it")],
-        [("docs/limitation-analysis.md", "an MCP-spawn revive", "a dead daemon is restarted automatically on the next MCP spawn, an MCP-spawn revive")],
+        [("docs/limitation-analysis.md", "an MCP-spawn start", "a dead daemon is restarted automatically on the next MCP spawn, an MCP-spawn start")],
+        [("docs/operations.md", "The canonical watchdog (`ops/bin/watchdog-backup.sh`) never restarts the daemon itself", "The watchdog cron also revives a dead daemon on its next run")],
+        [("docs/runbook.md", "Restart it directly with the `nohup` command above", "Restart it directly or wait for the watchdog cron")],
     ],
 }
 

@@ -339,6 +339,50 @@ echo "50 intentional" >"$(fixture_ns)/.daemon-down-accounted"
 run_watchdog # client used the daemon after the last accounted stop, now it is down
 check "(l) client use after the last accounted stop counts as unexpected" test -n "$(find "$(fixture_ns)/logs" -maxdepth 1 -name 'crash-*.log' 2>/dev/null)"
 
+note "case (m): BIN SSOT prefers ~/go/bin/neurostrata-mcp (runbook path) and fails loudly if missing"
+new_fixture m
+rm -f "$(fixture_ns)/bin/neurostrata-mcp"
+mkdir -p "$FH/go/bin"
+cp "$SB/stub/neurostrata-mcp" "$FH/go/bin/neurostrata-mcp"
+set_changed
+set_last_use 1
+HOME="$FH" nohup "$FH/go/bin/neurostrata-mcp" daemon >/dev/null 2>&1 &
+sleep 0.1
+for _ in $(seq 1 50); do
+  [ -s "$(fixture_ns)/.stub-daemon.pid" ] && break
+  /usr/bin/sleep 0.05
+done
+run_watchdog
+[ "$RC" -eq 0 ] && ok "(m) ~/go/bin-only host exits 0" || fail "(m) ~/go/bin-only host exits 0 (got $RC)"
+check "(m) ~/go/bin-only host saw daemon healthy" grep -q "daemon healthy" "$OUT"
+check "(m) ~/go/bin-only host staged backup" ls "$(fixture_ns)/backups"/db-*.db
+kill_fixture_daemons
+rm -f "$FH/go/bin/neurostrata-mcp"
+PATH="$SB/bin:/usr/bin:/bin" run_watchdog
+[ "$RC" -ne 0 ] && ok "(m) missing binary fails loudly (got $RC)" || fail "(m) missing binary fails loudly (got $RC)"
+check "(m) missing binary logs ERROR" grep -q "neurostrata-mcp not found" "$OUT"
+
+note "case (n): unwritable crash-evidence state files never abort backups (best-effort)"
+new_fixture n1
+set_changed
+set_last_use 1
+mkdir -p "$(fixture_ns)/.daemon-seen-up"
+start_fixture_daemon
+run_watchdog
+[ "$RC" -eq 0 ] && ok "(n1) unwritable .daemon-seen-up still exits 0" || fail "(n1) unwritable .daemon-seen-up still exits 0 (got $RC)"
+check "(n1) warns on .daemon-seen-up write failure" grep -q "cannot write .*daemon-seen-up" "$OUT"
+check "(n1) backup still taken despite .daemon-seen-up failure" ls "$(fixture_ns)/backups"/db-*.db
+kill_fixture_daemons
+
+new_fixture n2
+set_changed
+date +%s >"$(fixture_ns)/.daemon-seen-up"
+mkdir -p "$(fixture_ns)/.daemon-down-accounted"
+run_watchdog
+[ "$RC" -eq 0 ] && ok "(n2) unwritable .daemon-down-accounted still exits 0" || fail "(n2) unwritable .daemon-down-accounted still exits 0 (got $RC)"
+check "(n2) warns on .daemon-down-accounted write failure" grep -q "cannot write .*daemon-down-accounted" "$OUT"
+check "(n2) quiescent backup still taken despite accounted-file failure" ls "$(fixture_ns)/backups"/db-*.db
+
 note "case (f): regression pins over every run above — no 127, no 'command not found'"
 F_OK=1
 for rc in "${CASE_RCS[@]}"; do

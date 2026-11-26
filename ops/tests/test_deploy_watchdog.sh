@@ -187,6 +187,18 @@ RC=0
 OUT="$(DEPLOY_TARGET="$SB/real-target/watchdog-backup.sh" bash "$ROOT/ops/bin/deploy-watchdog.sh" --dry-run 2>&1)" || RC=$?
 t "dry-run from the real repo exits 0" "$RC" -eq 0
 
+echo "# case 11: symlink target refused and missing custom receipt dir created"
+reset_target
+mkdir -p "$(dirname "$DEPLOY_TARGET")"
+ln -s "$SB/elsewhere" "$DEPLOY_TARGET"
+run --apply --skip-tests
+t "symlink target refused with non-zero" "$RC" -ne 0
+has "symlink refusal named" "symlink"
+rm -f "$DEPLOY_TARGET"
+DEPLOY_RECEIPT="$SB/nested/receipt-dir/custom.json" run --apply --skip-tests
+t "missing custom receipt dir created and exits 0" "$RC" -eq 0
+t "custom receipt written" "$(test -s "$SB/nested/receipt-dir/custom.json" && echo yes || echo no)" = "yes"
+
 if [ "$FAILURES" -ne 0 ]; then
   echo "test_deploy_watchdog: $FAILURES failure(s)"
   exit 1

@@ -54,6 +54,12 @@ sha_of() { # portable SHA-256 of a file
 
 json_escape() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
 
+check_clean_path() {
+  case "$2" in
+  *$'\n'* | *$'\r'* | *$'\t'*) die "$1 contains control characters" ;;
+  esac
+}
+
 MODE=""
 SKIP_TESTS=0
 for arg in "$@"; do
@@ -69,17 +75,25 @@ done
 [ -n "$MODE" ] || usage
 if [ "$SKIP_TESTS" -eq 1 ] && [ "$MODE" != apply ]; then usage; fi
 
+check_clean_path "DEPLOY_TARGET" "$TARGET"
+check_clean_path "DEPLOY_RECEIPT" "$RECEIPT"
 [ -f "$SRC" ] || die "canonical source not found: $SRC"
 SRC_SHA="$(sha_of "$SRC")"
 
-# state: missing | in-sync | drift
-if [ ! -f "$TARGET" ]; then
-  STATE=missing
-  TARGET_SHA=""
-else
-  TARGET_SHA="$(sha_of "$TARGET")"
-  if [ "$TARGET_SHA" = "$SRC_SHA" ]; then STATE=in-sync; else STATE=drift; fi
-fi
+compute_state() {
+  # state: missing | in-sync | drift
+  if [ -L "$TARGET" ]; then
+    die "refusing to deploy over symlink: $TARGET"
+  fi
+  if [ ! -f "$TARGET" ]; then
+    STATE=missing
+    TARGET_SHA=""
+  else
+    TARGET_SHA="$(sha_of "$TARGET")"
+    if [ "$TARGET_SHA" = "$SRC_SHA" ]; then STATE=in-sync; else STATE=drift; fi
+  fi
+}
+compute_state
 
 report_state() {
   case "$STATE" in
@@ -141,7 +155,7 @@ apply)
   else
     [ -x "$SUITE" ] || die "behavioral suite not found or not executable: $SUITE"
     say "running $SUITE"
-    "$SUITE" || die "behavioral suite failed, nothing was deployed"
+    "$SUITE" || die "behavioral suite failed (check unshare privileges or stop a live daemon); nothing was deployed — do not use --skip-tests blindly"
   fi
 
   COMMIT="unknown"
@@ -156,7 +170,15 @@ apply)
     say "WARNING: $REPO is not a git checkout, the receipt records git_commit=unknown"
   fi
 
-  mkdir -p "$(dirname "$TARGET")"
+  # Recompute target state after the behavioral suite finishes so a file
+  # created or modified in the meantime is never overwritten without a backup.
+  compute_state
+  if [ "$STATE" = in-sync ]; then
+    say "target is now in sync, nothing to do"
+    exit 0
+  fi
+
+  mkdir -p "$(dirname "$TARGET")" "$(dirname "$RECEIPT")"
   BACKUP=""
   if [ "$STATE" = drift ]; then
     BACKUP="$(backup_path)"

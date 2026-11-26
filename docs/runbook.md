@@ -194,16 +194,16 @@ mkdir -p ~/workspace/neurostrata
 HF_HUB_OFFLINE=1 nohup neurostrata-mcp daemon >> ~/workspace/neurostrata/daemon.log 2>&1 &
 sleep 15
 neurostrata-mcp status
-# expect: "status: healthy -- one daemon is serving every console"
+# expect: "status: healthy" (note: scripts/boot-gate.sh checks for "daemon: listening ... answering"; co-occurrence is UNVERIFIED per docs/daemon-lifecycle-contract.md)
 ```
 
 Append with `>>`, never `>`. A truncating redirect destroys the previous run's log, which is the only evidence of an unexpected death (see `docs/limitation-analysis.md` section 1). `HF_HUB_OFFLINE=1` is required because the binary cannot download its model through a TLS-intercepting proxy (see section 2).
 
 The daemon log must show the embedder initializing from cache with no download attempt. The store is created at `~/.config/NeuroStrata/data/db/ladybug.db`.
 
-Note: the binary ships systemd user units, but they cannot be enabled where no user D-Bus exists. `nohup` is the supported fallback; a dead daemon does *not* reliably come back via MCP spawn (verified 2026-10-16) — restart it directly or wait for the watchdog cron.
+Note: the binary ships systemd user units, but they cannot be enabled where no user D-Bus exists. `nohup` is the supported fallback; a dead daemon does *not* reliably come back via MCP spawn (verified 2026-10-16). Restart it directly with the `nohup` command above — the canonical watchdog (`ops/bin/watchdog-backup.sh`) captures crash evidence and backs up the DB, and never restarts the daemon itself.
 
-**Daemon forking behavior.** The binary forks on startup: briefly after launch, `pgrep -f 'neurostrata-mcp daemon'` returns two PIDs (the forking parent plus the live daemon). Any stop logic must signal *all* matching PIDs, not just the first — `pgrep ... | head -1` can pick the stale parent, leaving the live daemon running until the stop times out (observed 2026-10-17: `ERROR: daemon did not exit in 30s`, backup skipped, unclean-shutdown WAL warning on next start). Use the `[n]` bracket trick (`pgrep -f '[n]eurostrata-mcp daemon'`) so pgrep never matches its own command line, and loop `kill -TERM` over every returned PID. `scripts/watchdog-backup.sh` implements this.
+**Daemon forking behavior.** The binary forks on startup: briefly after launch, `pgrep -f 'neurostrata-mcp daemon'` returns two PIDs (the forking parent plus the live daemon). Any stop logic must signal *all* matching PIDs, not just the first — `pgrep ... | head -1` can pick the stale parent, leaving the live daemon running until the stop times out (observed 2026-10-17: `ERROR: daemon did not exit in 30s`, backup skipped, unclean-shutdown WAL warning on next start). Use the `[n]` bracket trick (`pgrep -f '[n]eurostrata-mcp daemon'`) so pgrep never matches its own command line, and loop `kill -TERM` over every returned PID. The canonical `ops/bin/watchdog-backup.sh` (and legacy `scripts/watchdog-backup.sh`) implement this.
 
 ### Seed the guard namespace
 
@@ -283,7 +283,7 @@ sudo ip6tables -S OUTPUT | grep DROP   # present when IPv6 is active
 - [ ] `bd ping` ok; issue lifecycle (create/show/close) works; per-repo isolation confirmed
 - [ ] `bd` metrics OFF, proven by BOTH signals: `bd metrics` reports OFF, **and** `~/.config/bd/config.yaml` carries `disabled: true` under `metrics:` — assert with `grep -A2 '^metrics:' ~/.config/bd/config.yaml | grep -q 'disabled: true'` (exits non-zero when the flag is absent). If either check fails, setup has FAILED — stop and fix before continuing onboarding. A future bd version that moves the setting or changes the default must break setup visibly here, not silently phone home
 - [ ] `ocr delegate preview` returns a review spec with no API key
-- [ ] `neurostrata-mcp status` reports `status: healthy` and `scripts/boot-gate.sh` prints `BOOT-GATE: daemon ok`
+- [ ] `neurostrata-mcp status` reports `status: healthy` and `scripts/boot-gate.sh` prints `BOOT-GATE: daemon ok` (note: `boot-gate.sh` checks `daemon: listening ... answering`; equivalence with `status: healthy` is UNVERIFIED per `docs/daemon-lifecycle-contract.md`)
 - [ ] `scripts/seed-boot-guards.sh --check` exits 0 and `scripts/boot-gate.sh` prints `BOOT-GATE: guards ok`
 - [ ] `sudo scripts/apply-domain-blocks.sh` prints `Domain blocks applied and verified:` and `sudo iptables -S OUTPUT` lists a DROP rule for each blocked domain
 - [ ] `ops/bin/deploy-watchdog.sh --check` exits 0 (the deployed watchdog matches `ops/bin/watchdog-backup.sh`)

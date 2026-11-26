@@ -15,7 +15,7 @@ Runs report to chat only when tasks were completed or attention is needed. An em
 
 ### Gating scheduled jobs with the boot gate
 
-`ops/bin/cron-with-boot-gate.sh <job-name> -- <command...>` runs `scripts/boot-gate.sh` first. If the gate fails, the job does not start and the wrapper logs `CRON-GATE: ABORT <job-name> rc=<rc>`. If the gate passes, the wrapper runs the command and its exit status is the job's exit status. Put the wrapper in front of the command of any job that starts an autonomous agent session. Do not put it in front of the NeuroStrata watchdog, because the gate needs a live daemon and the watchdog is what recovers a dead one (see `ops/crons/CRONS.md`). Changing a scheduler entry is an operator act, so a job is gated only after its entry is changed.
+`ops/bin/cron-with-boot-gate.sh <job-name> -- <command...>` runs `scripts/boot-gate.sh` first. If the gate fails, the job does not start and the wrapper logs `CRON-GATE: ABORT <job-name> rc=<rc>`. If the gate passes, the wrapper runs the command and its exit status is the job's exit status. Put the wrapper in front of the command of any job that starts an autonomous agent session. Do not put it in front of the NeuroStrata watchdog, because the gate needs an answering daemon and the watchdog must run while the daemon is down to capture crash evidence and back up a changed database (see `ops/crons/CRONS.md`). Changing a scheduler entry is an operator act, so a job is gated only after its entry is changed.
 
 ## NeuroStrata daemon
 
@@ -29,11 +29,11 @@ HF_HUB_OFFLINE=1 nohup ~/go/bin/neurostrata-mcp daemon >> ~/workspace/neurostrat
 
 The canonical watchdog (`ops/bin/watchdog-backup.sh`) reads and rotates `~/workspace/neurostrata/daemon.log`, so the commands above use that path. The deployed adaptation described under "Reference vs VM adaptation" below logs to `~/.local/share/neurostrata/daemon.log` instead. Use whichever file your deployed watchdog reads.
 
-If the daemon is down, restart it with the nohup command above. A bare MCP spawn does not reliably start the daemon (verified 2026-10-16, see `docs/limitation-analysis.md` section 1 and `docs/daemon-lifecycle-contract.md`). The watchdog cron also revives a daemon that died unexpectedly on its next run.
+If the daemon is down, restart it directly with the `nohup` command above. A bare MCP spawn does not reliably start the daemon (verified 2026-10-16, see `docs/limitation-analysis.md` section 1 and `docs/daemon-lifecycle-contract.md`). The canonical watchdog (`ops/bin/watchdog-backup.sh`) never restarts the daemon itself; it captures crash evidence and backs up a changed database.
 
 ## Watchdog and backups
 
-A cron job (`neurostrata-watchdog`, every 2 h) runs `~/workspace/neurostrata/bin/watchdog-backup.sh`: it revives a dead daemon, checksums the database, and only when the checksum changed it takes a verified copy (SIGTERM for a checkpoint-consistent copy, sha256-verified) and uploads it to Google Drive (`Musebot-Astro/database`). The last checksum lives in `~/workspace/neurostrata/.last-db-sha256`; run output goes to `~/workspace/neurostrata/watchdog.log`.
+A cron job (`neurostrata-watchdog`, every 2 h) runs `~/workspace/neurostrata/bin/watchdog-backup.sh`. In the canonical on-demand script (`ops/bin/watchdog-backup.sh`), the watchdog never restarts the daemon: it captures crash evidence after an unexpected death, checksums the database, stops an idle daemon when needed, and only when the checksum changed takes a verified copy (SIGTERM for a checkpoint-consistent copy, sha256-verified) and uploads it to Google Drive (`Musebot-Astro/database`). The last checksum lives in `~/workspace/neurostrata/.last-db-sha256`; run output goes to `~/workspace/neurostrata/watchdog.log`.
 
 ### Deploying the canonical watchdog
 
@@ -47,18 +47,13 @@ ops/bin/deploy-watchdog.sh --apply     # test, back up, deploy atomically, write
 
 `--apply` runs `bash -n` and the behavioral suite first, saves a drifted target as `watchdog-backup.sh.bak.<UTC timestamp>` for rollback, and writes `.watchdog-deploy-receipt.json` beside the target with the UTC time, the source commit, and the SHA-256. The target defaults to `~/workspace/neurostrata/bin/watchdog-backup.sh` and can be changed with `DEPLOY_TARGET`. Details are in `ops/README.md`, section "Deployment".
 
-### Reference vs VM adaptation
+### Canonical vs legacy vs VM adaptation
 
-The repo carries the portable reference (`scripts/watchdog-backup.sh`); the VM runs an adaptation of it. The lifecycle now lives in both: change detection before any stop/restart decision, no stop when the DB is unchanged, restart-if-unexpectedly-down, restart-after-backup with a 60 s health poll, and an EXIT trap that restarts the daemon after any stop. "Down is intentional" is the reference's portable `WATCHDOG_LEAVE_DOWN_MARKER` file check.
+Three watchdog artifacts exist in this ecosystem; check `ops/README.md` and `ops/bin/WATCHDOG-DELTAS.md` as the single source of truth for the canonical script:
 
-What remains different in the VM adaptation — check this list before syncing either copy over the other:
-
-- Paths: the binary is `~/go/bin/neurostrata-mcp` (reference: `~/workspace/neurostrata/bin/`), and the daemon log is `~/.local/share/neurostrata/daemon.log` (reference: `~/workspace/neurostrata/daemon.log`). Both rotate the daemon log at start — the adaptation to a timestamped sibling file (10 kept), the reference into its `logs/` directory (5 kept).
-- Health-poll budget: the reference reads it from `WATCHDOG_HEALTH_TIMEOUT` (default 60); the adaptation's `wait_healthy` carries the same 60 s as a built-in default — no env knob.
-- Stop failure: in the reference, a daemon that will not stop fails the run (exit 1). In the adaptation it logs ERROR and exits 0, skipping that run's backup with the daemon left running.
-- "Down is intentional" is decided by the reaper-log heuristic (`reaped_expected()` compares the newest REAPED line in `reaper.log` against the last start in `watchdog.log`) — the reaper's state file is, in effect, the marker's content for this adaptation.
-- One behavioral difference: with the marker present the reference exits before doing anything (no backup even if the DB changed), while the adaptation leaves a reaped daemon down only when the DB is unchanged and still takes a changed backup, restarting afterwards.
-- Drive mechanics: a failed upload is retried once in-run and never fails the deployed run; the reference exits 1 on a configured-but-failing upload and lets the catch-up path repair the gap on the next run.
+- **Canonical (`ops/bin/watchdog-backup.sh`):** on-demand model; resolves `neurostrata-mcp` preferring `~/go/bin/neurostrata-mcp` (then `~/workspace/neurostrata/bin/neurostrata-mcp`, then `PATH`, or `AEP_MCP_BIN`); **never restarts the daemon itself**; captures crash bundles and rotates `~/workspace/neurostrata/daemon.log` to `daemon.log.<UTC>.pre-restart` on unexpected deaths (Delta F/G); fails loudly (exit 1) if the daemon will not stop (Delta E).
+- **Legacy portable reference (`scripts/watchdog-backup.sh`):** older always-on-era script kept with `scripts/tests/test_watchdog.sh`. It still carries restart-if-down, restart-after-backup, EXIT-trap restart, and `WATCHDOG_LEAVE_DOWN_MARKER`. Do not treat its always-on restart promises as current canonical practice.
+- **Historical VM adaptation (deployed pre-deploy-kit record):** ran the older always-on lifecycle with `~/go/bin/neurostrata-mcp`, `~/.local/share/neurostrata/daemon.log`, stop-failure exit 0, `reaped_expected()` heuristic, and single in-run Drive retry. Run `ops/bin/deploy-watchdog.sh --check` on the host before trusting what is live.
 
 To restore the model cache after a wipe:
 
@@ -69,17 +64,9 @@ tar -xzf ~/workspace/neurostrata/model-cache-backup.tar.gz -C ~/.cache/neuro/mod
 
 ## Memory backend
 
-All operations go through the stdio client:
+Live operations use the `neurostrata-mcp` CLI (`~/go/bin/neurostrata-mcp status`, `neurostrata-mcp list <namespace>`) and MCP stdio tools registered in the client (`neurostrata_search_memory`, `neurostrata_add_memory`, `neurostrata_get_memory`, `neurostrata_archive_memory`, `neurostrata_list_namespaces`, `neurostrata_supersede_memory`).
 
-```bash
-BIN=~/workspace/custom-connectors/custom.neurostrata/bin/client.py
-python3 $BIN list-tools
-python3 $BIN call-tool --name neurostrata_search_memory --arguments-file search.json  # {query, namespace}
-python3 $BIN call-tool --name neurostrata_add_memory    --arguments-file add.json     # {content, namespace, project_root}
-python3 $BIN call-tool --name neurostrata_get_memory    --arguments-file get.json     # {id, namespace}
-python3 $BIN call-tool --name neurostrata_archive_memory --arguments-file a.json      # {id, namespace}
-python3 $BIN call-tool --name neurostrata_list_namespaces --arguments-file empty.json # {}
-```
+> **Planned / not built (VM record only):** The earlier stdio wrapper `~/workspace/custom-connectors/custom.neurostrata/bin/client.py` is not built in this repo (see `docs/runbook.md` Appendix A). Do not expect `client.py` on a fresh host.
 
 Namespace convention: `global` for broadly-applicable lessons, project namespaces for project-specific ones. Prefer `neurostrata_supersede_memory` over archiving when a correction matters.
 
@@ -126,7 +113,7 @@ bash .../bin/stop.sh
 | MCP client: invalid JSON-RPC message | Server emits `{}` after `notifications/initialized` | Tolerate non-JSON-RPC stdout lines; do not fail on them |
 | `bd doctor`: "not yet supported in embedded mode" | Expected | Use `bd doctor --check={artifacts,conventions,pollution}`, `bd ping` |
 | Provider calls fail from open-connector | Egress guard | Allowlist the host via `OOMOL_CONNECT_EGRESS_TRUSTED_HOSTS` |
-| `neurostrata-mcp status`: "down" | Daemon died (e.g. VM restart) | Restart via nohup (`nohup …/neurostrata-mcp daemon … &`); the watchdog cron also revives it on its next run. Note: a bare MCP spawn does *not* reliably auto-start the daemon — verified 2026-10-16. |
-| Watchdog always reports "another watchdog run in progress" | The daemon inherited the script's flock FD and holds the lock for its whole lifetime | Upgrade to the fixed script (closes the FD with `9>&-` on the daemon spawn); kill the old daemon once so the stale lock clears, then let the watchdog restart it |
+| `neurostrata-mcp status`: "down" | Daemon died (e.g. VM restart) | Restart directly via `nohup` (`HF_HUB_OFFLINE=1 nohup ~/go/bin/neurostrata-mcp daemon >> ~/workspace/neurostrata/daemon.log 2>&1 &`). The canonical watchdog does not restart the daemon, and a bare MCP spawn does *not* reliably start it (verified 2026-10-16). |
+| Watchdog always reports "another watchdog run in progress" | The daemon inherited the script's flock FD and holds the lock for its whole lifetime | Upgrade to the canonical script (`ops/bin/deploy-watchdog.sh --apply`); kill the old daemon once so the stale lock clears, then restart the daemon directly via `nohup`. |
 | Cron run reports "backlog empty" | No to-do tasks | Add tasks to `~/workspace/ralph/backlog.md` |
 | Loop works an example task | Backlog still has seed examples | Replace `RALPH-001`/`RALPH-002` with real work or mark them done |

@@ -11,3 +11,7 @@ dist/
 
 # .superpowers/ — local SDD workspace, never committed
 .superpowers/
+
+# Python bytecode caches
+__pycache__/
+*.pyc

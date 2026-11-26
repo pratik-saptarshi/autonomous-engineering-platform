@@ -12,9 +12,13 @@ Canonical watchdog source: `~/workspace/neurostrata/bin/watchdog-backup.sh`
   (331 lines).
 - Delta E sha256: `5199425a830b79bd3715df1cfd87904227e9a13fbf5823d073eb404257f09453`
   (339 lines, landed in PR #163 as commit `f9dcd636`).
-- Current sha256 after Delta F: `f6ee0938d9268a4f931f73100d2ac8adbb3542d0c8494b2c6eaa91a7771ec164`
+- Delta F sha256: `f6ee0938d9268a4f931f73100d2ac8adbb3542d0c8494b2c6eaa91a7771ec164`
   (438 lines, issue #21 phase 1).
-- Delta count: six (A through F).
+- Current sha256 after Delta G: `128a790d416192067f3b033bc4d0d99d9ff2b9793dfd6186cda3a5c870f7de1b`
+  (498 lines, binary SSOT + best-effort state-write hardening + comment truth).
+- Last verified deployed: not yet deployed to VM from this branch (run
+  `ops/bin/deploy-watchdog.sh --check` on the host, then `--apply`).
+- Delta count: seven (A through G).
 - `bash -n ops/bin/watchdog-backup.sh`: clean.
 
 ## Delta A — "Every run" header block rewritten to on-demand truth
@@ -225,7 +229,10 @@ Known limits, stated plainly:
   manual `shutdown`) counts as a death and produces a bundle. That is a
   cheap false positive and the bundle shows what happened.
 - A daemon that starts and dies between two runs without ever being seen
-  healthy or touching `.last-daemon-use` is not detected.
+  healthy or touching `.last-daemon-use` is not detected. Note: no script in
+  this repo writes `.last-daemon-use` yet; unless an operator wrapper or
+  client hook touches it, unexpected-death detection relies on
+  `.daemon-seen-up` alone.
 - This is phase 1 only. It captures evidence, it does not fix the cause.
   The root cause stays open until a deployed watchdog has collected a few
   bundles (see `docs/limitation-analysis.md` section 1).
@@ -236,6 +243,40 @@ bundle contents and mode, (j) is the retention cap over 15 deaths, (k) is
 an intentional idle stop emitting no bundle, and (l) is the classification
 rules (no history, and client use after the last accounted stop). The
 suite stays green under PID-namespace isolation.
+
+## Delta G: binary SSOT resolution, best-effort state writes, and truthful comments
+
+Defects addressed:
+
+- `BIN` was hardcoded to `$HOME/workspace/neurostrata/bin/neurostrata-mcp`,
+  while `docs/runbook.md` installs `neurostrata-mcp` to `~/go/bin`. On a
+  fresh host built from the runbook, `daemon_healthy()` always failed and
+  took a live `cp -p` backup.
+- Crash-evidence bookkeeping (`SEEN_UP_FILE`, `ACCOUNTED_FILE`, `LOGS_DIR`,
+  `rotate_daemon_log`, and `log()`) ran unguarded under `set -euo pipefail`,
+  so an unwritable state file could abort backups before the backup ran.
+- Header and inline comments still said the MCP client restarts the daemon,
+  contradicting `docs/limitation-analysis.md` section 1.
+
+Changes in `ops/bin/watchdog-backup.sh`:
+
+- Added `resolve_bin()` preferring `AEP_MCP_BIN`, then
+  `~/go/bin/neurostrata-mcp`, then
+  `~/workspace/neurostrata/bin/neurostrata-mcp`, then `PATH`, failing loudly
+  (exit 1) if none is executable.
+- Set `umask 077`, `chmod 600` on log archives, atomic `mktemp` + `mv` for
+  crash bundles with symlink check on `LOGS_DIR`, and `timeout 10` on
+  external probes (`dmesg`, `free`, `df`, `"$BIN" --version`).
+- Guarded `SEEN_UP_FILE`, `ACCOUNTED_FILE`, `LOGS_DIR`, `rotate_daemon_log`,
+  and `log()` so bookkeeping failures log a `WARNING` and never abort
+  backups.
+- Qualified header and step 3/4 comments to state that this script never
+  restarts the daemon and that a bare MCP spawn does not reliably start it;
+  documented the Linux `/proc`, `flock`, and GNU coreutils requirement.
+
+Tests: cases (m) and (n) in `ops/tests/test_watchdog_ops.sh` verify `~/go/bin`
+binary resolution, missing-binary loud failure, and backup continuation when
+`.daemon-seen-up` or `.daemon-down-accounted` is unwritable.
 
 Divergence from the deployed script: the deployed watchdog has none of this
 until it is redeployed. Run `ops/bin/deploy-watchdog.sh --check` on the
