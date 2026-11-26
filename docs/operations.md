@@ -13,6 +13,10 @@ cron.remove {id: ralph-loop}
 
 Runs report to chat only when tasks were completed or attention is needed. An empty backlog ends the run with a one-line result in run history.
 
+### Gating scheduled jobs with the boot gate
+
+`ops/bin/cron-with-boot-gate.sh <job-name> -- <command...>` runs `scripts/boot-gate.sh` first. If the gate fails, the job does not start and the wrapper logs `CRON-GATE: ABORT <job-name> rc=<rc>`. If the gate passes, the wrapper runs the command and its exit status is the job's exit status. Put the wrapper in front of the command of any job that starts an autonomous agent session. Do not put it in front of the NeuroStrata watchdog, because the gate needs a live daemon and the watchdog is what recovers a dead one (see `ops/crons/CRONS.md`). Changing a scheduler entry is an operator act, so a job is gated only after its entry is changed.
+
 ## NeuroStrata daemon
 
 ```bash

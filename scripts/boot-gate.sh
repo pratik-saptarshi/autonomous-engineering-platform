@@ -24,8 +24,11 @@
 # docs/boot-gate-policy.md). The policy check's ok line names the resolved
 # path and short digest, and a pass ends with the machine-readable token
 # line "BOOT-GATE-RESULT: POLICY-OK".
-# Scope: this wires the policy check into boot-gate.sh only. Whether and
-# when anything invokes boot-gate.sh is issue #17's unexecuted scope.
+# Scope: this wires the policy check into boot-gate.sh only. Scheduled jobs
+# reach the gate through ops/bin/cron-with-boot-gate.sh, which runs it before
+# the job and aborts the job on failure. A job is gated only when its
+# scheduler entry calls that wrapper (the NeuroStrata watchdog is
+# deliberately excluded, see ops/crons/CRONS.md).
 # Run with --self-test to execute the stub-based negative tests
 # (each prints "SELF-TEST: <case> ok").
 # `--self-test --offline` runs the same cases with fully self-contained

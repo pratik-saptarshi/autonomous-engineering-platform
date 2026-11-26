@@ -104,6 +104,8 @@ The deployed watchdog governs runtime, so after a deploy run
 | `ops/tests/test_watchdog_ops.sh` | Behavioral test, per daemon state, with PID-namespace isolation guard |
 | `ops/bin/deploy-watchdog.sh` | Deploys the canonical watchdog to the live path: `--check` drift, `--dry-run`, `--apply` with backup and receipt |
 | `ops/tests/test_deploy_watchdog.sh` | Test for the deploy script, run against a throwaway fixture repo and target |
+| `ops/bin/cron-with-boot-gate.sh` | Wrapper that runs `scripts/boot-gate.sh` before a scheduled job and aborts the job when the gate fails |
+| `ops/tests/test_cron_boot_gate.sh` | Test for the wrapper: pass-through, abort, missing gate, usage errors |
 | `ops/bin/idle-reaper.sh` | Retired standalone reaper, preserved with an in-file retirement banner |
 | `ops/bin/RETIRED.md` | Retirement evidence: standalone reaper retired, idle-stop behavior absorbed into the watchdog |
 | `ops/crons/watchdog-cron-record.md` | Dated scheduler record, derived from the live cron body only |

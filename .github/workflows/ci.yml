@@ -68,6 +68,7 @@ jobs:
       - run: bash scripts/tests/test_verify_signals.sh
       - run: bash ops/tests/test_watchdog_ops.sh
       - run: bash ops/tests/test_deploy_watchdog.sh
+      - run: bash ops/tests/test_cron_boot_gate.sh
       - run: bash scripts/install-re-runtime.sh --self-test --offline
       - run: bash scripts/tests/test_install_re_runtime.sh
       - run: bash scripts/tests/test_install_env_scan.sh
