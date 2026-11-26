@@ -14,9 +14,13 @@ SCRIPT="$ROOT/scripts/install-re-runtime.sh"
 SB="$(mktemp -d "$HOME/.test-install-env-scan.XXXXXX")"
 LIB="$SB/lib.sh"
 FAILURES=0
+CHECKS=0
 
 note() { echo "# $*"; }
-ok() { echo "ok - $*"; }
+ok() {
+  CHECKS=$((CHECKS + 1))
+  echo "ok - $*"
+}
 fail() {
   echo "FAIL - $*"
   FAILURES=$((FAILURES + 1))
@@ -2126,7 +2130,46 @@ check "224c relative test after cd keeps the fallback reachable" \
   profile_detected 'cd /tmp
 [ -f .bashrc ] || . "$HOME/.bashrc"'
 
+note "PR220-R13: every unary op on ~/.bashrc keeps only what the installer guarantees"
+check "PR220 [ -x ~/.bashrc ] || source runs (0644 is not executable)" profile_detected '[ -x ~/.bashrc ] || . ~/.bashrc'
+check "PR220 [ -d ~/.bashrc ] && source is skipped (regular file)" profile_not_detected '[ -d ~/.bashrc ] && . ~/.bashrc'
+check "PR220 [ -f \"\$HOME/.bashrc/\" ] || source runs (trailing slash)" profile_detected '[ -f "$HOME/.bashrc/" ] || . ~/.bashrc'
+check "PR220 [ -e \"\$HOME/.bashrc/.\" ] || source runs (dot component)" profile_detected '[ -e "$HOME/.bashrc/." ] || . ~/.bashrc'
+
+note "PR220-R14: a source word the scan cannot expand counts as possibly wired"
+check "PR220 . \"\$(echo ~/.bashrc)\" is reachable" profile_detected '. "$(echo ~/.bashrc)"'
+check "PR220 . \"\${VAR:-~/.bashrc}\" is reachable" profile_detected '. "${VAR:-$HOME/.bashrc}"'
+check "PR220 . \"\$UNSET/rc\" is reachable" profile_detected '. "$UNSET/rc"'
+
+note "PR220-R15: numeric operands follow bash arithmetic and non-canonical spellings stay unknown"
+check "PR220 [[ 9 -lt 010 ]] reachable (non-canonical right operand)" profile_detected '[[ 9 -lt 010 ]] && . ~/.bashrc'
+check "PR220 [[ 10 -gt 010 ]] reachable (octal right operand)" profile_detected '[[ 10 -gt 010 ]] && . ~/.bashrc'
+check "PR220 [[ -1 -eq 1 ]] dead (negative control)" profile_not_detected '[[ -1 -eq 1 ]] && . ~/.bashrc'
+
+note "PR220-R16: scanning profile text never executes it"
+profile_detected '[ -f "$(touch "$HOME/canary")" ] && . ~/.bashrc'
+check "PR220 file-test substitution not executed" test ! -e "$SB/psb-probe/canary"
+profile_detected '. "$(touch "$HOME/canary2"; echo ~/.bashrc)"'
+check "PR220 source-word substitution not executed" test ! -e "$SB/psb-probe/canary2"
+
+note "224d: a source behind a structural prefix still counts (bash runs it in the login shell)"
+check "224d brace group source counted" profile_detected '{ . ~/.bashrc; }'
+check "224d bang source counted" profile_detected '! . ~/.bashrc'
+check "224d case arm source counted" profile_detected 'case x in x) . ~/.bashrc ;; esac'
+check "224d while body source counted" profile_detected 'while true; do . ~/.bashrc; break; done'
+check "224d for body source counted" profile_detected 'for i in 1; do . ~/.bashrc; done'
+check "224d function body plus call counted" profile_detected 'f() { . ~/.bashrc; }; f'
+check "224d command prefix counted" profile_detected 'command . ~/.bashrc'
+check "224d builtin prefix counted" profile_detected 'builtin . ~/.bashrc'
+check "224d assignment prefix counted" profile_detected 'X=1 . ~/.bashrc'
+check "224d eval source counted" profile_detected "eval '. ~/.bashrc'"
+check "224d subshell source is not wiring (control)" profile_not_detected '( . ~/.bashrc )'
+check "224d dead brace group is not wiring (control)" profile_not_detected 'false && { . ~/.bashrc; }'
+check "224d argument that looks like a source is not wiring (control)" profile_not_detected 'echo . ~/.bashrc'
+check "224d [ -w ~/.bashrc ] || source is reachable (mode unknown)" profile_detected '[ -w ~/.bashrc ] || . ~/.bashrc'
+
 if [ "$FAILURES" -eq 0 ]; then
+  echo "test_install_env_scan: checks=$CHECKS"
   echo "test_install_env_scan: ALL PASS (sandbox $SB)"
   rm -rf "$SB"
   exit 0

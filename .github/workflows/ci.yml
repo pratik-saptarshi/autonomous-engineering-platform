@@ -106,7 +106,23 @@ jobs:
       - run: bash ops/tests/test_cron_boot_gate.sh
       - run: bash scripts/install-re-runtime.sh --self-test --offline
       - run: bash scripts/tests/test_install_re_runtime.sh
-      - run: bash scripts/tests/test_install_env_scan.sh
+      - name: Installer env-scan suite (executed-check floor)
+        # A deleted assertion (or a whole test block) is a pass unless
+        # the executed count is asserted. The suite prints checks=N on
+        # success; the floor keeps the PR #224 regressions from being
+        # removed silently.
+        run: |
+          set +e
+          out="$(bash scripts/tests/test_install_env_scan.sh)"
+          rc=$?
+          set -e
+          printf '%s\n' "$out"
+          [ "$rc" -eq 0 ] || exit "$rc"
+          checks="$(printf '%s\n' "$out" | sed -n 's/^test_install_env_scan: checks=\([0-9][0-9]*\)$/\1/p' | tail -1)"
+          if [ -z "$checks" ] || [ "$checks" -lt 950 ]; then
+            echo "env-scan suite executed ${checks:-0} checks; floor is 950 (a removed assertion must not be green)" >&2
+            exit 1
+          fi
 
   # Bounded claim: on macOS and Windows (Git Bash) lane-coord loud-skips instead
   # of failing mid-run. --self-test exits 0 with the SKIP line (a skipped suite

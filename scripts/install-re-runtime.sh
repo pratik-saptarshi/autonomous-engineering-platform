@@ -386,6 +386,111 @@ PROFILE_ORIGIN=""
 # word (`"$HOME"/.bashrc`, `$HOME"/.bashrc"`, `"$HOME/"'.bashrc'`).
 # $HOME/${HOME} expand only where bash would expand them (unquoted or
 # inside double quotes); a leading tilde expands only when unquoted.
+# True when the segment is a source command behind a structural prefix
+# this scan does not model: `{ ...; }`, `!`, a loop/if body keyword, a
+# case pattern, a function/group opener, an assignment prefix, or
+# command/builtin, and eval (whose string may source). Only the FIRST
+# command position counts, so an argument that merely looks like `.`
+# is not evidence.
+prefixed_source_p() {
+  local s="$1" w peeled=0
+  while :; do
+    s="${s#"${s%%[![:space:]]*}"}"
+    [ -n "$s" ] || return 1
+    w="${s%%[[:space:]]*}"
+    case "$w" in
+    '!' | '{' | '}' | 'do' | 'then' | 'else' | 'elif' | 'in' | 'if' | 'while' | 'until' | 'command' | 'builtin' | 'function')
+      s="${s#"$w"}"
+      peeled=1
+      continue
+      ;;
+    'case')
+      s="${s#case}"
+      s="${s#"${s%%[![:space:]]*}"}"
+      s="${s#"${s%%[[:space:]]*}"}"
+      s="${s#"${s%%[![:space:]]*}"}"
+      case "$s" in
+      in*) s="${s#in}" ;;
+      *) return 1 ;;
+      esac
+      peeled=1
+      continue
+      ;;
+    [A-Za-z_]*=*)
+      s="${s#"$w"}"
+      peeled=1
+      continue
+      ;;
+    *')')
+      s="${s#"$w"}"
+      peeled=1
+      continue
+      ;;
+    esac
+    break
+  done
+  w="${s%%[[:space:]]*}"
+  case "$w" in
+  '.' | 'source') [ "$peeled" -eq 1 ] && return 0 ;;
+  'eval') return 0 ;;
+  esac
+  return 1
+}
+
+# True when a source word contains an expansion this scan cannot
+# resolve: `$...` or a backtick outside single quotes (and not escaped).
+# `$HOME`/`${HOME}`/`~` are resolved by normalize_source_word and are
+# not "unexpandable"; this check runs on the raw word first.
+source_word_expands_p() {
+  local w="$1" i=0 ch nxt sq=0 dq=0
+  while [ "$i" -lt "${#w}" ]; do
+    ch="${w:i:1}"
+    if [ "$sq" -eq 1 ]; then
+      [ "$ch" = "'" ] && sq=0
+      i=$((i + 1))
+      continue
+    fi
+    if [ "$dq" -eq 0 ] && [ "$ch" = "'" ]; then
+      sq=1
+      i=$((i + 1))
+      continue
+    fi
+    if [ "$ch" = '"' ]; then
+      if [ "$dq" -eq 1 ]; then dq=0; else dq=1; fi
+      i=$((i + 1))
+      continue
+    fi
+    if [ "$ch" = "\\" ]; then
+      i=$((i + 2))
+      continue
+    fi
+    if [ "$ch" = '$' ]; then
+      # shellcheck disable=SC2016 # comparing literal ${HOME}/$HOME spellings is the point
+      if [ "${w:i:7}" = '${HOME}' ]; then
+        i=$((i + 7))
+        continue
+      fi
+      # shellcheck disable=SC2016 # comparing literal ${HOME}/$HOME spellings is the point
+      if [ "${w:i:5}" = '$HOME' ]; then
+        nxt="${w:i+5:1}"
+        case "$nxt" in
+        [A-Za-z0-9_]*) ;;
+        *)
+          i=$((i + 5))
+          continue
+          ;;
+        esac
+      fi
+      return 0
+    fi
+    if [ "$ch" = '`' ]; then
+      return 0
+    fi
+    i=$((i + 1))
+  done
+  return 1
+}
+
 normalize_source_word() {
   local word="$1" out="" ch nxt i=0 sq=0 dq=0
   while [ "$i" -lt "${#word}" ]; do
@@ -750,26 +855,35 @@ const_status() {
         st=u
         ;;
       /*)
-        val="$(normalize_path_components "$val")"
-        if [ "$val" = "$HOME/.bashrc" ]; then
-          # .bashrc is a regular file, so -d is false. Its existence
-          # is guaranteed only once the installer has written it;
-          # while it is absent at scan time the test stays unknown,
-          # because declaring it true would make a shadowing SKIP
-          # return before the installer ever creates the file.
-          if [ "$op" = "-d" ]; then
-            st=f
-          elif [ -e "$val" ]; then
-            st=t
+        case "$val" in
+        */ | */. | */..)
+          # A trailing slash or `/.`/`/..` names the file but makes the
+          # test false for a regular file; checked before
+          # normalisation, which would erase the suffix.
+          st=u
+          ;;
+        *)
+          val="$(normalize_path_components "$val")"
+          if [ "$val" = "$HOME/.bashrc" ]; then
+            # .bashrc is a regular file written by this installer, so
+            # -d is false. -f/-e/-s are true once it exists; while it
+            # is absent the outcome depends on whether the installer
+            # decides to write it, so stay unknown (counted as
+            # reachable). -r/-w/-x depend on the preserved mode:
+            # unknown, never a skip.
+            case "$op" in
+            -d) st=f ;;
+            -f | -e | -s) [ -e "$val" ] && st=t || st=u ;;
+            *) st=u ;;
+            esac
           else
+            # Earlier commands in the profile can create or remove any
+            # other path before this test runs, so the install-time
+            # filesystem result is not the login-time result.
             st=u
           fi
-        else
-          # Earlier commands in the profile can create or remove any
-          # other path before this test runs, so the install-time
-          # filesystem result is not the login-time result.
-          st=u
-        fi
+          ;;
+        esac
         ;;
       *)
         # A relative operand is resolved against the shell's working
@@ -1006,6 +1120,7 @@ profile_sources_bashrc() {
       chain_sep="" chain_cstat=u
       for ((k = 0; k < ${#segs[@]}; k++)); do
         seg="${segs[k]}"
+        raw_seg="$seg"
         if [ "$k" -eq 0 ] && [ -n "$line_sep" ]; then
           sep="$line_sep"
         else
@@ -1234,6 +1349,11 @@ profile_sources_bashrc() {
             fi
             wi=$((wi + 1))
           done
+          if source_word_expands_p "$src"; then
+            # The login-time target is unknown; a real source must
+            # never be declared shadowed.
+            return 0
+          fi
           src="$(normalize_source_word "$src")"
           # Bash resolves a relative source path against the shell's
           # working directory, not against the directory of the file
@@ -1254,6 +1374,15 @@ profile_sources_bashrc() {
           esac
           ;;
         esac
+        # Structural spellings the exact detector does not model: a
+        # reachable segment whose first command position is a source
+        # behind `{`, `!`, `do`/`then`, a case pattern, a function
+        # opener, an assignment, or command/builtin counts as possibly
+        # wired (never a shadowing SKIP).
+        if [ "$run" -eq 1 ] && [ "$sep" != "|" ] &&
+          prefixed_source_p "$raw_seg"; then
+          return 0
+        fi
       done
       # A trailing `&&`, `||` or `|` continues the chain (or pipeline)
       # on the next physical line; carry the operator and the status
