@@ -431,8 +431,11 @@ class WorkflowWiringTests(unittest.TestCase):
                          r"    workflows: \[\"Policy Delta\"\]\n"
                          r"    types: \[completed\]")
         self.assertIn(
-            "github.event.workflow_run.pull_requests[0].head.repo"
-            ".full_name == github.repository", self.comment_text)
+            "github.event.workflow_run.pull_requests[0].head.repo.id"
+            " == github.event.repository.id", self.comment_text)
+        # The workflow_run repo ref has no full_name; asserting one would
+        # make the job condition permanently false (PR #223 finding).
+        self.assertNotIn("head.repo.full_name", self.comment_text)
         self.assertIn("github.event.workflow_run.event == 'pull_request'",
                       self.comment_text)
 
@@ -441,6 +444,15 @@ class WorkflowWiringTests(unittest.TestCase):
             "group: policy-delta-comment-${{ github.event.workflow_run"
             ".pull_requests[0].number }}", self.comment_text)
         self.assertIn("cancel-in-progress: false", self.comment_text)
+        # Same-head re-runs (body edits) must not let an older report
+        # overwrite the newer acknowledgement status.
+        self.assertIn("actions/workflows/policy-delta.yml/runs?branch=",
+                      self.comment_text)
+        self.assertIn("superseded by", self.comment_text)
+        self.assertIn("RUN_ID: ${{ github.event.workflow_run.id }}",
+                      self.comment_text)
+        self.assertIn("HEAD_BRANCH: ${{ github.event.workflow_run"
+                      ".head_branch }}", self.comment_text)
 
     def test_comment_job_runs_only_default_branch_code(self):
         # The token-bearing job must not check out the PR head and must
