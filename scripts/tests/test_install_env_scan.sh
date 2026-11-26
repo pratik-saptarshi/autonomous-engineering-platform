@@ -67,11 +67,12 @@ new_home() { # new_home <case-name>
   mkdir -p "$FH"
   OUT="$SB/case-$1/out"
 }
-run_env() { # run_env <function-name>
+run_env() { # run_env <function-name>; RUN_PATH_PREFIX / RUN_UMASK optionally prepend a PATH dir / set a umask
   (
     HOME="$FH"
-    PATH="$SB/bin:$PATH"
+    PATH="${RUN_PATH_PREFIX:+$RUN_PATH_PREFIX:}$SB/bin:$PATH"
     export HOME PATH
+    [ -z "${RUN_UMASK:-}" ] || umask "$RUN_UMASK"
     # shellcheck disable=SC1090 # the fixture library is generated above
     source "$LIB"
     set +eu
@@ -584,7 +585,7 @@ check_out "122 names the as-found backup" "$FH/.bashrc.install-re-runtime.bak" "
 check_no_out "122 no env ok" 'INSTALL-RE: env ok' "$OUT"
 check "122 file left untouched" cmp -s "$SB/case-122/orig" "$FH/.bashrc"
 check "122 backup holds as-found bytes" cmp -s "$SB/case-122/orig" "$FH/.bashrc.install-re-runtime.bak"
-check "122 no block composed" test ! -f "$FH/.bashrc.install-re-runtime.tmp"
+check "122 no block composed" bash -c 'shopt -s nullglob; f=("$1"/.bashrc.install-re-runtime.*); for x in "${f[@]}"; do [ "$x" = "$1/.bashrc.install-re-runtime.bak" ] || exit 1; done' _ "$FH"
 
 # ================= PR #191 R3-T6: multiline arithmetic is not a heredoc =================
 
@@ -905,7 +906,7 @@ profile_detected() { # profile_detected <profile-line>
 profile_not_detected() { ! profile_detected "$1"; }
 check "R2F2 unquoted braced form detected" profile_detected '. ${HOME}/.bashrc'
 check "R2F2 source-keyword braced form detected" profile_detected 'source "${HOME}/.bashrc"'
-check "R2F2 braced || chain not detected (unchanged)" profile_not_detected '[ -f "${HOME}/.bashrc" ] || . "${HOME}/.bashrc"'
+check "R2F2 braced || chain detected (K7d: || is a segment boundary)" profile_detected '[ -f "${HOME}/.bashrc.missing" ] || . "${HOME}/.bashrc"'
 check "R2F2 braced mention without a source command not detected" profile_not_detected 'echo ". \"${HOME}/.bashrc\""'
 check "R3T7 quoted HOME fragment detected" profile_detected '. "$HOME"/.bashrc'
 check "R3T7 quoted suffix fragment detected" profile_detected '. "$HOME/"'"'"'.bashrc'"'"''
@@ -1336,6 +1337,725 @@ SHA="$(file_sha "$FH/.bashrc")"
 run_env install_env_block
 check "K2R3a second run rc 0" test "$RC" -eq 0
 check "K2R3a fixed point" test "$(file_sha "$FH/.bashrc")" = "$SHA"
+
+# ================= #207: unpredictable temp path for the .bashrc write =================
+
+stray_temps() { # stray_temps: count install temp leftovers (not the .bak, not a planted symlink)
+  find "$FH" -maxdepth 1 -name '.bashrc.install-re-runtime.*' ! -name '*.bak' ! -type l | wc -l | tr -d ' '
+}
+
+note "#207a: a planted symlink at the old fixed temp path is never followed or touched"
+new_home 207a
+printf 'export USER_LINE=1\n' >"$FH/.bashrc"
+printf 'canary-original\n' >"$FH/canary"
+ln -s "$FH/canary" "$FH/.bashrc.install-re-runtime.tmp"
+CANARY_SHA="$(file_sha "$FH/canary")"
+run_env install_env_block
+check "207a rc 0" test "$RC" -eq 0
+check_out "207a env ok" 'INSTALL-RE: env ok' "$OUT"
+check "207a canary content untouched" test "$(file_sha "$FH/canary")" = "$CANARY_SHA"
+check "207a planted symlink untouched" test -L "$FH/.bashrc.install-re-runtime.tmp"
+check "207a symlink still points at the canary" test "$(readlink "$FH/.bashrc.install-re-runtime.tmp")" = "$FH/canary"
+check "207a block written to .bashrc" test "$(marker_count '>>>')" -eq 1
+check "207a no temp leftovers" test "$(stray_temps)" -eq 0
+
+note "#207b: a failed compose step leaves no temp file behind"
+new_home 207b
+printf 'export USER_LINE=1\n' >"$FH/.bashrc"
+mkdir -p "$SB/failbin"
+printf '#!/bin/bash\nexit 1\n' >"$SB/failbin/sync"
+chmod +x "$SB/failbin/sync"
+BASHRC_SHA="$(file_sha "$FH/.bashrc")"
+RUN_PATH_PREFIX="$SB/failbin" run_env install_env_block
+check "207b failure rc nonzero" test "$RC" -ne 0
+check_out "207b names the fsync failure" 'cannot fsync' "$OUT"
+check "207b no temp leftovers after failure" test "$(stray_temps)" -eq 0
+check "207b .bashrc unchanged after failure" test "$(file_sha "$FH/.bashrc")" = "$BASHRC_SHA"
+
+note "#207c: new-file mode stays umask-derived (mktemp's 0600 is not inherited)"
+new_home 207c
+RUN_UMASK=022 run_env install_env_block
+check "207c rc 0" test "$RC" -eq 0
+check "207c fresh .bashrc is 0644 under umask 022" test "$(/usr/bin/stat -c %a "$FH/.bashrc" 2>/dev/null || /usr/bin/stat -f %Lp "$FH/.bashrc")" = "644"
+
+# ================= #195 (K1): a metacharacter-led comment is a comment =================
+
+note "#195: unit-level strip_trailing_comment (# after ; & | ( ) starts a comment; data # does not)"
+strip_eq() { # strip_eq <line> <expected-output>
+  local got
+  got="$(
+    (
+      # shellcheck disable=SC1090 # the fixture library is generated above
+      source "$LIB"
+      set +eu
+      strip_trailing_comment "$1"
+    ) 2>/dev/null
+  )"
+  test "$got" = "$2"
+}
+check "K1 semicolon-led comment is cut" strip_eq 'echo x;# case foo in' 'echo x;'
+check "K1 ampersand-led comment is cut" strip_eq 'true&&# if foo; then' 'true&&'
+check "K1 single-ampersand-led comment is cut" strip_eq 'sleep 1&# if foo; then' 'sleep 1&'
+check "K1 pipe-led comment is cut" strip_eq 'true|# case foo in' 'true|'
+check "K1 open-paren-led comment is cut" strip_eq '(# case foo in' '('
+check "K1 close-paren-led comment is cut" strip_eq '(echo x)# case foo in' '(echo x)'
+check "K1 whitespace-led comment is still cut" strip_eq 'echo x # case foo in' 'echo x'
+check "K1 line-start comment is still cut" strip_eq '# case foo in' ''
+check "K1 \$# is data" strip_eq 'echo $# case foo in' 'echo $# case foo in'
+check "K1 \${#var} is data" strip_eq 'echo ${#var};# case foo in' 'echo ${#var};'
+check "K1 glued foo#bar is data" strip_eq 'echo foo#bar case foo in' 'echo foo#bar case foo in'
+check "K1 double-quoted ;# is data" strip_eq 'echo "x;# case foo in"' 'echo "x;# case foo in"'
+check "K1 single-quoted ;# is data" strip_eq "echo 'x;# case foo in'" "echo 'x;# case foo in'"
+check "K1 escaped \;\\# is data" strip_eq 'echo x\;\# case foo in' 'echo x\;\# case foo in'
+
+note "#195: a metacharacter-led comment mints no phantom opener"
+check "K1 opener: semicolon-led case comment opens nothing" opener_eq 'echo x;# case foo in' ''
+check "K1 opener: ampersand-led if comment opens nothing" opener_eq 'true&&# if foo; then' ''
+check "K1 opener: pipe-led case comment opens nothing" opener_eq 'true|# case foo in' ''
+check "K1 opener: paren-led case comment opens nothing" opener_eq '(# case foo in' ''
+check "K1 opener: real opener before a ;-led comment still opens" opener_eq 'case $x in;# note' 'esac'
+
+note "#195: a phantom opener from a metacharacter-led comment does not strand the block"
+new_home k1
+cat >"$FH/.bashrc" <<'EOF2'
+echo x;# case foo in
+case $- in
+  *i*) ;;
+  *) return;;
+esac
+export AFTER=1
+EOF2
+run_env install_env_block
+check "K1 rc 0" test "$RC" -eq 0
+check_out "K1 env ok" 'INSTALL-RE: env ok' "$OUT"
+BLOCK_LINE="$(line_of '# >>> re-runtime >>>')"
+GUARD_LINE="$(line_of 'case $- in')"
+check "K1 block before the guard" test "$BLOCK_LINE" -lt "$GUARD_LINE"
+SHA="$(file_sha "$FH/.bashrc")"
+run_env install_env_block
+check "K1 second run rc 0" test "$RC" -eq 0
+check "K1 fixed point" test "$(file_sha "$FH/.bashrc")" = "$SHA"
+
+# ================= #194 (K4) / #196 (C-P1): closer operators and multiple closers per line =================
+
+note "#194: unit-level closer grammar (a closer followed by an operator or redirection still pops)"
+check "K4 fi && pops" closer_pops 'fi && echo ok' 'fi'
+check "K4 fi || pops" closer_pops 'fi || :' 'fi'
+check "K4 fi>/dev/null pops" closer_pops 'fi >/dev/null' 'fi'
+check "K4 fi 2>&1 pops" closer_pops 'fi 2>&1' 'fi'
+check "K4 fi | pops" closer_pops 'fi | cat' 'fi'
+check "K4 fi & pops" closer_pops 'fi &' 'fi'
+check "K4 glued fi&& pops" closer_pops 'fi&&echo ok' 'fi'
+check "K4 fi < pops" closer_pops 'fi <in' 'fi'
+check "K4 fi >> pops" closer_pops 'fi >>log' 'fi'
+check "K4 esac && pops" closer_pops 'esac && echo ok' 'esac'
+check "K4 esac 2>&1 pops" closer_pops 'esac 2>&1' 'esac'
+check "K4 } && pops" closer_pops '} && :' '}'
+check "K4 } >/dev/null pops" closer_pops '} >/dev/null' '}'
+check "K4 done && pops" closer_pops 'done && echo ok' 'done'
+check "K4 fi) pops" closer_pops 'fi)' 'fi'
+check "K4 tail fi && after a plain command pops" closer_pops ':; fi && echo ok' 'fi'
+check "K4 identifier file=1 && echo done does not pop fi (control)" closer_stuck 'file=1 && echo done' 'fi'
+check "K4 identifier fifo does not pop fi (control)" closer_stuck 'fifo' 'fi'
+check "K4 identifier fi_x does not pop fi (control)" closer_stuck 'fi_x && :' 'fi'
+check "K4 tail identifier ; file=1 does not pop fi (control)" closer_stuck ':; file=1 && echo done' 'fi'
+check "K4 identifier esacx does not pop esac (control)" closer_stuck 'esacx && :' 'esac'
+check "K4 identifier done does not pop } (control)" closer_stuck 'echo done' '}'
+check "K4 quoted fi after a space is data (control)" closer_stuck 'echo "x; fi y"' 'fi'
+check "K4+K2 one-line if followed by && does not pop an outer fi (control)" closer_stuck 'if true; then :; fi && echo ok' 'fi'
+check "K4+K2 one-line if followed by a redirect does not pop an outer fi (control)" closer_stuck 'if true; then :; fi >/dev/null' 'fi'
+check "K4+K2 one-line case followed by || does not pop an outer esac (control)" closer_stuck 'case x in x) :;; esac || :' 'esac'
+check "K4+K2 one-line function followed by && does not pop an outer } (control)" closer_stuck 'f() { :; } && :' '}'
+
+note "#196: unit-level remainder (the slice after the popped closer, for the caller's left-to-right loop)"
+closer_rest_eq() { # closer_rest_eq <line> <closer> <expected-remainder>
+  local got
+  got="$(
+    (
+      # shellcheck disable=SC1090 # the fixture library is generated above
+      source "$LIB"
+      set +eu
+      ctrl_closer_line "$1" "$2"
+    ) 2>/dev/null
+  )"
+  test "$got" = "$3"
+}
+check "C-P1 rest after a leading closer" closer_rest_eq 'fi; fi' 'fi' '; fi'
+check "C-P1 rest after a tail closer" closer_rest_eq ':; fi; }' 'fi' '; }'
+check "C-P1 rest after a closer and an operator" closer_rest_eq 'fi && fi' 'fi' ' && fi'
+check "C-P1 second closer pops from the remainder" closer_pops '; fi' 'fi'
+check "C-P1 second closer pops after an operator remainder" closer_pops ' && fi' 'fi'
+check "C-P1 second closer pops after a redirect remainder" closer_pops ' 2>&1; }' '}'
+check "C-P1 compound closed earlier in the remainder still lets the real closer pop" closer_pops 'if true; then :; fi; fi' 'fi'
+
+# multi_fixture <case> <prelude>: a prelude of control structures, then a
+# top-level noninteractive-guard. The block belongs BEFORE the guard, so
+# the prelude's closers must pop every frame they close.
+multi_fixture() {
+  local name="$1" prelude="$2" marker guard_line val sha
+  new_home "$name"
+  {
+    printf '%s\n' "$prelude"
+    printf 'case $- in\n  *i*) ;;\n  *) return;;\nesac\n'
+    printf 'export AFTER=1\n'
+  } >"$FH/.bashrc"
+  run_env install_env_block
+  check "$name rc 0" test "$RC" -eq 0
+  check_out "$name env ok" 'INSTALL-RE: env ok' "$OUT"
+  marker="$(line_of '# >>> re-runtime >>>')"
+  guard_line="$(line_of 'case $- in')"
+  check "$name block before the guard" test "$marker" -lt "$guard_line"
+  val="$(env -i HOME="$FH" /bin/bash -c '. "$HOME/.bashrc"; printf %s "${JAVA_HOME:-}"' 2>/dev/null)"
+  check "$name block reachable in a noninteractive source" test "$val" = "$FH/opt/jdk-$TEMURIN_VERSION"
+  sha="$(file_sha "$FH/.bashrc")"
+  run_env install_env_block
+  check "$name second run rc 0" test "$RC" -eq 0
+  check "$name fixed point" test "$(file_sha "$FH/.bashrc")" = "$sha"
+}
+
+note "#194: a multi-line closer followed by an operator or redirection is recognized (end to end)"
+multi_fixture k4-and $'if true; then\n  :\nfi && :'
+multi_fixture k4-or $'if true; then\n  :\nfi || :'
+multi_fixture k4-devnull $'if true; then\n  :\nfi >/dev/null'
+multi_fixture k4-dup $'if true; then\n  :\nfi 2>&1'
+multi_fixture k4-pipe $'if true; then\n  :\nfi | cat'
+multi_fixture k4-bg $'if true; then\n  :\nfi &'
+multi_fixture k4-esac-and $'case x in\n  x) :;;\nesac && :'
+multi_fixture k4-brace-and $'f() {\n  :\n} && :'
+multi_fixture k4-brace-redir $'f() {\n  :\n} >/dev/null 2>&1'
+
+note "#196: several closers on one physical line each pop a frame (end to end)"
+multi_fixture cp1-fi-fi $'if true; then\n  if true; then\n    :\n  fi; fi'
+multi_fixture cp1-fi-brace $'f() {\n  if true; then\n    :\n  fi; }'
+multi_fixture cp1-esac-fi $'if true; then\n  case x in\n    x) :;;\n  esac; fi'
+multi_fixture cp1-esac-fi-brace $'f() {\n  if true; then\n    case x in\n      x) :;;\n    esac; fi; }'
+multi_fixture cp1-fi-fi-redir $'if true; then\n  if true; then\n    :\n  fi; fi >/dev/null'
+multi_fixture cp1-spaced $'if true; then\n  if true; then\n    :\n  fi ; fi ;'
+
+note "#196: a guard whose return shares a multi-closer line is still recognized (R4F1 preserved)"
+new_home cp1-return
+cat >"$FH/.bashrc" <<'EOF2'
+export BEFORE=1
+if [ -z "$PS1" ]; then
+  if true; then
+    return
+  fi; fi
+export AFTER=1
+EOF2
+run_env install_env_block
+check "cp1-return rc 0" test "$RC" -eq 0
+check_out "cp1-return env ok" 'INSTALL-RE: env ok' "$OUT"
+BLOCK_LINE="$(line_of '# >>> re-runtime >>>')"
+GUARD_LINE="$(line_of 'if [ -z "$PS1" ]')"
+check "cp1-return block before the guard" test "$BLOCK_LINE" -lt "$GUARD_LINE"
+
+# ================= #202: an extglob group mid-pattern =================
+
+note "#202: unit-level closer grammar (an extglob group inside a case pattern does not end the pattern at its own close paren)"
+check "202 mid-pattern @() arm-body if does not pop an outer fi" closer_stuck 'case x in @(a|b)c) if b; then :; fi' 'fi'
+check "202 mid-pattern *() arm-body if does not pop an outer fi" closer_stuck 'case x in *(a|b)c) if b; then :; fi' 'fi'
+check "202 mid-pattern +() arm-body if does not pop an outer fi" closer_stuck 'case x in +(a|b)c) if b; then :; fi' 'fi'
+check "202 mid-pattern ?() arm-body if does not pop an outer fi" closer_stuck 'case x in ?(a|b)c) if b; then :; fi' 'fi'
+check "202 mid-pattern !() arm-body if does not pop an outer fi" closer_stuck 'case x in !(a|b)c) if b; then :; fi' 'fi'
+check "202 prefixed mid-pattern group arm-body if does not pop an outer fi" closer_stuck 'case x in pre@(a|b)post) if b; then :; fi' 'fi'
+check "202 nested groups arm-body if does not pop an outer fi" closer_stuck 'case x in @(a|@(b|c))) if b; then :; fi' 'fi'
+check "202 nested mid-pattern groups arm-body if does not pop an outer fi" closer_stuck 'case x in @(a|*(b|c)d)e) if b; then :; fi' 'fi'
+check "202 two groups in one pattern arm-body if does not pop an outer fi" closer_stuck 'case x in @(a|b)@(c|d)) if b; then :; fi' 'fi'
+check "202 leading-paren pattern with a group arm-body if does not pop an outer fi" closer_stuck 'case x in (@(a|b)c) if b; then :; fi' 'fi'
+check "202 mid-pattern group arm-body case does not pop an outer esac" closer_stuck 'case x in @(a|b)c) case y in y) :;; esac' 'esac'
+check "202 group with a substitution arm-body if does not pop an outer fi" closer_stuck 'case x in @(a|$(echo b))c) if b; then :; fi' 'fi'
+check "202 second arm after a group arm keeps tracking" closer_stuck 'case x in @(a|b)c) :;; d) if b; then :; fi' 'fi'
+check "202 ;; resets a stale group depth" closer_stuck 'case x in @(a ;; b) if y; then :; fi' 'fi'
+check "202 ;& resets a stale group depth" closer_stuck 'case x in @(a ;& b) if y; then :; fi' 'fi'
+check "202 valid leading group with its own terminator arm-body if does not pop an outer fi" closer_stuck 'case x in @(a|b)) if b; then :; fi' 'fi'
+check "202 group then alternation arm-body if does not pop an outer fi" closer_stuck 'case x in @(a|b) | c) if b; then :; fi' 'fi'
+check "202 ;;& resets a stale group depth" closer_stuck 'case x in @(a ;;& b) if y; then :; fi' 'fi'
+check "202 quoted group is plain data (control)" closer_stuck 'case x in "@(a|b)") if b; then :; fi' 'fi'
+check "202 single-quoted group is plain data (control)" closer_stuck "case x in '@(a|b)') if b; then :; fi" 'fi'
+check "202 leading group (K2R3) still ends at its own paren (control)" closer_stuck 'case x in @(a|b) if b; then :; fi' 'fi'
+check "202 leading star group (K2R3) still ends at its own paren (control)" closer_stuck 'case x in *(a|b) if b; then :; fi' 'fi'
+check "202 plain pattern (K2R3) still ends at its paren (control)" closer_stuck 'case x in a|b) if b; then :; fi' 'fi'
+check "202 pattern-only group line still lets the tail fi pop (control)" closer_pops 'case x in @(a|b)c) :;; esac; fi' 'fi'
+
+# No end-to-end fixture: the installer's damage check parses the kept
+# content with a plain `bash -n`, which rejects extglob syntax before
+# any `shopt -s extglob` could take effect, so such a .bashrc never
+# reaches the guard scan. The unit-level closer grammar above is the
+# observable surface of this fix.
+
+# ================= #199 (K6): a guard split across physical lines by a continuation =================
+
+note "#199: unit-level continuation grammar (an unescaped trailing backslash outside quotes and comments continues the line)"
+line_continues_p() { # line_continues_p <physical-line>
+  (
+    # shellcheck disable=SC1090 # the fixture library is generated above
+    source "$LIB"
+    set +eu
+    line_continues "$1"
+  ) >/dev/null 2>&1
+}
+line_continues_n() { ! line_continues_p "$1"; }
+check "K6 single trailing backslash continues" line_continues_p 'case $- \'
+check "K6 backslash after text continues" line_continues_p 'echo a \'
+check "K6 three trailing backslashes continue" line_continues_p 'echo a \\\'
+check "K6 even trailing backslashes do not continue" line_continues_n 'echo a \\'
+check "K6 four trailing backslashes do not continue" line_continues_n 'echo a \\\\'
+check "K6 no backslash does not continue" line_continues_n 'echo a'
+check "K6 backslash before trailing space does not continue (escaped space)" line_continues_n 'echo a\ '
+check "K6 backslash inside single quotes does not continue" line_continues_n "echo 'a \\"
+check "K6 backslash inside a comment does not continue" line_continues_n 'echo a # note \'
+check "K6 whole-line comment does not continue" line_continues_n '# note \'
+check "K6 backslash inside double quotes continues" line_continues_p 'echo "a \'
+check "K6 backslash before a carriage return does not continue (bash escapes the CR)" line_continues_n $'echo a \\\r'
+check "K6 empty line does not continue" line_continues_n ''
+
+# cont_fixture <case> <guard-text> <first-guard-physical-line>: a
+# guard written across continued lines. The block must land before the
+# FIRST physical line of the logical guard — never between its pieces.
+cont_fixture() {
+  local name="$1" guard="$2" first="$3" marker first_line after_line val sha
+  new_home "$name"
+  {
+    printf 'export BEFORE_GUARD=1\n'
+    printf '%s\n' "$guard"
+    printf 'export AFTER=1\n'
+  } >"$FH/.bashrc"
+  run_env install_env_block
+  check "$name rc 0" test "$RC" -eq 0
+  check_out "$name env ok" 'INSTALL-RE: env ok' "$OUT"
+  marker="$(line_of '# >>> re-runtime >>>')"
+  first_line="$(line_of "$first")"
+  after_line="$(line_of 'export AFTER=1')"
+  check "$name block before the first physical guard line" test "$marker" -lt "$first_line"
+  check "$name block before the trailing content" test "$marker" -lt "$after_line"
+  check "$name guard lines stay verbatim and adjacent" grep -qxF "$first" "$FH/.bashrc"
+  check "$name kept content still parses" bash -n "$FH/.bashrc"
+  val="$(env -i HOME="$FH" /bin/bash -c '. "$HOME/.bashrc"; printf %s "${JAVA_HOME:-}"' 2>/dev/null)"
+  check "$name block reachable in a noninteractive source" test "$val" = "$FH/opt/jdk-$TEMURIN_VERSION"
+  sha="$(file_sha "$FH/.bashrc")"
+  run_env install_env_block
+  check "$name second run rc 0" test "$RC" -eq 0
+  check "$name fixed point" test "$(file_sha "$FH/.bashrc")" = "$sha"
+}
+
+note "#199: a guard whose opener is split by a continuation is recognized (end to end)"
+cont_fixture k6-case $'case $- \\\nin *i*) ;; *) return;; esac' 'case $- \'
+cont_fixture k6-case-multi $'case $- \\\nin\n  *i*) ;;\n  *) return;;\nesac' 'case $- \'
+cont_fixture k6-if $'if [[ $- != *i* ]] \\\n; then\n  return\nfi' 'if [[ $- != *i* ]] \'
+cont_fixture k6-ps1 $'[ -z "$PS1" ] \\\n&& return' '[ -z "$PS1" ] \'
+cont_fixture k6-ps1-or $'[ -n "$PS1" ] || \\\nreturn' '[ -n "$PS1" ] || \'
+cont_fixture k6-three-pieces $'[ -z \\\n"$PS1" ] \\\n&& return' '[ -z \'
+
+note "#199: an even trailing backslash count is not a continuation (control)"
+new_home k6-even
+cat >"$FH/.bashrc" <<'EOF2'
+echo a \\
+case $- in
+  *i*) ;;
+  *) return;;
+esac
+export AFTER=1
+EOF2
+run_env install_env_block
+check "k6-even rc 0" test "$RC" -eq 0
+check_out "k6-even env ok" 'INSTALL-RE: env ok' "$OUT"
+BLOCK_LINE="$(line_of '# >>> re-runtime >>>')"
+GUARD_LINE="$(line_of 'case $- in')"
+check "k6-even block before the guard (not joined into the echo line)" test "$BLOCK_LINE" -lt "$GUARD_LINE"
+check "k6-even echo line stays before the block" test "$(line_of 'echo a')" -lt "$BLOCK_LINE"
+
+note "#199: a continued line inside a heredoc body is data, not a join (control)"
+new_home k6-heredoc
+cat >"$FH/.bashrc" <<'EOF2'
+cat >/dev/null <<'DOC'
+note \
+case $- in
+DOC
+export AFTER=1
+EOF2
+run_env install_env_block
+check "k6-heredoc rc 0" test "$RC" -eq 0
+check_out "k6-heredoc env ok" 'INSTALL-RE: env ok' "$OUT"
+check "k6-heredoc body kept verbatim" grep -qxF 'note \' "$FH/.bashrc"
+check "k6-heredoc block appended after the heredoc terminator" test "$(line_of '# >>> re-runtime >>>')" -gt "$(last_line_of 'DOC')"
+
+# ================= #200 (K7d): ||, | and & are command-segment boundaries in the profile reader =================
+
+note "#200: unit-level profile_sources_bashrc (a source after ||, | or & is detected; quoted/commented/redirect forms are not boundaries)"
+check "K7d || source detected when the guard fails" profile_detected '[ -f ~/.bashrc.missing ] || . ~/.bashrc'
+check "K7d || source skipped when ~/.bashrc exists (bash semantics)" profile_not_detected '[ -f ~/.bashrc ] || . ~/.bashrc'
+check "K7d braced || source detected when the guard fails" profile_detected '[ -f "${HOME}/.bashrc.missing" ] || . "${HOME}/.bashrc"'
+check "K7d glued || source detected" profile_detected 'false||. ~/.bashrc'
+check "K7d | source not counted (pipeline subshell)" profile_not_detected 'echo x | . ~/.bashrc'
+check "K7d |& source not counted (pipeline subshell)" profile_not_detected 'echo x |& . ~/.bashrc'
+check "K7d source after a pipeline then ; still detected (control)" profile_detected 'echo x | cat; . ~/.bashrc'
+check "K7d & source detected" profile_detected 'true & . ~/.bashrc'
+check "K7d glued & source detected" profile_detected 'true&. ~/.bashrc'
+check "K7d && source still detected (control)" profile_detected '[ -f ~/.bashrc ] && . ~/.bashrc'
+check "K7d ; source still detected (control)" profile_detected 'true; . ~/.bashrc'
+check "K7d source keyword after || detected" profile_detected '[ -f ~/.bashrc.missing ] || source ~/.bashrc'
+check "K7d double-quoted || is data, not a boundary" profile_not_detected 'echo "a || . ~/.bashrc"'
+check "K7d single-quoted | is data, not a boundary" profile_not_detected "echo 'a | . ~/.bashrc'"
+check "K7d double-quoted & is data, not a boundary" profile_not_detected 'echo "a & . ~/.bashrc"'
+check "K7d escaped \\| is data, not a boundary" profile_not_detected 'echo a \| . ~/.bashrc'
+check "K7d || inside a trailing comment is not a boundary" profile_not_detected 'echo x # a || . ~/.bashrc'
+check "K7d ; inside a trailing comment is not a boundary" profile_not_detected 'echo x # a; . ~/.bashrc'
+check "K7d >& redirection is not a boundary" profile_not_detected 'echo >& . ~/.bashrc'
+check "K7d <& redirection is not a boundary" profile_not_detected 'cat <& . ~/.bashrc'
+check "K7d &> redirection is not a boundary" profile_not_detected 'echo &> . ~/.bashrc'
+check "K7d 2>&1 redirection does not split a mention" profile_not_detected 'echo . ~/.bashrc 2>&1'
+check "K7d a source of another file after || is not ~/.bashrc" profile_not_detected '[ -f ~/.x ] || . ~/.other'
+check "K7d a mention after || without a source command is not detected" profile_not_detected 'true || echo ". ~/.bashrc"'
+
+note "#200: a .bash_profile sourcing .bashrc through || is not shadowing (end to end)"
+new_home k7d
+printf '[ -f "$HOME/.bashrc.missing" ] || . "$HOME/.bashrc"\n' >"$FH/.bash_profile"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+run_env install_env_block
+check "k7d rc 0" test "$RC" -eq 0
+check_out "k7d env ok" 'INSTALL-RE: env ok' "$OUT"
+check_no_out "k7d no shadowing SKIP" 'login startup is shadowed by' "$OUT"
+check "k7d block written" test "$(marker_count '>>>')" -eq 1
+
+# ================= #198 (K5): heredoc bodies and provably-dead branches are not sourcing =================
+
+note "#198: unit-level profile_sources_bashrc (a heredoc body or a provably-dead branch never counts as sourcing)"
+check "K5 quoted-heredoc body mention not detected" profile_not_detected $'cat <<\'EOF\'\n. ~/.bashrc\nEOF'
+check "K5 unquoted-heredoc body mention not detected" profile_not_detected $'cat <<EOF\n. ~/.bashrc\nEOF'
+check "K5 dash-heredoc body mention not detected (tab-indented terminator)" profile_not_detected $'cat <<-EOF\n\t. ~/.bashrc\n\tEOF'
+check "K5 double-quoted-delimiter heredoc body mention not detected" profile_not_detected $'cat <<"END"\nsource ~/.bashrc\nEND'
+check "K5 heredoc mention with a source after the terminator detected (positive control)" profile_detected $'cat <<\'EOF\'\n. ~/.bashrc\nEOF\n. ~/.bashrc'
+check "K5 heredoc with an unrelated body then a real source detected (positive control)" profile_detected $'cat <<EOF\nhello\nEOF\n[ -f ~/.bashrc ] && . ~/.bashrc'
+check "K5 two heredocs on one line both skipped" profile_not_detected $'cat <<A <<B\n. ~/.bashrc\nA\n. ~/.bashrc\nB'
+check "K5 here-string mention is not a heredoc (control)" profile_detected $'cat <<< hi\n. ~/.bashrc'
+check "K5 if false then-branch not detected" profile_not_detected 'if false; then . ~/.bashrc; fi'
+check "K5 multi-line if false then-branch not detected" profile_not_detected $'if false\nthen\n  . ~/.bashrc\nfi'
+check "K5 multi-line if false (then on the cond line) not detected" profile_not_detected $'if false; then\n  . ~/.bashrc\nfi'
+check "K5 false && source not detected" profile_not_detected 'false && . ~/.bashrc'
+check "K5 [ 0 = 1 ] && source not detected" profile_not_detected '[ 0 = 1 ] && . ~/.bashrc'
+check "K5 [ 1 = 0 ] && source not detected" profile_not_detected '[ 1 = 0 ] && . ~/.bashrc'
+check "K5 true || source not detected" profile_not_detected 'true || . ~/.bashrc'
+check "K5 dead chain through a middle && not detected" profile_not_detected 'false && : && . ~/.bashrc'
+check "K5 nested live if inside a dead if not detected" profile_not_detected 'if false; then if true; then . ~/.bashrc; fi; fi'
+check "K5 else branch of if true not detected" profile_not_detected 'if true; then :; else . ~/.bashrc; fi'
+check "K5 else branch of if false detected" profile_detected 'if false; then :; else . ~/.bashrc; fi'
+check "K5 then branch of if true detected" profile_detected 'if true; then . ~/.bashrc; fi'
+check "K5 unknown condition detected (control)" profile_detected 'if [ -f ~/.bashrc ]; then . ~/.bashrc; fi'
+check "K5 source after a closed dead if detected" profile_detected 'if false; then :; fi; . ~/.bashrc'
+check "K5 source after a closed dead multi-line if detected" profile_detected $'if false\nthen\n  :\nfi\n. ~/.bashrc'
+check "K5 true && source detected (control)" profile_detected 'true && . ~/.bashrc'
+check "K5 false || source detected (control)" profile_detected 'false || . ~/.bashrc'
+check "K5 dead && then || fallback detected" profile_detected 'false && : || . ~/.bashrc'
+check "K5 false ; source detected (a ; ends the dead chain)" profile_detected 'false; . ~/.bashrc'
+check "K5 elif keeps the branch live (conservative control)" profile_detected $'if false; then :\nelif [ -f ~/.x ]; then\n  . ~/.bashrc\nfi'
+check "K5 compound if false || cond stays live (J2)" profile_detected 'if false || [ -f ~/.bashrc ]; then . ~/.bashrc; fi'
+check "K5 compound if [ 0 = 1 ] || cond stays live (J2)" profile_detected 'if [ 0 = 1 ] || [ -f ~/.bashrc ]; then . ~/.bashrc; fi'
+check "K5 compound if false; true stays live (J2)" profile_detected 'if false; true; then . ~/.bashrc; fi'
+check "K5 compound if false | true stays live (J2)" profile_detected 'if false | true; then . ~/.bashrc; fi'
+check "K5 compound if true && cond else stays live (J2)" profile_detected 'if true && [ -f ~/.x ]; then :; else . ~/.bashrc; fi'
+check "K5 dead chain before if true skipped" profile_not_detected 'false && if true; then . ~/.bashrc; fi'
+check "K5 dead chain before if true else skipped" profile_not_detected 'false && if true; then :; else . ~/.bashrc; fi'
+
+note "#198: a .bash_profile whose only .bashrc source is a heredoc mention or a dead branch is shadowing (end to end)"
+new_home k5a
+printf 'cat <<'"'"'EOF'"'"'\n. "$HOME/.bashrc"\nEOF\n' >"$FH/.bash_profile"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+run_env install_env_block
+check "k5a rc 0" test "$RC" -eq 0
+check_out "k5a shadowing SKIP line" 'login startup is shadowed by' "$OUT"
+check_no_out "k5a no opaque env ok" 'INSTALL-RE: env ok' "$OUT"
+check "k5a no block composed into an unreachable file" test "$(marker_count '>>>')" -eq 0
+
+new_home k5b
+printf 'if false; then\n  . "$HOME/.bashrc"\nfi\n' >"$FH/.bash_profile"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+run_env install_env_block
+check "k5b rc 0" test "$RC" -eq 0
+check_out "k5b shadowing SKIP line" 'login startup is shadowed by' "$OUT"
+check "k5b no block composed into an unreachable file" test "$(marker_count '>>>')" -eq 0
+
+new_home k5c
+printf 'cat <<'"'"'EOF'"'"'\n. "$HOME/.bashrc"\nEOF\n[ -f "$HOME/.bashrc" ] && . "$HOME/.bashrc"\n' >"$FH/.bash_profile"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+run_env install_env_block
+check "k5c rc 0" test "$RC" -eq 0
+check_out "k5c env ok" 'INSTALL-RE: env ok' "$OUT"
+check_no_out "k5c no shadowing SKIP" 'login startup is shadowed by' "$OUT"
+check "k5c block written" test "$(marker_count '>>>')" -eq 1
+
+# ================= #197 (K3): a pre-existing .profile must source ~/.bashrc =================
+
+note "#197a: a non-sourcing pre-existing .profile is named, left byte-identical, and no block is written"
+new_home k3a
+printf '# my own profile\nexport EDITOR=vim\n' >"$FH/.profile"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+PROFILE_SHA="$(file_sha "$FH/.profile")"
+BASHRC_SHA="$(file_sha "$FH/.bashrc")"
+run_env install_env_block
+check "k3a rc 0" test "$RC" -eq 0
+check_out "k3a shadowing SKIP line" 'login startup is shadowed by' "$OUT"
+check_out "k3a names ~/.profile" "$FH/.profile" "$OUT"
+check_out "k3a names the non-sourcing reason" 'does not source ~/.bashrc' "$OUT"
+check_no_out "k3a no false env ok" 'INSTALL-RE: env ok' "$OUT"
+check "k3a .profile byte-identical" test "$(file_sha "$FH/.profile")" = "$PROFILE_SHA"
+check "k3a .bashrc untouched" test "$(file_sha "$FH/.bashrc")" = "$BASHRC_SHA"
+check "k3a no block composed into an unreachable file" test "$(marker_count '>>>')" -eq 0
+run_env install_env_block
+check "k3a repeat run rc 0" test "$RC" -eq 0
+check_out "k3a repeat run still names the shadowing" 'login startup is shadowed by' "$OUT"
+check "k3a repeat run leaves .profile byte-identical" test "$(file_sha "$FH/.profile")" = "$PROFILE_SHA"
+
+note "#197b: a sourcing pre-existing .profile is reachable by a login shell"
+new_home k3b
+cat >"$FH/.profile" <<'EOF2'
+# user profile
+if [ -n "$BASH_VERSION" ]; then
+  if [ -f "$HOME/.bashrc" ]; then
+    . "$HOME/.bashrc"
+  fi
+fi
+EOF2
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+PROFILE_SHA="$(file_sha "$FH/.profile")"
+run_env install_env_block
+check "k3b rc 0" test "$RC" -eq 0
+check_out "k3b env ok" 'INSTALL-RE: env ok' "$OUT"
+check_no_out "k3b no shadowing SKIP" 'login startup is shadowed by' "$OUT"
+check "k3b block written" test "$(marker_count '>>>')" -eq 1
+check "k3b .profile byte-identical" test "$(file_sha "$FH/.profile")" = "$PROFILE_SHA"
+LOGIN_OUT="$(env -i HOME="$FH" /bin/bash -lc 'printf "JAVA=%s" "${JAVA_HOME:-<unset>}"' 2>/dev/null)"
+check "k3b block reachable in a login shell" test "${LOGIN_OUT##*JAVA=}" = "$FH/opt/jdk-$TEMURIN_VERSION"
+SHA="$(file_sha "$FH/.bashrc")"
+run_env install_env_block
+check "k3b second run rc 0" test "$RC" -eq 0
+check "k3b fixed point" test "$(file_sha "$FH/.bashrc")" = "$SHA"
+
+note "#197c: .bash_profile takes precedence over .profile (only the first existing file is judged)"
+new_home k3c
+printf '# non-sourcing profile\nexport EDITOR=vim\n' >"$FH/.profile"
+cat >"$FH/.bash_profile" <<'EOF2'
+if [ -f "$HOME/.bashrc" ]; then
+  . "$HOME/.bashrc"
+fi
+EOF2
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+run_env install_env_block
+check "k3c rc 0" test "$RC" -eq 0
+check_out "k3c env ok" 'INSTALL-RE: env ok' "$OUT"
+check_no_out "k3c no shadowing SKIP" 'login startup is shadowed by' "$OUT"
+LOGIN_OUT="$(env -i HOME="$FH" /bin/bash -lc 'printf "JAVA=%s" "${JAVA_HOME:-<unset>}"' 2>/dev/null)"
+check "k3c block reachable in a login shell through .bash_profile" test "${LOGIN_OUT##*JAVA=}" = "$FH/opt/jdk-$TEMURIN_VERSION"
+
+note "#197d: a non-sourcing .bash_profile shadows a sourcing .profile (precedence, the other direction)"
+new_home k3d
+cat >"$FH/.profile" <<'EOF2'
+if [ -f "$HOME/.bashrc" ]; then
+  . "$HOME/.bashrc"
+fi
+EOF2
+printf '# non-sourcing bash_profile\nexport EDITOR=vim\n' >"$FH/.bash_profile"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+run_env install_env_block
+check "k3d rc 0" test "$RC" -eq 0
+check_out "k3d shadowing SKIP names .bash_profile" "$FH/.bash_profile" "$OUT"
+
+note "#197e: an absent .bashrc with a non-sourcing .profile is still named, and nothing is created"
+new_home k3e
+printf '# my own profile\nexport EDITOR=vim\n' >"$FH/.profile"
+run_env install_env_block
+check "k3e rc 0" test "$RC" -eq 0
+check_out "k3e shadowing SKIP line" 'login startup is shadowed by' "$OUT"
+check "k3e no .bashrc created" test ! -e "$FH/.bashrc"
+
+note "#202 end-to-end: extglob mid-pattern with shopt -s extglob passes damage gate and places block before guard"
+new_home extglob_e2e
+cat >"$FH/.bashrc" <<'EOF2'
+shopt -s extglob
+if false; then
+  case x in @(a|b)c) if b; then :; fi ;; esac
+fi
+case $- in
+  *i*) ;;
+  *) return;;
+esac
+export AFTER=1
+EOF2
+run_env install_env_block
+check "extglob_e2e rc 0" test "$RC" -eq 0
+check_out "extglob_e2e env ok" 'INSTALL-RE: env ok' "$OUT"
+E2E_VAL="$(env -i HOME="$FH" /bin/bash -c '. "$HOME/.bashrc"; printf %s "${JAVA_HOME:-}"' 2>/dev/null)"
+check "extglob_e2e block reachable in noninteractive source" test "$E2E_VAL" = "$FH/opt/jdk-$TEMURIN_VERSION"
+
+# ================= PR #220 review residuals: profile-reader parity with bash =================
+
+note "PR220-R1: a source that only runs as a pipeline component is never wiring"
+check "PR220 pipeline source not counted" profile_not_detected 'echo x | . ~/.bashrc'
+check "PR220 |& pipeline source not counted" profile_not_detected 'echo x |& . ~/.bashrc'
+check "PR220 pipeline source not counted across a newline after |" profile_not_detected $'echo x |\n. ~/.bashrc'
+check "PR220 pipeline source not counted across a continuation" profile_not_detected $'echo x | \\\n. ~/.bashrc'
+check "PR220 a source in the login shell after the pipeline is counted (control)" profile_detected 'echo x | cat; . ~/.bashrc'
+
+note "PR220-R2: && / || chains continue across a newline and skipped commands never count"
+check "PR220 dead && chain continued on the next line" profile_not_detected $'false &&\n. ~/.bashrc'
+check "PR220 dead && chain continued across a blank line" profile_not_detected $'false &&\n\n. ~/.bashrc'
+check "PR220 live || chain continued on the next line (control)" profile_detected $'false ||\n. ~/.bashrc'
+check "PR220 live && chain continued on the next line (control)" profile_detected $'true &&\n. ~/.bashrc'
+
+note "PR220-R3: an if condition list split across physical lines is classified only at its then"
+check "PR220 multiline condition false/true runs the branch" profile_detected $'if false\ntrue\nthen\n. ~/.bashrc\nfi'
+check "PR220 multiline condition false/true; then form" profile_detected $'if false\ntrue; then\n. ~/.bashrc\nfi'
+check "PR220 multiline condition false/then stays dead (control)" profile_not_detected $'if false\nthen\n. ~/.bashrc\nfi'
+check "PR220 multiline condition false/then on the condition line (control)" profile_not_detected $'if false; then\n. ~/.bashrc\nfi'
+
+note "PR220-R4: an if compound with no branch taken has a successful status"
+check "PR220 if false; then :; fi || source is skipped" profile_not_detected 'if false; then :; fi || . ~/.bashrc'
+check "PR220 if false; then :; fi && source runs (control)" profile_detected 'if false; then :; fi && . ~/.bashrc'
+check "PR220 if true; then false; fi || source runs (control)" profile_detected 'if true; then false; fi || . ~/.bashrc'
+check "PR220 if true; then :; fi || source is skipped (compound succeeds)" profile_not_detected 'if true; then :; fi || . ~/.bashrc'
+
+note "PR220-R5: literal comparisons are evaluated, not enumerated as 0/1"
+check "PR220 [ 2 = 3 ] then-branch dead" profile_not_detected 'if [ 2 = 3 ]; then . ~/.bashrc; fi'
+check "PR220 [ 2 = 2 ] then-branch live (control)" profile_detected 'if [ 2 = 2 ]; then . ~/.bashrc; fi'
+check "PR220 [ 1 -gt 2 ] dead" profile_not_detected '[ 1 -gt 2 ] && . ~/.bashrc'
+check "PR220 [ 3 -gt 2 ] live (control)" profile_detected '[ 3 -gt 2 ] && . ~/.bashrc'
+check "PR220 [[ foo != foo ]] dead" profile_not_detected 'if [[ foo != foo ]]; then . ~/.bashrc; fi'
+check "PR220 [ x = y ] dead (string comparison)" profile_not_detected 'if [ x = y ]; then . ~/.bashrc; fi'
+check "PR220 test 1 -eq 2 dead" profile_not_detected 'test 1 -eq 2 && . ~/.bashrc'
+check "PR220 [[ foo = f* ]] pattern RHS stays reachable" profile_detected '[[ foo = f* ]] && . ~/.bashrc'
+check "PR220 [[ foo = \"f*\" ]] quoted RHS is literal and dead" profile_not_detected '[[ foo = "f*" ]] && . ~/.bashrc'
+check "PR220 [ foo = \"f*\" ] literal comparison is dead (control)" profile_not_detected '[ foo = "f*" ] && . ~/.bashrc'
+
+note "PR220-R6: a redefined false/true builtin is not a literal constant"
+check "PR220 false() override makes if false reachable" profile_detected $'false() { return 0; }\nif false; then . ~/.bashrc; fi'
+check "PR220 function false form makes if false reachable" profile_detected $'function false { return 0; }\nif false; then . ~/.bashrc; fi'
+
+note "PR220-R7: a file-existence guard is evaluated for the login shell after install"
+check "PR220 [ -f ~/.bashrc ] || source is skipped (file exists post-install)" profile_not_detected '[ -f ~/.bashrc ] || . ~/.bashrc'
+check "PR220 [ -f \"\$HOME/.bashrc\" ] || source is skipped" profile_not_detected '[ -f "$HOME/.bashrc" ] || . "$HOME/.bashrc"'
+check "PR220 [ -f ~/.bashrc ] && source runs (control)" profile_detected '[ -f ~/.bashrc ] && . ~/.bashrc'
+
+note "PR220-R8: backslash-continued physical lines are one logical line"
+check "PR220 continued source is detected" profile_detected $'. \\\n~/.bashrc'
+check "PR220 continued source keyword is detected" profile_detected $'source \\\n"$HOME/.bashrc"'
+check "PR220 continued heredoc opener: a source after the terminator is detected" profile_detected $'cat <<E\\\nOF\nbody\nEOF\n. ~/.bashrc'
+check "PR220 continued heredoc opener: a source inside the body is not detected" profile_not_detected $'cat <<E\\\nOF\n. ~/.bashrc\nEOF'
+
+note "PR220-R9: a one-argument [ ] / [[ ]] / test is a string test, not a command name"
+check "PR220 [ false ] && source runs (non-empty string)" profile_detected '[ false ] && . ~/.bashrc'
+check "PR220 [[ false ]] && source runs (non-empty string)" profile_detected '[[ false ]] && . ~/.bashrc'
+check "PR220 test false && source runs (non-empty string)" profile_detected 'test false && . ~/.bashrc'
+check "PR220 [ \"false\" ] && source runs (quoted string)" profile_detected '[ "false" ] && . ~/.bashrc'
+check "PR220 [ \"\" ] && source is skipped (empty string)" profile_not_detected '[ "" ] && . ~/.bashrc'
+check "PR220 standalone false && source is skipped (control)" profile_not_detected 'false && . ~/.bashrc'
+check "PR220 standalone true && source runs (control)" profile_detected 'true && . ~/.bashrc'
+
+note "PR220-R10: a short-circuited pipeline is skipped whole and does not reset the AND-OR status"
+check "PR220 true || echo unused | false && source runs" profile_detected 'true || echo unused | false && . ~/.bashrc'
+check "PR220 true || false | false && source runs" profile_detected 'true || false | false && . ~/.bashrc'
+check "PR220 false && true | true && source is skipped (control)" profile_not_detected 'false && true | true && . ~/.bashrc'
+check "PR220 true | false && source is skipped (control)" profile_not_detected 'true | false && . ~/.bashrc'
+check "PR220 false | true && source runs (control)" profile_detected 'false | true && . ~/.bashrc'
+check "PR220 false || false | false && source is skipped (control)" profile_not_detected 'false || false | false && . ~/.bashrc'
+
+note "PR220-E2E: pipeline-only wiring is named as shadowing end to end"
+new_home pr220-pipe
+printf 'echo x | . "$HOME/.bashrc"\n' >"$FH/.bash_profile"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+run_env install_env_block
+check "PR220-pipe rc 0" test "$RC" -eq 0
+check_out "PR220-pipe shadowing SKIP line" 'login startup is shadowed by' "$OUT"
+check_no_out "PR220-pipe no opaque env ok" 'INSTALL-RE: env ok' "$OUT"
+check "PR220-pipe no block composed into an unreachable file" test "$(marker_count '>>>')" -eq 0
+
+note "PR220-E2E: [ -f ~/.bashrc ] || . ~/.bashrc never sources it at login"
+new_home pr220-orf
+printf '[ -f "$HOME/.bashrc" ] || . "$HOME/.bashrc"\n' >"$FH/.bash_profile"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+run_env install_env_block
+check "PR220-orf rc 0" test "$RC" -eq 0
+check_out "PR220-orf shadowing SKIP line" 'login startup is shadowed by' "$OUT"
+check "PR220-orf no block composed into an unreachable file" test "$(marker_count '>>>')" -eq 0
+
+note "PR220-E2E: a multiline if condition that runs the source reaches the block"
+new_home pr220-ml
+printf 'if false\ntrue\nthen\n  . "$HOME/.bashrc"\nfi\n' >"$FH/.bash_profile"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+run_env install_env_block
+check "PR220-ml rc 0" test "$RC" -eq 0
+check_out "PR220-ml env ok" 'INSTALL-RE: env ok' "$OUT"
+check "PR220-ml block written" test "$(marker_count '>>>')" -eq 1
+PR220_ML_VAL="$(env -i HOME="$FH" /bin/bash -c '. "$HOME/.bash_profile"; printf %s "${JAVA_HOME:-}"' 2>/dev/null)"
+check "PR220-ml block reachable through the profile" test "$PR220_ML_VAL" = "$FH/opt/jdk-$TEMURIN_VERSION"
+
+note "PR220-E2E: a false() override reaches the block"
+new_home pr220-fn
+printf 'false() { return 0; }\nif false; then . "$HOME/.bashrc"; fi\n' >"$FH/.bash_profile"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+run_env install_env_block
+check "PR220-fn rc 0" test "$RC" -eq 0
+check_out "PR220-fn env ok" 'INSTALL-RE: env ok' "$OUT"
+check "PR220-fn block written" test "$(marker_count '>>>')" -eq 1
+
+note "PR220-E2E: a backslash-continued source reaches the block"
+new_home pr220-cont
+printf '. \\\n"$HOME/.bashrc"\n' >"$FH/.bash_profile"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+run_env install_env_block
+check "PR220-cont rc 0" test "$RC" -eq 0
+check_out "PR220-cont env ok" 'INSTALL-RE: env ok' "$OUT"
+check "PR220-cont block written" test "$(marker_count '>>>')" -eq 1
+
+note "PR220-E2E: a continued heredoc opener is read as one delimiter word"
+new_home pr220-hd
+printf 'cat <<E\\\nOF\nbody\nEOF\n. "$HOME/.bashrc"\n' >"$FH/.bash_profile"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+run_env install_env_block
+check "PR220-hd rc 0" test "$RC" -eq 0
+check_out "PR220-hd env ok" 'INSTALL-RE: env ok' "$OUT"
+check "PR220-hd block written" test "$(marker_count '>>>')" -eq 1
+
+note "PR220-CAS: a concurrent .bashrc edit is never overwritten by the composed file"
+new_home pr220-cas
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+CAS_SHA="$(file_sha "$FH/.bashrc")"
+mkdir -p "$SB/casbin"
+cat >"$SB/casbin/sync" <<'EOF'
+#!/bin/bash
+printf '# concurrent edit\n' >>"${HOME:?}/.bashrc"
+exec /bin/sync "$@"
+EOF
+chmod +x "$SB/casbin/sync"
+RUN_PATH_PREFIX="$SB/casbin" run_env install_env_block
+check "PR220-CAS failure rc nonzero" test "$RC" -ne 0
+check_out "PR220-CAS names the concurrent edit" 'concurrent edit' "$OUT"
+check "PR220-CAS concurrent edit preserved" test "$(grep -cxF '# concurrent edit' "$FH/.bashrc")" -eq 1
+check "PR220-CAS original content preserved" grep -qxF 'export EDITOR=vim' "$FH/.bashrc"
+check "PR220-CAS no block installed" test "$(marker_count '>>>')" -eq 0
+check "PR220-CAS no temp leftovers" test "$(stray_temps)" -eq 0
+check "PR220-CAS backup is the as-found file" test "$(file_sha "$FH/.bashrc.install-re-runtime.bak")" = "$CAS_SHA"
+
+note "PR220-EG: kept .bashrc content must parse under the login shell's own options"
+new_home pr220-eg-bad
+printf 'case x in @(a|b)c) :;; esac\nexport AFTER=1\n' >"$FH/.bashrc"
+BAD_SHA="$(file_sha "$FH/.bashrc")"
+run_env install_env_block
+check "PR220-EG-bad rc nonzero" test "$RC" -ne 0
+check_out "PR220-EG-bad names the damage" 'fails bash -n under the login shell' "$OUT"
+check "PR220-EG-bad .bashrc byte-identical" test "$(file_sha "$FH/.bashrc")" = "$BAD_SHA"
+check "PR220-EG-bad no block installed" test "$(marker_count '>>>')" -eq 0
+
+new_home pr220-eg-late
+printf 'case x in @(a|b)c) :;; esac\nshopt -s extglob\nexport AFTER=1\n' >"$FH/.bashrc"
+run_env install_env_block
+check "PR220-EG-late extglob before its enabling line is rejected" test "$RC" -ne 0
+check_out "PR220-EG-late names the damage" 'fails bash -n under the login shell' "$OUT"
+
+new_home pr220-eg-ok
+printf 'shopt -s extglob\ncase x in @(a|b)c) :;; esac\nexport AFTER=1\n' >"$FH/.bashrc"
+run_env install_env_block
+check "PR220-EG-ok extglob after its enabling line is accepted" test "$RC" -eq 0
+check_out "PR220-EG-ok env ok" 'INSTALL-RE: env ok' "$OUT"
+check "PR220-EG-ok user line kept" grep -qxF 'export AFTER=1' "$FH/.bashrc"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then

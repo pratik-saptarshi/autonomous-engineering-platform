@@ -101,6 +101,12 @@ fail() { # $1 = check name, $2 = reason
   exit 1
 }
 
+# fail, after removing the temp file $1 so a failed write leaves nothing behind.
+fail_rm() { # $1 = temp file, $2 = check name, $3 = reason
+  rm -f "$1"
+  fail "$2" "$3"
+}
+
 ok() { # $1 = check name
   echo "INSTALL-RE: $1 ok"
 }
@@ -491,18 +497,370 @@ normalize_path_components() {
   printf '%s' "${out:-/}"
 }
 
+# Heredoc queue helpers shared by the two readers that must not read a
+# heredoc body as code: install_env_block's splitter and
+# profile_sources_bashrc. The caller declares the pending queue — the
+# parallel arrays hd_delims / hd_dash / hd_lines (delimiter, <<- flag,
+# opener line) — and hd_arith_depth, which collect_heredoc_openers
+# (below) fills and carries; the helpers see them by dynamic scope.
+
+# True when the physical line $1 is a heredoc body line or terminator
+# (a heredoc is pending). Only the queue head's delimiter on a line of
+# its own closes it (leading tabs stripped for <<-), and closing pops
+# the queue.
+hd_consume_body() {
+  [ "${#hd_delims[@]}" -gt 0 ] || return 1
+  local probe="$1"
+  if [ "${hd_dash[0]}" = "1" ]; then
+    while [ "${probe:0:1}" = $'\t' ]; do
+      probe="${probe:1}"
+    done
+  fi
+  if [ "$probe" = "${hd_delims[0]}" ]; then
+    hd_delims=("${hd_delims[@]:1}")
+    hd_dash=("${hd_dash[@]:1}")
+    hd_lines=("${hd_lines[@]:1}")
+  fi
+  return 0
+}
+
+# Queue every heredoc the code line $1 opens, recording $2 as the
+# physical line number of each opener.
+hd_note_openers() {
+  local before=${#hd_delims[@]}
+  collect_heredoc_openers "$1"
+  while [ "$before" -lt "${#hd_delims[@]}" ]; do
+    hd_lines+=("$2")
+    before=$((before + 1))
+  done
+}
+
+# Print $1 when it is a pure literal word (no expansion, no command
+# substitution), with one layer of surrounding quotes removed; return 1
+# when the shell would expand it, because then its value is not known to
+# the scan.
+literal_word() {
+  local w="$1"
+  case "$w" in
+  *'$'* | *'`'*) return 1 ;;
+  esac
+  case "$w" in
+  \"*\")
+    w="${w#\"}"
+    w="${w%\"}"
+    ;;
+  \'*\')
+    w="${w#\'}"
+    w="${w%\'}"
+    ;;
+  esac
+  printf '%s' "$w"
+}
+
+# True when $1 is a (possibly negative) decimal integer literal.
+numeric_p() {
+  local v="$1"
+  v="${v#-}"
+  [ -n "$v" ] || return 1
+  case "$v" in *[!0-9]*) return 1 ;; esac
+  return 0
+}
+
+# True when $1 (a test operand word) contains a glob metacharacter
+# outside quotes and outside backslash escapes.
+unquoted_glob_p() {
+  local w="$1" i=0 ch
+  local n=${#1}
+  local sq=0 dq=0
+  while [ "$i" -lt "$n" ]; do
+    ch="${w:i:1}"
+    if [ "$sq" -eq 1 ]; then
+      if [ "$ch" = "'" ]; then sq=0; fi
+      i=$((i + 1))
+      continue
+    fi
+    if [ "$dq" -eq 1 ]; then
+      case "$ch" in
+      \\) i=$((i + 2)) ;;
+      '"')
+        dq=0
+        i=$((i + 1))
+        ;;
+      *) i=$((i + 1)) ;;
+      esac
+      continue
+    fi
+    case "$ch" in
+    "'") sq=1 ;;
+    '"') dq=1 ;;
+    \\)
+      i=$((i + 2))
+      continue
+      ;;
+    '*' | '?' | '[') return 0 ;;
+    esac
+    i=$((i + 1))
+  done
+  return 1
+}
+
+# Print the outcome the command text $1 provably has: `t` (always
+# succeeds), `f` (always fails), or `u` (unknown — anything that
+# depends on the environment). Only literal constants are recognized:
+# `true`, `:`, `false`, and `[ ]` / `[[ ]]` / `test` comparisons of
+# literals — enough to name a branch a profile can never take
+# (`if false; then ...`, `[ 2 = 3 ] && ...`) without modeling the shell.
+# Two facts about the login shell the scan models are used: a profile
+# that redefines `true`/`false` (the caller tracks fn_true/fn_false)
+# makes those words unknown, and a unary file test on a literal path is
+# evaluated against the filesystem with ~/.bashrc treated as present —
+# the installer writes that file before a login shell reads the profile,
+# so `[ -f ~/.bashrc ] || . ~/.bashrc` skips the source exactly as it
+# does at login.
+const_status() {
+  local -a w=() t=()
+  local IFS=' '
+  local invert=0 st=u n i a op b p val text bracket=""
+  text="$1"
+  text="${text//$'\t'/ }"
+  text="${text//$'\n'/ }"
+  read -ra w <<<"$text"
+  while [ "${#w[@]}" -gt 0 ] && [ -z "${w[0]}" ]; do
+    w=("${w[@]:1}")
+  done
+  [ "${#w[@]}" -gt 0 ] || {
+    printf u
+    return 0
+  }
+  while [ "${w[0]}" = "!" ]; do
+    invert=$((1 - invert))
+    w=("${w[@]:1}")
+    [ "${#w[@]}" -gt 0 ] || {
+      printf u
+      return 0
+    }
+  done
+  n=${#w[@]}
+  if [ "$n" -ne 1 ]; then
+    # Only the test forms carry more than one token; a multi-word
+    # simple command (a function call, an assignment prefix) is not a
+    # literal constant.
+    case "${w[0]}" in
+    '[' | '[[' | test) ;;
+    *)
+      printf u
+      return 0
+      ;;
+    esac
+  fi
+  case "${w[0]}" in
+  '[' | '[[')
+    case "${w[0]}" in
+    '[[') bracket="[[" ;;
+    *) bracket="[" ;;
+    esac
+    case "${w[n - 1]}" in
+    ']' | ']]') ;;
+    *)
+      printf u
+      return 0
+      ;;
+    esac
+    i=1
+    while [ "$i" -lt $((n - 1)) ]; do
+      t+=("${w[i]}")
+      i=$((i + 1))
+    done
+    ;;
+  test)
+    bracket="test"
+    i=1
+    while [ "$i" -lt "$n" ]; do
+      t+=("${w[i]}")
+      i=$((i + 1))
+    done
+    ;;
+  true)
+    if [ "${fn_true:-0}" = 1 ]; then
+      printf u
+      return 0
+    fi
+    t+=(true)
+    ;;
+  false)
+    if [ "${fn_false:-0}" = 1 ]; then
+      printf u
+      return 0
+    fi
+    t+=(false)
+    ;;
+  :)
+    t+=(:)
+    ;;
+  *)
+    printf u
+    return 0
+    ;;
+  esac
+  case "${#t[@]}" in
+  0)
+    # `[ ]` / `test` with no operand is a syntax error in bash.
+    printf u
+    return 0
+    ;;
+  1)
+    if [ -n "$bracket" ]; then
+      # `[ word ]`, `[[ word ]]` and `test word` are one-argument
+      # string tests: true iff the operand is non-empty. The word is
+      # data, never a command name, so `[ false ]` is TRUE while the
+      # standalone `false` command FAILS.
+      val="$(literal_word "${t[0]}")" || {
+        printf u
+        return 0
+      }
+      [ -n "$val" ] && st=t || st=f
+    else
+      case "${t[0]}" in
+      true | :) st=t ;;
+      false) st=f ;;
+      *) st=u ;;
+      esac
+    fi
+    ;;
+  2)
+    op="${t[0]}"
+    p="${t[1]}"
+    case "$op" in
+    -f | -e | -r | -s | -w | -x | -d)
+      val="$(normalize_source_word "$p")"
+      case "$val" in
+      *'$'* | *'`'*)
+        st=u
+        ;;
+      *)
+        case "$val" in
+        /*) ;;
+        *) val="$HOME/$val" ;;
+        esac
+        val="$(normalize_path_components "$val")"
+        if [ "$val" = "$HOME/.bashrc" ]; then
+          # Written by this installer before any login shell reads it:
+          # the file exists and is non-empty, so only -d is false.
+          [ "$op" = "-d" ] && st=f || st=t
+        else
+          case "$op" in
+          -f) [ -f "$val" ] && st=t || st=f ;;
+          -e) [ -e "$val" ] && st=t || st=f ;;
+          -r) [ -r "$val" ] && st=t || st=f ;;
+          -s) [ -s "$val" ] && st=t || st=f ;;
+          -w) [ -w "$val" ] && st=t || st=f ;;
+          -x) [ -x "$val" ] && st=t || st=f ;;
+          -d) [ -d "$val" ] && st=t || st=f ;;
+          esac
+        fi
+        ;;
+      esac
+      ;;
+    -z | -n)
+      val="$(literal_word "$p")" || {
+        printf u
+        return 0
+      }
+      if [ "$op" = "-z" ]; then
+        [ -z "$val" ] && st=t || st=f
+      else
+        [ -n "$val" ] && st=t || st=f
+      fi
+      ;;
+    *) st=u ;;
+    esac
+    ;;
+  3)
+    a="$(literal_word "${t[0]}")" || {
+      printf u
+      return 0
+    }
+    op="${t[1]}"
+    b="$(literal_word "${t[2]}")" || {
+      printf u
+      return 0
+    }
+    case "$op" in
+    '=' | '==' | '!=')
+      # Only [[ ]] treats an unquoted right operand as a pattern; [ ]
+      # and test compare strings. A pattern match against a literal
+      # left operand is not modeled, so it stays unknown (and the
+      # source is counted, never declared unreachable).
+      if [ "$bracket" = "[[" ] && unquoted_glob_p "${t[2]}"; then
+        st=u
+      elif [ "$op" = "!=" ]; then
+        [ "$a" != "$b" ] && st=t || st=f
+      else
+        [ "$a" = "$b" ] && st=t || st=f
+      fi
+      ;;
+    -eq | -ne | -lt | -le | -gt | -ge)
+      if numeric_p "$a" && numeric_p "$b"; then
+        case "$op" in
+        -eq) [ "$a" -eq "$b" ] && st=t || st=f ;;
+        -ne) [ "$a" -ne "$b" ] && st=t || st=f ;;
+        -lt) [ "$a" -lt "$b" ] && st=t || st=f ;;
+        -le) [ "$a" -le "$b" ] && st=t || st=f ;;
+        -gt) [ "$a" -gt "$b" ] && st=t || st=f ;;
+        -ge) [ "$a" -ge "$b" ] && st=t || st=f ;;
+        esac
+      else
+        st=u
+      fi
+      ;;
+    *) st=u ;;
+    esac
+    ;;
+  *) st=u ;;
+  esac
+  if [ "$invert" -eq 1 ]; then
+    case "$st" in
+    t) st=f ;;
+    f) st=t ;;
+    esac
+  fi
+  printf '%s' "$st"
+}
+
 # True when $1 (the first existing login startup file) sources ~/.bashrc,
 # following chains of sourced files with a cycle guard. Used only to
 # NAME a shadowing state: a pre-existing profile is never modified.
+# Only reachable text counts: a heredoc body is data (the same pending
+# queue the env block's splitter uses), and a command in a provably
+# dead branch — `if false; then ...`, `false && ...`, `true || ...`,
+# the dead arm of an if on a literal condition (const_status) — never
+# runs. Each command segment carries the separator before it; `&&` /
+# `||` chains track the outcome of the last command that ran and carry
+# across a physical line break after the operator or a pipeline `|`;
+# `;` and `&` start a fresh chain. A source in a pipeline component is
+# never evidence of wiring: it runs in a subshell, so its exports never
+# reach the login shell. A stack of open `if` frames tracks which branch
+# the walk is in. Backslash-continued lines are joined into one logical
+# line before the heredoc and command scans, so a continued source or
+# heredoc opener is read the way bash reads it; an `if` condition list
+# split across physical lines stays unknown until its `then`.
 profile_sources_bashrc() {
-  local -a queue=("$1") seen=() segs=()
-  local file item dup=0 line src seg si ssq sdq sch wtxt wch wi wsq wdq
+  local -a queue=("$1") seen=() segs=() seps=() fr_cond=() fr_else=() fr_stat=()
+  local -a hd_delims=() hd_dash=() hd_lines=() plines=()
+  local hd_arith_depth=0
+  local file item dup=0 line src seg sep si ssq sdq sch sprev wtxt wch wi wsq wdq
+  local next_seg k f kw cstat run dead line_no last_seg line_sep
+  local cond_pending=0 cond_idx=-1 cond_text="" cond_trim
+  local chain_sep="" chain_cstat=u pipe_skip=0
+  local last_stat=""
+  local fn_false=0 fn_true=0
   while [ "${#queue[@]}" -gt 0 ]; do
     file="${queue[0]}"
     queue=("${queue[@]:1}")
     [ -f "$file" ] || continue
     dup=0
-    for item in "${seen[@]}"; do
+    # shellcheck disable=SC2206 # the +"${seen[@]}" idiom is the bash 3.2-safe empty-array expansion under set -u
+    for item in ${seen[@]+"${seen[@]}"}; do
       if [ "$item" = "$file" ]; then
         dup=1
         break
@@ -510,24 +868,56 @@ profile_sources_bashrc() {
     done
     [ "$dup" -eq 0 ] || continue
     seen+=("$file")
+    hd_delims=() hd_dash=() hd_lines=() hd_arith_depth=0
+    fr_cond=() fr_else=() fr_stat=()
+    cond_pending=0 cond_idx=-1 cond_text=""
+    chain_sep="" chain_cstat=u pipe_skip=0 last_stat=""
+    plines=()
     while IFS= read -r line || [ -n "$line" ]; do
+      plines+=("$line")
+    done <"$file"
+    line_no=0
+    while [ "$line_no" -lt "${#plines[@]}" ]; do
+      line="${plines[line_no]}"
+      # A heredoc body (or its terminator) is data, not commands.
+      if hd_consume_body "$line"; then
+        line_no=$((line_no + 1))
+        continue
+      fi
+      # Join backslash-continued physical lines into one logical line
+      # before either scan sees them: a continued source (`. \` then
+      # `~/.bashrc`) is one command, and a continued heredoc opener
+      # (`<<E\` then `OF`) has one delimiter word.
+      while line_continues "$line"; do
+        line="${line%\\}"
+        line_no=$((line_no + 1))
+        [ "$line_no" -lt "${#plines[@]}" ] || break
+        line+="${plines[line_no]}"
+      done
+      line_no=$((line_no + 1))
+      hd_note_openers "$line" 0
+      # A comment never counts as sourcing: a commented-out line, or
+      # the comment trailing a command, is cut before the scan.
+      line="$(strip_trailing_comment "$line")"
       line="${line#"${line%%[![:space:]]*}"}"
-      # A commented-out line never counts as sourcing.
-      case "$line" in
-      '#'*) continue ;;
-      esac
+      # A blank or comment-only line does not end a `&&` / `||` chain
+      # or pipeline whose next command is on a later physical line.
+      [ -n "$line" ] || continue
       # A source command counts at the start of the line or in a later
-      # command segment of it: `[ -f ~/.bashrc ] && . ~/.bashrc`, the
-      # single-line `if ...; then . ~/.bashrc; fi`, and the plain forms
-      # all reduce to the segment carrying the source command, which the
-      # parse below then sees in one grammar. The split is quote-aware:
-      # a `;` or `&&` inside quotes or after a backslash is filename
-      # data (`. "$HOME/log;in setup"`), not a segment boundary.
+      # command segment of it: `[ -f ~/.bashrc ] && . ~/.bashrc`,
+      # `[ -f ~/.bashrc ] || . ~/.bashrc`, the single-line
+      # `if ...; then . ~/.bashrc; fi`, and the plain forms all reduce
+      # to the segment carrying the source command, which the parse
+      # below then sees in one grammar. Segments end at `;`, `&&`, `||`,
+      # `|` and `&` — but not at a `>&`, `<&` or `&>` redirection or
+      # the `&` of `|&`. The split is quote-aware: a `;`, `&&` or `|`
+      # inside quotes or after a backslash is filename data
+      # (`. "$HOME/log;in setup"`), not a segment boundary.
       # Segments that merely mention .bashrc (a `[ -f ... ]` test, an
       # echo) never match, because only a segment whose first token is
       # `.` or `source` is parsed.
-      segs=()
-      seg="" si=0 ssq=0 sdq=0
+      segs=() seps=()
+      seg="" si=0 ssq=0 sdq=0 sep=""
       while [ "$si" -lt "${#line}" ]; do
         sch="${line:si:1}"
         if [ "$ssq" -eq 1 ]; then
@@ -555,27 +945,230 @@ profile_sources_bashrc() {
           seg+="${line:si:1}"
         elif [ "$sch" = ";" ]; then
           segs+=("$seg")
-          seg=""
-        elif [ "$sch" = "&" ] && [ "${line:si+1:1}" = "&" ]; then
-          segs+=("$seg")
-          seg=""
-          si=$((si + 1))
+          seps+=("$sep")
+          seg="" sep=";"
+        elif [ "$sch" = "&" ] || [ "$sch" = "|" ]; then
+          sprev=""
+          if [ "$si" -gt 0 ]; then sprev="${line:si-1:1}"; fi
+          if [ "$sch" = "&" ] &&
+            { [ "$sprev" = ">" ] || [ "$sprev" = "<" ] ||
+              [ "${line:si+1:1}" = ">" ]; }; then
+            # `>&`, `<&`, `&>`: a redirection, not a boundary.
+            seg+="$sch"
+          elif [ "$sch" = "&" ] && [ "$sprev" = "|" ]; then
+            # The `&` of `|&` belongs to the boundary just taken.
+            :
+          else
+            segs+=("$seg")
+            seps+=("$sep")
+            seg="" sep="$sch"
+            if [ "${line:si+1:1}" = "$sch" ]; then
+              si=$((si + 1))
+              sep="$sch$sch"
+            fi
+          fi
         else
           seg+="$sch"
         fi
         si=$((si + 1))
       done
       segs+=("$seg")
-      for seg in "${segs[@]}"; do
-        seg="${seg#"${seg%%[![:space:]]*}"}"
-        case "$seg" in
-        'then'[[:space:]]*)
-          seg="${seg#then}"
-          seg="${seg#"${seg%%[![:space:]]*}"}"
+      seps+=("$sep")
+      # A chain continued from the previous physical line keeps its
+      # operator and the status the next command tests.
+      line_sep="$chain_sep"
+      cstat=u
+      [ -n "$line_sep" ] && cstat="$chain_cstat"
+      chain_sep="" chain_cstat=u
+      for ((k = 0; k < ${#segs[@]}; k++)); do
+        seg="${segs[k]}"
+        if [ "$k" -eq 0 ] && [ -n "$line_sep" ]; then
+          sep="$line_sep"
+        else
+          sep="${seps[k]}"
+        fi
+        # Whether the chain lets this segment run: after `&&` only if
+        # the last command that ran can succeed, after `||` only if it
+        # can fail; any other separator starts a fresh chain.
+        run=1
+        case "$sep" in
+        '&&')
+          pipe_skip=0
+          [ "$cstat" = f ] && run=0
+          ;;
+        '||')
+          pipe_skip=0
+          [ "$cstat" = t ] && run=0
+          ;;
+        '|')
+          # A later component of the same pipeline is skipped exactly
+          # when a short-circuited && / || list skipped the whole
+          # pipeline.
+          [ "$pipe_skip" -eq 1 ] && run=0
+          ;;
+        *)
+          pipe_skip=0
+          cstat=u
           ;;
         esac
+        # A skipped pipeline stays skipped for all of its | components;
+        # its components never update cstat, so a following && / ||
+        # still tests the status of the preceding AND-OR list.
+        if [ "$sep" != "|" ] && [ "$run" -eq 0 ]; then
+          pipe_skip=1
+        fi
+        # A line-split `if` / `elif` condition list continues until
+        # bash sees `then`; keep the frame's outcome unknown until the
+        # complete list is known (a later condition command can change
+        # it). The condition commands themselves still run below.
+        if [ "$cond_pending" -eq 1 ]; then
+          cond_trim="${seg#"${seg%%[![:space:]]*}"}"
+          case "$cond_trim" in
+          then | then[[:space:]]*)
+            if [ "$cond_idx" -ge 0 ] &&
+              [ "$cond_idx" -lt "${#fr_cond[@]}" ]; then
+              fr_cond[cond_idx]="$(const_status "$cond_text")"
+            fi
+            cond_pending=0 cond_idx=-1 cond_text=""
+            ;;
+          fi | fi[[:space:]]* | else | else[[:space:]]* | elif | elif[[:space:]]* | if | if[[:space:]]*)
+            # Not valid, or too structural to model, inside a condition
+            # list: leave the frame unknown rather than misread the
+            # rest of the file as condition text.
+            cond_pending=0 cond_idx=-1 cond_text=""
+            ;;
+          *)
+            cond_text+=" $cond_trim"
+            ;;
+          esac
+        fi
+        # Peel the structural keywords off the front of the segment,
+        # keeping the open-if frames current (a frame is the literal
+        # outcome of its condition and whether the walk is in its
+        # else arm). An `elif` condition is not modeled: it makes the
+        # frame unknown, so everything after it counts.
+        kw=1
+        while [ "$kw" -eq 1 ]; do
+          kw=0
+          seg="${seg#"${seg%%[![:space:]]*}"}"
+          case "$seg" in
+          if | if[[:space:]]*)
+            if [ "$run" -eq 0 ]; then
+              # Whole `if ... fi` is skipped by a dead `&&`/`||` chain;
+              # the chain's own status is the compound's status.
+              fr_cond+=(d)
+              fr_stat+=("$cstat")
+            elif [ $((k + 1)) -eq "${#segs[@]}" ]; then
+              # The condition list may continue on the next physical
+              # line; defer the verdict to the `then` (cond_pending).
+              fr_cond+=(u)
+              fr_stat+=("")
+              cond_pending=1
+              cond_idx=$((${#fr_cond[@]} - 1))
+              cond_text="${seg#if}"
+              cond_text="${cond_text#"${cond_text%%[![:space:]]*}"}"
+            else
+              # Only a single-segment condition (end of line, or `; then`)
+              # has a known literal outcome; a compound condition such as
+              # `if false || [ -f ~/.bashrc ]; then` stays unknown (`u`).
+              next_seg="${segs[k + 1]}"
+              next_seg="${next_seg#"${next_seg%%[![:space:]]*}"}"
+              if [ "${seps[k + 1]}" = ";" ] &&
+                { [ "$next_seg" = "then" ] || [[ "$next_seg" == then[[:space:]]* ]]; }; then
+                fr_cond+=("$(const_status "${seg#if}")")
+              else
+                fr_cond+=(u)
+              fi
+              fr_stat+=("")
+            fi
+            fr_else+=(0)
+            seg=""
+            ;;
+          elif | elif[[:space:]]*)
+            if [ "${#fr_cond[@]}" -gt 0 ]; then
+              if [ "${fr_cond[${#fr_cond[@]} - 1]}" != d ]; then
+                fr_cond[${#fr_cond[@]} - 1]=u
+                fr_stat[${#fr_stat[@]} - 1]=""
+              fi
+              fr_else[${#fr_else[@]} - 1]=0
+            fi
+            seg=""
+            ;;
+          then | then[[:space:]]*)
+            seg="${seg#then}"
+            kw=1
+            ;;
+          else | else[[:space:]]*)
+            if [ "${#fr_else[@]}" -gt 0 ]; then
+              fr_else[${#fr_else[@]} - 1]=1
+              fr_stat[${#fr_stat[@]} - 1]=""
+            fi
+            seg="${seg#else}"
+            kw=1
+            ;;
+          fi | fi[[:space:]]*)
+            if [ "${#fr_cond[@]}" -gt 0 ]; then
+              f=$((${#fr_cond[@]} - 1))
+              case "${fr_cond[f]}" in
+              d)
+                # The whole compound was skipped by a && / || chain:
+                # the chain's status is the compound's status.
+                cstat="${fr_stat[f]}"
+                ;;
+              f)
+                if [ "${fr_else[f]}" -eq 0 ]; then
+                  # No branch ran (false condition, no else), so bash
+                  # gives the if compound a successful status.
+                  cstat=t
+                else
+                  cstat="${last_stat:-u}"
+                fi
+                ;;
+              u) cstat=u ;;
+              *) cstat="${last_stat:-u}" ;;
+              esac
+              unset 'fr_cond[f]' 'fr_else[f]' 'fr_stat[f]'
+              # The compound is itself a command: later chains test it.
+              last_stat="$cstat"
+            fi
+            seg=""
+            ;;
+          esac
+        done
+        dead=0
+        for ((f = 0; f < ${#fr_cond[@]}; f++)); do
+          if [ "${fr_cond[f]}" = d ] ||
+            { [ "${fr_else[f]}" -eq 0 ] && [ "${fr_cond[f]}" = f ]; } ||
+            { [ "${fr_else[f]}" -eq 1 ] && [ "${fr_cond[f]}" = t ]; }; then
+            dead=1
+          fi
+        done
+        # A segment the chain or a dead branch skips changes nothing,
+        # not even the outcome the next `&&` / `||` looks at.
+        if [ "$run" -eq 0 ] || [ "$dead" -eq 1 ] || [ -z "$seg" ]; then
+          continue
+        fi
+        # A profile can redefine the true/false builtins; from then on
+        # those words are not literal constants (const_status reads the
+        # dynamic-scope flags).
+        case "$seg" in
+        false'()'* | false[[:space:]]'()'* | function[[:space:]]false | function[[:space:]]false[[:space:]]*)
+          fn_false=1
+          ;;
+        true'()'* | true[[:space:]]'()'* | function[[:space:]]true | function[[:space:]]true[[:space:]]*)
+          fn_true=1
+          ;;
+        esac
+        cstat="$(const_status "$seg")"
+        last_stat="$cstat"
         case "$seg" in
         '.'[[:space:]]* | source[[:space:]]*)
+          # A pipeline component runs in a subshell (a login shell has
+          # lastpipe off), so its exports never reach the login shell:
+          # this is not evidence of wiring.
+          if [ "$sep" = "|" ]; then
+            continue
+          fi
           # Extract the complete path word before normalizing: a
           # plain whitespace split truncates a quoted filename at its
           # spaces (`. "$HOME/login setup"`), so scan the word with
@@ -638,7 +1231,22 @@ profile_sources_bashrc() {
           ;;
         esac
       done
-    done <"$file"
+      # A trailing `&&`, `||` or `|` continues the chain (or pipeline)
+      # on the next physical line; carry the operator and the status
+      # the next command tests.
+      if [ "${#segs[@]}" -gt 0 ]; then
+        last_seg="${segs[${#segs[@]} - 1]}"
+        last_seg="${last_seg#"${last_seg%%[![:space:]]*}"}"
+        if [ -z "$last_seg" ]; then
+          case "${seps[${#seps[@]} - 1]}" in
+          '&&' | '||' | '|')
+            chain_sep="${seps[${#seps[@]} - 1]}"
+            chain_cstat="$cstat"
+            ;;
+          esac
+        fi
+      fi
+    done
   done
   return 1
 }
@@ -648,11 +1256,12 @@ ensure_profile() {
   # the env stage twice in one process, and a cached origin must not
   # turn a terminal SKIP into a written-but-unreachable block.
   # Bash reads the FIRST existing of ~/.bash_profile, ~/.bash_login and
-  # ~/.profile. A pre-existing .profile is ours to leave alone, but a
-  # pre-existing .bash_profile/.bash_login that does not source
-  # ~/.bashrc shadows both the profile and the env block: name that
-  # state instead of writing a healthy-looking block that verify_env
-  # can never reach.
+  # ~/.profile, and that file alone. Every pre-existing file is ours to
+  # leave alone, but when the first one does not source ~/.bashrc, a
+  # login shell never reads the env block: name that state instead of
+  # writing a healthy-looking block that verify_env can never reach.
+  # That holds for a pre-existing ~/.profile too (issue #197) — the
+  # file this script itself creates sources ~/.bashrc, so it passes.
   local candidate="" first=""
   for candidate in .bash_profile .bash_login .profile; do
     if [ -e "$HOME/$candidate" ]; then
@@ -661,7 +1270,7 @@ ensure_profile() {
     fi
   done
   case "$first" in
-  .bash_profile | .bash_login)
+  .bash_profile | .bash_login | .profile)
     if ! profile_sources_bashrc "$HOME/$first"; then
       echo "INSTALL-RE: env SKIP: login startup is shadowed by $HOME/$first, which does not source ~/.bashrc"
       ENV_OUTCOME="skip"
@@ -909,8 +1518,10 @@ ni_test_line() {
 # Print $1 with any trailing comment removed. A `#` begins a comment
 # only where bash would begin one on a code line: outside single and
 # double quotes, not backslash-escaped, and at a word start (line
-# start or after whitespace). A `#` inside quotes, escaped, or glued
-# to a word is literal text and never cuts the line — cutting there
+# start, after whitespace, or right after a shell metacharacter that
+# breaks words: `;` `&` `|` `(` `)` — `echo x;# case foo in` carries a
+# comment, not a case opener). A `#` inside quotes, escaped, or glued
+# to a word (`$#`, `${#var}`, `foo#bar`) is literal text and never cuts the line — cutting there
 # deletes real code after the `#` (the strip this replaces cut at the
 # first whitespace-`#`, quoted or not, and lost real openers and
 # closers that followed a quoted `#` on the same line). When a comment
@@ -958,7 +1569,7 @@ strip_trailing_comment() {
       fi
       out+="$ch"
       ;;
-    [[:space:]])
+    [[:space:]] | ';' | '&' | '|' | '(' | ')')
       out+="$ch"
       wstart=1
       ;;
@@ -972,6 +1583,26 @@ strip_trailing_comment() {
     out="${out%"${out##*[![:space:]]}"}"
   fi
   printf '%s' "$out"
+}
+
+# True when the physical line $1 continues onto the next one: it ends
+# in a backslash that is not itself escaped (an odd run — `\\` is an
+# escaped backslash and continues nothing), outside single quotes and
+# outside a comment. Both are decided by the same lexing the other
+# line predicates use (strip_trailing_comment, mask_quoted): a masked
+# trailing backslash was escaped or quoted. A backslash inside double
+# quotes does continue the line, as in bash. A CR after the backslash
+# defeats it — bash escapes the CR instead — so a CRLF line is never
+# joined with its successor.
+line_continues() {
+  case "$1" in
+  *\\) ;;
+  *) return 1 ;;
+  esac
+  local s
+  s="$(strip_trailing_comment "$1")"
+  s="$(mask_quoted "$s")"
+  [ "${s: -1}" = "\\" ]
 }
 
 # Print the closer (`}`, `fi`, `esac`) when $1 opens a function, if, or
@@ -1005,6 +1636,55 @@ ctrl_opener_closer() {
   return 1
 }
 
+# Print $1 with quoted text masked: every character inside single or
+# double quotes, the quote delimiters, and every backslash-escaped
+# character becomes `x` (the backslash itself stays). Quoted text is
+# data, not grammar, so a scan over the masked form only ever sees
+# unquoted separators and keywords. The mask is one character per
+# character — positions in the masked form index the original — and
+# idempotent.
+mask_quoted() {
+  local raw="$1" out="" ch i sq=0 dq=0
+  for ((i = 0; i < ${#raw}; i++)); do
+    ch="${raw:i:1}"
+    if [ "$sq" -eq 1 ]; then
+      out+=x
+      [ "$ch" = "'" ] && sq=0
+      continue
+    fi
+    if [ "$ch" = "\\" ]; then
+      # An escape consumes the next character, inside double quotes
+      # and out (inside single quotes it never reaches here): the
+      # escaped character is literal, never a quote or a separator.
+      out+="$ch"
+      if [ $((i + 1)) -lt ${#raw} ]; then
+        out+=x
+        i=$((i + 1))
+      fi
+      continue
+    fi
+    if [ "$dq" -eq 1 ]; then
+      out+=x
+      [ "$ch" = '"' ] && dq=0
+      continue
+    fi
+    case "$ch" in
+    "'")
+      sq=1
+      out+=x
+      ;;
+    '"')
+      dq=1
+      out+=x
+      ;;
+    *)
+      out+="$ch"
+      ;;
+    esac
+  done
+  printf '%s' "$out"
+}
+
 # True when $1 — the part of a line before its final `;` segment —
 # opens the construct closed by $2 and does not close it again on the
 # same line. The trailing closer of such a line belongs to the opener
@@ -1017,10 +1697,9 @@ ctrl_opener_closer() {
 # ctrl_opener_closer, except the match may start after a `;` and the
 # line need not end at the opener.
 #
-# The head is masked before matching, with the same quote scan as
-# strip_trailing_comment: every character inside single or double
-# quotes, the quote delimiters, and every backslash-escaped character
-# becomes `x`. Quoted text is data, not grammar — an `if ... then`
+# The head is masked before matching (mask_quoted): every character
+# inside single or double quotes, the quote delimiters, and every
+# backslash-escaped character becomes `x`. Quoted text is data, not grammar — an `if ... then`
 # inside a quoted string mints no opener, and a quoted `;fi;` is not
 # a segment boundary, so the walk below only ever sees unquoted
 # separators. (Glued forms need no special case here: `;then` and
@@ -1061,51 +1740,14 @@ ctrl_opener_closer() {
 # a compound after `&&` / `||` (S3) each desynced the caller's stack
 # in one direction or the other (Sourcery review, PR #201).
 ctrl_head_opens_unclosed() {
-  local head=""
-  local raw="$1" ch i sq=0 dq=0
-  for ((i = 0; i < ${#raw}; i++)); do
-    ch="${raw:i:1}"
-    if [ "$sq" -eq 1 ]; then
-      head+=x
-      [ "$ch" = "'" ] && sq=0
-      continue
-    fi
-    if [ "$ch" = "\\" ]; then
-      # An escape consumes the next character, inside double quotes
-      # and out (inside single quotes it never reaches here): the
-      # escaped character is literal, never a quote or a separator.
-      head+="$ch"
-      if [ $((i + 1)) -lt ${#raw} ]; then
-        head+=x
-        i=$((i + 1))
-      fi
-      continue
-    fi
-    if [ "$dq" -eq 1 ]; then
-      head+=x
-      [ "$ch" = '"' ] && dq=0
-      continue
-    fi
-    case "$ch" in
-    "'")
-      sq=1
-      head+=x
-      ;;
-    '"')
-      dq=1
-      head+=x
-      ;;
-    *)
-      head+="$ch"
-      ;;
-    esac
-  done
+  local head ch
+  head="$(mask_quoted "$1")"
   case "$2" in
   fi | 'esac' | '}') ;;
   *) return 1 ;;
   esac
   # Tokenize the masked head.
-  local -a toks=()
+  local -a toks=() sp_after=()
   local word=""
   local n=${#head} j
   for ((j = 0; j < n; j++)); do
@@ -1115,6 +1757,10 @@ ctrl_head_opens_unclosed() {
       if [ -n "$word" ]; then
         toks+=("$word")
         word=""
+      elif [ "${#toks[@]}" -gt 0 ] && [ "${toks[${#toks[@]} - 1]}" = ')' ]; then
+        # Remember a `)` followed by whitespace: the pattern walk
+        # reads it as the end of a pattern word (see below).
+        sp_after[${#toks[@]} - 1]=1
       fi
       ;;
     ';' | '&' | '|')
@@ -1124,6 +1770,10 @@ ctrl_head_opens_unclosed() {
       fi
       if [ $((j + 1)) -lt "$n" ] && [ "${head:j+1:1}" = "$ch" ]; then
         toks+=("$ch$ch")
+        j=$((j + 1))
+      elif [ "$ch" = ';' ] && [ "${head:j+1:1}" = '&' ]; then
+        # `;&` (case fall-through) ends an arm just as `;;` does.
+        toks+=(';&')
         j=$((j + 1))
       else
         toks+=("$ch")
@@ -1138,6 +1788,18 @@ ctrl_head_opens_unclosed() {
           word=""
         fi
         toks+=("\$(")
+        ;;
+      *[@*+?!])
+        # An extglob group opener: `@(` `*(` `+(` `?(` `!(` glued to
+        # the pattern text before it. Its prefix character belongs to
+        # the token; the walk counts the group separately from a
+        # substitution's parens.
+        word="${word%?}"
+        if [ -n "$word" ]; then
+          toks+=("$word")
+          word=""
+        fi
+        toks+=('@(')
         ;;
       *)
         if [ -n "$word" ]; then
@@ -1165,10 +1827,11 @@ ctrl_head_opens_unclosed() {
   # head opens and leaves open; pending counts `if` / `case` openers
   # still awaiting their `then` / `in`. cstate/cpdepth track, per
   # open case, whether the walk is in its pattern list (p) or an arm
-  # body (b), and the command-substitution depth inside a pattern.
+  # body (b), and the depth of parenthesized groups inside a pattern:
+  # substitutions (`$(`) and extglob groups (`@(` `*(` `+(` `?(` `!(`).
   local -a cstate=() cpdepth=()
   local depth=0 pending=0 cpending=0 elif_pending=0 func_ctx=0 cmdpos=1 bracepos=0 popstate=0
-  local tok nxt prev="" k top
+  local tok nxt prev="" k top pat_ends
   for ((k = 0; k < ${#toks[@]}; k++)); do
     tok="${toks[k]}"
     nxt=""
@@ -1181,31 +1844,49 @@ ctrl_head_opens_unclosed() {
         # state is tracked for every closer, not just esac: a
         # keyword spelled like a pattern is data, and the arm body
         # after the pattern's `)` is a command position again.
-        # A pattern's own parens open no tracked nesting: the
-        # optional leading `(` and an extglob group's `(` are closed
-        # by the pattern's terminating `)`. Only substitution parens
-        # open a depth the walk counts, because a substitution's `)`
-        # is internal to the pattern — any other `)` ends it.
+        # A pattern's own optional leading `(` opens no tracked
+        # nesting: it is closed by the pattern's terminating `)`.
+        # Substitution parens and extglob groups do open a depth the
+        # walk counts, because their `)` is internal to the pattern
+        # — extglob groups may sit anywhere in it (`@(a|b)c)`,
+        # `@(a|@(b|c)))`) — so only a `)` at depth zero ends it. The
+        # depth resets with the next pattern (`;;`, `;&`).
         case "$tok" in
-        "\$(")
+        "\$(" | '@(')
           cpdepth[top]=$((cpdepth[top] + 1))
           ;;
         '(')
-          # A `(` inside a substitution nests — a subshell, or the
-          # second paren of an arithmetic `$((` — and its `)` closes
-          # the substitution, not the pattern. At the pattern's own
+          # A `(` inside a substitution or group nests — a subshell,
+          # or the second paren of an arithmetic `$((` — and its `)`
+          # closes that group, not the pattern. At the pattern's own
           # level the token falls through uncounted (see above).
           if [ "${cpdepth[top]}" -gt 0 ]; then
             cpdepth[top]=$((cpdepth[top] + 1))
           fi
           ;;
         ')')
+          pat_ends=0
           if [ "${cpdepth[top]}" -gt 0 ]; then
             cpdepth[top]=$((cpdepth[top] - 1))
+            # A group closing the pattern word with whitespace after
+            # it and no `|` or `)` next (`case x in *(a|b) cmd`) has
+            # no terminator of its own — a malformed arm; read its
+            # close paren as the pattern's end so the arm body is
+            # still walked as commands.
+            if [ "${cpdepth[top]}" -eq 0 ] && [ -n "${sp_after[k]:-}" ] &&
+              [ -n "$nxt" ] && [ "$nxt" != '|' ] && [ "$nxt" != ')' ]; then
+              pat_ends=1
+            fi
           else
+            pat_ends=1
+          fi
+          if [ "$pat_ends" -eq 1 ]; then
             cstate[top]=b
             cmdpos=1
           fi
+          ;;
+        ';;' | ';&')
+          cpdepth[top]=0
           ;;
         'esac')
           if [ "$2" = 'esac' ]; then depth=$((depth - 1)); fi
@@ -1225,22 +1906,22 @@ ctrl_head_opens_unclosed() {
     # the function whose `function` keyword or name precedes it.
     bracepos=0
     case "$prev" in
-    '' | ';' | ';;' | '&&' | '||' | '&' | '|' | "\$(" | '(' | ')' | 'then' | 'else' | 'do' | '{' | '!')
+    '' | ';' | ';;' | ';&' | '&&' | '||' | '&' | '|' | "\$(" | '(' | '@(' | ')' | 'then' | 'else' | 'do' | '{' | '!')
       bracepos=1
       ;;
     esac
     if [ "$func_ctx" -eq 1 ]; then bracepos=1; fi
     case "$tok" in
-    ';' | ';;' | '&' | '|' | '&&' | '||')
+    ';' | ';;' | ';&' | '&' | '|' | '&&' | '||')
       cmdpos=1
       func_ctx=0
-      if [ "$tok" = ';;' ] && [ "${#cstate[@]}" -gt 0 ]; then
+      if { [ "$tok" = ';;' ] || [ "$tok" = ';&' ]; } && [ "${#cstate[@]}" -gt 0 ]; then
         top=$((${#cstate[@]} - 1))
         cstate[top]=p
         cpdepth[top]=0
       fi
       ;;
-    "\$(" | '(')
+    "\$(" | '(' | '@(')
       cmdpos=1
       ;;
     ')')
@@ -1355,39 +2036,59 @@ ctrl_head_opens_unclosed() {
   return 1
 }
 
-# True when $1 is the closer named by $2 (optionally followed by `;`),
-# either at the start of the line or as the command after the line's
-# last `;` separator (`:; }` ends a one-line function body just as a
-# bare `}` does). A trailing comment is stripped first
-# (strip_trailing_comment): a `#` at a word start comments out the
-# rest of the line in bash, while a `#` inside quotes, escaped, or
-# glued to the word is part of the word, not a comment — the
-# quote-blind cut this replaces lost a closer that followed a quoted
-# `#` on the same line (the bridge Finding A mechanism at this site;
-# pre-existing here — the opener strip was copied from this one).
-# The tail-split form is refused when the same line opens the
-# construct it closes without closing it again first
-# (ctrl_head_opens_unclosed): that closer is the same-line opener's
-# own, and popping an earlier frame for it desyncs the struct stack
-# (panel finding K2).
+# True when $1 contains the closer named by $2 at a command position —
+# the line start (after any whitespace or leftover separators) or right
+# after a `;` — followed by a word boundary: the end of the line, or
+# (after optional whitespace) one of `;` `&` `|` `)` `<` `>`, or a
+# file-descriptor redirection (`2>&1`). The boundary set is what lets
+# `fi && echo ok`, `fi || :`, `fi | cat`, `fi &`, `} >/dev/null` and
+# `esac 2>&1` pop their frame (issue #194) while `file=1`, `fifo`,
+# `esacx` and `fi extra` — words that merely begin like a closer, or
+# a closer followed by an ordinary word — never do. On a
+# pop the text after the closer word is printed, so the caller can
+# keep popping the closers that follow it on the same physical line
+# (`fi; fi`, `esac; fi; }`: issue #196 — left to right, one frame per
+# closer); a leading `&&` / `||` / `&` / `|` / `;` of such a remainder
+# is skipped.
+#
+# A trailing comment is stripped first (strip_trailing_comment) and
+# the line is masked (mask_quoted) before any position is chosen, so
+# a `;` or a closer-looking word inside quotes is data. A candidate
+# is refused when the text before it opens the construct it closes
+# without closing it again first (ctrl_head_opens_unclosed): that
+# closer is the same-line opener's own (`if true; then :; fi && echo
+# ok`), and popping an earlier frame for it desyncs the struct stack
+# (panel finding K2). A refused candidate does not end the search — a
+# later one, whose head has by then closed the compound, can still be
+# the real closer (`if true; then :; fi; fi`).
 ctrl_closer_line() {
-  local s tail
+  local s m i n ch cl=${#2} at_cmd=1 started=0
+  local after='^([[:space:]]*([;&|)<>]|$)|[[:space:]]+[0-9]+[<>])'
   s="$(strip_trailing_comment "$1")"
-  case "$s" in
-  "$2" | "$2;"* | "$2;;"*) return 0 ;;
-  esac
-  case "$s" in
-  *';'*)
-    tail="${s##*';'}"
-    tail="${tail#"${tail%%[![:space:]]*}"}"
-    case "$tail" in
-    "$2" | "$2;"* | "$2;;"*)
-      ctrl_head_opens_unclosed "${s%';'*}" "$2" && return 1
-      return 0
+  m="$(mask_quoted "$s")"
+  n=${#m}
+  for ((i = 0; i < n; i++)); do
+    ch="${m:i:1}"
+    case "$ch" in
+    [[:space:]]) continue ;;
+    ';')
+      at_cmd=1
+      continue
+      ;;
+    '&' | '|')
+      [ "$started" -eq 0 ] && continue
       ;;
     esac
-    ;;
-  esac
+    started=1
+    [ "$at_cmd" -eq 1 ] || continue
+    at_cmd=0
+    [ "${m:i:cl}" = "$2" ] || continue
+    [[ "${m:i+cl}" =~ $after ]] || continue
+    if ! ctrl_head_opens_unclosed "${s:0:i}" "$2"; then
+      printf '%s' "${s:i+cl}"
+      return 0
+    fi
+  done
   return 1
 }
 
@@ -1396,7 +2097,7 @@ install_env_block() {
   ENV_SKIP_REASON=""
   local bashrc="$HOME/.bashrc"
   local bak="$HOME/.bashrc.install-re-runtime.bak"
-  local tmp="$HOME/.bashrc.install-re-runtime.tmp"
+  local tmp=""
   # One-time as-found backup, before any inspection or modification:
   # the .bashrc exactly as found (damaged or not) is preserved if the
   # backup is absent, so a later refusal can always name a real path
@@ -1421,31 +2122,27 @@ install_env_block() {
   local -a hd_delims=() hd_dash=() hd_lines=()
   local hd_arith_depth=0
   local line trimmed norm in_block=0 seen_block=0 insert_at=-1
-  local unmarked=0 prior_profile="" hd_probe before line_no
+  local unmarked=0 prior_profile="" line_no
+  # Snapshot of the file the kept content is drawn from. Before the
+  # composed file is renamed over it, the snapshot is compared again: an
+  # editor or another process that saved .bashrc after this read would
+  # otherwise have its changes silently replaced by content composed
+  # from the older text.
+  local bashrc_snapshot=""
   if [ -e "$bashrc" ]; then
     while IFS= read -r line || [ -n "$line" ]; do
       lines+=("$line")
     done <"$bashrc"
+    bashrc_snapshot="$(cksum <"$bashrc" 2>/dev/null)" ||
+      fail env "cannot read $bashrc"
   fi
   for ((line_no = 0; line_no < ${#lines[@]}; line_no++)); do
     line="${lines[line_no]}"
-    if [ "${#hd_delims[@]}" -gt 0 ]; then
+    if hd_consume_body "$line"; then
       # Heredoc body (or its terminator): keep verbatim, but mark it as
-      # data. Only the queue head's delimiter on a line of its own
-      # closes the heredoc (leading tabs stripped for <<-).
+      # data.
       kept+=("$line")
       kept_body+=(1)
-      hd_probe="$line"
-      if [ "${hd_dash[0]}" = "1" ]; then
-        while [ "${hd_probe:0:1}" = $'\t' ]; do
-          hd_probe="${hd_probe:1}"
-        done
-      fi
-      if [ "$hd_probe" = "${hd_delims[0]}" ]; then
-        hd_delims=("${hd_delims[@]:1}")
-        hd_dash=("${hd_dash[@]:1}")
-        hd_lines=("${hd_lines[@]:1}")
-      fi
       continue
     fi
     # Markers are recognized whole-line but modulo leading/trailing
@@ -1488,12 +2185,7 @@ install_env_block() {
     '#'*) ;;
     *JAVA_HOME=* | *GHIDRA_INSTALL_DIR=*) unmarked=1 ;;
     esac
-    before=${#hd_delims[@]}
-    collect_heredoc_openers "$line"
-    while [ "$before" -lt "${#hd_delims[@]}" ]; do
-      hd_lines+=("$((line_no + 1))")
-      before=$((before + 1))
-    done
+    hd_note_openers "$line" "$((line_no + 1))"
   done
   # Insertion point, with the stock-skel reachability rule. On
   # Debian/Ubuntu homes the stock .bashrc (/etc/skel/.bashrc) returns
@@ -1506,7 +2198,7 @@ install_env_block() {
   # there. A block already at or before the guard keeps its position,
   # so the relocated layout is the fixed point: re-runs stay
   # byte-identical on stock and guard-free homes alike.
-  local block_at=$insert_at guard_at=-1 scan rtrim opener
+  local block_at=$insert_at guard_at=-1 scan rtrim opener rest
   # Guard recognition is region-based: a noninteractive test whose
   # controlled statement is on the same line or in the body of the
   # following if/case is a guard, wherever the opener sits on that line.
@@ -1516,10 +2208,24 @@ install_env_block() {
   # candidate so its `return` arm can close the region. Heredoc body
   # lines are skipped via flags from the splitter above.
   local -a struct_stack=() region_stack=()
-  local region_start=-1
+  local region_start=-1 logical logical_start
   for ((scan = 0; scan < ${#kept[@]}; scan++)); do
     [ "${kept_body[scan]}" -eq 1 ] && continue
-    trimmed="${kept[scan]#"${kept[scan]%%[![:space:]]*}"}"
+    # A command split across physical lines by trailing backslashes
+    # is one logical line (a guard such as `case $- \` / `in ...` is
+    # recognized as written): the scan reads the joined text, and a
+    # guard found in it lands before its FIRST physical line, so the
+    # block never splits a continued command. kept[] itself stays
+    # verbatim. A heredoc body line is never a continuation piece.
+    logical="${kept[scan]}"
+    logical_start=$scan
+    while line_continues "${kept[scan]}" &&
+      [ $((scan + 1)) -lt ${#kept[@]} ] &&
+      [ "${kept_body[scan + 1]}" -eq 0 ]; do
+      logical="${logical%\\}${kept[scan + 1]}"
+      scan=$((scan + 1))
+    done
+    trimmed="${logical#"${logical%%[![:space:]]*}"}"
     rtrim="${trimmed%"${trimmed##*[![:space:]]}"}"
     case "$rtrim" in
     '#'*) continue ;;
@@ -1527,31 +2233,32 @@ install_env_block() {
     opener=""
     if opener=$(ctrl_opener_closer "$rtrim"); then :; else opener=""; fi
 
-    # A closer pops both stacks; the candidate region ends when its own
-    # opener is popped.
-    if [ "${#struct_stack[@]}" -gt 0 ]; then
-      if ctrl_closer_line "$rtrim" "${struct_stack[${#struct_stack[@]} - 1]}"; then
-        unset 'struct_stack[${#struct_stack[@]}-1]'
-        struct_stack=("${struct_stack[@]}")
-        if [ "${#region_stack[@]}" -gt 0 ]; then
-          unset 'region_stack[${#region_stack[@]}-1]'
-          region_stack=("${region_stack[@]}")
-          if [ "${#region_stack[@]}" -eq 0 ]; then
-            # The region ends on this line, and its controlled
-            # statement can share the line (`*) return;; esac`):
-            # inspect the line before discarding the region, or the
-            # guard is missed and the block strands behind it.
-            case "$rtrim" in
-            *return*)
-              guard_at=$region_start
-              break
-              ;;
-            esac
-            region_start=-1
-          fi
+    # Each closer on the line pops both stacks, left to right
+    # (ctrl_closer_line prints what follows the closer it popped); the
+    # candidate region ends when its own opener is popped.
+    rest="$rtrim"
+    while [ "${#struct_stack[@]}" -gt 0 ] &&
+      rest=$(ctrl_closer_line "$rest" "${struct_stack[${#struct_stack[@]} - 1]}"); do
+      unset 'struct_stack[${#struct_stack[@]}-1]'
+      struct_stack=("${struct_stack[@]}")
+      if [ "${#region_stack[@]}" -gt 0 ]; then
+        unset 'region_stack[${#region_stack[@]}-1]'
+        region_stack=("${region_stack[@]}")
+        if [ "${#region_stack[@]}" -eq 0 ]; then
+          # The region ends on this line, and its controlled
+          # statement can share the line (`*) return;; esac`):
+          # inspect the line before discarding the region, or the
+          # guard is missed and the block strands behind it.
+          case "$rtrim" in
+          *return*)
+            guard_at=$region_start
+            break 2
+            ;;
+          esac
+          region_start=-1
         fi
       fi
-    fi
+    done
 
     if [ "$region_start" -ge 0 ]; then
       # Inside a candidate region: any return is the guard's controlled
@@ -1569,13 +2276,13 @@ install_env_block() {
       # One-line guards (Arch/PS1 forms, braced or not).
       case "$rtrim" in
       *return*)
-        guard_at=$scan
+        guard_at=$logical_start
         break
         ;;
       esac
       # Multi-line guard: remember the opener; its body decides.
       if [ -n "$opener" ]; then
-        region_start=$scan
+        region_start=$logical_start
         region_stack+=("$opener")
       fi
     fi
@@ -1595,14 +2302,44 @@ install_env_block() {
     insert_at=${#kept[@]}
   fi
 
-  # Damage outside the block: the kept content must parse as shell.
-  # The atomic write below makes a torn file unreachable from this
-  # script's own writes, so unparseable kept content means an outside
-  # writer tore the file — fail, naming the file and the backup,
-  # rather than silently "repairing" over lost user content.
-  if [ "${#kept[@]}" -gt 0 ] &&
-    ! printf '%s\n' "${kept[@]}" | bash -n >/dev/null 2>&1; then
-    fail env "$bashrc is damaged outside the re-runtime block (kept content fails bash -n); refusing to rewrite it; as-found backup at $bak"
+  # Damage outside the block: the kept content must parse the way the
+  # login shell that reads it parses it. A normal login shell has
+  # extglob OFF, so extglob syntax is a parse error unless the file
+  # itself turned it on earlier (`shopt -s extglob`). bash -n on the
+  # whole stream reports the first offending line, so: parse with the
+  # default options; if that fails, accept only when an enabling shopt
+  # line precedes the error and the content then parses with extglob
+  # enabled. Otherwise the kept content is damaged — the atomic write
+  # below makes a torn file unreachable from this script's own writes,
+  # so fail, naming the file and the backup, rather than silently
+  # "repairing" over lost user content.
+  if [ "${#kept[@]}" -gt 0 ]; then
+    local parse_err parse_line eg_on=0 eg_ln eg_line
+    if ! parse_err="$(printf '%s\n' "${kept[@]}" | bash -n 2>&1)"; then
+      parse_line="$(printf '%s\n' "$parse_err" |
+        sed -n 's/.*: line \([0-9][0-9]*\):.*/\1/p' | head -n 1)"
+      if [ -n "$parse_line" ]; then
+        for ((eg_ln = 0; eg_ln < ${#kept[@]} && eg_ln < parse_line - 1; eg_ln++)); do
+          [ "${kept_body[eg_ln]:-0}" = 1 ] && continue
+          eg_line="${kept[eg_ln]}"
+          eg_line="${eg_line#"${eg_line%%[![:space:]]*}"}"
+          case "$eg_line" in
+          shopt[[:space:]]-s[[:space:]]extglob* | \
+            shopt[[:space:]]-so[[:space:]]extglob* | \
+            shopt[[:space:]]-s[[:space:]]-o[[:space:]]extglob*)
+            eg_on=1
+            ;;
+          shopt[[:space:]]-u[[:space:]]*extglob)
+            eg_on=0
+            ;;
+          esac
+        done
+      fi
+      if [ "$eg_on" -ne 1 ] ||
+        ! printf '%s\n' "${kept[@]}" | bash -O extglob -n >/dev/null 2>&1; then
+        fail env "$bashrc is damaged outside the re-runtime block (kept content fails bash -n under the login shell's shell options); refusing to rewrite it; as-found backup at $bak"
+      fi
+    fi
   fi
   # bash -n exits 0 with only a warning on an unterminated heredoc, so
   # the syntax check above cannot catch it. The scan already knows: a
@@ -1645,22 +2382,27 @@ install_env_block() {
 
   # Compose the new file in a same-directory temp file, fsync it,
   # then install it by atomic mv — a crash leaves the old file or the
-  # new one, never a torn one. The temp file is created fresh by the
-  # redirection below, so it carries 0666 & ~umask: without the chmod
-  # after composing, the rename would silently replace an existing
-  # .bashrc's permissions with the umask default (a 0600 .bashrc
-  # becomes 0644 under umask 022, exposing previously private shell
-  # configuration on a traversable home). Capture the existing file's
-  # mode and carry it onto the temp file; with no pre-existing .bashrc
-  # there is no mode to preserve and the temp keeps its umask-derived
-  # mode. The stat must dereference (-L): for a symlinked .bashrc the
-  # plain stat reports the link's own mode (0777), and the rename would
+  # new one, never a torn one. The temp file comes from mktemp (a
+  # fresh, unpredictable name created exclusively with mode 0600), so
+  # a symlink planted at a guessable path in $HOME is never followed
+  # (issue #207), and every failure past this point removes it
+  # (fail_rm). Its mode is set explicitly: left alone, the rename
+  # would silently replace an existing .bashrc's permissions with
+  # mktemp's 0600 (a 0644 .bashrc would become private, and a fresh
+  # one would ignore the user's umask). Capture the existing file's
+  # mode and carry it onto the temp file; with no pre-existing
+  # .bashrc, apply the umask-derived mode a plain redirection would
+  # have produced. The
+  # stat must dereference (-L): for a symlinked .bashrc the plain
+  # stat reports the link's own mode (0777), and the rename would
   # install a world-writable file (Codex P1 on PR #135).
   local i bashrc_mode=""
   if [ -e "$bashrc" ]; then
     bashrc_mode=$(stat -L -c %a "$bashrc") || fail env "cannot stat $bashrc"
+  else
+    bashrc_mode=$(printf '%o' $((0666 & ~$(umask))))
   fi
-  rm -f "$tmp"
+  tmp=$(mktemp "$HOME/.bashrc.install-re-runtime.XXXXXX") || fail env "cannot create a temp file in $HOME"
   # shellcheck disable=SC2016 # the composed block must contain literal $HOME/$PATH — they expand in the login shell that reads it, not at install time
   {
     for ((i = 0; i < insert_at; i++)); do
@@ -1676,12 +2418,23 @@ install_env_block() {
     for ((i = insert_at; i < ${#kept[@]}; i++)); do
       printf '%s\n' "${kept[i]}"
     done
-  } >"$tmp" || fail env "cannot compose new .bashrc in $tmp"
-  if [ -n "$bashrc_mode" ]; then
-    chmod "$bashrc_mode" "$tmp" || fail env "cannot apply permissions $bashrc_mode to $tmp"
+  } >"$tmp" || fail_rm "$tmp" env "cannot compose new .bashrc in $tmp"
+  chmod "$bashrc_mode" "$tmp" || fail_rm "$tmp" env "cannot apply permissions $bashrc_mode to $tmp"
+  sync "$tmp" || fail_rm "$tmp" env "cannot fsync $tmp"
+  # Compare-and-swap guard: the temp file was composed from the snapshot
+  # read at the top of this function. If .bashrc changed since then (an
+  # editor save, another installer, a hand edit), installing the temp
+  # file would silently discard that edit, so refuse and leave the file
+  # as the other writer left it.
+  local now_snapshot=""
+  if [ -e "$bashrc" ]; then
+    now_snapshot="$(cksum <"$bashrc" 2>/dev/null)" ||
+      fail_rm "$tmp" env "cannot re-read $bashrc to check for concurrent edits"
   fi
-  sync "$tmp" || fail env "cannot fsync $tmp"
-  mv "$tmp" "$bashrc" || fail env "cannot install new .bashrc over $bashrc"
+  if [ "$now_snapshot" != "$bashrc_snapshot" ]; then
+    fail_rm "$tmp" env "$bashrc changed while the re-runtime block was being composed (concurrent edit); refusing to replace it — re-run the installer"
+  fi
+  mv "$tmp" "$bashrc" || fail_rm "$tmp" env "cannot install new .bashrc over $bashrc"
   ENV_OUTCOME="ok"
   ok env
 }
@@ -2913,7 +3666,7 @@ EOF
 export EDITOR=vim
 alias ll='ls -l'
 EOF
-  printf '# user profile\n' >"$envhome/.profile"
+  printf '# user profile\n. ~/.bashrc\n' >"$envhome/.profile"
   cp "$envhome/.bashrc" "$selftest_root/env-a-orig"
   out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
   cp "$envhome/.bashrc" "$selftest_root/env-a-run1"
@@ -2936,11 +3689,11 @@ EOF
   fi
   report_stage env-block-idempotent "$pass"
 
-  # (b) A pre-existing user .profile is never modified, and the block
-  # header records it as pre-existing.
+  # (b) A pre-existing user .profile that sources .bashrc is never
+  # modified, and the block header records it as pre-existing.
   reset_env
   printf '# user bashrc\nexport EDITOR=vim\n' >"$envhome/.bashrc"
-  printf '# my own profile\nexport PROFILE_SENTINEL=1\n' >"$envhome/.profile"
+  printf '# my own profile\nexport PROFILE_SENTINEL=1\n. ~/.bashrc\n' >"$envhome/.profile"
   cp "$envhome/.profile" "$selftest_root/env-b-profile"
   out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
   pass=0
@@ -2950,6 +3703,21 @@ EOF
     pass=1
   fi
   report_stage env-profile-pre-existing "$pass"
+
+  # (b2) A pre-existing user .profile that does NOT source .bashrc
+  # triggers the #197 shadowing SKIP and leaves .profile untouched.
+  reset_env
+  printf '# user bashrc\nexport EDITOR=vim\n' >"$envhome/.bashrc"
+  printf '# my own profile\nexport PROFILE_SENTINEL=1\n' >"$envhome/.profile"
+  cp "$envhome/.profile" "$selftest_root/env-b2-profile"
+  out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
+  pass=0
+  if [ "$rc" -eq 0 ] &&
+    cmp -s "$selftest_root/env-b2-profile" "$envhome/.profile" &&
+    printf '%s\n' "$out" | grep -qF "INSTALL-RE: env SKIP: login startup is shadowed by $envhome/.profile"; then
+    pass=1
+  fi
+  report_stage env-profile-non-sourcing-skip "$pass"
 
   # (c) With no .profile, one is created sourcing ~/.bashrc, the header
   # records the creation, and a second run stays byte-identical (the
@@ -2983,7 +3751,7 @@ EOF
   # recorded value.
   reset_env
   printf '# user bashrc\nexport EDITOR=vim\n' >"$envhome/.bashrc"
-  printf '# user profile\n' >"$envhome/.profile"
+  printf '# user profile\n. ~/.bashrc\n' >"$envhome/.profile"
   out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
   pass=0
   if [ "$rc" -eq 0 ] &&
@@ -3012,7 +3780,7 @@ export EDITOR=vim
 # >>> re-runtime >>>
 export JAVA_HOME="$HOME/opt/jdk-25.0.4.1+1"
 EOF
-  printf '# user profile\n' >"$envhome/.profile"
+  printf '# user profile\n. ~/.bashrc\n' >"$envhome/.profile"
   out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
   pass=0
   # shellcheck disable=SC2016 # the grep pattern matches the composed block's literal line
@@ -3149,7 +3917,7 @@ export PATH="$JAVA_HOME/bin:$GHIDRA_INSTALL_DIR/support:$HOME/opt/radare2/bin:$P
 export LD_LIBRARY_PATH="$HOME/opt/radare2/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 # <<< re-runtime <<<
 EOF
-  printf '# user profile\n' >"$envhome/.profile"
+  printf '# user profile\n. ~/.bashrc\n' >"$envhome/.profile"
   cp "$envhome/.bashrc" "$selftest_root/env-i-orig"
   out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
   cp "$envhome/.bashrc" "$selftest_root/env-i-run1"
@@ -3188,7 +3956,7 @@ esac
 SCRIPT
 export EDITOR=vim
 EOF
-  printf '# user profile\n' >"$envhome/.profile"
+  printf '# user profile\n. ~/.bashrc\n' >"$envhome/.profile"
   cp "$envhome/.bashrc" "$selftest_root/env-j-orig"
   out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
   cp "$envhome/.bashrc" "$selftest_root/env-j-run1"
@@ -3234,7 +4002,7 @@ esac
 
 export EDITOR=vim
 EOF
-  printf '# user profile\n' >"$envhome/.profile"
+  printf '# user profile\n. ~/.bashrc\n' >"$envhome/.profile"
   out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
   cp "$envhome/.bashrc" "$selftest_root/env-k-run1"
   out2=$(run_env install_env_block 2>&1) && rc2=0 || rc2=$?
@@ -3281,7 +4049,7 @@ esac
 
 export EDITOR=vim
 FIXTURE
-  printf '# user profile\n' >"$envhome/.profile"
+  printf '# user profile\n. ~/.bashrc\n' >"$envhome/.profile"
   out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
   cp "$envhome/.bashrc" "$selftest_root/env-l-run1"
   out2=$(run_env install_env_block 2>&1) && rc2=0 || rc2=$?
@@ -3323,7 +4091,7 @@ esac
 
 export EDITOR=vim
 FIXTURE
-  printf '# user profile\n' >"$envhome/.profile"
+  printf '# user profile\n. ~/.bashrc\n' >"$envhome/.profile"
   out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
   cp "$envhome/.bashrc" "$selftest_root/env-m-run1"
   out2=$(run_env install_env_block 2>&1) && rc2=0 || rc2=$?
@@ -3368,7 +4136,7 @@ esac
 
 export EDITOR=vim
 FIXTURE
-  printf '# user profile\n' >"$envhome/.profile"
+  printf '# user profile\n. ~/.bashrc\n' >"$envhome/.profile"
   out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
   cp "$envhome/.bashrc" "$selftest_root/env-n-run1"
   out2=$(run_env install_env_block 2>&1) && rc2=0 || rc2=$?
@@ -3409,7 +4177,7 @@ case $- in
 esac
 export EDITOR=vim
 FIXTURE
-  printf '# user profile\n' >"$envhome/.profile"
+  printf '# user profile\n. ~/.bashrc\n' >"$envhome/.profile"
   out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
   cp "$envhome/.bashrc" "$selftest_root/env-o-run1"
   out2=$(run_env install_env_block 2>&1) && rc2=0 || rc2=$?
@@ -3454,7 +4222,7 @@ esac
 
 export EDITOR=vim
 FIXTURE
-  printf '# user profile\n' >"$envhome/.profile"
+  printf '# user profile\n. ~/.bashrc\n' >"$envhome/.profile"
   out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
   cp "$envhome/.bashrc" "$selftest_root/env-p-run1"
   out2=$(run_env install_env_block 2>&1) && rc2=0 || rc2=$?
@@ -3499,7 +4267,7 @@ esac
 
 export EDITOR=vim
 FIXTURE
-  printf '# user profile\n' >"$envhome/.profile"
+  printf '# user profile\n. ~/.bashrc\n' >"$envhome/.profile"
   out=$(run_env install_env_block 2>&1) && rc=0 || rc=$?
   cp "$envhome/.bashrc" "$selftest_root/env-q-run1"
   out2=$(run_env install_env_block 2>&1) && rc2=0 || rc2=$?
