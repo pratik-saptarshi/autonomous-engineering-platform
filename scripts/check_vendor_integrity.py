@@ -32,7 +32,17 @@ def discover_trees(root: Path):
     ref = root / "reference"
     if not ref.is_dir():
         return set()
-    return {p.name for p in ref.iterdir() if p.is_dir()}
+    # A tree root that is a symlink is not vendored content: following it
+    # would accept an external directory as long as its hashes match.
+    return {p.name for p in ref.iterdir()
+            if p.is_dir() and not p.is_symlink()}
+
+
+def discover_symlinked_trees(root: Path):
+    ref = root / "reference"
+    if not ref.is_dir():
+        return []
+    return sorted(p.name for p in ref.iterdir() if p.is_symlink())
 
 
 def discover_manifests(root: Path):
@@ -105,6 +115,9 @@ def sha256_file(path: Path):
 def check_tree(root: Path, name: str):
     findings = []
     tree = root / "reference" / name
+    if tree.is_symlink():
+        return [f"[{name}] tree root is a symlink: vendor trees must be "
+                "real directories under reference/"]
     manifest = root / ".github" / f"{MANIFEST_PREFIX}{name}{MANIFEST_SUFFIX}"
     entries, errors = parse_manifest(manifest)
     findings.extend(f"[{name}] {e}" for e in errors)
@@ -156,6 +169,10 @@ def main(argv=None):
     findings = []
     if not trees:
         findings.append("no vendored trees found under reference/")
+    for n in discover_symlinked_trees(root):
+        findings.append(
+            f"reference/{n} is a symlink: vendor trees must be real "
+            "directories under reference/")
     for n in sorted(trees - manifests):
         findings.append(
             f"reference/{n}/ has no manifest: expected .github/{MANIFEST_PREFIX}{n}{MANIFEST_SUFFIX}"

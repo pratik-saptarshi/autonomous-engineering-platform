@@ -144,6 +144,24 @@ class VendorIntegrityTest(unittest.TestCase):
         self.assertIn("escape-link", out)
         self.assertIn("escapes", out)
 
+    def test_symlinked_tree_root_fails(self):
+        # An external directory with matching hashes must not pass as a
+        # vendored tree just because the manifest agrees with it.
+        ext = self.root / "external" / "gamma"
+        ext.mkdir(parents=True)
+        (ext / "a.txt").write_bytes(b"alpha\n")
+        (ext / "PROVENANCE.md").write_text("# provenance\n")
+        lines = [f"{sha(b'alpha\n')}  ./a.txt",
+                 f"{sha(b'# provenance\n')}  ./PROVENANCE.md"]
+        (self.root / ".github" / "vendor-gamma.sha256").write_text(
+            "\n".join(sorted(lines)) + "\n")
+        os.symlink(ext, self.root / "reference" / "gamma")
+        r = self.run_check()
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        out = r.stdout + r.stderr
+        self.assertIn("gamma", out)
+        self.assertIn("symlink", out)
+
     def test_duplicate_manifest_entry_fails(self):
         self.add_tree("alpha")
         manifest = self.root / ".github" / "vendor-alpha.sha256"
