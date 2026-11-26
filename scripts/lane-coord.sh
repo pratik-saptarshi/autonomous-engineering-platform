@@ -69,14 +69,15 @@
 #     determined same-uid process.
 set -euo pipefail
 
-# Linux-only paths: flock(1) and /proc have no Darwin equivalents, so
-# refuse early instead of failing mid-run. The skip stays successful
+# Linux-only paths: flock(1) and /proc have no Darwin or Windows
+# (Git Bash: MINGW64_NT-*, MSYS_NT-*) equivalents, so refuse early on
+# anything that is not Linux instead of failing mid-run. The skip stays successful
 # for --self-test only (a skipped suite is a pass); operational
 # commands exit nonzero, because callers read a claim's exit status
 # to decide whether the lane started (skills/overnight-parallel-lanes:
 # a non-zero claim exit means the lane does not start) — a successful
 # skip here would report unexecuted work as done.
-if [ "$(uname)" = "Darwin" ]; then
+if [ "$(uname -s)" != "Linux" ]; then
   echo "SKIP: lane-coord requires flock/proc (Linux-only)"
   if [ "${1:-}" = "--self-test" ]; then
     exit 0
@@ -2685,26 +2686,31 @@ PYEOF
   report_case "clean-refuses-manifest-missing-required-field"
 
   # --- Case: darwin-skip-nonzero-for-operational-commands ---
-  # The Darwin guard (top of file) skips the whole script on macOS.
-  # The skip must stay successful for --self-test only: operational
-  # commands exit nonzero, so a caller reading a claim's exit status
-  # never mistakes unexecuted work for a started lane (Codex P2).
-  # uname is stubbed to Darwin; the guard fires before any state is
-  # touched, so the operational probe needs no fixture claim.
-  local darwin_stubs="$selftest_root/darwin-stubs"
-  mkdir -p "$darwin_stubs"
-  printf '#!/usr/bin/env bash\necho Darwin\n' >"$darwin_stubs/uname"
-  chmod +x "$darwin_stubs/uname"
-  local out34="$selftest_root/out34.txt" out35="$selftest_root/out35.txt" rc34=0 rc35=0
-  PATH="$darwin_stubs:$PATH" bash "$self_path" --self-test >"$out34" 2>&1 || rc34=$?
-  [ "$rc34" -eq 0 ] || case_fails=1
-  grep -qF "SKIP: lane-coord requires flock/proc (Linux-only)" "$out34" || case_fails=1
-  PATH="$darwin_stubs:$PATH" bash "$self_path" claim --repo "$repo" --project omega \
-    --lane darwin --branch br-darwin --base HEAD --worker wdarwin \
-    --exec true >"$out35" 2>&1 || rc35=$?
-  [ "$rc35" -eq 1 ] || case_fails=1
-  grep -qF "SKIP: lane-coord requires flock/proc (Linux-only)" "$out35" || case_fails=1
-  [ ! -e "$LANES_DIR/omega-darwin.json" ] || case_fails=1
+  # The non-Linux guard (top of file) skips the whole script on macOS
+  # (Darwin) and on Windows Git Bash (MINGW64_NT-*, MSYS_NT-*). The skip
+  # must stay successful for --self-test only: operational commands exit
+  # nonzero, so a caller reading a claim's exit status never mistakes
+  # unexecuted work for a started lane (Codex P2). uname is stubbed per
+  # platform name; the guard fires before any state is touched, so the
+  # operational probe needs no fixture claim. Case name is kept stable.
+  local plat plat_i=0
+  for plat in Darwin MINGW64_NT-10.0 MSYS_NT-10.0; do
+    plat_i=$((plat_i + 1))
+    local plat_stubs="$selftest_root/uname-stubs-$plat_i"
+    mkdir -p "$plat_stubs"
+    printf '#!/usr/bin/env bash\necho %s\n' "$plat" >"$plat_stubs/uname"
+    chmod +x "$plat_stubs/uname"
+    local out34="$selftest_root/out34-$plat_i.txt" out35="$selftest_root/out35-$plat_i.txt" rc34=0 rc35=0
+    PATH="$plat_stubs:$PATH" bash "$self_path" --self-test >"$out34" 2>&1 || rc34=$?
+    [ "$rc34" -eq 0 ] || case_fails=1
+    grep -qF "SKIP: lane-coord requires flock/proc (Linux-only)" "$out34" || case_fails=1
+    PATH="$plat_stubs:$PATH" bash "$self_path" claim --repo "$repo" --project omega \
+      --lane "plat$plat_i" --branch "br-plat$plat_i" --base HEAD --worker "wplat$plat_i" \
+      --exec true >"$out35" 2>&1 || rc35=$?
+    [ "$rc35" -eq 1 ] || case_fails=1
+    grep -qF "SKIP: lane-coord requires flock/proc (Linux-only)" "$out35" || case_fails=1
+    [ ! -e "$LANES_DIR/omega-plat$plat_i.json" ] || case_fails=1
+  done
   report_case "darwin-skip-nonzero-for-operational-commands"
 
   return "$fails"
