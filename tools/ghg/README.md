@@ -169,9 +169,18 @@ caller still sees the child's exit code, plus a loud stderr
 warning — never a masked success that invites a duplicate create.
 
 Privacy: argv is stored with the values of `--body`, `--title`,
-`-m`/`--message`, and `--body-file` replaced by
-`<redacted len=N>` at write time. Response bodies and credentials
-are never stored.
+`-m`/`--message`, `--body-file`, `-H`/`--header` and the `gh api`
+payload flags `-f`/`--field`, `-F`/`--raw-field` and `--input`
+replaced by `<redacted len=N>` at write time, in the separate
+(`-f key=v`), `=` (`--field=key=v`) and attached (`-fkey=v`)
+spellings. The shim's `fallback.log` applies the same flag set (as
+a bare `<redacted>`, without the length). Response bodies and
+credentials are never stored. The state dir itself is created
+owner-only (`0700`) by both `ghg.py` and the shim when it does not
+exist. An existing directory is never chmodded -- it may be shared,
+or be the working directory (`GHG_STATE_DIR=.`) -- so the ledger,
+its `-wal`/`-shm` side files, and `fallback.log` are created and
+tightened to `0600` instead.
 
 ## The fence — known ungated vectors, by name
 
@@ -214,6 +223,29 @@ and paths are deliberately left ungated today:
   PAT-expiry reminder (fired 2026-10-19) instructed a human-run
   `gh auth status` check. It has expired and was never an
   unattended caller; named here for completeness.
+
+Environment knobs that move the fence itself:
+
+- `GHG_BYPASS=1` — skips the caps for that call (see
+  [Bypass](#bypass)); the call is still ledgered as `bypass` and
+  counted in `ghg status` and the drift check. An operator
+  decision, never an agent default.
+- `GHG_LIMITS_JSON` — JSON object overriding the per-bucket caps,
+  e.g. `{"search": [[60, 5]]}` (bucket -> `[window_seconds, cap]`
+  pairs). It is merged over the built-in defaults, so buckets it
+  does not mention keep their default caps. It **fails closed**:
+  malformed JSON, a non-object root, an empty window list
+  (`{"core": []}`), or any window or cap that is not a positive
+  integer (zero, negative, boolean) rejects the *entire* override,
+  prints a warning on stderr naming the reason, and applies the
+  built-in defaults. An override can only **tighten**: every
+  built-in window of a named bucket must be present, no new window
+  may be added, and each cap must be at most the built-in cap, so
+  an agent that can set this variable cannot raise its own budget.
+- `GHG_REAL_GH` — path of the real `gh` that `ghg` and the shim
+  exec (default `/usr/bin/gh`). Whoever controls it controls what
+  actually runs, so it is a trust boundary: set it only to a
+  binary you trust (the test suite points it at a stub).
 
 The two standing unattended callers found by the adoption census
 — the DAP build crons `dap-build-check-3h` and `dap-nightly-build`
