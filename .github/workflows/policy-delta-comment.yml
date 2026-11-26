@@ -91,6 +91,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
           HEAD_SHA: ${{ github.event.workflow_run.pull_requests[0].head.sha }}
           RUN_URL: ${{ github.event.workflow_run.html_url }}
         run: |
@@ -108,6 +110,15 @@ jobs:
           live_head="$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq .head.sha)"
           if [ "$live_head" != "$HEAD_SHA" ]; then
             echo "PR head moved to $live_head (this run is $HEAD_SHA); skipping stale comment upsert."
+            exit 0
+          fi
+          # A body edit produces a second Policy Delta run on the SAME head
+          # SHA, and both comment jobs pass the head check. Only the latest
+          # run may publish: an older report must not overwrite the newer
+          # acknowledgement status.
+          latest_run="$(gh api "repos/$REPO/actions/workflows/policy-delta.yml/runs?branch=$HEAD_BRANCH&event=pull_request&per_page=1" --jq '.workflow_runs[0].id')"
+          if [ "$latest_run" != "$RUN_ID" ]; then
+            echo "run $RUN_ID is superseded by $latest_run for $HEAD_BRANCH; not writing."
             exit 0
           fi
           python3 scripts/format_policy_delta_comment.py format \
