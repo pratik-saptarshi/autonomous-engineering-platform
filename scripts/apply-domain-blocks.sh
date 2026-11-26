@@ -288,14 +288,26 @@ while read -r tool ip; do
     reconcile_failed=1
     continue
   fi
-  if "$tool" -C OUTPUT -d "$ip" -j DROP 2>/dev/null; then
+  check_rc=0
+  "$tool" -C OUTPUT -d "$ip" -j DROP 2>/dev/null || check_rc=$?
+  case "$check_rc" in
+  0)
     if "$tool" -D OUTPUT -d "$ip" -j DROP 2>/dev/null; then
       echo "unblocked (rotated away): $ip"
     else
       echo "ERROR: could not remove the stale $tool drop for $ip; ownership retained for the next run" >&2
       reconcile_failed=1
     fi
-  fi
+    ;;
+  1) ;;
+  # -C exit 1 means the rule is absent; anything else is an operational error
+  # (for example xtables lock contention). Never drop ownership on an error:
+  # the DROP may still be installed.
+  *)
+    echo "ERROR: could not check the stale $tool drop for $ip (exit $check_rc); ownership retained for the next run" >&2
+    reconcile_failed=1
+    ;;
+  esac
 done <"$PREV_PAIRS"
 
 if [ "$reconcile_failed" -ne 0 ]; then
