@@ -3150,9 +3150,14 @@ class CoreDeltaTests(SyntheticRepo):
         head10 = self.commit("named-container-literal-rebind-may")
         r = self.run_tool("diff", self.base, head10)
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
-        # Precision, disqualifier rule lock: a rebind through a
-        # Name disqualifies the name, so it does not resolve
-        # and runtime reaches only sorted.
+        # Disqualifier rule lock (local-callee channel): a rebind
+        # through a Name disqualifies the name from LOCAL-callee
+        # resolution, so the local-callee check alone does not fire
+        # here. Issue #149 Layer 3 closes the remaining gap: the
+        # call is flow-insensitively ambiguous between the local
+        # mutator `_uncap` and `sorted`, and an unprovable callee
+        # receiving a table is refused. (Previously exit 0; the
+        # stricter answer is intentional -- the safe direction.)
         self.write("tools/ghg/ghg.py", GHG_PY +
                    '\ndef _uncap(caps):\n    caps.clear()\n'
                    '\n_helpers = [sorted]\n'
@@ -3161,6 +3166,17 @@ class CoreDeltaTests(SyntheticRepo):
                    '_runs[0](DEFAULT_LIMITS)\n')
         head11 = self.commit("named-container-name-rebind-disqualified")
         r = self.run_tool("diff", self.base, head11)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("external or unknown callable", r.stderr)
+        # Precision: the same rebind shape with no local callee in
+        # any binding reaches only read-only callables and passes.
+        self.write("tools/ghg/ghg.py", GHG_PY +
+                   '\n_helpers = [sorted]\n'
+                   '_runs = [len]\n'
+                   '_runs = _helpers\n'
+                   '_runs[0](DEFAULT_LIMITS)\n')
+        head11b = self.commit("named-container-name-rebind-readonly")
+        r = self.run_tool("diff", self.base, head11b)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         # Attack: a container of a callee alias settles in the
         # same fixpoint as the alias itself.
@@ -4760,6 +4776,351 @@ class CoreDeltaTests(SyntheticRepo):
         self.assertEqual(d["newly_allowed"], [])
 
 
+class BoundaryLayerTests(SyntheticRepo):
+    """Issue #149: the three residual ghg mutation boundaries.
+
+    Layer 1 -- dynamic indirection (eval/exec/globals/vars/locals,
+    aliased or via builtins; getattr/setattr/delattr on a watched
+    table, a module object, or by the table's own name).
+    Layer 2 -- builtin-constructor shallow copies (dict(T), list(T.values()),
+    copy.copy, ...) share the inner bucket lists with the table.
+    Layer 3 -- a watched table handed to an imported / unknown builtin
+    callable (operator.delitem, ...) outside a small read-only allowlist.
+
+    Every refusal is exit 2 (the gate fails closed); every precision
+    control must still pass, and the real tools/ghg/ghg.py must stay
+    accepted (the replay corpus covers the historical versions).
+    """
+
+    def refuses(self, snippet, label):
+        self.write("tools/ghg/ghg.py", GHG_PY + snippet)
+        head = self.commit(label)
+        r = self.run_tool("diff", self.base, head)
+        self.assertEqual(r.returncode, 2, f"{label}: {r.stdout}{r.stderr}")
+        self.assertIn("modelled power is mutated at runtime",
+                      r.stderr, label)
+
+    def accepts(self, snippet, label):
+        self.write("tools/ghg/ghg.py", GHG_PY + snippet)
+        head = self.commit(label)
+        r = self.run_tool("diff", self.base, head)
+        self.assertIn(r.returncode, (0, 1), f"{label}: {r.stdout}{r.stderr}")
+
+    # ---- Layer 1: dynamic indirection
+    def test_layer1_dynamic_indirection_refused(self):
+        cases = {
+            "eval": '\neval("DEFAULT_LIMITS.clear()")\n',
+            "exec": '\nexec("DEFAULT_LIMITS.clear()")\n',
+            "globals-call": '\nglobals()["DEFAULT_LIMITS"].clear()\n',
+            "vars-call": '\nvars()["DEFAULT_LIMITS"].clear()\n',
+            "vars-mutating-set": '\nvars()["_MUTATING_METHODS"].add("GET")\n',
+            "locals-module": '\nlocals()["DEFAULT_LIMITS"].clear()\n',
+            "aliased-globals": '\ng = globals\ng()["DEFAULT_LIMITS"].clear()\n',
+            "aliased-eval": '\n_e = eval\n_e("1")\n',
+            "walrus-alias": '\n(_v := vars)\n_v()\n',
+            "builtins-globals": '\nimport builtins\n'
+                                'builtins.globals()["DEFAULT_LIMITS"].clear()\n',
+            "builtins-as": '\nimport builtins as b\nb.exec("pass")\n',
+            "from-builtins": '\nfrom builtins import eval as _ev\n_ev("1")\n',
+            "import-module-builtins": '\nimport importlib\n'
+                                      'importlib.import_module("builtins").eval("1")\n',
+            "sysmodules-builtins": '\nimport sys\n'
+                                   'sys.modules["builtins"].exec("pass")\n',
+            "module-alias-attr": '\nimport builtins\n_b = builtins\n'
+                                 '_b.exec("pass")\n',
+            "dunder-builtins": '\n__builtins__["eval"]("1")\n',
+            "getattr-table": '\ngetattr(DEFAULT_LIMITS, "clear")()\n',
+            "getattr-alias": '\n_a = DEFAULT_LIMITS\ngetattr(_a, "clear")()\n',
+            "getattr-by-name": '\nimport sys\n'
+                               'getattr(sys.modules[__name__], '
+                               '"DEFAULT_LIMITS").clear()\n',
+            "getattr-module": '\nimport sys\n'
+                              '_m = sys.modules[__name__]\n'
+                              'getattr(_m, "x")\n',
+            "setattr-table": '\nsetattr(DEFAULT_LIMITS, "x", 1)\n',
+            "setattr-module": '\nimport sys\n'
+                              'setattr(sys.modules[__name__], '
+                              '"DEFAULT_LIMITS", {})\n',
+            "delattr-by-name": '\ndelattr(object(), "DEFAULT_LIMITS")\n',
+            "getattr-alias-captured": '\n_ga = getattr\n_ga(DEFAULT_LIMITS, "pop")("core")\n',
+            "frame-globals": '\nimport sys\n'
+                             'sys._getframe().f_globals["DEFAULT_LIMITS"].clear()\n',
+            "func-globals": '\ndef _f():\n    pass\n'
+                            '_f.__globals__["DEFAULT_LIMITS"].clear()\n',
+            "sysmodules-attr": '\nimport sys\n'
+                               'sys.modules[__name__].DEFAULT_LIMITS.clear()\n',
+            "sysmodules-rebind": '\nimport sys\n'
+                                 'sys.modules[__name__].DEFAULT_LIMITS = {}\n',
+            "self-import-ghg": '\nimport ghg\nghg.DEFAULT_LIMITS.clear()\n',
+            "import-main": '\nimport __main__\n__main__.DEFAULT_LIMITS = {}\n',
+            "operator-attrgetter": '\nimport operator, sys\n'
+                                   'operator.attrgetter("DEFAULT_LIMITS")'
+                                   '(sys.modules[__name__]).clear()\n',
+            "operator-methodcaller": '\nimport operator, builtins\n'
+                                     'operator.methodcaller("exec", "pass")(builtins)\n',
+            "dict-get-default": '\n{}.get("a", DEFAULT_LIMITS).clear()\n',
+            "max-default": '\nmax([], default=DEFAULT_LIMITS).clear()\n',
+            "augassign-list": '\n_l = []\n_l += [DEFAULT_LIMITS]\n_l[0].clear()\n',
+            "augassign-dict": '\n_d = {}\n_d |= {"t": DEFAULT_LIMITS}\n_d["t"].clear()\n',
+            "dunder-getitem": '\nclass _Box:\n'
+                              '    def __getitem__(self, k):\n'
+                              '        return DEFAULT_LIMITS\n'
+                              '_Box()[0].clear()\n',
+            "dunder-descriptor": '\nclass _Desc:\n'
+                                 '    def __get__(self, obj, tp=None):\n'
+                                 '        return DEFAULT_LIMITS\n',
+            "generator-yield": '\ndef _gen():\n    yield DEFAULT_LIMITS\n',
+            "cprofile-run": '\nimport cProfile\n'
+                            'cProfile.run("DEFAULT_LIMITS.clear()")\n',
+            # Peer-review regressions (PR #223). Each was a live bypass:
+            # the differ reported a literal-only delta while the change
+            # mutated a watched table at runtime.
+            "expanded-key-kwarg": '\nsorted(DEFAULT_LIMITS.values(), '
+                                  '**{"key": list.clear})\n',
+            "deepcopy-memo-kwarg": '\nimport copy\n'
+                                   'copy.deepcopy([], memo=DEFAULT_LIMITS)\n',
+            "deepcopy-memo-positional": '\nimport copy\n'
+                                        'copy.deepcopy([], DEFAULT_LIMITS)\n',
+            "isinstance-metaclass": '\nclass _M(type):\n'
+                                    '    def __instancecheck__(cls, inst):\n'
+                                    '        inst.clear()\n'
+                                    'isinstance(DEFAULT_LIMITS,\n'
+                                    '           type("_X", (_M,), {}))\n',
+            "globals-aliased-then-rebound": '\n_g = globals\n'
+                                            'globals = None\n'
+                                            '_g()["DEFAULT_LIMITS"].clear()\n',
+            "sysmodules-get": '\nimport sys\n'
+                              'sys.modules.get("builtins").exec("pass")\n',
+            "closurevars-globals": '\nimport inspect\n'
+                                   'def _f():\n    return DEFAULT_LIMITS\n'
+                                   'inspect.getclosurevars(_f)'
+                                   '.globals["DEFAULT_LIMITS"].clear()\n',
+            "attrgetter-alias": '\nimport operator, sys\n'
+                                '_ag = operator.attrgetter\n'
+                                '_ag("DEFAULT_LIMITS")'
+                                '(sys.modules[__name__]).clear()\n',
+            "methodcaller-alias": '\nimport operator, builtins\n'
+                                  '_mc = operator.methodcaller\n'
+                                  '_mc("exec", "pass")(builtins)\n',
+            "import-module-cprofile": '\nimport importlib\n'
+                                      'importlib.import_module("cProfile")'
+                                      '.run("DEFAULT_LIMITS.clear()")\n',
+            "import-module-alias": '\nimport importlib as _il\n'
+                                   '_il.import_module("cProfile")'
+                                   '.run("DEFAULT_LIMITS.clear()")\n',
+            "starred-table-arg": '\n_args = [DEFAULT_LIMITS]\n'
+                                 'sorted(*_args)\n',
+            "rebound-import-callee": '\nfrom json import dumps as _d\n'
+                                     '_d = lambda t: t.clear()\n'
+                                     '_d(DEFAULT_LIMITS)\n',
+            "unknown-method-receiver": '\ndef _f(obj):\n'
+                                       '    return obj.get("k", '
+                                       'DEFAULT_LIMITS)\n',
+            "subclass-method-receiver": '\nclass _X:\n'
+                                        '    def get(self, *a):\n'
+                                        '        DEFAULT_LIMITS.clear()\n'
+                                        '_X().get(DEFAULT_LIMITS)\n',
+        }
+        for label, snippet in cases.items():
+            with self.subTest(form=label):
+                self.refuses(snippet, label)
+
+    def test_rebinding_without_lineno_node_exits_2_cleanly(self):
+        cases = {
+            "with-as-table": '\nimport contextlib\n'
+                             'with contextlib.nullcontext(1) as DEFAULT_LIMITS:\n'
+                             '    pass\n',
+            "comp-target-table": '\n_x = [1 for DEFAULT_LIMITS in range(2)]\n',
+        }
+        if sys.version_info >= (3, 12):
+            cases["pep695-type-alias"] = '\ntype DEFAULT_LIMITS = int\n'
+            cases["pep695-type-param"] = '\ndef _f[DEFAULT_LIMITS]():\n    pass\n'
+        for label, snippet in cases.items():
+            with self.subTest(form=label):
+                self.write("tools/ghg/ghg.py", GHG_PY + snippet)
+                head = self.commit(label)
+                r = self.run_tool("diff", self.base, head)
+                self.assertEqual(r.returncode, 2, f"{label}: {r.stdout}{r.stderr}")
+                self.assertNotIn("Traceback", r.stderr, label)
+                # A generic catch-all must not mask a broken refusal:
+                # the diff has to name the table and the refusal reason.
+                self.assertIn("DEFAULT_LIMITS", r.stderr, label)
+                self.assertRegex(r.stderr,
+                                 r"rebound by|modelled power is mutated")
+
+    def test_layer1_precision_controls_pass(self):
+        cases = {
+            "getattr-unrelated": '\ndef _f(args):\n'
+                                 '    return getattr(args, "actor", None)\n',
+            "vars-as-param": '\ndef _f(vars):\n    return vars\n',
+            "eval-as-attr-of-obj": '\ndef _f(c):\n    return c.evaluate()\n',
+            "setattr-unrelated-ns": '\ndef _f(ns):\n'
+                                    '    setattr(ns, "k", 1)\n',
+        }
+        for label, snippet in cases.items():
+            with self.subTest(form=label):
+                self.accepts(snippet, label)
+
+    # ---- Layer 2: builtin-constructor shallow copies
+    def test_layer2_shallow_copies_share_inner_lists(self):
+        cases = {
+            "dict-copy-inner": '\nc = dict(DEFAULT_LIMITS)\nc["core"].clear()\n',
+            "dict-items-inner": '\nc = dict(DEFAULT_LIMITS.items())\n'
+                                'c["core"].append((1, 2))\n',
+            "list-values-inner": '\nv = list(DEFAULT_LIMITS.values())\n'
+                                 'v[0].clear()\n',
+            "tuple-values-inner": '\nv = tuple(DEFAULT_LIMITS.values())\n'
+                                  'v[0].clear()\n',
+            "sorted-values-inner": '\nv = sorted(DEFAULT_LIMITS.values())\n'
+                                   'v[0].clear()\n',
+            "list-items-inner": '\nv = list(DEFAULT_LIMITS.items())\n'
+                                'v[0][1].clear()\n',
+            "dict-alias": '\n_t = DEFAULT_LIMITS\nc = dict(_t)\n'
+                          'c["core"].clear()\n',
+            "dict-limits": '\nLIMITS = {bucket: list(pairs) '
+                           'for bucket, pairs in DEFAULT_LIMITS.items()}\n'
+                           'c = dict(LIMITS)\nc["core"].clear()\n',
+            "copy-of-copy": '\nc = dict(DEFAULT_LIMITS)\nd = dict(c)\n'
+                            'd["core"].clear()\n',
+            "loop-over-copy": '\nfor _v in list(DEFAULT_LIMITS.values()):\n'
+                              '    _v.clear()\n',
+            "loop-over-dict-copy": '\nfor _k, _v in dict(DEFAULT_LIMITS).items():\n'
+                                   '    _v.clear()\n',
+            "inline-subscript": '\ndict(DEFAULT_LIMITS)["core"].clear()\n',
+            "inline-list-values": '\nlist(DEFAULT_LIMITS.values())[0].append(1)\n',
+            "copy-copy": '\nimport copy\nc = copy.copy(DEFAULT_LIMITS)\n'
+                         'c["core"].clear()\n',
+            "from-copy-copy": '\nfrom copy import copy as _cp\n'
+                              'c = _cp(DEFAULT_LIMITS)\nc["core"].clear()\n',
+            "reversed-values": '\nv = list(reversed(list(DEFAULT_LIMITS.values())))\n'
+                               'v[0].clear()\n',
+            "next-iter-values": '\nnext(iter(DEFAULT_LIMITS.values())).clear()\n',
+            "max-values": '\nmax(DEFAULT_LIMITS.values(), key=len).clear()\n',
+            "enumerate-values": '\nfor _i, _v in enumerate(DEFAULT_LIMITS.values()):\n'
+                                '    _v.clear()\n',
+            "zip-values": '\nfor _a, _b in zip(DEFAULT_LIMITS.values(), [1]):\n'
+                          '    _a.clear()\n',
+            "dict-kwargs-merge": '\nc = dict(DEFAULT_LIMITS, extra=[])\n'
+                                 'c["core"].clear()\n',
+            "default-param-copy": '\ndef _f(c=dict(DEFAULT_LIMITS)):\n'
+                                  '    c["core"].clear()\n',
+            "return-copy": '\ndef _f():\n    return dict(DEFAULT_LIMITS)\n'
+                           '_f()["core"].clear()\n',
+        }
+        for label, snippet in cases.items():
+            with self.subTest(form=label):
+                self.refuses(snippet, label)
+
+    def test_layer2_legitimate_derivations_still_pass(self):
+        cases = {
+            "limits-derivation": '\nLIMITS = {bucket: list(pairs) '
+                                 'for bucket, pairs in DEFAULT_LIMITS.items()}\n',
+            "load-limits": '\ndef load_limits():\n'
+                           '    return {bucket: list(pairs)\n'
+                           '            for bucket, pairs in DEFAULT_LIMITS.items()}\n'
+                           '\n_x = load_limits()\n_x["core"].append((1, 2))\n',
+            "list-bucket": '\n_p = list(DEFAULT_LIMITS["core"])\n_p.append((1, 2))\n',
+            "list-loop-pairs": '\nfor _b, _pairs in DEFAULT_LIMITS.items():\n'
+                               '    _c = list(_pairs)\n    _c.append((1, 2))\n',
+            "tuple-bucket": '\n_p = tuple(DEFAULT_LIMITS.get("core", []))\n',
+            "sorted-keys-fresh": '\n_k = sorted(DEFAULT_LIMITS)\n_k.append("x")\n',
+            "list-keys-view": '\n_k = list(DEFAULT_LIMITS.keys())\n_k.append("x")\n',
+            "sorted-flat-set": '\n_s = sorted(_MUTATING_SUBCOMMANDS)\n_s.append("x")\n',
+            "set-flat-set": '\n_s = set(_MUTATING_METHODS)\n_s.add("X")\n',
+            "list-flat-set": '\n_s = list(_MUTATING_METHODS)\n_s.append("X")\n',
+            "deepcopy": '\nimport copy\n_d = copy.deepcopy(DEFAULT_LIMITS)\n'
+                        '_d["core"].clear()\n',
+            "unrelated-copies": '\ndef _f(argv):\n'
+                                '    a = list(argv)\n    a.append(1)\n'
+                                '    d = dict(zip(a, a))\n    d["k"] = 1\n',
+        }
+        for label, snippet in cases.items():
+            with self.subTest(form=label):
+                self.accepts(snippet, label)
+
+    # ---- Layer 3: imported / unknown callables receiving a table
+    def test_layer3_external_callables_refused(self):
+        cases = {
+            "operator-delitem": '\nimport operator\n'
+                                'operator.delitem(DEFAULT_LIMITS, "core")\n',
+            "operator-setitem-from": '\nfrom operator import setitem\n'
+                                     'setitem(DEFAULT_LIMITS, "core", [])\n',
+            "operator-alias": '\nimport operator as op\n'
+                              'op.delitem(DEFAULT_LIMITS, "core")\n',
+            "operator-inner": '\nimport operator\n'
+                              'operator.setitem(DEFAULT_LIMITS["core"], 0, (1, 2))\n',
+            "functools-partial": '\nimport functools\n'
+                                 'functools.partial(len, DEFAULT_LIMITS)\n',
+            "via-alias": '\n_t = DEFAULT_LIMITS\nimport operator\n'
+                         'operator.delitem(_t, "core")\n',
+            "via-copy": '\nimport operator\n'
+                        'operator.delitem(dict(DEFAULT_LIMITS)["core"], 0)\n',
+            "keyword": '\nimport operator\n'
+                       'operator.call(len, DEFAULT_LIMITS)\n',
+            "map-clear": '\nlist(map(list.clear, DEFAULT_LIMITS.values()))\n',
+            "filter-fn": '\nlist(filter(list.pop, DEFAULT_LIMITS.values()))\n',
+            "sorted-key-mutator": '\nsorted(DEFAULT_LIMITS.values(), key=list.clear)\n',
+            "type-call": '\ntype(DEFAULT_LIMITS)(DEFAULT_LIMITS)["core"].clear()\n',
+            "unknown-builtin": '\nobject.__setattr__(DEFAULT_LIMITS, "x", 1)\n',
+            "import-module-fn": '\nimport itertools\n'
+                                'list(itertools.chain(DEFAULT_LIMITS.values()))\n',
+            "unknown-method": '\nimport logging\n'
+                              '_l = logging.getLogger("x")\n_l.info("%s", DEFAULT_LIMITS)\n',
+        }
+        for label, snippet in cases.items():
+            with self.subTest(form=label):
+                self.refuses(snippet, label)
+
+    def test_layer3_read_only_allowlist_passes(self):
+        cases = {
+            "len": '\n_n = len(DEFAULT_LIMITS)\n',
+            "sorted-flat": '\n_s = sorted(_MUTATING_SUBCOMMANDS)\n',
+            "sorted-keys": '\n_s = sorted(DEFAULT_LIMITS)\n',
+            "iter-next": '\n_i = iter(_MUTATING_METHODS)\nnext(_i)\n',
+            "repr-str": '\n_r = repr(DEFAULT_LIMITS) + str(LIMITS)\n',
+            "type-introspection": '\n_b = type(DEFAULT_LIMITS) is dict '
+                                   'and isinstance("x", str)\n',
+            "json-dumps": '\nimport json\n_j = json.dumps(DEFAULT_LIMITS)\n',
+            "frozenset": '\n_f = frozenset(_MUTATING_METHODS)\n',
+            "tuple-flat": '\n_t = tuple(_MUTATING_SUBCOMMANDS)\n',
+            "membership-any-all": '\n_a = any(k in _MUTATING_METHODS for k in "ab")\n',
+            "sum-len-values": '\n_s = sum(len(v) for v in DEFAULT_LIMITS.values())\n',
+            "print": '\nprint(DEFAULT_LIMITS)\n',
+            "join-sorted": '\n_j = ", ".join(sorted(_MUTATING_METHODS))\n',
+        }
+        for label, snippet in cases.items():
+            with self.subTest(form=label):
+                self.accepts(snippet, label)
+
+    # ---- the real artefact and the stated boundary
+    def test_real_ghg_still_accepted(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "check_policy_delta_under_test", REAL_SCRIPT)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        text = (REPO_ROOT / "tools" / "ghg" / "ghg.py").read_text()
+        model = mod.model_ghg(text)
+        self.assertIn("core", model["limits"])
+
+    def test_not_modelled_names_only_genuine_residuals(self):
+        r = subprocess.run(
+            [sys.executable, str(REAL_SCRIPT), "--repo", str(REPO_ROOT),
+             "diff", "HEAD", "HEAD"], capture_output=True, text=True)
+        self.assertIn(r.returncode, (0, 1), r.stderr)
+        d = json.loads(r.stdout)
+        text = " | ".join(d["not_modelled"])
+        for gone in ("getattr", "setattr", "eval", "globals",
+                     "builtin-constructor", "dict()/list()"):
+            self.assertNotIn(gone, text)
+        self.assertIn("not a sandbox", text)
+        self.assertIn("ctypes", text)
+        self.assertIn("bytecode", text)
+        scope = " | ".join(d["model_scope"])
+        self.assertIn("dynamic indirection", scope)
+        self.assertIn("not a Python sandbox", scope)
+
+
 class SkillsTierTests(SyntheticRepo):
     def test_new_skill_is_newly_allowed(self):
         self.write("skills/delta/SKILL.md", "# Delta\n")
@@ -4893,6 +5254,23 @@ class ReportAndAckTests(SyntheticRepo):
         self.assertIn("gcloud", r.stdout)
         self.assertIn("does not cover", r.stdout)
         self.assertIn("policy-delta-sha256:", r.stdout)
+
+    def test_markdown_fields_cannot_forge_structure(self):
+        # A git filename may contain a newline; rendered verbatim it
+        # could forge a report heading or a reference link.
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "check_policy_delta_md", REAL_SCRIPT)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        line = mod._md_literal(
+            "evil\n\n## Forged [x](https://e) [g]: https://e <b>@here")
+        self.assertNotIn("\n", line)
+        self.assertNotRegex(line, r"(?<!\\)\]\(https")
+        self.assertIn("\\](", line)
+        self.assertNotIn("<b>", line)
+        self.assertNotIn("@here", line)
+        self.assertIn("\\[", line)
 
     def fingerprint(self, head):
         r = self.run_tool("diff", self.base, head, "--format", "markdown")
