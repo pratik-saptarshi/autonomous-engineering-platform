@@ -1436,6 +1436,119 @@ run_env install_env_block
 check "K1 second run rc 0" test "$RC" -eq 0
 check "K1 fixed point" test "$(file_sha "$FH/.bashrc")" = "$SHA"
 
+# ================= #194 (K4) / #196 (C-P1): closer operators and multiple closers per line =================
+
+note "#194: unit-level closer grammar (a closer followed by an operator or redirection still pops)"
+check "K4 fi && pops" closer_pops 'fi && echo ok' 'fi'
+check "K4 fi || pops" closer_pops 'fi || :' 'fi'
+check "K4 fi>/dev/null pops" closer_pops 'fi >/dev/null' 'fi'
+check "K4 fi 2>&1 pops" closer_pops 'fi 2>&1' 'fi'
+check "K4 fi | pops" closer_pops 'fi | cat' 'fi'
+check "K4 fi & pops" closer_pops 'fi &' 'fi'
+check "K4 glued fi&& pops" closer_pops 'fi&&echo ok' 'fi'
+check "K4 fi < pops" closer_pops 'fi <in' 'fi'
+check "K4 fi >> pops" closer_pops 'fi >>log' 'fi'
+check "K4 esac && pops" closer_pops 'esac && echo ok' 'esac'
+check "K4 esac 2>&1 pops" closer_pops 'esac 2>&1' 'esac'
+check "K4 } && pops" closer_pops '} && :' '}'
+check "K4 } >/dev/null pops" closer_pops '} >/dev/null' '}'
+check "K4 done && pops" closer_pops 'done && echo ok' 'done'
+check "K4 fi) pops" closer_pops 'fi)' 'fi'
+check "K4 tail fi && after a plain command pops" closer_pops ':; fi && echo ok' 'fi'
+check "K4 identifier file=1 && echo done does not pop fi (control)" closer_stuck 'file=1 && echo done' 'fi'
+check "K4 identifier fifo does not pop fi (control)" closer_stuck 'fifo' 'fi'
+check "K4 identifier fi_x does not pop fi (control)" closer_stuck 'fi_x && :' 'fi'
+check "K4 tail identifier ; file=1 does not pop fi (control)" closer_stuck ':; file=1 && echo done' 'fi'
+check "K4 identifier esacx does not pop esac (control)" closer_stuck 'esacx && :' 'esac'
+check "K4 identifier done does not pop } (control)" closer_stuck 'echo done' '}'
+check "K4 quoted fi after a space is data (control)" closer_stuck 'echo "x; fi y"' 'fi'
+check "K4+K2 one-line if followed by && does not pop an outer fi (control)" closer_stuck 'if true; then :; fi && echo ok' 'fi'
+check "K4+K2 one-line if followed by a redirect does not pop an outer fi (control)" closer_stuck 'if true; then :; fi >/dev/null' 'fi'
+check "K4+K2 one-line case followed by || does not pop an outer esac (control)" closer_stuck 'case x in x) :;; esac || :' 'esac'
+check "K4+K2 one-line function followed by && does not pop an outer } (control)" closer_stuck 'f() { :; } && :' '}'
+
+note "#196: unit-level remainder (the slice after the popped closer, for the caller's left-to-right loop)"
+closer_rest_eq() { # closer_rest_eq <line> <closer> <expected-remainder>
+  local got
+  got="$(
+    (
+      # shellcheck disable=SC1090 # the fixture library is generated above
+      source "$LIB"
+      set +eu
+      ctrl_closer_line "$1" "$2"
+    ) 2>/dev/null
+  )"
+  test "$got" = "$3"
+}
+check "C-P1 rest after a leading closer" closer_rest_eq 'fi; fi' 'fi' '; fi'
+check "C-P1 rest after a tail closer" closer_rest_eq ':; fi; }' 'fi' '; }'
+check "C-P1 rest after a closer and an operator" closer_rest_eq 'fi && fi' 'fi' ' && fi'
+check "C-P1 second closer pops from the remainder" closer_pops '; fi' 'fi'
+check "C-P1 second closer pops after an operator remainder" closer_pops ' && fi' 'fi'
+check "C-P1 second closer pops after a redirect remainder" closer_pops ' 2>&1; }' '}'
+check "C-P1 compound closed earlier in the remainder still lets the real closer pop" closer_pops 'if true; then :; fi; fi' 'fi'
+
+# multi_fixture <case> <prelude>: a prelude of control structures, then a
+# top-level noninteractive-guard. The block belongs BEFORE the guard, so
+# the prelude's closers must pop every frame they close.
+multi_fixture() {
+  local name="$1" prelude="$2" marker guard_line val sha
+  new_home "$name"
+  {
+    printf '%s\n' "$prelude"
+    printf 'case $- in\n  *i*) ;;\n  *) return;;\nesac\n'
+    printf 'export AFTER=1\n'
+  } >"$FH/.bashrc"
+  run_env install_env_block
+  check "$name rc 0" test "$RC" -eq 0
+  check_out "$name env ok" 'INSTALL-RE: env ok' "$OUT"
+  marker="$(line_of '# >>> re-runtime >>>')"
+  guard_line="$(line_of 'case $- in')"
+  check "$name block before the guard" test "$marker" -lt "$guard_line"
+  val="$(env -i HOME="$FH" /bin/bash -c '. "$HOME/.bashrc"; printf %s "${JAVA_HOME:-}"' 2>/dev/null)"
+  check "$name block reachable in a noninteractive source" test "$val" = "$FH/opt/jdk-$TEMURIN_VERSION"
+  sha="$(file_sha "$FH/.bashrc")"
+  run_env install_env_block
+  check "$name second run rc 0" test "$RC" -eq 0
+  check "$name fixed point" test "$(file_sha "$FH/.bashrc")" = "$sha"
+}
+
+note "#194: a multi-line closer followed by an operator or redirection is recognized (end to end)"
+multi_fixture k4-and $'if true; then\n  :\nfi && :'
+multi_fixture k4-or $'if true; then\n  :\nfi || :'
+multi_fixture k4-devnull $'if true; then\n  :\nfi >/dev/null'
+multi_fixture k4-dup $'if true; then\n  :\nfi 2>&1'
+multi_fixture k4-pipe $'if true; then\n  :\nfi | cat'
+multi_fixture k4-bg $'if true; then\n  :\nfi &'
+multi_fixture k4-esac-and $'case x in\n  x) :;;\nesac && :'
+multi_fixture k4-brace-and $'f() {\n  :\n} && :'
+multi_fixture k4-brace-redir $'f() {\n  :\n} >/dev/null 2>&1'
+
+note "#196: several closers on one physical line each pop a frame (end to end)"
+multi_fixture cp1-fi-fi $'if true; then\n  if true; then\n    :\n  fi; fi'
+multi_fixture cp1-fi-brace $'f() {\n  if true; then\n    :\n  fi; }'
+multi_fixture cp1-esac-fi $'if true; then\n  case x in\n    x) :;;\n  esac; fi'
+multi_fixture cp1-esac-fi-brace $'f() {\n  if true; then\n    case x in\n      x) :;;\n    esac; fi; }'
+multi_fixture cp1-fi-fi-redir $'if true; then\n  if true; then\n    :\n  fi; fi >/dev/null'
+multi_fixture cp1-spaced $'if true; then\n  if true; then\n    :\n  fi ; fi ;'
+
+note "#196: a guard whose return shares a multi-closer line is still recognized (R4F1 preserved)"
+new_home cp1-return
+cat >"$FH/.bashrc" <<'EOF2'
+export BEFORE=1
+if [ -z "$PS1" ]; then
+  if true; then
+    return
+  fi; fi
+export AFTER=1
+EOF2
+run_env install_env_block
+check "cp1-return rc 0" test "$RC" -eq 0
+check_out "cp1-return env ok" 'INSTALL-RE: env ok' "$OUT"
+BLOCK_LINE="$(line_of '# >>> re-runtime >>>')"
+GUARD_LINE="$(line_of 'if [ -z "$PS1" ]')"
+check "cp1-return block before the guard" test "$BLOCK_LINE" -lt "$GUARD_LINE"
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "test_install_env_scan: ALL PASS (sandbox $SB)"

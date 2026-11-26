@@ -1013,6 +1013,55 @@ ctrl_opener_closer() {
   return 1
 }
 
+# Print $1 with quoted text masked: every character inside single or
+# double quotes, the quote delimiters, and every backslash-escaped
+# character becomes `x` (the backslash itself stays). Quoted text is
+# data, not grammar, so a scan over the masked form only ever sees
+# unquoted separators and keywords. The mask is one character per
+# character — positions in the masked form index the original — and
+# idempotent.
+mask_quoted() {
+  local raw="$1" out="" ch i sq=0 dq=0
+  for ((i = 0; i < ${#raw}; i++)); do
+    ch="${raw:i:1}"
+    if [ "$sq" -eq 1 ]; then
+      out+=x
+      [ "$ch" = "'" ] && sq=0
+      continue
+    fi
+    if [ "$ch" = "\\" ]; then
+      # An escape consumes the next character, inside double quotes
+      # and out (inside single quotes it never reaches here): the
+      # escaped character is literal, never a quote or a separator.
+      out+="$ch"
+      if [ $((i + 1)) -lt ${#raw} ]; then
+        out+=x
+        i=$((i + 1))
+      fi
+      continue
+    fi
+    if [ "$dq" -eq 1 ]; then
+      out+=x
+      [ "$ch" = '"' ] && dq=0
+      continue
+    fi
+    case "$ch" in
+    "'")
+      sq=1
+      out+=x
+      ;;
+    '"')
+      dq=1
+      out+=x
+      ;;
+    *)
+      out+="$ch"
+      ;;
+    esac
+  done
+  printf '%s' "$out"
+}
+
 # True when $1 — the part of a line before its final `;` segment —
 # opens the construct closed by $2 and does not close it again on the
 # same line. The trailing closer of such a line belongs to the opener
@@ -1025,10 +1074,9 @@ ctrl_opener_closer() {
 # ctrl_opener_closer, except the match may start after a `;` and the
 # line need not end at the opener.
 #
-# The head is masked before matching, with the same quote scan as
-# strip_trailing_comment: every character inside single or double
-# quotes, the quote delimiters, and every backslash-escaped character
-# becomes `x`. Quoted text is data, not grammar — an `if ... then`
+# The head is masked before matching (mask_quoted): every character
+# inside single or double quotes, the quote delimiters, and every
+# backslash-escaped character becomes `x`. Quoted text is data, not grammar — an `if ... then`
 # inside a quoted string mints no opener, and a quoted `;fi;` is not
 # a segment boundary, so the walk below only ever sees unquoted
 # separators. (Glued forms need no special case here: `;then` and
@@ -1069,45 +1117,8 @@ ctrl_opener_closer() {
 # a compound after `&&` / `||` (S3) each desynced the caller's stack
 # in one direction or the other (Sourcery review, PR #201).
 ctrl_head_opens_unclosed() {
-  local head=""
-  local raw="$1" ch i sq=0 dq=0
-  for ((i = 0; i < ${#raw}; i++)); do
-    ch="${raw:i:1}"
-    if [ "$sq" -eq 1 ]; then
-      head+=x
-      [ "$ch" = "'" ] && sq=0
-      continue
-    fi
-    if [ "$ch" = "\\" ]; then
-      # An escape consumes the next character, inside double quotes
-      # and out (inside single quotes it never reaches here): the
-      # escaped character is literal, never a quote or a separator.
-      head+="$ch"
-      if [ $((i + 1)) -lt ${#raw} ]; then
-        head+=x
-        i=$((i + 1))
-      fi
-      continue
-    fi
-    if [ "$dq" -eq 1 ]; then
-      head+=x
-      [ "$ch" = '"' ] && dq=0
-      continue
-    fi
-    case "$ch" in
-    "'")
-      sq=1
-      head+=x
-      ;;
-    '"')
-      dq=1
-      head+=x
-      ;;
-    *)
-      head+="$ch"
-      ;;
-    esac
-  done
+  local head ch
+  head="$(mask_quoted "$1")"
   case "$2" in
   fi | 'esac' | '}') ;;
   *) return 1 ;;
@@ -1363,39 +1374,59 @@ ctrl_head_opens_unclosed() {
   return 1
 }
 
-# True when $1 is the closer named by $2 (optionally followed by `;`),
-# either at the start of the line or as the command after the line's
-# last `;` separator (`:; }` ends a one-line function body just as a
-# bare `}` does). A trailing comment is stripped first
-# (strip_trailing_comment): a `#` at a word start comments out the
-# rest of the line in bash, while a `#` inside quotes, escaped, or
-# glued to the word is part of the word, not a comment — the
-# quote-blind cut this replaces lost a closer that followed a quoted
-# `#` on the same line (the bridge Finding A mechanism at this site;
-# pre-existing here — the opener strip was copied from this one).
-# The tail-split form is refused when the same line opens the
-# construct it closes without closing it again first
-# (ctrl_head_opens_unclosed): that closer is the same-line opener's
-# own, and popping an earlier frame for it desyncs the struct stack
-# (panel finding K2).
+# True when $1 contains the closer named by $2 at a command position —
+# the line start (after any whitespace or leftover separators) or right
+# after a `;` — followed by a word boundary: the end of the line, or
+# (after optional whitespace) one of `;` `&` `|` `)` `<` `>`, or a
+# file-descriptor redirection (`2>&1`). The boundary set is what lets
+# `fi && echo ok`, `fi || :`, `fi | cat`, `fi &`, `} >/dev/null` and
+# `esac 2>&1` pop their frame (issue #194) while `file=1`, `fifo`,
+# `esacx` and `fi extra` — words that merely begin like a closer, or
+# a closer followed by an ordinary word — never do. On a
+# pop the text after the closer word is printed, so the caller can
+# keep popping the closers that follow it on the same physical line
+# (`fi; fi`, `esac; fi; }`: issue #196 — left to right, one frame per
+# closer); a leading `&&` / `||` / `&` / `|` / `;` of such a remainder
+# is skipped.
+#
+# A trailing comment is stripped first (strip_trailing_comment) and
+# the line is masked (mask_quoted) before any position is chosen, so
+# a `;` or a closer-looking word inside quotes is data. A candidate
+# is refused when the text before it opens the construct it closes
+# without closing it again first (ctrl_head_opens_unclosed): that
+# closer is the same-line opener's own (`if true; then :; fi && echo
+# ok`), and popping an earlier frame for it desyncs the struct stack
+# (panel finding K2). A refused candidate does not end the search — a
+# later one, whose head has by then closed the compound, can still be
+# the real closer (`if true; then :; fi; fi`).
 ctrl_closer_line() {
-  local s tail
+  local s m i n ch cl=${#2} at_cmd=1 started=0
+  local after='^([[:space:]]*([;&|)<>]|$)|[[:space:]]+[0-9]+[<>])'
   s="$(strip_trailing_comment "$1")"
-  case "$s" in
-  "$2" | "$2;"* | "$2;;"*) return 0 ;;
-  esac
-  case "$s" in
-  *';'*)
-    tail="${s##*';'}"
-    tail="${tail#"${tail%%[![:space:]]*}"}"
-    case "$tail" in
-    "$2" | "$2;"* | "$2;;"*)
-      ctrl_head_opens_unclosed "${s%';'*}" "$2" && return 1
-      return 0
+  m="$(mask_quoted "$s")"
+  n=${#m}
+  for ((i = 0; i < n; i++)); do
+    ch="${m:i:1}"
+    case "$ch" in
+    [[:space:]]) continue ;;
+    ';')
+      at_cmd=1
+      continue
+      ;;
+    '&' | '|')
+      [ "$started" -eq 0 ] && continue
       ;;
     esac
-    ;;
-  esac
+    started=1
+    [ "$at_cmd" -eq 1 ] || continue
+    at_cmd=0
+    [ "${m:i:cl}" = "$2" ] || continue
+    [[ "${m:i+cl}" =~ $after ]] || continue
+    if ! ctrl_head_opens_unclosed "${s:0:i}" "$2"; then
+      printf '%s' "${s:i+cl}"
+      return 0
+    fi
+  done
   return 1
 }
 
@@ -1514,7 +1545,7 @@ install_env_block() {
   # there. A block already at or before the guard keeps its position,
   # so the relocated layout is the fixed point: re-runs stay
   # byte-identical on stock and guard-free homes alike.
-  local block_at=$insert_at guard_at=-1 scan rtrim opener
+  local block_at=$insert_at guard_at=-1 scan rtrim opener rest
   # Guard recognition is region-based: a noninteractive test whose
   # controlled statement is on the same line or in the body of the
   # following if/case is a guard, wherever the opener sits on that line.
@@ -1535,31 +1566,32 @@ install_env_block() {
     opener=""
     if opener=$(ctrl_opener_closer "$rtrim"); then :; else opener=""; fi
 
-    # A closer pops both stacks; the candidate region ends when its own
-    # opener is popped.
-    if [ "${#struct_stack[@]}" -gt 0 ]; then
-      if ctrl_closer_line "$rtrim" "${struct_stack[${#struct_stack[@]} - 1]}"; then
-        unset 'struct_stack[${#struct_stack[@]}-1]'
-        struct_stack=("${struct_stack[@]}")
-        if [ "${#region_stack[@]}" -gt 0 ]; then
-          unset 'region_stack[${#region_stack[@]}-1]'
-          region_stack=("${region_stack[@]}")
-          if [ "${#region_stack[@]}" -eq 0 ]; then
-            # The region ends on this line, and its controlled
-            # statement can share the line (`*) return;; esac`):
-            # inspect the line before discarding the region, or the
-            # guard is missed and the block strands behind it.
-            case "$rtrim" in
-            *return*)
-              guard_at=$region_start
-              break
-              ;;
-            esac
-            region_start=-1
-          fi
+    # Each closer on the line pops both stacks, left to right
+    # (ctrl_closer_line prints what follows the closer it popped); the
+    # candidate region ends when its own opener is popped.
+    rest="$rtrim"
+    while [ "${#struct_stack[@]}" -gt 0 ] &&
+      rest=$(ctrl_closer_line "$rest" "${struct_stack[${#struct_stack[@]} - 1]}"); do
+      unset 'struct_stack[${#struct_stack[@]}-1]'
+      struct_stack=("${struct_stack[@]}")
+      if [ "${#region_stack[@]}" -gt 0 ]; then
+        unset 'region_stack[${#region_stack[@]}-1]'
+        region_stack=("${region_stack[@]}")
+        if [ "${#region_stack[@]}" -eq 0 ]; then
+          # The region ends on this line, and its controlled
+          # statement can share the line (`*) return;; esac`):
+          # inspect the line before discarding the region, or the
+          # guard is missed and the block strands behind it.
+          case "$rtrim" in
+          *return*)
+            guard_at=$region_start
+            break 2
+            ;;
+          esac
+          region_start=-1
         fi
       fi
-    fi
+    done
 
     if [ "$region_start" -ge 0 ]; then
       # Inside a candidate region: any return is the guard's controlled
