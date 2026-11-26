@@ -906,7 +906,7 @@ profile_detected() { # profile_detected <profile-line>
 profile_not_detected() { ! profile_detected "$1"; }
 check "R2F2 unquoted braced form detected" profile_detected '. ${HOME}/.bashrc'
 check "R2F2 source-keyword braced form detected" profile_detected 'source "${HOME}/.bashrc"'
-check "R2F2 braced || chain detected (K7d: || is a segment boundary)" profile_detected '[ -f "${HOME}/.bashrc" ] || . "${HOME}/.bashrc"'
+check "R2F2 braced || chain detected (K7d: || is a segment boundary)" profile_detected '[ -f "${HOME}/.bashrc.missing" ] || . "${HOME}/.bashrc"'
 check "R2F2 braced mention without a source command not detected" profile_not_detected 'echo ". \"${HOME}/.bashrc\""'
 check "R3T7 quoted HOME fragment detected" profile_detected '. "$HOME"/.bashrc'
 check "R3T7 quoted suffix fragment detected" profile_detected '. "$HOME/"'"'"'.bashrc'"'"''
@@ -1682,15 +1682,18 @@ check "k6-heredoc block appended after the heredoc terminator" test "$(line_of '
 # ================= #200 (K7d): ||, | and & are command-segment boundaries in the profile reader =================
 
 note "#200: unit-level profile_sources_bashrc (a source after ||, | or & is detected; quoted/commented/redirect forms are not boundaries)"
-check "K7d || source detected" profile_detected '[ -f ~/.bashrc ] || . ~/.bashrc'
-check "K7d braced || source detected" profile_detected '[ -f "${HOME}/.bashrc" ] || . "${HOME}/.bashrc"'
+check "K7d || source detected when the guard fails" profile_detected '[ -f ~/.bashrc.missing ] || . ~/.bashrc'
+check "K7d || source skipped when ~/.bashrc exists (bash semantics)" profile_not_detected '[ -f ~/.bashrc ] || . ~/.bashrc'
+check "K7d braced || source detected when the guard fails" profile_detected '[ -f "${HOME}/.bashrc.missing" ] || . "${HOME}/.bashrc"'
 check "K7d glued || source detected" profile_detected 'false||. ~/.bashrc'
-check "K7d | source detected" profile_detected 'echo x | . ~/.bashrc'
+check "K7d | source not counted (pipeline subshell)" profile_not_detected 'echo x | . ~/.bashrc'
+check "K7d |& source not counted (pipeline subshell)" profile_not_detected 'echo x |& . ~/.bashrc'
+check "K7d source after a pipeline then ; still detected (control)" profile_detected 'echo x | cat; . ~/.bashrc'
 check "K7d & source detected" profile_detected 'true & . ~/.bashrc'
 check "K7d glued & source detected" profile_detected 'true&. ~/.bashrc'
 check "K7d && source still detected (control)" profile_detected '[ -f ~/.bashrc ] && . ~/.bashrc'
 check "K7d ; source still detected (control)" profile_detected 'true; . ~/.bashrc'
-check "K7d source keyword after || detected" profile_detected '[ -f ~/.bashrc ] || source ~/.bashrc'
+check "K7d source keyword after || detected" profile_detected '[ -f ~/.bashrc.missing ] || source ~/.bashrc'
 check "K7d double-quoted || is data, not a boundary" profile_not_detected 'echo "a || . ~/.bashrc"'
 check "K7d single-quoted | is data, not a boundary" profile_not_detected "echo 'a | . ~/.bashrc'"
 check "K7d double-quoted & is data, not a boundary" profile_not_detected 'echo "a & . ~/.bashrc"'
@@ -1706,7 +1709,7 @@ check "K7d a mention after || without a source command is not detected" profile_
 
 note "#200: a .bash_profile sourcing .bashrc through || is not shadowing (end to end)"
 new_home k7d
-printf '[ -f "$HOME/.bashrc" ] || . "$HOME/.bashrc"\n' >"$FH/.bash_profile"
+printf '[ -f "$HOME/.bashrc.missing" ] || . "$HOME/.bashrc"\n' >"$FH/.bash_profile"
 printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
 run_env install_env_block
 check "k7d rc 0" test "$RC" -eq 0
@@ -1882,6 +1885,157 @@ check "extglob_e2e rc 0" test "$RC" -eq 0
 check_out "extglob_e2e env ok" 'INSTALL-RE: env ok' "$OUT"
 E2E_VAL="$(env -i HOME="$FH" /bin/bash -c '. "$HOME/.bashrc"; printf %s "${JAVA_HOME:-}"' 2>/dev/null)"
 check "extglob_e2e block reachable in noninteractive source" test "$E2E_VAL" = "$FH/opt/jdk-$TEMURIN_VERSION"
+
+# ================= PR #220 review residuals: profile-reader parity with bash =================
+
+note "PR220-R1: a source that only runs as a pipeline component is never wiring"
+check "PR220 pipeline source not counted" profile_not_detected 'echo x | . ~/.bashrc'
+check "PR220 |& pipeline source not counted" profile_not_detected 'echo x |& . ~/.bashrc'
+check "PR220 pipeline source not counted across a newline after |" profile_not_detected $'echo x |\n. ~/.bashrc'
+check "PR220 pipeline source not counted across a continuation" profile_not_detected $'echo x | \\\n. ~/.bashrc'
+check "PR220 a source in the login shell after the pipeline is counted (control)" profile_detected 'echo x | cat; . ~/.bashrc'
+
+note "PR220-R2: && / || chains continue across a newline and skipped commands never count"
+check "PR220 dead && chain continued on the next line" profile_not_detected $'false &&\n. ~/.bashrc'
+check "PR220 dead && chain continued across a blank line" profile_not_detected $'false &&\n\n. ~/.bashrc'
+check "PR220 live || chain continued on the next line (control)" profile_detected $'false ||\n. ~/.bashrc'
+check "PR220 live && chain continued on the next line (control)" profile_detected $'true &&\n. ~/.bashrc'
+
+note "PR220-R3: an if condition list split across physical lines is classified only at its then"
+check "PR220 multiline condition false/true runs the branch" profile_detected $'if false\ntrue\nthen\n. ~/.bashrc\nfi'
+check "PR220 multiline condition false/true; then form" profile_detected $'if false\ntrue; then\n. ~/.bashrc\nfi'
+check "PR220 multiline condition false/then stays dead (control)" profile_not_detected $'if false\nthen\n. ~/.bashrc\nfi'
+check "PR220 multiline condition false/then on the condition line (control)" profile_not_detected $'if false; then\n. ~/.bashrc\nfi'
+
+note "PR220-R4: an if compound with no branch taken has a successful status"
+check "PR220 if false; then :; fi || source is skipped" profile_not_detected 'if false; then :; fi || . ~/.bashrc'
+check "PR220 if false; then :; fi && source runs (control)" profile_detected 'if false; then :; fi && . ~/.bashrc'
+check "PR220 if true; then false; fi || source runs (control)" profile_detected 'if true; then false; fi || . ~/.bashrc'
+check "PR220 if true; then :; fi || source is skipped (compound succeeds)" profile_not_detected 'if true; then :; fi || . ~/.bashrc'
+
+note "PR220-R5: literal comparisons are evaluated, not enumerated as 0/1"
+check "PR220 [ 2 = 3 ] then-branch dead" profile_not_detected 'if [ 2 = 3 ]; then . ~/.bashrc; fi'
+check "PR220 [ 2 = 2 ] then-branch live (control)" profile_detected 'if [ 2 = 2 ]; then . ~/.bashrc; fi'
+check "PR220 [ 1 -gt 2 ] dead" profile_not_detected '[ 1 -gt 2 ] && . ~/.bashrc'
+check "PR220 [ 3 -gt 2 ] live (control)" profile_detected '[ 3 -gt 2 ] && . ~/.bashrc'
+check "PR220 [[ foo != foo ]] dead" profile_not_detected 'if [[ foo != foo ]]; then . ~/.bashrc; fi'
+check "PR220 [ x = y ] dead (string comparison)" profile_not_detected 'if [ x = y ]; then . ~/.bashrc; fi'
+check "PR220 test 1 -eq 2 dead" profile_not_detected 'test 1 -eq 2 && . ~/.bashrc'
+
+note "PR220-R6: a redefined false/true builtin is not a literal constant"
+check "PR220 false() override makes if false reachable" profile_detected $'false() { return 0; }\nif false; then . ~/.bashrc; fi'
+check "PR220 function false form makes if false reachable" profile_detected $'function false { return 0; }\nif false; then . ~/.bashrc; fi'
+
+note "PR220-R7: a file-existence guard is evaluated for the login shell after install"
+check "PR220 [ -f ~/.bashrc ] || source is skipped (file exists post-install)" profile_not_detected '[ -f ~/.bashrc ] || . ~/.bashrc'
+check "PR220 [ -f \"\$HOME/.bashrc\" ] || source is skipped" profile_not_detected '[ -f "$HOME/.bashrc" ] || . "$HOME/.bashrc"'
+check "PR220 [ -f ~/.bashrc ] && source runs (control)" profile_detected '[ -f ~/.bashrc ] && . ~/.bashrc'
+
+note "PR220-R8: backslash-continued physical lines are one logical line"
+check "PR220 continued source is detected" profile_detected $'. \\\n~/.bashrc'
+check "PR220 continued source keyword is detected" profile_detected $'source \\\n"$HOME/.bashrc"'
+check "PR220 continued heredoc opener: a source after the terminator is detected" profile_detected $'cat <<E\\\nOF\nbody\nEOF\n. ~/.bashrc'
+check "PR220 continued heredoc opener: a source inside the body is not detected" profile_not_detected $'cat <<E\\\nOF\n. ~/.bashrc\nEOF'
+
+note "PR220-E2E: pipeline-only wiring is named as shadowing end to end"
+new_home pr220-pipe
+printf 'echo x | . "$HOME/.bashrc"\n' >"$FH/.bash_profile"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+run_env install_env_block
+check "PR220-pipe rc 0" test "$RC" -eq 0
+check_out "PR220-pipe shadowing SKIP line" 'login startup is shadowed by' "$OUT"
+check_no_out "PR220-pipe no opaque env ok" 'INSTALL-RE: env ok' "$OUT"
+check "PR220-pipe no block composed into an unreachable file" test "$(marker_count '>>>')" -eq 0
+
+note "PR220-E2E: [ -f ~/.bashrc ] || . ~/.bashrc never sources it at login"
+new_home pr220-orf
+printf '[ -f "$HOME/.bashrc" ] || . "$HOME/.bashrc"\n' >"$FH/.bash_profile"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+run_env install_env_block
+check "PR220-orf rc 0" test "$RC" -eq 0
+check_out "PR220-orf shadowing SKIP line" 'login startup is shadowed by' "$OUT"
+check "PR220-orf no block composed into an unreachable file" test "$(marker_count '>>>')" -eq 0
+
+note "PR220-E2E: a multiline if condition that runs the source reaches the block"
+new_home pr220-ml
+printf 'if false\ntrue\nthen\n  . "$HOME/.bashrc"\nfi\n' >"$FH/.bash_profile"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+run_env install_env_block
+check "PR220-ml rc 0" test "$RC" -eq 0
+check_out "PR220-ml env ok" 'INSTALL-RE: env ok' "$OUT"
+check "PR220-ml block written" test "$(marker_count '>>>')" -eq 1
+PR220_ML_VAL="$(env -i HOME="$FH" /bin/bash -c '. "$HOME/.bash_profile"; printf %s "${JAVA_HOME:-}"' 2>/dev/null)"
+check "PR220-ml block reachable through the profile" test "$PR220_ML_VAL" = "$FH/opt/jdk-$TEMURIN_VERSION"
+
+note "PR220-E2E: a false() override reaches the block"
+new_home pr220-fn
+printf 'false() { return 0; }\nif false; then . "$HOME/.bashrc"; fi\n' >"$FH/.bash_profile"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+run_env install_env_block
+check "PR220-fn rc 0" test "$RC" -eq 0
+check_out "PR220-fn env ok" 'INSTALL-RE: env ok' "$OUT"
+check "PR220-fn block written" test "$(marker_count '>>>')" -eq 1
+
+note "PR220-E2E: a backslash-continued source reaches the block"
+new_home pr220-cont
+printf '. \\\n"$HOME/.bashrc"\n' >"$FH/.bash_profile"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+run_env install_env_block
+check "PR220-cont rc 0" test "$RC" -eq 0
+check_out "PR220-cont env ok" 'INSTALL-RE: env ok' "$OUT"
+check "PR220-cont block written" test "$(marker_count '>>>')" -eq 1
+
+note "PR220-E2E: a continued heredoc opener is read as one delimiter word"
+new_home pr220-hd
+printf 'cat <<E\\\nOF\nbody\nEOF\n. "$HOME/.bashrc"\n' >"$FH/.bash_profile"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+run_env install_env_block
+check "PR220-hd rc 0" test "$RC" -eq 0
+check_out "PR220-hd env ok" 'INSTALL-RE: env ok' "$OUT"
+check "PR220-hd block written" test "$(marker_count '>>>')" -eq 1
+
+note "PR220-CAS: a concurrent .bashrc edit is never overwritten by the composed file"
+new_home pr220-cas
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+CAS_SHA="$(file_sha "$FH/.bashrc")"
+mkdir -p "$SB/casbin"
+cat >"$SB/casbin/sync" <<'EOF'
+#!/bin/bash
+printf '# concurrent edit\n' >>"${HOME:?}/.bashrc"
+exec /bin/sync "$@"
+EOF
+chmod +x "$SB/casbin/sync"
+RUN_PATH_PREFIX="$SB/casbin" run_env install_env_block
+check "PR220-CAS failure rc nonzero" test "$RC" -ne 0
+check_out "PR220-CAS names the concurrent edit" 'concurrent edit' "$OUT"
+check "PR220-CAS concurrent edit preserved" test "$(grep -cxF '# concurrent edit' "$FH/.bashrc")" -eq 1
+check "PR220-CAS original content preserved" grep -qxF 'export EDITOR=vim' "$FH/.bashrc"
+check "PR220-CAS no block installed" test "$(marker_count '>>>')" -eq 0
+check "PR220-CAS no temp leftovers" test "$(stray_temps)" -eq 0
+check "PR220-CAS backup is the as-found file" test "$(file_sha "$FH/.bashrc.install-re-runtime.bak")" = "$CAS_SHA"
+
+note "PR220-EG: kept .bashrc content must parse under the login shell's own options"
+new_home pr220-eg-bad
+printf 'case x in @(a|b)c) :;; esac\nexport AFTER=1\n' >"$FH/.bashrc"
+BAD_SHA="$(file_sha "$FH/.bashrc")"
+run_env install_env_block
+check "PR220-EG-bad rc nonzero" test "$RC" -ne 0
+check_out "PR220-EG-bad names the damage" 'fails bash -n under the login shell' "$OUT"
+check "PR220-EG-bad .bashrc byte-identical" test "$(file_sha "$FH/.bashrc")" = "$BAD_SHA"
+check "PR220-EG-bad no block installed" test "$(marker_count '>>>')" -eq 0
+
+new_home pr220-eg-late
+printf 'case x in @(a|b)c) :;; esac\nshopt -s extglob\nexport AFTER=1\n' >"$FH/.bashrc"
+run_env install_env_block
+check "PR220-EG-late extglob before its enabling line is rejected" test "$RC" -ne 0
+check_out "PR220-EG-late names the damage" 'fails bash -n under the login shell' "$OUT"
+
+new_home pr220-eg-ok
+printf 'shopt -s extglob\ncase x in @(a|b)c) :;; esac\nexport AFTER=1\n' >"$FH/.bashrc"
+run_env install_env_block
+check "PR220-EG-ok extglob after its enabling line is accepted" test "$RC" -eq 0
+check_out "PR220-EG-ok env ok" 'INSTALL-RE: env ok' "$OUT"
+check "PR220-EG-ok user line kept" grep -qxF 'export AFTER=1' "$FH/.bashrc"
 
 echo
 if [ "$FAILURES" -eq 0 ]; then
