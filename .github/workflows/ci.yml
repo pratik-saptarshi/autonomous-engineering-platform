@@ -47,8 +47,10 @@ jobs:
           shellcheck --version
       - run: |
           go install mvdan.cc/sh/v3/cmd/shfmt@v3.10.0
-          shellcheck scripts/*.sh ops/bin/*.sh
-          test -z "$(shfmt -d -i 2 scripts/*.sh ops/bin/*.sh)"
+          # skills/wizard/template.sh is an executable skill asset (the library
+          # every generated wizard copies), so it is linted like scripts/.
+          shellcheck scripts/*.sh ops/bin/*.sh skills/wizard/template.sh
+          test -z "$(shfmt -d -i 2 scripts/*.sh ops/bin/*.sh skills/wizard/template.sh)"
 
   script-tests:
     runs-on: ubuntu-latest
@@ -272,3 +274,12 @@ jobs:
       # review-loop normalization table vs bundle agent frontmatter,
       # and egm-review call-site standards coverage (panel J8/J10/J16).
       - run: python3 scripts/check_egm_drift.py --root skills
+      # Skills executables: wizard/template.sh is shellchecked in `shell-lint`;
+      # quest_helper.js is the other executable under skills/. A syntax-only
+      # parse (`node --check`) is the bounded claim: it proves the file
+      # parses, not that it behaves. Node 26 matches vendor-tests.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26'
+      - name: Syntax-check skills JavaScript executables
+        run: node --check skills/excalibur-quest/scripts/quest_helper.js
