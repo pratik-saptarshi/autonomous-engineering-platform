@@ -623,6 +623,32 @@ class TestLoadLimits(CoreTestCase):
         self.assertEqual(ghg.DEFAULT_LIMITS["content"],
                          [(60, 40), (3600, 300)])
 
+    def test_deeply_nested_json_rejected_without_fail_open(self):
+        deep = "[" * 200000 + "]" * 200000
+        limits, err = self.load(deep)
+        self.assert_defaults(limits)
+        self.assertIn("GHG_LIMITS_JSON", err)
+        # Ledger still opens and enforces caps (never fails open).
+        ledger = ghg.Ledger(self.root / "ghg.db")
+        try:
+            self.assertIsNone(
+                ledger.reserve_all([("core", 10000)], "tester", "api x"))
+        finally:
+            ledger.close()
+
+    def test_huge_int_rejected_without_overflow(self):
+        huge = 1 << 63
+        for raw in ({"core": [[huge, 10]]}, {"core": [[60, huge]]}):
+            limits, err = self.load(json.dumps(raw))
+            self.assert_defaults(limits)
+            self.assertIn("GHG_LIMITS_JSON", err)
+
+    def test_unknown_bucket_rejected_atomically(self):
+        limits, err = self.load(json.dumps(
+            {"search": [[60, 5]], "cor": [[60, 1]]}))
+        self.assert_defaults(limits)
+        self.assertIn("unknown bucket", err)
+
 
 class TestStateDirMode(CoreTestCase):
     """Issue #207 D9b: the state dir (ledger, traces) is owner-only."""
@@ -665,6 +691,20 @@ class TestStateDirMode(CoreTestCase):
         ghg._ensure_state_dir(self.fresh)
         self.assertEqual(self.mode(self.fresh), 0o700)
         self.assertTrue((self.fresh / "keep").exists())
+
+    def test_open_db_does_not_chmod_cwd_for_memory_or_bare_relative(self):
+        cwd_dir = self.root / "cwd_probe"
+        cwd_dir.mkdir()
+        os.chmod(cwd_dir, 0o755)
+        old_cwd = os.getcwd()
+        os.chdir(cwd_dir)
+        try:
+            ghg.open_db(":memory:").close()
+            self.assertEqual(self.mode(cwd_dir), 0o755)
+            ghg.open_db("rel.db").close()
+            self.assertEqual(self.mode(cwd_dir), 0o755)
+        finally:
+            os.chdir(old_cwd)
 
 
 if __name__ == "__main__":

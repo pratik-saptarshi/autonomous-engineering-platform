@@ -77,10 +77,13 @@ def _ensure_state_dir(path):
 
     The ledger and traces hold argv history; mkdir's mode is masked by
     the umask and ignored for an existing directory, so chmod explicitly.
+    Never chmod the implicit current directory (``"."`` or ``""``).
     Hardening is best-effort: a directory we cannot chmod (not ours) is
     warned about, never a reason to block the call.
     """
     path = Path(path)
+    if str(path) in ("", "."):
+        return
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
     try:
         os.chmod(path, 0o700)
@@ -359,7 +362,8 @@ def gated_gh(argv, actor, timeout=None, budget_s=None):
 # ------------------------------------------------------------------ db
 
 def open_db(path):
-    _ensure_state_dir(Path(path).parent)
+    if str(path) != ":memory:":
+        _ensure_state_dir(Path(path).parent)
     conn = sqlite3.connect(str(path), isolation_level=None, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout=5000")
@@ -455,8 +459,12 @@ class GateBroken(Exception):
     """
 
 
+_MAX_LIMIT_INT = (1 << 62) - 1
+
+
 def _positive_int(x):
-    return isinstance(x, int) and not isinstance(x, bool) and x > 0
+    return (isinstance(x, int) and not isinstance(x, bool)
+            and 0 < x <= _MAX_LIMIT_INT)
 
 
 def _parse_limits_override(raw):
@@ -467,6 +475,8 @@ def _parse_limits_override(raw):
                          % type(parsed).__name__)
     out = {}
     for bucket, pairs in parsed.items():
+        if bucket not in DEFAULT_LIMITS:
+            raise ValueError("unknown bucket %r" % (bucket,))
         if not isinstance(pairs, list) or not pairs:
             raise ValueError("bucket %r needs a non-empty list of"
                              " [window_s, cap] pairs" % bucket)
@@ -475,7 +485,7 @@ def _parse_limits_override(raw):
             if not (isinstance(pair, (list, tuple)) and len(pair) == 2
                     and _positive_int(pair[0]) and _positive_int(pair[1])):
                 raise ValueError("bucket %r pair %r is not two positive"
-                                 " integers" % (bucket, pair))
+                                 " bounded integers" % (bucket, pair))
             checked.append((pair[0], pair[1]))
         out[str(bucket)] = checked
     return out
@@ -486,17 +496,18 @@ def load_limits():
 
     The override is merged over a fresh copy of DEFAULT_LIMITS, so a
     partial override keeps the default caps of unmentioned buckets. An
-    invalid override (malformed JSON, non-object root, empty or
-    malformed window list, non-positive or boolean numbers) is rejected
-    atomically with a stderr warning and the defaults apply: a broken
-    override must never widen or remove a cap.
+    invalid override (malformed or over-nested JSON, non-object root,
+    unknown bucket, empty or malformed window list, non-positive,
+    out-of-range, or boolean numbers) is rejected atomically with a
+    stderr warning and the defaults apply: a broken override must never
+    widen, crash, or remove a cap.
     """
     override = {}
     raw = os.environ.get("GHG_LIMITS_JSON")
     if raw:
         try:
             override = _parse_limits_override(raw)
-        except ValueError as exc:  # JSONDecodeError is a ValueError
+        except (ValueError, TypeError, RecursionError) as exc:
             print("ghg: WARNING ignoring GHG_LIMITS_JSON (%s);"
                   " using default limits" % exc, file=sys.stderr)
     limits = {bucket: list(pairs)

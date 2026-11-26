@@ -58,9 +58,9 @@ jobs:
         # installed here) opentelemetry packages are absent, so the floor
         # is on tests actually EXECUTED (ran - skipped): other tests going
         # quiet cannot hide behind that allowance. Raise `expected` when
-        # tests are added (135 run, 14 skipped today).
+        # tests are added (139 run, 14 skipped today).
         run: |
-          expected=121
+          expected=125
           out=$(python3 -m unittest discover -s tools/ghg/tests -v 2>&1) || { printf '%s\n' "$out"; echo "ERROR: ghg suite failed"; exit 1; }
           printf '%s\n' "$out"
           ran=$(printf '%s\n' "$out" | sed -n 's/^Ran \([0-9][0-9]*\) tests\{0,1\} in .*/\1/p' | tail -n 1)
@@ -68,7 +68,7 @@ jobs:
             echo "ERROR: could not read the test count from unittest output"
             exit 1
           fi
-          skipped=$(printf '%s\n' "$out" | sed -n 's/^OK (skipped=\([0-9][0-9]*\))$/\1/p' | tail -n 1)
+          skipped=$(printf '%s\n' "$out" | sed -n 's/^OK (.*skipped=\([0-9][0-9]*\).*)$/\1/p' | tail -n 1)
           executed=$((ran - ${skipped:-0}))
           if [ "$executed" -lt "$expected" ]; then
             echo "ERROR: ghg suite executed $executed tests (ran $ran, skipped ${skipped:-0}), expected at least $expected; a test was deleted, failed to load or was skipped"
