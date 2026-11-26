@@ -22,7 +22,7 @@ import argparse
 import hashlib
 import os
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 MANIFEST_PREFIX = "vendor-"
 MANIFEST_SUFFIX = ".sha256"
@@ -59,7 +59,10 @@ def parse_manifest(path: Path):
     (``\\n``/``\\\\``) as sha256sum emits it; those are unescaped.
     """
     entries, errors = {}, []
-    text = path.read_bytes().decode("utf-8")
+    try:
+        text = path.read_bytes().decode("utf-8")
+    except UnicodeDecodeError as exc:
+        return {}, [f"{path.name}: manifest is not valid UTF-8 ({exc})"]
     for lineno, line in enumerate(text.split("\n"), 1):
         if not line:
             continue
@@ -76,7 +79,18 @@ def parse_manifest(path: Path):
             name = name.replace("\\\\", "\x00").replace("\\n", "\n").replace("\x00", "\\")
         if name.startswith("./"):
             name = name[2:]
-        entries[name] = digest
+        p_rel = PurePosixPath(name)
+        if not name or p_rel.is_absolute() or name.startswith("/") or ".." in p_rel.parts:
+            errors.append(f"{path.name}:{lineno}: unsafe manifest path outside tree: {name}")
+            continue
+        norm = p_rel.as_posix()
+        if norm in ("", "."):
+            errors.append(f"{path.name}:{lineno}: unsafe manifest path outside tree: {name}")
+            continue
+        if norm in entries:
+            errors.append(f"{path.name}:{lineno}: duplicate manifest entry: {norm}")
+            continue
+        entries[norm] = digest
     return entries, errors
 
 
@@ -95,15 +109,19 @@ def check_tree(root: Path, name: str):
     entries, errors = parse_manifest(manifest)
     findings.extend(f"[{name}] {e}" for e in errors)
 
+    tree_resolved = tree.resolve()
     for rel, digest in sorted(entries.items()):
         p = tree / rel
         if not p.is_file():  # follows symlinks, like sha256sum -c
             findings.append(f"[{name}] missing listed file: {rel}")
             continue
+        if not p.resolve().is_relative_to(tree_resolved):
+            findings.append(f"[{name}] listed file escapes vendored tree: {rel}")
+            continue
         if sha256_file(p) != digest:
             findings.append(f"[{name}] SHA-256 mismatch: {rel}")
 
-    regular, broken = set(), []
+    regular, broken, escaping = set(), [], []
     for dirpath, dirnames, filenames in os.walk(tree, followlinks=False):
         dp = Path(dirpath)
         for entry in dirnames + filenames:
@@ -112,12 +130,16 @@ def check_tree(root: Path, name: str):
             if p.is_symlink():
                 if not p.exists():
                     broken.append(rel)
+                elif not p.resolve().is_relative_to(tree_resolved):
+                    escaping.append(rel)
             elif p.is_file():
                 regular.add(rel)
     for rel in sorted(regular - set(entries)):
         findings.append(f"[{name}] unlisted file (not in {manifest.name}): {rel}")
     for rel in sorted(broken):
         findings.append(f"[{name}] broken symlink: {rel}")
+    for rel in sorted(escaping):
+        findings.append(f"[{name}] symlink escapes vendored tree: {rel}")
     return findings
 
 

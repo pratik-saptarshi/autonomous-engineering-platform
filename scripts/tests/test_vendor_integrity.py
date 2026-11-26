@@ -133,6 +133,58 @@ class VendorIntegrityTest(unittest.TestCase):
         r = self.run_check()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
+    def test_escaping_symlink_fails(self):
+        tree = self.add_tree("alpha")
+        outside = self.root / "outside.txt"
+        outside.write_text("secret\n")
+        os.symlink(str(outside), tree / "escape-link")
+        r = self.run_check()
+        self.assertEqual(r.returncode, 1)
+        out = r.stdout + r.stderr
+        self.assertIn("escape-link", out)
+        self.assertIn("escapes", out)
+
+    def test_duplicate_manifest_entry_fails(self):
+        self.add_tree("alpha")
+        manifest = self.root / ".github" / "vendor-alpha.sha256"
+        existing = manifest.read_text()
+        bad_line = f"{'0' * 64}  ./a.txt\n"
+        manifest.write_text(bad_line + existing)
+        r = self.run_check()
+        self.assertEqual(r.returncode, 1)
+        out = r.stdout + r.stderr
+        self.assertIn("duplicate manifest entry", out)
+        self.assertIn("a.txt", out)
+
+    def test_manifest_path_traversal_and_absolute_fail(self):
+        self.add_tree("alpha")
+        outside = self.root / "outside.txt"
+        outside.write_bytes(b"out\n")
+        manifest = self.root / ".github" / "vendor-alpha.sha256"
+        existing = manifest.read_text()
+        h = sha(b"out\n")
+        manifest.write_text(
+            existing
+            + f"{h}  ../outside.txt\n"
+            + f"{h}  {outside}\n"
+        )
+        r = self.run_check()
+        self.assertEqual(r.returncode, 1)
+        out = r.stdout + r.stderr
+        self.assertIn("unsafe manifest path", out)
+        self.assertIn("../outside.txt", out)
+        self.assertIn(str(outside), out)
+
+    def test_non_utf8_manifest_fails_cleanly(self):
+        self.add_tree("alpha")
+        manifest = self.root / ".github" / "vendor-alpha.sha256"
+        manifest.write_bytes(b"\xff\xfe\x00\x01")
+        r = self.run_check()
+        self.assertEqual(r.returncode, 1)
+        out = r.stdout + r.stderr
+        self.assertIn("not valid UTF-8", out)
+        self.assertNotIn("Traceback", out)
+
     def test_default_root_is_cwd(self):
         self.add_tree("alpha")
         r = subprocess.run([sys.executable, str(SCRIPT)], cwd=self.root, capture_output=True, text=True)
