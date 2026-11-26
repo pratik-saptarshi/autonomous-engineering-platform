@@ -1921,6 +1921,9 @@ check "PR220 [ 3 -gt 2 ] live (control)" profile_detected '[ 3 -gt 2 ] && . ~/.b
 check "PR220 [[ foo != foo ]] dead" profile_not_detected 'if [[ foo != foo ]]; then . ~/.bashrc; fi'
 check "PR220 [ x = y ] dead (string comparison)" profile_not_detected 'if [ x = y ]; then . ~/.bashrc; fi'
 check "PR220 test 1 -eq 2 dead" profile_not_detected 'test 1 -eq 2 && . ~/.bashrc'
+check "PR220 [[ foo = f* ]] pattern RHS stays reachable" profile_detected '[[ foo = f* ]] && . ~/.bashrc'
+check "PR220 [[ foo = \"f*\" ]] quoted RHS is literal and dead" profile_not_detected '[[ foo = "f*" ]] && . ~/.bashrc'
+check "PR220 [ foo = \"f*\" ] literal comparison is dead (control)" profile_not_detected '[ foo = "f*" ] && . ~/.bashrc'
 
 note "PR220-R6: a redefined false/true builtin is not a literal constant"
 check "PR220 false() override makes if false reachable" profile_detected $'false() { return 0; }\nif false; then . ~/.bashrc; fi'

@@ -566,6 +566,38 @@ numeric_p() {
   return 0
 }
 
+# True when $1 (a test operand word) contains a glob metacharacter
+# outside quotes and outside backslash escapes.
+unquoted_glob_p() {
+  local w="$1" i=0 ch
+  local n=${#1}
+  local sq=0 dq=0
+  while [ "$i" -lt "$n" ]; do
+    ch="${w:i:1}"
+    if [ "$sq" -eq 1 ]; then
+      if [ "$ch" = "'" ]; then sq=0; fi
+      i=$((i + 1))
+      continue
+    fi
+    if [ "$dq" -eq 1 ]; then
+      case "$ch" in
+      \\) i=$((i + 2)) ;;
+      '"') dq=0; i=$((i + 1)) ;;
+      *) i=$((i + 1)) ;;
+      esac
+      continue
+    fi
+    case "$ch" in
+    "'") sq=1 ;;
+    '"') dq=1 ;;
+    \\) i=$((i + 2)); continue ;;
+    '*' | '?' | '[') return 0 ;;
+    esac
+    i=$((i + 1))
+  done
+  return 1
+}
+
 # Print the outcome the command text $1 provably has: `t` (always
 # succeeds), `f` (always fails), or `u` (unknown — anything that
 # depends on the environment). Only literal constants are recognized:
@@ -582,7 +614,7 @@ numeric_p() {
 const_status() {
   local -a w=() t=()
   local IFS=' '
-  local invert=0 st=u n i a op b p val text
+  local invert=0 st=u n i a op b p val text bracket=""
   text="$1"
   text="${text//$'\t'/ }"
   text="${text//$'\n'/ }"
@@ -617,6 +649,10 @@ const_status() {
   fi
   case "${w[0]}" in
   '[' | '[[')
+    case "${w[0]}" in
+    '[[') bracket="[[" ;;
+    *) bracket="[" ;;
+    esac
     case "${w[n - 1]}" in
     ']' | ']]') ;;
     *)
@@ -731,24 +767,18 @@ const_status() {
       return 0
     }
     case "$op" in
-    '=')
-      [ "$a" = "$b" ] && st=t || st=f
-      ;;
-    '==' | '!=')
-      # In [[ ]] the right operand is a pattern; only a literal
-      # right side (no glob metacharacter) has a known outcome.
-      case "$b" in
-      *[*?[]*)
+    '=' | '==' | '!=')
+      # Only [[ ]] treats an unquoted right operand as a pattern; [ ]
+      # and test compare strings. A pattern match against a literal
+      # left operand is not modeled, so it stays unknown (and the
+      # source is counted, never declared unreachable).
+      if [ "$bracket" = "[[" ] && unquoted_glob_p "${t[2]}"; then
         st=u
-        ;;
-      *)
-        if [ "$op" = "==" ]; then
-          [ "$a" = "$b" ] && st=t || st=f
-        else
-          [ "$a" != "$b" ] && st=t || st=f
-        fi
-        ;;
-      esac
+      elif [ "$op" = "!=" ]; then
+        [ "$a" != "$b" ] && st=t || st=f
+      else
+        [ "$a" = "$b" ] && st=t || st=f
+      fi
       ;;
     -eq | -ne | -lt | -le | -gt | -ge)
       if numeric_p "$a" && numeric_p "$b"; then
