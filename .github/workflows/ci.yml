@@ -30,16 +30,26 @@ jobs:
 
   shell-lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+      - name: Install shellcheck (pinned, checksum-verified)
+        # Pinned release tarball instead of the runner's apt package: the
+        # apt install started failing on the Ubuntu 26.04 image, and a
+        # floating version would let a lint verdict change with the image.
+        run: |
+          curl -fsSL --connect-timeout 15 --max-time 180 --retry 3 --retry-delay 2 --retry-all-errors -o /tmp/shellcheck.tar.xz https://github.com/koalaman/shellcheck/releases/download/v0.10.0/shellcheck-v0.10.0.linux.x86_64.tar.xz
+          echo "6c881ab0698e4e6ea235245f22832860544f17ba386442fe7e9d629f8cbedf87  /tmp/shellcheck.tar.xz" | sha256sum -c -
+          tar -xJ -C /tmp -f /tmp/shellcheck.tar.xz
+          sudo install -m 0755 /tmp/shellcheck-v0.10.0/shellcheck /usr/local/bin/shellcheck
+          shellcheck --version
       - run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
           go install mvdan.cc/sh/v3/cmd/shfmt@v3.10.0
-          shellcheck scripts/*.sh ops/bin/*.sh
-          test -z "$(shfmt -d -i 2 scripts/*.sh ops/bin/*.sh)"
+          shellcheck scripts/*.sh ops/bin/*.sh tools/ghg/bin/ghg
+          test -z "$(shfmt -d -i 2 scripts/*.sh ops/bin/*.sh tools/ghg/bin/ghg)"
 
   script-tests:
     runs-on: ubuntu-latest
@@ -51,6 +61,29 @@ jobs:
         with:
           go-version: '1.27.4'
       - run: python3 -m unittest discover -s scripts/tests -v
+      - name: ghg suite (stub gh, no live GitHub; executed-test count asserted)
+        # unittest discovery treats a test file that is deleted or fails to
+        # load as fewer tests, not a failure, and a skip counts as a pass.
+        # The 14 OpenTelemetry tests skip when the optional (pinned, not
+        # installed here) opentelemetry packages are absent, so the floor
+        # is on tests actually EXECUTED (ran - skipped): other tests going
+        # quiet cannot hide behind that allowance. Raise `expected` when
+        # tests are added (139 run, 14 skipped today).
+        run: |
+          expected=125
+          out=$(python3 -m unittest discover -s tools/ghg/tests -v 2>&1) || { printf '%s\n' "$out"; echo "ERROR: ghg suite failed"; exit 1; }
+          printf '%s\n' "$out"
+          ran=$(printf '%s\n' "$out" | sed -n 's/^Ran \([0-9][0-9]*\) tests\{0,1\} in .*/\1/p' | tail -n 1)
+          if [ -z "$ran" ]; then
+            echo "ERROR: could not read the test count from unittest output"
+            exit 1
+          fi
+          skipped=$(printf '%s\n' "$out" | sed -n 's/^OK (.*skipped=\([0-9][0-9]*\).*)$/\1/p' | tail -n 1)
+          executed=$((ran - ${skipped:-0}))
+          if [ "$executed" -lt "$expected" ]; then
+            echo "ERROR: ghg suite executed $executed tests (ran $ran, skipped ${skipped:-0}), expected at least $expected; a test was deleted, failed to load or was skipped"
+            exit 1
+          fi
       - name: Vendor freshness blocks (15 provenance files, no live API)
         run: python3 scripts/vendor_graph.py --root . --no-live --strict
       - name: Vendor freshness detector self-test

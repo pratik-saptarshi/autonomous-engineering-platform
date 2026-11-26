@@ -17,95 +17,134 @@ set -u
 # no `readlink -f` (not POSIX/macOS-safe).
 GHG_SELF=$0
 while [ -L "$GHG_SELF" ]; do
-    GHG_LINK=$(readlink "$GHG_SELF") || break
-    case $GHG_LINK in
-        /*) GHG_SELF=$GHG_LINK ;;
-        *) GHG_SELF=$(dirname -- "$GHG_SELF")/$GHG_LINK ;;
-    esac
+  GHG_LINK=$(readlink "$GHG_SELF") || break
+  case $GHG_LINK in
+  /*) GHG_SELF=$GHG_LINK ;;
+  *) GHG_SELF=$(dirname -- "$GHG_SELF")/$GHG_LINK ;;
+  esac
 done
+# shellcheck disable=SC1007 # `CDPATH=` is the intentional empty-assignment idiom: cd must not search $CDPATH
 SHIM_DIR=$(CDPATH= cd -- "$(dirname -- "$GHG_SELF")" && pwd)
 GHG_PY="$SHIM_DIR/../ghg.py"
 STATE_DIR=${GHG_STATE_DIR:-"$HOME/workspace/ghg-state"}
 REAL_GH=${GHG_REAL_GH:-/usr/bin/gh}
-mkdir -p "$STATE_DIR" 2>/dev/null || true
+# State dir is owner-only (0700) when this invocation creates it: it
+# holds argv traces. A pre-existing directory (a shared dir, a checkout,
+# the working directory) is never chmodded -- that would remove access
+# for unrelated users and files -- and the files written here are 0600
+# instead.
+# shellcheck disable=SC1007 # same empty-assignment idiom as SHIM_DIR above
+state_real=$(CDPATH= cd -- "$STATE_DIR" 2>/dev/null && pwd -P) || state_real=
+cwd_real=$(pwd -P)
+if [ -n "$state_real" ] && [ "$state_real" = "$cwd_real" ]; then
+  : # never chmod the working directory
+elif [ ! -d "$STATE_DIR" ]; then
+  if (umask 077 && mkdir -p "$STATE_DIR") 2>/dev/null; then
+    chmod 700 "$STATE_DIR" 2>/dev/null || true
+  fi
+fi
 
-if python3 -c 'import py_compile, sys; py_compile.compile(sys.argv[1], cfile=sys.argv[2], doraise=True)' "$GHG_PY" "$STATE_DIR/ghg.pyc" 2>/dev/null; then
-    exec python3 "$GHG_PY" "$@"
+if (umask 077 && python3 -c 'import py_compile, sys; py_compile.compile(sys.argv[1], cfile=sys.argv[2], doraise=True)' "$GHG_PY" "$STATE_DIR/ghg.pyc" 2>/dev/null); then
+  exec python3 "$GHG_PY" "$@"
 fi
 
 # ghg.py is broken: record the fallback and degrade per verb.
 # The trace must not persist sensitive flag values (--body, --title,
-# -m/--message, --body-file, -H/--header — the same set ghg.py's
-# redact_argv covers), in separate-token, `--flag=value`, and combined
-# `-H<value>`/`-m<value>` spellings. Unlike redact_argv the shell
-# rendering omits the value length: `<redacted>`, not
-# `<redacted len=N>` — the length is itself a minor leak.
+# -m/--message, --body-file, -H/--header and the `gh api` payload
+# flags -f/--field, -F/--raw-field, --input — the same set ghg.py's
+# redact_argv covers), in separate-token, `--flag=value`, and attached
+# `-H<value>`/`-m<value>`/`-f<value>`/`-F<value>` spellings. Unlike
+# redact_argv the shell rendering omits the value length:
+# `<redacted>`, not `<redacted len=N>` — the length is itself a minor
+# leak.
 safe_argv=""
 redact_next=0
 for tok in "$@"; do
-    if [ "$redact_next" = 1 ]; then
-        safe_argv="$safe_argv <redacted>"
-        redact_next=0
-        continue
-    fi
-    case $tok in
-        --body|--title|-m|--message|--body-file|-H|--header)
-            safe_argv="$safe_argv $tok"
-            redact_next=1
-            ;;
-        --body=*|--title=*|--message=*|--body-file=*|--header=*)
-            safe_argv="$safe_argv ${tok%%=*}=<redacted>"
-            ;;
-        -H?*)
-            safe_argv="$safe_argv -H=<redacted>"
-            ;;
-        -m?*)
-            safe_argv="$safe_argv -m=<redacted>"
-            ;;
-        *)
-            safe_argv="$safe_argv $tok"
-            ;;
-    esac
+  if [ "$redact_next" = 1 ]; then
+    safe_argv="$safe_argv <redacted>"
+    redact_next=0
+    continue
+  fi
+  case $tok in
+  --body | --title | -m | --message | --body-file | -H | --header | -f | --field | -F | --raw-field | --input)
+    safe_argv="$safe_argv $tok"
+    redact_next=1
+    ;;
+  --body=* | --title=* | --message=* | --body-file=* | --header=* | --field=* | --raw-field=* | --input=*)
+    safe_argv="$safe_argv ${tok%%=*}=<redacted>"
+    ;;
+  -H?*)
+    safe_argv="$safe_argv -H=<redacted>"
+    ;;
+  -m?*)
+    safe_argv="$safe_argv -m=<redacted>"
+    ;;
+  -f?*)
+    safe_argv="$safe_argv -f=<redacted>"
+    ;;
+  -F?*)
+    safe_argv="$safe_argv -F=<redacted>"
+    ;;
+  *)
+    safe_argv="$safe_argv $tok"
+    ;;
+  esac
 done
 safe_argv=${safe_argv# }
-printf '%s ghg.py failed py_compile; fallback verb=%s argv=%s\n' \
-    "$(date +%s)" "${1:-}" "$safe_argv" >> "$STATE_DIR/fallback.log" 2>/dev/null || true
+(
+  umask 077
+  printf '%s ghg.py failed py_compile; fallback verb=%s argv=%s\n' \
+    "$(date +%s)" "${1:-}" "$safe_argv" >>"$STATE_DIR/fallback.log" 2>/dev/null
+) || true
+chmod 600 "$STATE_DIR/fallback.log" 2>/dev/null || true
 
 verb=${1:-}
 case "$verb" in
-    run)
-        shift
-        while [ $# -gt 0 ]; do
-            if [ "$1" = "--" ]; then
-                shift
-                break
-            fi
-            shift
-        done
-        exec "$REAL_GH" "$@"
-        ;;
-    watch)
-        shift
-        repo=""
-        run_id=""
-        while [ $# -gt 0 ]; do
-            case "$1" in
-                --repo) repo=$2; shift 2 ;;
-                --repo=*) repo=${1#--repo=}; shift ;;
-                --run) run_id=$2; shift 2 ;;
-                --run=*) run_id=${1#--run=}; shift ;;
-                *) shift ;;
-            esac
-        done
-        echo "ghg: WARNING ghg.py is broken; watch is DEGRADED to a single status read (no polling)" >&2
-        exec "$REAL_GH" run view "$run_id" --repo "$repo"
-        ;;
-    check|status)
-        echo "ghg: ghg.py is broken; '$verb' cannot run (nothing executed)" >&2
-        exit 70
-        ;;
-    *)
-        echo "ghg: ghg.py is broken; cannot dispatch verb '${verb}'" >&2
-        exit 70
-        ;;
+run)
+  shift
+  while [ $# -gt 0 ]; do
+    if [ "$1" = "--" ]; then
+      shift
+      break
+    fi
+    shift
+  done
+  exec "$REAL_GH" "$@"
+  ;;
+watch)
+  shift
+  repo=""
+  run_id=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+    --repo)
+      repo=$2
+      shift 2
+      ;;
+    --repo=*)
+      repo=${1#--repo=}
+      shift
+      ;;
+    --run)
+      run_id=$2
+      shift 2
+      ;;
+    --run=*)
+      run_id=${1#--run=}
+      shift
+      ;;
+    *) shift ;;
+    esac
+  done
+  echo "ghg: WARNING ghg.py is broken; watch is DEGRADED to a single status read (no polling)" >&2
+  exec "$REAL_GH" run view "$run_id" --repo "$repo"
+  ;;
+check | status)
+  echo "ghg: ghg.py is broken; '$verb' cannot run (nothing executed)" >&2
+  exit 70
+  ;;
+*)
+  echo "ghg: ghg.py is broken; cannot dispatch verb '${verb}'" >&2
+  exit 70
+  ;;
 esac

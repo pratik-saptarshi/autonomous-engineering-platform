@@ -404,8 +404,15 @@ class TestWatchDenial(RunTestCase):
     """Ruling R1's deferred test, landed with the real gate."""
 
     def test_gate_denial_mid_watch_exits_75(self):
+        # A zero cap is no longer a valid override (it fails closed to
+        # the defaults, #203), so exhaust a cap of 1 with a prior call.
+        limits = json.dumps({"core": [[3600, 1]]})
+        spend = self.run_cli(["run", "--", "api", "repos/octo/demo"],
+                             {"GHG_LIMITS_JSON": limits})
+        self.assertEqual(spend.returncode, 0)
+        self.assertEqual(self.stub_calls(), 1)
         env = self.base_env({
-            "GHG_LIMITS_JSON": json.dumps({"core": [[3600, 0]]}),
+            "GHG_LIMITS_JSON": limits,
             "GHG_MIN_INTERVAL": "1",
         })
         proc = subprocess.run(
@@ -415,7 +422,7 @@ class TestWatchDenial(RunTestCase):
             capture_output=True, text=True, timeout=60, env=env)
         self.assertEqual(proc.returncode, 75)
         self.assertIn("ghg: DENIED bucket=core", proc.stderr)
-        self.assertEqual(self.stub_calls(), 0)  # the poll never exec'd
+        self.assertEqual(self.stub_calls(), 1)  # the poll never exec'd
 
 
 if __name__ == "__main__":

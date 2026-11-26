@@ -1,0 +1,477 @@
+"""Tests for scripts/format_policy_delta_comment.py (issue #154).
+
+unittest.TestCase style only: CI runs
+``python3 -m unittest discover -s scripts/tests``.
+
+The helper formats the sticky head-SHA PR comment for the Policy Delta
+workflow and picks the existing comment to update (or none, to create).
+Everything here is pure stdlib and offline: the workflow itself is
+checked statically (no network, no YAML dependency).
+"""
+
+import importlib.util
+import json
+import re
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SCRIPT = REPO_ROOT / "scripts" / "format_policy_delta_comment.py"
+WORKFLOW = REPO_ROOT / ".github" / "workflows" / "policy-delta.yml"
+COMMENT_WORKFLOW = (REPO_ROOT / ".github" / "workflows"
+                    / "policy-delta-comment.yml")
+
+HEAD = "a" * 40
+BASE = "b" * 40
+RUN_URL = "https://github.com/example/repo/actions/runs/123456"
+MARKER = "<!-- aep:policy-delta -->"
+BOT = "github-actions[bot]"
+
+REPORT = """\
+# Policy delta
+
+Newly allowed (1):
+- tools/ghg/ghg.py: bucket `core` cap 3500 -> 4000
+
+Acknowledgement token: `policy-delta-sha256: deadbeef`
+"""
+
+
+def load():
+    spec = importlib.util.spec_from_file_location(
+        "format_policy_delta_comment", SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class FormatTests(unittest.TestCase):
+    def setUp(self):
+        self.m = load()
+
+    def fmt(self, report=REPORT, outcome="ok", **kw):
+        return self.m.format_comment(
+            report, head_sha=kw.get("head", HEAD),
+            base_sha=kw.get("base", BASE),
+            run_url=kw.get("run_url", RUN_URL), outcome=outcome)
+
+    def test_normal_report_has_marker_metadata_and_body(self):
+        body = self.fmt(outcome="ack-required")
+        self.assertEqual(body.count(MARKER), 1)
+        self.assertTrue(body.startswith(MARKER))
+        self.assertIn(HEAD, body)
+        self.assertIn(BASE, body)
+        self.assertIn(RUN_URL, body)
+        self.assertIn("ack-required", body)
+        self.assertIn("bucket `core` cap 3500 -> 4000", body)
+        self.assertIn(f"policy-delta-{HEAD}", body)
+        self.assertLess(len(body.encode("utf-8")), 65000)
+
+    def test_each_outcome_is_named(self):
+        for outcome in ("ok", "ack-required", "differ-error"):
+            with self.subTest(outcome=outcome):
+                self.assertIn(f"`{outcome}`", self.fmt(outcome=outcome))
+
+    def test_exit2_error_report(self):
+        report = ("check_policy_delta: error: tools/ghg/ghg.py: modelled "
+                  "power is mutated at runtime (line 9)\n\n**The differ "
+                  "errored (exit 2); the acknowledgement check below "
+                  "fails closed.**\n")
+        body = self.fmt(report=report, outcome="differ-error")
+        self.assertIn("differ-error", body)
+        self.assertIn("modelled power is mutated at runtime", body)
+        self.assertIn("fails closed", body)
+        self.assertEqual(body.count(MARKER), 1)
+
+    def test_outcome_from_ack_rc(self):
+        m = self.m
+        self.assertEqual(m.outcome_from_rc("0"), "ok")
+        self.assertEqual(m.outcome_from_rc("1"), "ack-required")
+        self.assertEqual(m.outcome_from_rc("2"), "differ-error")
+        # Missing / garbage rc (an earlier step failed): fail closed.
+        self.assertEqual(m.outcome_from_rc(""), "differ-error")
+        self.assertEqual(m.outcome_from_rc(None), "differ-error")
+        self.assertEqual(m.outcome_from_rc("137"), "differ-error")
+
+    def test_oversized_report_is_truncated_under_65000_bytes(self):
+        # 100 KB of multibyte text: the cut must land on a character
+        # boundary and the result must still be valid UTF-8.
+        big = ("é" * 50 + "\n") * 2000
+        self.assertGreater(len(big.encode("utf-8")), 100_000)
+        body = self.fmt(report=big)
+        raw = body.encode("utf-8")
+        self.assertLess(len(raw), 65000)
+        raw.decode("utf-8")  # strict: no split code point
+        self.assertIn("truncated", body.lower())
+        self.assertIn(f"policy-delta-{HEAD}", body)
+        self.assertIn(RUN_URL, body)
+        self.assertEqual(body.count(MARKER), 1)
+        # Truncation must keep a prefix of the report, not just the
+        # notice and metadata.
+        self.assertIn("é" * 50, body)
+
+    def test_truncation_never_leaves_an_open_code_fence(self):
+        big = "```\n" + ("x" * 79 + "\n") * 3000
+        body = self.fmt(report=big)
+        self.assertLess(len(body.encode("utf-8")), 65000)
+        fences = [ln for ln in body.splitlines()
+                  if ln.strip().startswith("```")]
+        self.assertEqual(len(fences) % 2, 0, "unbalanced code fence")
+
+    def test_report_just_under_budget_is_not_truncated(self):
+        body = self.fmt(report="line\n" * 100)
+        self.assertNotIn("truncated", body.lower())
+
+    def test_hostile_report_text_is_neutralised(self):
+        # A skill path can carry an @mention, HTML tags, markdown links,
+        # a reference link, a forged marker, or a forged heading; none
+        # must render or forge the upsert marker.
+        report = ("- skills/safe/run.sh\n"
+                  "- skills/@octocat/run.sh\n"
+                  "- <!-- aep:policy-delta -->\n"
+                  "- <img src=x onerror=alert(1)> <script>alert(1)</script>\n"
+                  "- skills/[click](https://evil.example) -->\n"
+                  "\n[View required acknowledgement][gate]\n"
+                  "\n[gate]: https://attacker.example\n")
+        body = self.fmt(report=report)
+        self.assertNotIn("@octocat", body)
+        self.assertNotIn("<img ", body)
+        self.assertNotIn("<script>", body)
+        self.assertNotIn("[click](https://evil.example)", body)
+        self.assertNotIn("[View required acknowledgement][gate]", body)
+        self.assertNotIn("\n[gate]: https://attacker.example", body)
+        self.assertIn("\\[gate\\]: https://attacker.example", body)
+        self.assertEqual(body.count(MARKER), 1)
+        # The sanitizer must retain the safe report text, not drop it.
+        self.assertIn("skills/safe/run.sh", body)
+
+    def test_reference_style_links_are_neutralised(self):
+        report = ("Newly allowed:\n"
+                  "- see [the gate][req] at [req]: https://evil.example\n"
+                  "[req]: https://evil.example\n")
+        body = self.fmt(report=report)
+        self.assertNotIn("[the gate][req]", body)
+        self.assertNotIn("\n[req]:", body)
+        self.assertIn("\\[req\\]:", body)
+
+    def test_truncation_closes_tilde_and_four_backtick_fences(self):
+        for fence in ("~~~", "````"):
+            with self.subTest(fence=fence):
+                big = f"{fence}\n" + ("x" * 79 + "\n") * 3000
+                body = self.fmt(report=big)
+                self.assertLess(len(body.encode("utf-8")), 65000)
+                fences = [ln.strip() for ln in body.splitlines()
+                          if ln.strip() and set(ln.strip()) <= {"`", "~"}]
+                self.assertEqual(len(fences) % 2, 0,
+                                 f"unbalanced {fence} fence: {fences}")
+                # The closing fence must be a real, final closer -- not
+                # the report's opening fence matched by assertIn.
+                self.assertEqual(fences[-1], fence)
+
+    def test_rejects_bad_metadata(self):
+        m = self.m
+        with self.assertRaises(ValueError):
+            m.format_comment(REPORT, head_sha="not-a-sha", base_sha=BASE,
+                             run_url=RUN_URL, outcome="ok")
+        with self.assertRaises(ValueError):
+            m.format_comment(REPORT, head_sha=HEAD, base_sha=BASE,
+                             run_url="javascript:alert(1)", outcome="ok")
+        with self.assertRaises(ValueError):
+            m.format_comment(REPORT, head_sha=HEAD, base_sha=BASE,
+                             run_url=RUN_URL, outcome="approved")
+
+
+class UpsertSelectionTests(unittest.TestCase):
+    def setUp(self):
+        self.m = load()
+
+    @staticmethod
+    def comment(cid, login, body, utype="Bot"):
+        return {"id": cid, "body": body,
+                "user": {"login": login, "type": utype}}
+
+    def test_no_comments_creates(self):
+        self.assertIsNone(self.m.select_upsert_target([]))
+
+    def test_existing_bot_marker_comment_is_updated(self):
+        comments = [
+            self.comment(1, "alice", "hello", "User"),
+            self.comment(2, BOT, f"{MARKER}\nold report"),
+            self.comment(3, BOT, "some other bot comment"),
+        ]
+        self.assertEqual(self.m.select_upsert_target(comments), 2)
+
+    def test_non_bot_comment_with_marker_is_ignored(self):
+        # A human (or another app) pasting the marker must never be
+        # PATCHed -- and must not block creating our own comment.
+        comments = [
+            self.comment(7, "mallory", f"{MARKER}\nfake", "User"),
+            self.comment(8, "other-app[bot]", f"{MARKER}\nfake"),
+            self.comment(9, BOT, f"{MARKER}\nfake", "User"),
+            self.comment(10, BOT, f"quoted:\n{MARKER}\nmid-body", "Bot"),
+        ]
+        self.assertIsNone(self.m.select_upsert_target(comments))
+
+    def test_bot_comment_without_marker_is_ignored(self):
+        comments = [self.comment(4, BOT, "dependabot says hi")]
+        self.assertIsNone(self.m.select_upsert_target(comments))
+
+    def test_lowest_id_wins_when_duplicates_exist(self):
+        comments = [self.comment(9, BOT, MARKER),
+                    self.comment(5, BOT, MARKER)]
+        self.assertEqual(self.m.select_upsert_target(comments), 5)
+
+    def test_prune_lists_only_other_bot_marker_comments(self):
+        comments = [
+            self.comment(1, "alice", f"{MARKER}\nfake", "User"),
+            self.comment(5, BOT, f"{MARKER}\nkept"),
+            self.comment(6, BOT, "unrelated"),
+            self.comment(9, BOT, f"{MARKER}\nduplicate"),
+            self.comment(12, "other[bot]", f"{MARKER}\nfake"),
+        ]
+        self.assertEqual(self.m.duplicate_marker_ids(comments, 5), [9])
+        self.assertEqual(self.m.duplicate_marker_ids(comments, None), [5, 9])
+        self.assertEqual(self.m.duplicate_marker_ids([], 1), [])
+
+    def test_accepts_json_text_and_paginated_concatenation(self):
+        page1 = json.dumps([self.comment(1, "alice", "x", "User")])
+        page2 = json.dumps([self.comment(2, BOT, MARKER)])
+        # `gh api --paginate` prints the arrays back to back.
+        self.assertEqual(
+            self.m.select_upsert_target(page1 + page2), 2)
+        self.assertEqual(
+            self.m.select_upsert_target(page1 + "\n" + page2), 2)
+        self.assertIsNone(self.m.select_upsert_target(""))
+
+    def test_tolerates_malformed_entries(self):
+        comments = [None, 3, {"id": 1}, {"id": 2, "body": None,
+                                         "user": None},
+                    self.comment(6, BOT, MARKER)]
+        self.assertEqual(self.m.select_upsert_target(comments), 6)
+
+    def test_plan_noop_when_content_unchanged(self):
+        m = self.m
+        body = m.format_comment(REPORT, head_sha=HEAD, base_sha=BASE,
+                                run_url=RUN_URL, outcome="ack-required")
+        # Same content, different workflow run (an `edited` re-run):
+        # the stored comment must not be rewritten.
+        rerun = m.format_comment(
+            REPORT, head_sha=HEAD, base_sha=BASE,
+            run_url=RUN_URL.replace("123456", "999999"),
+            outcome="ack-required")
+        comments = [self.comment(42, BOT, body)]
+        self.assertEqual(m.plan_upsert(comments, rerun), ("noop", 42))
+
+    def test_plan_update_when_outcome_changes(self):
+        m = self.m
+        old = m.format_comment(REPORT, head_sha=HEAD, base_sha=BASE,
+                               run_url=RUN_URL, outcome="ack-required")
+        new = m.format_comment(REPORT, head_sha=HEAD, base_sha=BASE,
+                               run_url=RUN_URL, outcome="ok")
+        self.assertEqual(
+            m.plan_upsert([self.comment(42, BOT, old)], new),
+            ("update", 42))
+
+    def test_plan_update_when_head_changes(self):
+        m = self.m
+        old = m.format_comment(REPORT, head_sha=HEAD, base_sha=BASE,
+                               run_url=RUN_URL, outcome="ok")
+        new = m.format_comment(REPORT, head_sha="c" * 40, base_sha=BASE,
+                               run_url=RUN_URL, outcome="ok")
+        self.assertEqual(
+            m.plan_upsert([self.comment(42, BOT, old)], new),
+            ("update", 42))
+
+    def test_plan_create_when_no_target(self):
+        m = self.m
+        new = m.format_comment(REPORT, head_sha=HEAD, base_sha=BASE,
+                               run_url=RUN_URL, outcome="ok")
+        self.assertEqual(m.plan_upsert([], new), ("create", None))
+
+
+class CliTests(unittest.TestCase):
+    def run_cli(self, *args):
+        return subprocess.run([sys.executable, str(SCRIPT), *args],
+                              capture_output=True, text=True)
+
+    def test_format_and_plan_roundtrip(self):
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            (td / "report.md").write_text(REPORT)
+            out = td / "comment.md"
+            r = self.run_cli(
+                "format", "--report", str(td / "report.md"),
+                "--head-sha", HEAD, "--base-sha", BASE,
+                "--run-url", RUN_URL, "--ack-rc", "1",
+                "--output", str(out))
+            self.assertEqual(r.returncode, 0, r.stderr)
+            body = out.read_text()
+            self.assertIn(MARKER, body)
+            self.assertIn("ack-required", body)
+            (td / "comments.json").write_text("[]")
+            r = self.run_cli("plan", "--comments",
+                             str(td / "comments.json"),
+                             "--body-file", str(out))
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(r.stdout.split(), ["action=create"])
+            (td / "comments.json").write_text(json.dumps([
+                {"id": 77, "body": body,
+                 "user": {"login": BOT, "type": "Bot"}}]))
+            r = self.run_cli("plan", "--comments",
+                             str(td / "comments.json"),
+                             "--body-file", str(out))
+            self.assertEqual(r.stdout.split(),
+                             ["action=noop", "comment_id=77"])
+
+    def test_missing_report_fails_closed_to_differ_error(self):
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td) / "comment.md"
+            r = self.run_cli(
+                "format", "--report", str(Path(td) / "nope.md"),
+                "--head-sha", HEAD, "--base-sha", BASE,
+                "--run-url", RUN_URL, "--ack-rc", "",
+                "--output", str(out))
+            self.assertEqual(r.returncode, 0, r.stderr)
+            body = out.read_text()
+            self.assertIn("differ-error", body)
+            self.assertIn("report was not produced", body)
+
+    def test_bad_input_exits_2(self):
+        r = self.run_cli("format", "--report", "x", "--head-sha", "zz",
+                         "--base-sha", BASE, "--run-url", RUN_URL,
+                         "--ack-rc", "0", "--output", "/dev/null")
+        self.assertEqual(r.returncode, 2)
+
+
+class WorkflowWiringTests(unittest.TestCase):
+    """Static checks on the split workflows: the PR-triggered gate
+    (.github/workflows/policy-delta.yml) holds no write token, and the
+    token-bearing sticky comment runs from `workflow_run` on the
+    default branch (.github/workflows/policy-delta-comment.yml)."""
+
+    def setUp(self):
+        self.text = WORKFLOW.read_text()
+        self.lines = self.text.splitlines()
+        self.comment_text = COMMENT_WORKFLOW.read_text()
+        self.comment_lines = self.comment_text.splitlines()
+
+    def run_blocks(self):
+        """Yield the text of every `run:` script block."""
+        i = 0
+        while i < len(self.lines):
+            ln = self.lines[i]
+            m = re.match(r"^(\s*)(?:- )?run:\s*(.*)$", ln)
+            if m:
+                indent = len(m.group(1)) + (2 if ln.lstrip()
+                                            .startswith("- ") else 0)
+                if m.group(2) in ("|", ">", "|-", ">-"):
+                    block = []
+                    i += 1
+                    while i < len(self.lines) and (
+                            not self.lines[i].strip()
+                            or len(self.lines[i])
+                            - len(self.lines[i].lstrip()) > indent):
+                        block.append(self.lines[i])
+                        i += 1
+                    yield "\n".join(block)
+                    continue
+                yield m.group(2)
+            i += 1
+
+    def test_top_level_permissions_stay_read_only(self):
+        for text in (self.text, self.comment_text):
+            self.assertRegex(text,
+                             r"(?m)^permissions:\n  contents: read\n")
+
+    def test_pr_workflow_never_requests_a_write_token(self):
+        # A pull_request-triggered workflow runs PR-controlled YAML and
+        # scripts, so it must not carry any write scope at all.
+        self.assertNotIn("pull-requests: write", self.text)
+        self.assertNotIn("contents: write", self.text)
+        self.assertNotIn("GH_TOKEN", self.text)
+        self.assertNotIn("format_policy_delta_comment.py", self.text)
+
+    def test_comment_write_scope_is_job_level_only(self):
+        hits = [ln for ln in self.comment_lines
+                if "pull-requests: write" in ln]
+        self.assertEqual(len(hits), 1, hits)
+        self.assertTrue(hits[0].startswith("      "), hits[0])
+        self.assertNotRegex(self.comment_text,
+                            r"(?m)^permissions:\n(?:  .*\n)*?  "
+                            r"pull-requests: write")
+
+    def test_no_expression_interpolation_inside_run_scripts(self):
+        blocks = list(self.run_blocks())
+        self.assertTrue(blocks)
+        for block in blocks:
+            self.assertNotIn("${{", block, block)
+        i = 0
+        while i < len(self.comment_lines):
+            m = re.match(r"^(\s*)(?:- )?run:\s*(.*)$",
+                         self.comment_lines[i])
+            if m and m.group(2) in ("|", ">", "|-", ">-"):
+                indent = len(m.group(1)) + (2 if self.comment_lines[i]
+                                            .lstrip().startswith("- ") else 0)
+                i += 1
+                while i < len(self.comment_lines) and (
+                        not self.comment_lines[i].strip()
+                        or len(self.comment_lines[i])
+                        - len(self.comment_lines[i].lstrip()) > indent):
+                    self.assertNotIn("${{", self.comment_lines[i])
+                    i += 1
+                continue
+            i += 1
+
+    def test_comment_job_is_workflow_run_and_skips_forks(self):
+        self.assertRegex(self.comment_text,
+                         r"(?ms)^on:\n  workflow_run:\n"
+                         r"    workflows: \[\"Policy Delta\"\]\n"
+                         r"    types: \[completed\]")
+        self.assertIn(
+            "github.event.workflow_run.pull_requests[0].head.repo"
+            ".full_name == github.repository", self.comment_text)
+        self.assertIn("github.event.workflow_run.event == 'pull_request'",
+                      self.comment_text)
+
+    def test_comment_job_serialises_per_pr(self):
+        self.assertIn(
+            "group: policy-delta-comment-${{ github.event.workflow_run"
+            ".pull_requests[0].number }}", self.comment_text)
+        self.assertIn("cancel-in-progress: false", self.comment_text)
+
+    def test_comment_job_runs_only_default_branch_code(self):
+        # The token-bearing job must not check out the PR head and must
+        # not run a script whose bytes came from the PR.
+        checkout = next(n for n, ln in enumerate(self.comment_lines)
+                        if "actions/checkout@" in ln)
+        block = "\n".join(self.comment_lines[checkout:checkout + 5])
+        self.assertNotIn("ref:", block, block)
+        self.assertNotIn("pull_request.head", block, block)
+        self.assertIn("format_policy_delta_comment.py", self.comment_text)
+
+    def test_artifact_and_summary_still_publish(self):
+        self.assertIn("name: policy-delta-${{ github.event.pull_request"
+                      ".head.sha }}", self.text)
+        self.assertIn('>> "$GITHUB_STEP_SUMMARY"', self.text)
+        self.assertIn("ack-rc.txt", self.text)
+        self.assertIn("base-sha.txt", self.text)
+        # Artifact upload is not gated on fork status.
+        up = next(n for n, ln in enumerate(self.lines)
+                  if "upload-artifact@" in ln)
+        header = "\n".join(self.lines[max(0, up - 4):up + 1])
+        self.assertNotIn("head.repo.full_name", header)
+
+    def test_ack_check_is_still_fail_closed(self):
+        # The status must be captured from the command, not replaced by
+        # a constant, and the step must exit with it.
+        self.assertIn("check_policy_delta.py check", self.text)
+        self.assertIn("rc=$?", self.text)
+        self.assertRegex(self.text, r'printf \'%s\' "\$rc" > ack-rc\.txt')
+        self.assertRegex(self.text, r'exit "\$rc"')
+
+
+if __name__ == "__main__":
+    unittest.main()
