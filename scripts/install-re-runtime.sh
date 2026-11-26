@@ -749,22 +749,34 @@ const_status() {
       *'$'* | *'`'*)
         st=u
         ;;
-      *)
-        case "$val" in
-        /*) ;;
-        *) val="$HOME/$val" ;;
-        esac
+      /*)
         val="$(normalize_path_components "$val")"
         if [ "$val" = "$HOME/.bashrc" ]; then
-          # Written by this installer before any login shell reads it:
-          # the file exists and is non-empty, so only -d is false.
-          [ "$op" = "-d" ] && st=f || st=t
+          # .bashrc is a regular file, so -d is false. Its existence
+          # is guaranteed only once the installer has written it;
+          # while it is absent at scan time the test stays unknown,
+          # because declaring it true would make a shadowing SKIP
+          # return before the installer ever creates the file.
+          if [ "$op" = "-d" ]; then
+            st=f
+          elif [ -e "$val" ]; then
+            st=t
+          else
+            st=u
+          fi
         else
           # Earlier commands in the profile can create or remove any
           # other path before this test runs, so the install-time
           # filesystem result is not the login-time result.
           st=u
         fi
+        ;;
+      *)
+        # A relative operand is resolved against the shell's working
+        # directory at login, which this scan does not track (a
+        # profile may `cd` first). Never resolve it against the
+        # install-time HOME.
+        st=u
         ;;
       esac
       ;;
@@ -808,13 +820,18 @@ const_status() {
       ;;
     -eq | -ne | -lt | -le | -gt | -ge)
       if numeric_p "$a" && numeric_p "$b"; then
+        # [[ ]] evaluates arithmetic operands with bash's own integer
+        # semantics (including wrapping for canonical decimals outside
+        # the range `[ -eq ]` accepts). Use it so an out-of-range
+        # comparison is not misclassified as false and its reachable
+        # source silently dropped.
         case "$op" in
-        -eq) [ "$a" -eq "$b" ] && st=t || st=f ;;
-        -ne) [ "$a" -ne "$b" ] && st=t || st=f ;;
-        -lt) [ "$a" -lt "$b" ] && st=t || st=f ;;
-        -le) [ "$a" -le "$b" ] && st=t || st=f ;;
-        -gt) [ "$a" -gt "$b" ] && st=t || st=f ;;
-        -ge) [ "$a" -ge "$b" ] && st=t || st=f ;;
+        -eq) [[ "$a" -eq "$b" ]] && st=t || st=f ;;
+        -ne) [[ "$a" -ne "$b" ]] && st=t || st=f ;;
+        -lt) [[ "$a" -lt "$b" ]] && st=t || st=f ;;
+        -le) [[ "$a" -le "$b" ]] && st=t || st=f ;;
+        -gt) [[ "$a" -gt "$b" ]] && st=t || st=f ;;
+        -ge) [[ "$a" -ge "$b" ]] && st=t || st=f ;;
         esac
       else
         st=u
