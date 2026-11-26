@@ -1,0 +1,8 @@
+# Keep live shell scripts on LF across macOS, Linux, and Windows checkouts.
+# Byte-pinned snapshots under reference/ are intentionally excluded.
+scripts/*.sh text eol=lf
+scripts/tests/*.sh text eol=lf
+ops/bin/*.sh text eol=lf
+ops/tests/*.sh text eol=lf
+skills/**/*.sh text eol=lf
+tools/ghg/bin/ghg text eol=lf

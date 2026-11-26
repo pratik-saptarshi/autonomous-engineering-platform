@@ -13,10 +13,19 @@ set -euo pipefail
 # ──────────────────────────────────────────────────────────────────────────
 
 if [[ -t 1 ]] && command -v tput >/dev/null 2>&1 && [[ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]]; then
-  BOLD=$(tput bold); DIM=$(tput dim); RESET=$(tput sgr0)
-  BLUE=$(tput setaf 4); GREEN=$(tput setaf 2); YELLOW=$(tput setaf 3)
+  BOLD=$(tput bold)
+  DIM=$(tput dim)
+  RESET=$(tput sgr0)
+  BLUE=$(tput setaf 4)
+  GREEN=$(tput setaf 2)
+  YELLOW=$(tput setaf 3)
 else
-  BOLD=""; DIM=""; RESET=""; BLUE=""; GREEN=""; YELLOW=""
+  BOLD=""
+  DIM=""
+  RESET=""
+  BLUE=""
+  GREEN=""
+  YELLOW=""
 fi
 
 # Author sets this at the top of the stages section.
@@ -57,7 +66,7 @@ stage() {
 }
 
 # say "..." prints a plain instruction line.
-say()  { printf '  %s\n' "$1"; }
+say() { printf '  %s\n' "$1"; }
 # step "..." is a numbered-feeling action the human takes in the browser.
 step() { printf '  %s•%s %s\n' "$BLUE" "$RESET" "$1"; }
 note() { printf '  %s%s%s\n' "$DIM" "$1" "$RESET"; }
@@ -67,10 +76,15 @@ warn() { printf '  %s⚠ %s%s\n' "$YELLOW" "$1" "$RESET"; }
 open_url() {
   local url="$1"
   printf '  %s↗ opening%s %s\n' "$GREEN" "$RESET" "$url"
-  { if   command -v wslview     >/dev/null 2>&1; then wslview "$url"
-    elif command -v explorer.exe >/dev/null 2>&1; then explorer.exe "$url"
-    elif command -v xdg-open    >/dev/null 2>&1; then xdg-open "$url"
-    elif command -v open        >/dev/null 2>&1; then open "$url"
+  {
+    if command -v wslview >/dev/null 2>&1; then
+      wslview "$url"
+    elif command -v explorer.exe >/dev/null 2>&1; then
+      explorer.exe "$url"
+    elif command -v xdg-open >/dev/null 2>&1; then
+      xdg-open "$url"
+    elif command -v open >/dev/null 2>&1; then
+      open "$url"
     else false; fi
   } >/dev/null 2>&1 || warn "couldn't open a browser, so visit it manually: $url"
 }
@@ -82,6 +96,7 @@ pause() {
 }
 
 # confirm "question" is a y/N gate; returns success on yes.
+# shellcheck disable=SC2329,SC2317 # library helper for generated stages; the example stage does not call it
 confirm() {
   local reply=""
   printf '  %s? %s [y/N] ' "$YELLOW" "$1"
@@ -93,12 +108,15 @@ confirm() {
 # quotes or a plain dotenv double-quoted value undone.
 _existing() {
   [[ -f "$ENV_FILE" ]] || return 1
-  local line value sq="'\\''"; line=$(grep -E "^${1}=" "$ENV_FILE" | tail -n1) || return 1
+  local line value sq="'\\''"
+  line=$(grep -E "^${1}=" "$ENV_FILE" | tail -n1) || return 1
   value="${line#*=}"
-  if [[ "$value" == \'*\' ]]; then value="${value:1:${#value}-2}"; value="${value//"$sq"/\'}"
+  if [[ "$value" == \'*\' ]]; then
+    value="${value:1:${#value}-2}"
+    value="${value//"$sq"/\'}"
   elif [[ "$value" == \"*\" ]]; then
     value="${value:1:${#value}-2}"
-    [[ "$value" == *[\\\$\"]* ]] && return 1   # escapes, $ or ": can't decode safely; ask again
+    [[ "$value" == *[\\\$\"]* ]] && return 1 # escapes, $ or ": can't decode safely; ask again
   fi
   printf '%s' "$value"
 }
@@ -111,9 +129,9 @@ ask() {
   current=$(_existing "$key" || true)
   # Readline needs the colour codes wrapped in \001..\002 to place the cursor.
   p="  $s$BOLD$e$prompt$s$RESET$e "
-  [[ -n "$current" ]] && p+="$s$DIM$e[Enter keeps current]$s$RESET$e "
+  [[ -n "$current" ]] && p+="$s$DIM${e}[Enter keeps current]$s$RESET$e "
   read -e -r -p "$p" input || rc=1
-  if (( rc )) && [[ -z "$input" ]]; then return 1; fi
+  if ((rc)) && [[ -z "$input" ]]; then return 1; fi
   [[ -z "$input" && -n "$current" ]] && input="$current"
   printf -v "$key" '%s' "$input"
 }
@@ -129,7 +147,7 @@ ask_secret() {
   fi
   read -rs input || rc=1
   printf '\n'
-  if (( rc )) && [[ -z "$input" ]]; then return 1; fi
+  if ((rc)) && [[ -z "$input" ]]; then return 1; fi
   [[ -z "$input" && -n "$current" ]] && input="$current"
   printf -v "$key" '%s' "$input"
 }
@@ -139,11 +157,11 @@ ask_secret() {
 # a symlink and keeps an existing file's mode.
 write_env() {
   local key="$1" value="$2" tmp sq="'\\''"
-  [[ -e "$ENV_FILE" ]] || (umask 077 && : > "$ENV_FILE")
+  [[ -e "$ENV_FILE" ]] || (umask 077 && : >"$ENV_FILE")
   tmp=$(mktemp)
-  grep -vE "^${key}=" "$ENV_FILE" > "$tmp" || true
-  printf "%s='%s'\n" "$key" "${value//\'/$sq}" >> "$tmp"
-  cat "$tmp" > "$ENV_FILE"
+  grep -vE "^${key}=" "$ENV_FILE" >"$tmp" || true
+  printf "%s='%s'\n" "$key" "${value//\'/$sq}" >>"$tmp"
+  cat "$tmp" >"$ENV_FILE"
   rm -f "$tmp"
   printf -v "$key" '%s' "$value"
   WRITTEN_ENV+=("$key")
@@ -166,6 +184,7 @@ set_secret() {
 }
 
 # set_var NAME VALUE sets a GitHub Actions repo variable (non-secret).
+# shellcheck disable=SC2329,SC2317 # library helper for generated stages; the example stage does not call it
 set_var() {
   local name="$1" value="$2"
   if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
@@ -182,10 +201,11 @@ set_var() {
 finish() {
   _clear
   printf '\n%s%s  ✓ Setup complete%s\n' "$BOLD" "$GREEN" "$RESET"
-  (( ${#WRITTEN_ENV[@]} ))    && note "wrote ${#WRITTEN_ENV[@]} value(s) to $ENV_FILE: ${WRITTEN_ENV[*]}"
-  (( ${#WRITTEN_SECRET[@]} )) && note "set ${#WRITTEN_SECRET[@]} GitHub secret(s): ${WRITTEN_SECRET[*]}"
-  if (( ${#SKIPPED[@]} )); then
-    printf '\n'; warn "still to do by hand:"
+  ((${#WRITTEN_ENV[@]})) && note "wrote ${#WRITTEN_ENV[@]} value(s) to $ENV_FILE: ${WRITTEN_ENV[*]}"
+  ((${#WRITTEN_SECRET[@]})) && note "set ${#WRITTEN_SECRET[@]} GitHub secret(s): ${WRITTEN_SECRET[*]}"
+  if ((${#SKIPPED[@]})); then
+    printf '\n'
+    warn "still to do by hand:"
     for s in "${SKIPPED[@]}"; do note "  - $s"; done
   fi
   printf '\n'
@@ -200,24 +220,25 @@ finish() {
 
 run_wizard() {
 
-TOTAL_STAGES=1
+  TOTAL_STAGES=1
 
-banner "Stripe setup"
+  banner "Stripe setup"
 
-# ── Example stage: replace with your real steps ───────────────────────────
-stage "Stripe: API keys"
-say "We'll grab your Stripe test keys and store them for local dev + CI."
-open_url "https://dashboard.stripe.com/test/apikeys"
-step "On the API keys page, copy the Publishable key (starts pk_test_)."
-ask STRIPE_PUBLISHABLE_KEY "Paste the publishable key:"
-step "Click 'Reveal test key' on the Secret key row, then copy it."
-ask_secret STRIPE_SECRET_KEY "Paste the secret key:"
-write_env STRIPE_PUBLISHABLE_KEY "$STRIPE_PUBLISHABLE_KEY"
-write_env STRIPE_SECRET_KEY "$STRIPE_SECRET_KEY"
-set_secret STRIPE_SECRET_KEY "$STRIPE_SECRET_KEY"   # CI needs this one
-# ──────────────────────────────────────────────────────────────────────────
+  # ── Example stage: replace with your real steps ───────────────────────────
+  stage "Stripe: API keys"
+  say "We'll grab your Stripe test keys and store them for local dev + CI."
+  open_url "https://dashboard.stripe.com/test/apikeys"
+  step "On the API keys page, copy the Publishable key (starts pk_test_)."
+  ask STRIPE_PUBLISHABLE_KEY "Paste the publishable key:"
+  step "Click 'Reveal test key' on the Secret key row, then copy it."
+  ask_secret STRIPE_SECRET_KEY "Paste the secret key:"
+  write_env STRIPE_PUBLISHABLE_KEY "$STRIPE_PUBLISHABLE_KEY"
+  write_env STRIPE_SECRET_KEY "$STRIPE_SECRET_KEY"
+  set_secret STRIPE_SECRET_KEY "$STRIPE_SECRET_KEY" # CI needs this one
+  # ──────────────────────────────────────────────────────────────────────────
 
-finish
+  finish
 }
 
-run_wizard "$@"; exit
+run_wizard "$@"
+exit
