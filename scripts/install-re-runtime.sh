@@ -673,6 +673,7 @@ const_status() {
     done
     ;;
   test)
+    bracket="test"
     i=1
     while [ "$i" -lt "$n" ]; do
       t+=("${w[i]}")
@@ -708,11 +709,23 @@ const_status() {
     return 0
     ;;
   1)
-    case "${t[0]}" in
-    true | :) st=t ;;
-    false) st=f ;;
-    *) st=u ;;
-    esac
+    if [ -n "$bracket" ]; then
+      # `[ word ]`, `[[ word ]]` and `test word` are one-argument
+      # string tests: true iff the operand is non-empty. The word is
+      # data, never a command name, so `[ false ]` is TRUE while the
+      # standalone `false` command FAILS.
+      val="$(literal_word "${t[0]}")" || {
+        printf u
+        return 0
+      }
+      [ -n "$val" ] && st=t || st=f
+    else
+      case "${t[0]}" in
+      true | :) st=t ;;
+      false) st=f ;;
+      *) st=u ;;
+      esac
+    fi
     ;;
   2)
     op="${t[0]}"
@@ -838,7 +851,7 @@ profile_sources_bashrc() {
   local file item dup=0 line src seg sep si ssq sdq sch sprev wtxt wch wi wsq wdq
   local next_seg k f kw cstat run dead line_no last_seg line_sep
   local cond_pending=0 cond_idx=-1 cond_text="" cond_trim
-  local chain_sep="" chain_cstat=u
+  local chain_sep="" chain_cstat=u pipe_skip=0
   local last_stat=""
   local fn_false=0 fn_true=0
   while [ "${#queue[@]}" -gt 0 ]; do
@@ -858,7 +871,7 @@ profile_sources_bashrc() {
     hd_delims=() hd_dash=() hd_lines=() hd_arith_depth=0
     fr_cond=() fr_else=() fr_stat=()
     cond_pending=0 cond_idx=-1 cond_text=""
-    chain_sep="" chain_cstat=u last_stat=""
+    chain_sep="" chain_cstat=u pipe_skip=0 last_stat=""
     plines=()
     while IFS= read -r line || [ -n "$line" ]; do
       plines+=("$line")
@@ -979,10 +992,31 @@ profile_sources_bashrc() {
         # can fail; any other separator starts a fresh chain.
         run=1
         case "$sep" in
-        '&&') [ "$cstat" = f ] && run=0 ;;
-        '||') [ "$cstat" = t ] && run=0 ;;
-        *) cstat=u ;;
+        '&&')
+          pipe_skip=0
+          [ "$cstat" = f ] && run=0
+          ;;
+        '||')
+          pipe_skip=0
+          [ "$cstat" = t ] && run=0
+          ;;
+        '|')
+          # A later component of the same pipeline is skipped exactly
+          # when a short-circuited && / || list skipped the whole
+          # pipeline.
+          [ "$pipe_skip" -eq 1 ] && run=0
+          ;;
+        *)
+          pipe_skip=0
+          cstat=u
+          ;;
         esac
+        # A skipped pipeline stays skipped for all of its | components;
+        # its components never update cstat, so a following && / ||
+        # still tests the status of the preceding AND-OR list.
+        if [ "$sep" != "|" ] && [ "$run" -eq 0 ]; then
+          pipe_skip=1
+        fi
         # A line-split `if` / `elif` condition list continues until
         # bash sees `then`; keep the frame's outcome unknown until the
         # complete list is known (a later condition command can change

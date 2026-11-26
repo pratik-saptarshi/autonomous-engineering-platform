@@ -1940,6 +1940,23 @@ check "PR220 continued source keyword is detected" profile_detected $'source \\\
 check "PR220 continued heredoc opener: a source after the terminator is detected" profile_detected $'cat <<E\\\nOF\nbody\nEOF\n. ~/.bashrc'
 check "PR220 continued heredoc opener: a source inside the body is not detected" profile_not_detected $'cat <<E\\\nOF\n. ~/.bashrc\nEOF'
 
+note "PR220-R9: a one-argument [ ] / [[ ]] / test is a string test, not a command name"
+check "PR220 [ false ] && source runs (non-empty string)" profile_detected '[ false ] && . ~/.bashrc'
+check "PR220 [[ false ]] && source runs (non-empty string)" profile_detected '[[ false ]] && . ~/.bashrc'
+check "PR220 test false && source runs (non-empty string)" profile_detected 'test false && . ~/.bashrc'
+check "PR220 [ \"false\" ] && source runs (quoted string)" profile_detected '[ "false" ] && . ~/.bashrc'
+check "PR220 [ \"\" ] && source is skipped (empty string)" profile_not_detected '[ "" ] && . ~/.bashrc'
+check "PR220 standalone false && source is skipped (control)" profile_not_detected 'false && . ~/.bashrc'
+check "PR220 standalone true && source runs (control)" profile_detected 'true && . ~/.bashrc'
+
+note "PR220-R10: a short-circuited pipeline is skipped whole and does not reset the AND-OR status"
+check "PR220 true || echo unused | false && source runs" profile_detected 'true || echo unused | false && . ~/.bashrc'
+check "PR220 true || false | false && source runs" profile_detected 'true || false | false && . ~/.bashrc'
+check "PR220 false && true | true && source is skipped (control)" profile_not_detected 'false && true | true && . ~/.bashrc'
+check "PR220 true | false && source is skipped (control)" profile_not_detected 'true | false && . ~/.bashrc'
+check "PR220 false | true && source runs (control)" profile_detected 'false | true && . ~/.bashrc'
+check "PR220 false || false | false && source is skipped (control)" profile_not_detected 'false || false | false && . ~/.bashrc'
+
 note "PR220-E2E: pipeline-only wiring is named as shadowing end to end"
 new_home pr220-pipe
 printf 'echo x | . "$HOME/.bashrc"\n' >"$FH/.bash_profile"
