@@ -6,6 +6,10 @@
 #   1. binaries  — required CLIs are on PATH
 #   2. daemon    — the NeuroStrata daemon is answering
 #   3. guards    — the guard namespace holds the standing guard rules
+#                  (at least three guard_rule memories, one of them
+#                  "Destructive GitHub actions"; on a fresh host run
+#                  scripts/seed-boot-guards.sh, see docs/runbook.md section
+#                  "Seed the guard namespace")
 #   4. gh-auth   — the GitHub CLI is authenticated
 #   5. policy    — the policy data matches the committed version (read-only:
 #                  it creates, copies, and freezes nothing; the committed
@@ -73,9 +77,10 @@ check_guards() {
   fi
   # Count actual guard_rule entries, not total memories in the namespace
   n=$(printf '%s\n' "$out" | grep -c "guard_rule" || true)
-  [ "$n" -ge 3 ] || fail guards "only $n guard_rule entries found, need >= 3"
+  [ "$n" -ge 3 ] ||
+    fail guards "only $n guard_rule entries found, need >= 3 (seed them with scripts/seed-boot-guards.sh, see docs/runbook.md section 'Seed the guard namespace')"
   printf '%s\n' "$out" | grep -q "Destructive GitHub actions" ||
-    fail guards "destructive-actions guard rule missing"
+    fail guards "destructive-actions guard rule missing (seed it with scripts/seed-boot-guards.sh, see docs/runbook.md section 'Seed the guard namespace')"
   ok guards
 }
 

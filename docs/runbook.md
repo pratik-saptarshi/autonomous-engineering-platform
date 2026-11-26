@@ -152,6 +152,27 @@ Note: the binary ships systemd user units, but they cannot be enabled where no u
 
 **Daemon forking behavior.** The binary forks on startup: briefly after launch, `pgrep -f 'neurostrata-mcp daemon'` returns two PIDs (the forking parent plus the live daemon). Any stop logic must signal *all* matching PIDs, not just the first — `pgrep ... | head -1` can pick the stale parent, leaving the live daemon running until the stop times out (observed 2026-10-17: `ERROR: daemon did not exit in 30s`, backup skipped, unclean-shutdown WAL warning on next start). Use the `[n]` bracket trick (`pgrep -f '[n]eurostrata-mcp daemon'`) so pgrep never matches its own command line, and loop `kill -TERM` over every returned PID. `scripts/watchdog-backup.sh` implements this.
 
+### Seed the guard namespace
+
+`scripts/boot-gate.sh` check 3 (guards) needs at least three `guard_rule` memories in the `guard` namespace, and one of them must contain "Destructive GitHub actions". On a fresh VM the namespace is empty and the gate fails closed with `BOOT-GATE: guards FAIL`. Seed it once the daemon is healthy:
+
+```bash
+scripts/seed-boot-guards.sh --dry-run   # report what would be seeded, write nothing
+scripts/seed-boot-guards.sh             # seed every canonical rule that is absent
+scripts/seed-boot-guards.sh --check     # same test as boot-gate check 3, write nothing
+```
+
+The script is idempotent. It matches each canonical rule by a short key phrase, so a rule worded differently on an older host still counts and is never duplicated, and a second run changes nothing. It fails loudly (exit 1) when `neurostrata-mcp` is missing or the daemon is not answering, and it never starts the daemon.
+
+It seeds three rules. The first is universal: destructive GitHub actions (branch deletion, force-push, history rewrite, repository deletion) each need the user's explicit per-action authorization. The second and third are specific to the document-accessibility-pipeline repo (no push without authorization, and the PR merge rule). If you replace the repo-specific rules, keep at least three `guard_rule` memories in the namespace.
+
+Verify the result with the gate itself:
+
+```bash
+neurostrata-mcp list guard      # expect: Found 3 memories (or more)
+scripts/boot-gate.sh            # expect: BOOT-GATE: guards ok
+```
+
 ## 4. MCP client and connector registration
 
 The server speaks MCP over stdio (protocol version `2024-11-05`). Write a minimal JSON-RPC client with `list-tools` and `call-tool --name --arguments-file` commands. Two protocol quirks to handle:
@@ -205,6 +226,7 @@ Start on demand (`start.sh`, ~20 s), discover actions (`oc.py list <service>` / 
 - [ ] `bd` metrics OFF, proven by BOTH signals: `bd metrics` reports OFF, **and** `~/.config/bd/config.yaml` carries `disabled: true` under `metrics:` — assert with `grep -A2 '^metrics:' ~/.config/bd/config.yaml | grep -q 'disabled: true'` (exits non-zero when the flag is absent). If either check fails, setup has FAILED — stop and fix before continuing onboarding. A future bd version that moves the setting or changes the default must break setup visibly here, not silently phone home
 - [ ] `ocr delegate preview` returns a review spec with no API key
 - [ ] `neurostrata-mcp status` healthy; MCP store/search/fetch/archive round-trip passes
+- [ ] `scripts/seed-boot-guards.sh --check` exits 0 and `scripts/boot-gate.sh` prints `BOOT-GATE: guards ok`
 - [ ] `backlog.py next` returns the expected task as JSON
 - [ ] Scheduler shows the `ralph-loop` job with a next run time
 - [ ] Scheduler shows the `neurostrata-watchdog` job; a manual run backs up to Google Drive on DB change
