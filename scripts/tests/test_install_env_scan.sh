@@ -1773,6 +1773,90 @@ check_out "k5c env ok" 'INSTALL-RE: env ok' "$OUT"
 check_no_out "k5c no shadowing SKIP" 'login startup is shadowed by' "$OUT"
 check "k5c block written" test "$(marker_count '>>>')" -eq 1
 
+# ================= #197 (K3): a pre-existing .profile must source ~/.bashrc =================
+
+note "#197a: a non-sourcing pre-existing .profile is named, left byte-identical, and no block is written"
+new_home k3a
+printf '# my own profile\nexport EDITOR=vim\n' >"$FH/.profile"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+PROFILE_SHA="$(file_sha "$FH/.profile")"
+BASHRC_SHA="$(file_sha "$FH/.bashrc")"
+run_env install_env_block
+check "k3a rc 0" test "$RC" -eq 0
+check_out "k3a shadowing SKIP line" 'login startup is shadowed by' "$OUT"
+check_out "k3a names ~/.profile" "$FH/.profile" "$OUT"
+check_out "k3a names the non-sourcing reason" 'does not source ~/.bashrc' "$OUT"
+check_no_out "k3a no false env ok" 'INSTALL-RE: env ok' "$OUT"
+check "k3a .profile byte-identical" test "$(file_sha "$FH/.profile")" = "$PROFILE_SHA"
+check "k3a .bashrc untouched" test "$(file_sha "$FH/.bashrc")" = "$BASHRC_SHA"
+check "k3a no block composed into an unreachable file" test "$(marker_count '>>>')" -eq 0
+run_env install_env_block
+check "k3a repeat run rc 0" test "$RC" -eq 0
+check_out "k3a repeat run still names the shadowing" 'login startup is shadowed by' "$OUT"
+check "k3a repeat run leaves .profile byte-identical" test "$(file_sha "$FH/.profile")" = "$PROFILE_SHA"
+
+note "#197b: a sourcing pre-existing .profile is reachable by a login shell"
+new_home k3b
+cat >"$FH/.profile" <<'EOF2'
+# user profile
+if [ -n "$BASH_VERSION" ]; then
+  if [ -f "$HOME/.bashrc" ]; then
+    . "$HOME/.bashrc"
+  fi
+fi
+EOF2
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+PROFILE_SHA="$(file_sha "$FH/.profile")"
+run_env install_env_block
+check "k3b rc 0" test "$RC" -eq 0
+check_out "k3b env ok" 'INSTALL-RE: env ok' "$OUT"
+check_no_out "k3b no shadowing SKIP" 'login startup is shadowed by' "$OUT"
+check "k3b block written" test "$(marker_count '>>>')" -eq 1
+check "k3b .profile byte-identical" test "$(file_sha "$FH/.profile")" = "$PROFILE_SHA"
+LOGIN_OUT="$(env -i HOME="$FH" /bin/bash -lc 'printf "JAVA=%s" "${JAVA_HOME:-<unset>}"' 2>/dev/null)"
+check "k3b block reachable in a login shell" test "${LOGIN_OUT##*JAVA=}" = "$FH/opt/jdk-$TEMURIN_VERSION"
+SHA="$(file_sha "$FH/.bashrc")"
+run_env install_env_block
+check "k3b second run rc 0" test "$RC" -eq 0
+check "k3b fixed point" test "$(file_sha "$FH/.bashrc")" = "$SHA"
+
+note "#197c: .bash_profile takes precedence over .profile (only the first existing file is judged)"
+new_home k3c
+printf '# non-sourcing profile\nexport EDITOR=vim\n' >"$FH/.profile"
+cat >"$FH/.bash_profile" <<'EOF2'
+if [ -f "$HOME/.bashrc" ]; then
+  . "$HOME/.bashrc"
+fi
+EOF2
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+run_env install_env_block
+check "k3c rc 0" test "$RC" -eq 0
+check_out "k3c env ok" 'INSTALL-RE: env ok' "$OUT"
+check_no_out "k3c no shadowing SKIP" 'login startup is shadowed by' "$OUT"
+LOGIN_OUT="$(env -i HOME="$FH" /bin/bash -lc 'printf "JAVA=%s" "${JAVA_HOME:-<unset>}"' 2>/dev/null)"
+check "k3c block reachable in a login shell through .bash_profile" test "${LOGIN_OUT##*JAVA=}" = "$FH/opt/jdk-$TEMURIN_VERSION"
+
+note "#197d: a non-sourcing .bash_profile shadows a sourcing .profile (precedence, the other direction)"
+new_home k3d
+cat >"$FH/.profile" <<'EOF2'
+if [ -f "$HOME/.bashrc" ]; then
+  . "$HOME/.bashrc"
+fi
+EOF2
+printf '# non-sourcing bash_profile\nexport EDITOR=vim\n' >"$FH/.bash_profile"
+printf '# user bashrc\nexport EDITOR=vim\n' >"$FH/.bashrc"
+run_env install_env_block
+check "k3d rc 0" test "$RC" -eq 0
+check_out "k3d shadowing SKIP names .bash_profile" "$FH/.bash_profile" "$OUT"
+
+note "#197e: an absent .bashrc with a non-sourcing .profile is still named, and nothing is created"
+new_home k3e
+printf '# my own profile\nexport EDITOR=vim\n' >"$FH/.profile"
+run_env install_env_block
+check "k3e rc 0" test "$RC" -eq 0
+check_out "k3e shadowing SKIP line" 'login startup is shadowed by' "$OUT"
+check "k3e no .bashrc created" test ! -e "$FH/.bashrc"
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "test_install_env_scan: ALL PASS (sandbox $SB)"

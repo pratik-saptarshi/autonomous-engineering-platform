@@ -803,11 +803,12 @@ ensure_profile() {
   # the env stage twice in one process, and a cached origin must not
   # turn a terminal SKIP into a written-but-unreachable block.
   # Bash reads the FIRST existing of ~/.bash_profile, ~/.bash_login and
-  # ~/.profile. A pre-existing .profile is ours to leave alone, but a
-  # pre-existing .bash_profile/.bash_login that does not source
-  # ~/.bashrc shadows both the profile and the env block: name that
-  # state instead of writing a healthy-looking block that verify_env
-  # can never reach.
+  # ~/.profile, and that file alone. Every pre-existing file is ours to
+  # leave alone, but when the first one does not source ~/.bashrc, a
+  # login shell never reads the env block: name that state instead of
+  # writing a healthy-looking block that verify_env can never reach.
+  # That holds for a pre-existing ~/.profile too (issue #197) — the
+  # file this script itself creates sources ~/.bashrc, so it passes.
   local candidate="" first=""
   for candidate in .bash_profile .bash_login .profile; do
     if [ -e "$HOME/$candidate" ]; then
@@ -816,7 +817,7 @@ ensure_profile() {
     fi
   done
   case "$first" in
-  .bash_profile | .bash_login)
+  .bash_profile | .bash_login | .profile)
     if ! profile_sources_bashrc "$HOME/$first"; then
       echo "INSTALL-RE: env SKIP: login startup is shadowed by $HOME/$first, which does not source ~/.bashrc"
       ENV_OUTCOME="skip"
