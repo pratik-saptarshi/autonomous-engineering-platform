@@ -1378,6 +1378,64 @@ RUN_UMASK=022 run_env install_env_block
 check "207c rc 0" test "$RC" -eq 0
 check "207c fresh .bashrc is 0644 under umask 022" test "$(/usr/bin/stat -c %a "$FH/.bashrc" 2>/dev/null || /usr/bin/stat -f %Lp "$FH/.bashrc")" = "644"
 
+# ================= #195 (K1): a metacharacter-led comment is a comment =================
+
+note "#195: unit-level strip_trailing_comment (# after ; & | ( ) starts a comment; data # does not)"
+strip_eq() { # strip_eq <line> <expected-output>
+  local got
+  got="$(
+    (
+      # shellcheck disable=SC1090 # the fixture library is generated above
+      source "$LIB"
+      set +eu
+      strip_trailing_comment "$1"
+    ) 2>/dev/null
+  )"
+  test "$got" = "$2"
+}
+check "K1 semicolon-led comment is cut" strip_eq 'echo x;# case foo in' 'echo x;'
+check "K1 ampersand-led comment is cut" strip_eq 'true&&# if foo; then' 'true&&'
+check "K1 single-ampersand-led comment is cut" strip_eq 'sleep 1&# if foo; then' 'sleep 1&'
+check "K1 pipe-led comment is cut" strip_eq 'true|# case foo in' 'true|'
+check "K1 open-paren-led comment is cut" strip_eq '(# case foo in' '('
+check "K1 close-paren-led comment is cut" strip_eq '(echo x)# case foo in' '(echo x)'
+check "K1 whitespace-led comment is still cut" strip_eq 'echo x # case foo in' 'echo x'
+check "K1 line-start comment is still cut" strip_eq '# case foo in' ''
+check "K1 \$# is data" strip_eq 'echo $# case foo in' 'echo $# case foo in'
+check "K1 \${#var} is data" strip_eq 'echo ${#var};# case foo in' 'echo ${#var};'
+check "K1 glued foo#bar is data" strip_eq 'echo foo#bar case foo in' 'echo foo#bar case foo in'
+check "K1 double-quoted ;# is data" strip_eq 'echo "x;# case foo in"' 'echo "x;# case foo in"'
+check "K1 single-quoted ;# is data" strip_eq "echo 'x;# case foo in'" "echo 'x;# case foo in'"
+check "K1 escaped \;\\# is data" strip_eq 'echo x\;\# case foo in' 'echo x\;\# case foo in'
+
+note "#195: a metacharacter-led comment mints no phantom opener"
+check "K1 opener: semicolon-led case comment opens nothing" opener_eq 'echo x;# case foo in' ''
+check "K1 opener: ampersand-led if comment opens nothing" opener_eq 'true&&# if foo; then' ''
+check "K1 opener: pipe-led case comment opens nothing" opener_eq 'true|# case foo in' ''
+check "K1 opener: paren-led case comment opens nothing" opener_eq '(# case foo in' ''
+check "K1 opener: real opener before a ;-led comment still opens" opener_eq 'case $x in;# note' 'esac'
+
+note "#195: a phantom opener from a metacharacter-led comment does not strand the block"
+new_home k1
+cat >"$FH/.bashrc" <<'EOF2'
+echo x;# case foo in
+case $- in
+  *i*) ;;
+  *) return;;
+esac
+export AFTER=1
+EOF2
+run_env install_env_block
+check "K1 rc 0" test "$RC" -eq 0
+check_out "K1 env ok" 'INSTALL-RE: env ok' "$OUT"
+BLOCK_LINE="$(line_of '# >>> re-runtime >>>')"
+GUARD_LINE="$(line_of 'case $- in')"
+check "K1 block before the guard" test "$BLOCK_LINE" -lt "$GUARD_LINE"
+SHA="$(file_sha "$FH/.bashrc")"
+run_env install_env_block
+check "K1 second run rc 0" test "$RC" -eq 0
+check "K1 fixed point" test "$(file_sha "$FH/.bashrc")" = "$SHA"
+
 echo
 if [ "$FAILURES" -eq 0 ]; then
   echo "test_install_env_scan: ALL PASS (sandbox $SB)"

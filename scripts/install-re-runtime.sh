@@ -915,8 +915,10 @@ ni_test_line() {
 # Print $1 with any trailing comment removed. A `#` begins a comment
 # only where bash would begin one on a code line: outside single and
 # double quotes, not backslash-escaped, and at a word start (line
-# start or after whitespace). A `#` inside quotes, escaped, or glued
-# to a word is literal text and never cuts the line — cutting there
+# start, after whitespace, or right after a shell metacharacter that
+# breaks words: `;` `&` `|` `(` `)` — `echo x;# case foo in` carries a
+# comment, not a case opener). A `#` inside quotes, escaped, or glued
+# to a word (`$#`, `${#var}`, `foo#bar`) is literal text and never cuts the line — cutting there
 # deletes real code after the `#` (the strip this replaces cut at the
 # first whitespace-`#`, quoted or not, and lost real openers and
 # closers that followed a quoted `#` on the same line). When a comment
@@ -964,7 +966,7 @@ strip_trailing_comment() {
       fi
       out+="$ch"
       ;;
-    [[:space:]])
+    [[:space:]] | ';' | '&' | '|' | '(' | ')')
       out+="$ch"
       wstart=1
       ;;
