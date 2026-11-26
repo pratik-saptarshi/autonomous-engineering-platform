@@ -123,6 +123,7 @@ case "\$op" in
   mv "\$file.tmp" "\$file"
   ;;
 -D)
+  [ "\${STUB_IPT_DEL_FAIL:-0}" = "1" ] && { echo "$fam: simulated delete failure" >&2; exit 4; }
   by_spec=1
   if [ "\$1" = OUTPUT ]; then
     case "\${2:-}" in
@@ -148,7 +149,7 @@ chmod +x "$STUBS/"*
 
 reset_case() {
   rm -f "$STATE"/* "$DNS"/*
-  unset STUB_UID STUB_V6_ROUTE STUB_IPT_FAIL STUB_IPT_DROP_ADD STUB_IPT_FAIL_ON AEP_BLOCK_DOMAINS
+  unset STUB_UID STUB_V6_ROUTE STUB_IPT_FAIL STUB_IPT_DROP_ADD STUB_IPT_FAIL_ON STUB_IPT_DEL_FAIL AEP_BLOCK_DOMAINS
   export AEP_BLOCK_DOMAINS="alpha.example beta.example"
   printf '192.0.2.10\n' >"$DNS/alpha.example.v4"
   printf '192.0.2.20\n' >"$DNS/beta.example.v4"
@@ -323,6 +324,43 @@ t "a failed reorder insert exits non-zero" "$RC" -ne 0
 t "the original DROP survives the failed reorder" "$(rules iptables | grep -cx -- 'OUTPUT -d 192.0.2.10 -j DROP')" -eq 1
 t "the original ACCEPT survives too" "$(rules iptables | grep -cx -- 'OUTPUT -j ACCEPT')" -eq 1
 unset STUB_IPT_FAIL_ON
+
+echo "# case 17: a source-restricted DROP does not satisfy the destination-wide order check"
+reset_case
+export AEP_BLOCK_DOMAINS="alpha.example"
+printf '192.0.2.10\n' >"$DNS/alpha.example.v4"
+printf 'OUTPUT -s 192.0.2.99 -d 192.0.2.10 -j DROP\nOUTPUT -j ACCEPT\nOUTPUT -d 192.0.2.10 -j DROP\n' >"$STATE/iptables.rules"
+run
+t "the source-restricted case exits 0" "$RC" -eq 0
+un_line="$(rules iptables | grep -nx -- 'OUTPUT -d 192.0.2.10 -j DROP' | cut -d: -f1)"
+accept_line="$(rules iptables | grep -nx -- 'OUTPUT -j ACCEPT' | cut -d: -f1)"
+restricted_line="$(rules iptables | grep -nx -- 'OUTPUT -s 192.0.2.99 -d 192.0.2.10 -j DROP' | cut -d: -f1)"
+t "the unrestricted DROP was moved ahead of the ACCEPT" "$un_line" -lt "$accept_line"
+t "the unrestricted DROP exists exactly once" "$(rules iptables | grep -cx -- 'OUTPUT -d 192.0.2.10 -j DROP')" -eq 1
+t "the source-restricted DROP is untouched" "$restricted_line" -ne 0
+
+echo "# case 18: ownership of new rules survives a failed stale-rule removal"
+reset_case
+export AEP_BLOCK_DOMAINS="alpha.example"
+printf '192.0.2.10\n' >"$DNS/alpha.example.v4"
+run
+t "first run owns the installed rule" "$(grep -cxF -- 'iptables 192.0.2.10' "$STATE/managed-rules" 2>/dev/null || true)" -eq 1
+printf '192.0.2.11\n' >"$DNS/alpha.example.v4"
+export STUB_IPT_DEL_FAIL=1
+run
+t "a failed stale removal exits non-zero" "$RC" -ne 0
+t "the new rule's ownership was persisted" "$(grep -cxF -- 'iptables 192.0.2.11' "$STATE/managed-rules" 2>/dev/null || true)" -eq 1
+t "the stale rule's ownership was retained" "$(grep -cxF -- 'iptables 192.0.2.10' "$STATE/managed-rules" 2>/dev/null || true)" -eq 1
+unset STUB_IPT_DEL_FAIL
+run
+t "the retry exits 0" "$RC" -eq 0
+t "the retry removed the stale DROP" "$(rules iptables | grep -cx -- 'OUTPUT -d 192.0.2.10 -j DROP')" -eq 0
+t "the retry dropped the stale ownership" "$(grep -cxF -- 'iptables 192.0.2.10' "$STATE/managed-rules" 2>/dev/null || true)" -eq 0
+t "the new rule is still blocked" "$(rules iptables | grep -cx -- 'OUTPUT -d 192.0.2.11 -j DROP')" -eq 1
+printf '192.0.2.12\n' >"$DNS/alpha.example.v4"
+run
+t "the next rotation is not stuck on the intermediate address" "$(rules iptables | grep -cx -- 'OUTPUT -d 192.0.2.11 -j DROP')" -eq 0
+t "the newest address is blocked" "$(rules iptables | grep -cx -- 'OUTPUT -d 192.0.2.12 -j DROP')" -eq 1
 
 if [ "$FAILURES" -ne 0 ]; then
   echo "test_apply_domain_blocks: $FAILURES failure(s)"

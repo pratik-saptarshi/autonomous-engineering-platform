@@ -162,8 +162,10 @@ fi
 # Line number of the DROP for $2 in OUTPUT, or empty when absent. `-S` renders
 # IPv4 as a /32 and IPv6 as a /128, so the optional prefix is part of the match.
 rule_position() { # $1 = iptables|ip6tables, $2 = ip
+  # Anchor the whole rule: a source-restricted DROP with the same destination
+  # and target is a different rule and must not satisfy this lookup.
   "$1" -S OUTPUT 2>/dev/null | awk -v ip="$2" '
-    $0 ~ "-d " ip "(/[0-9]+)? -j DROP$" { print NR; exit }
+    $0 ~ "^-A OUTPUT -d " ip "(/[0-9]+)? -j DROP$" { print NR; exit }
   '
 }
 
@@ -178,7 +180,7 @@ rule_number() { # $1 = tool, $2 = ip
   "$1" -S OUTPUT 2>/dev/null | awk -v ip="$2" '
     /^-A OUTPUT / {
       n++
-      if ($0 ~ "-d " ip "(/[0-9]+)? -j DROP$") { print n; exit }
+      if ($0 ~ "^-A OUTPUT -d " ip "(/[0-9]+)? -j DROP$") { print n; exit }
     }
   '
 }
@@ -266,18 +268,39 @@ COMMITTED=1
 # Phase 4: reconcile. Remove a managed DROP only when this script installed it
 # (it is in the previous managed set) and the address is no longer a current
 # DNS answer. Rules we never managed are left alone.
+#
+# Persist ownership BEFORE reconciliation can fail. The pre-write keeps the
+# newly inserted rules and every previously owned rule, including one whose
+# removal is about to be attempted. If a -D fails, the run exits non-zero and
+# the stale rule stays owned, so the next run retries it instead of mistaking
+# it for an administrator rule. Only a fully successful reconciliation writes
+# the shrunken set.
+TMP_STATE="$(mktemp "$STATE_DIR/.state.XXXXXX")"
+sort -u "$OWNED_PAIRS" "$PREV_PAIRS" >"$TMP_STATE"
+mv -f "$TMP_STATE" "$STATE_FILE"
+
+reconcile_failed=0
 while read -r tool ip; do
   [ -n "$tool" ] || continue
   grep -qxF -- "$tool $ip" "$CURRENT_PAIRS" && continue
-  command -v "$tool" >/dev/null 2>&1 || continue
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    echo "WARNING: $tool is missing; keeping ownership of $ip for a later run" >&2
+    reconcile_failed=1
+    continue
+  fi
   if "$tool" -C OUTPUT -d "$ip" -j DROP 2>/dev/null; then
     if "$tool" -D OUTPUT -d "$ip" -j DROP 2>/dev/null; then
       echo "unblocked (rotated away): $ip"
     else
-      die "could not remove the stale $tool drop for $ip (current blocks are in place)"
+      echo "ERROR: could not remove the stale $tool drop for $ip; ownership retained for the next run" >&2
+      reconcile_failed=1
     fi
   fi
 done <"$PREV_PAIRS"
+
+if [ "$reconcile_failed" -ne 0 ]; then
+  die "reconciliation incomplete; the current blocks are in place and stale ownership is retained"
+fi
 
 TMP_STATE="$(mktemp "$STATE_DIR/.state.XXXXXX")"
 sort -u "$OWNED_PAIRS" >"$TMP_STATE"
