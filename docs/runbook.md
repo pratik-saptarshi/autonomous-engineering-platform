@@ -137,7 +137,7 @@ OpenChamber is a multi-surface workspace (web/PWA, desktop, VS Code, mobile) lay
 
 **Prerequisites**
 
-- **OpenCode already installed and set up** — the binary is at `~/.opencode/bin/opencode`, version >= 2.2.4 (v2.3.0 verified). This section attaches to an existing install; it does not install OpenCode.
+- **OpenCode already installed and set up** — the binary is at `~/.opencode/bin/opencode`, version >= 2.2.4 (v2.4.2 verified). This section attaches to an existing install; it does not install OpenCode.
 - **A connected provider** — at least one provider is authenticated in OpenCode (here: OpenCode Go, connected via `opencode auth login`). Without a provider, the workspace opens but sessions cannot run a model. Provider credentials are operator-supplied and never live in this repo.
 - **The OpenCode background service configured** — its state is at `~/.local/state/opencode/service.json`; OpenChamber does not read a password from that file (its auth is covered in the launch note below). The service does not survive VM restarts; wake it before launching, as described in the launch note below.
 - **Node.js and Bun on PATH** — the CLI launches under Node (v24 verified), and the daemon runs under Bun (1.4 verified). Both ship in the Muse VM image; on any other machine, install Node >= 20 and Bun first.
@@ -148,7 +148,7 @@ Install the published npm package `@openchamber/web` (prebuilt; no monorepo buil
 
 ```bash
 mkdir -p ~/workspace/openchamber/app && cd ~/workspace/openchamber/app
-npm install @openchamber/web@2.7.3
+npm install @openchamber/web@2.8.1
 ```
 
 The background service must be up first: it does not survive VM restarts, and any `opencode api` call wakes it (e.g. `opencode api GET /api/session`). Launch in attach mode, bound to localhost only:
